@@ -1189,11 +1189,80 @@ export function buildIssueMonitorTriggeredPatch(input: {
   };
 }
 
+/**
+ * A scheduled dispatch attempt failed with a transient client error (e.g. the
+ * assignee is momentarily paused). Unlike `buildIssueMonitorClearedPatch`,
+ * this keeps the monitor policy alive and reschedules it (with backoff),
+ * consuming an attempt so `maxAttempts`/`timeoutAt` still bound the retries.
+ */
+export function buildIssueMonitorDeferredPatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  nextCheckAt: Date;
+  attemptCount: number;
+  /**
+   * The monitor's externalRef straight from the DB column, before it passed
+   * through `normalizeIssueExecutionPolicy` (which always redacts
+   * externalRef to "[redacted]"). `input.policy` is already-normalized, so
+   * without this, every deferred retry would overwrite the real source
+   * reference (e.g. a quota monitor's source run id) with the literal
+   * redacted placeholder, breaking recovery once the next tick reads it back.
+   */
+  rawExternalRef?: string | null;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  const monitor = input.policy?.monitor ?? null;
+  const nextMonitorState: IssueExecutionMonitorState = {
+    status: "scheduled",
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    lastTriggeredAt: currentMonitorState?.lastTriggeredAt ?? null,
+    attemptCount: input.attemptCount,
+    notes: currentMonitorState?.notes ?? null,
+    scheduledBy: currentMonitorState?.scheduledBy ?? null,
+    ...(monitor ? monitorMetadataFromPolicy(monitor) : monitorMetadataFromState(currentMonitorState)),
+    clearedAt: null,
+    clearReason: null,
+  };
+  const nextPolicy = monitor
+    ? {
+      ...input.policy!,
+      monitor: {
+        ...monitor,
+        externalRef: input.rawExternalRef ?? monitor.externalRef,
+        nextCheckAt: input.nextCheckAt.toISOString(),
+      },
+    }
+    : (input.policy ?? null);
+
+  return {
+    executionPolicy: nextPolicy as Record<string, unknown> | null,
+    executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
+    monitorNextCheckAt: input.nextCheckAt,
+    monitorWakeRequestedAt: null,
+    monitorAttemptCount: input.attemptCount,
+  };
+}
+
 export function buildIssueMonitorClearedPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
   clearReason: IssueExecutionMonitorClearReason;
   clearedAt?: Date;
+  /**
+   * The attempt count to persist to the monitorAttemptCount column, if this
+   * clear is itself the result of a just-consumed (and failed) dispatch
+   * attempt. Omitted when the clear isn't attempt-driven (e.g. the monitor
+   * was replaced/cancelled out from under the dispatch). Without this, a
+   * monitor cleared on its final allowed attempt (buildIssueMonitorDeferredPatch's
+   * counterpart on the defer path does set this) would leave the column at
+   * its pre-attempt value, understating how many times it actually ran.
+   */
+  nextAttemptCount?: number;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1212,6 +1281,9 @@ export function buildIssueMonitorClearedPatch(input: {
     executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
     monitorNextCheckAt: null,
     monitorWakeRequestedAt: null,
+    ...(input.nextAttemptCount !== undefined
+      ? { monitorAttemptCount: input.nextAttemptCount }
+      : {}),
   };
 }
 

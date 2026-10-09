@@ -639,6 +639,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
+  buildIssueMonitorDeferredPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -3385,16 +3386,39 @@ export function heartbeatService(
     monitor: IssueExecutionMonitorPolicy | null;
     nextAttemptCount: number;
     now: Date;
+    // Preemptive (pre-dispatch) checks allow exactly `maxAttempts` attempts to
+    // be made before stopping on what would be attempt `maxAttempts + 1`. A
+    // check made *after* an attempt has already failed must instead treat
+    // that failed attempt as consuming its slot immediately: if it was the
+    // `maxAttempts`-th attempt, there is no attempt left to defer into.
+    attemptJustFailed?: boolean;
   }): IssueExecutionMonitorClearReason | null {
     const timeoutAt = parseMonitorDate(input.monitor?.timeoutAt ?? null);
     if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
       return "timeout_exceeded";
     }
     const maxAttempts = input.monitor?.maxAttempts ?? null;
-    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
-      return "max_attempts_exhausted";
+    if (maxAttempts !== null) {
+      const exhausted = input.attemptJustFailed
+        ? input.nextAttemptCount >= maxAttempts
+        : input.nextAttemptCount > maxAttempts;
+      if (exhausted) return "max_attempts_exhausted";
     }
     return null;
+  }
+
+  const MONITOR_DISPATCH_DEFER_BASE_MS = 5 * 60 * 1000;
+  const MONITOR_DISPATCH_DEFER_MAX_MS = 60 * 60 * 1000;
+
+  /** Backoff for a scheduled dispatch deferred by a transient client error:
+   * 5 min, 10, 20, 40, capped at 60 min. `attemptCount` is 1-indexed (the
+   * attempt that just failed). */
+  function monitorDispatchDeferDelayMs(attemptCount: number) {
+    const exponent = Math.max(0, attemptCount - 1);
+    return Math.min(
+      MONITOR_DISPATCH_DEFER_BASE_MS * 2 ** exponent,
+      MONITOR_DISPATCH_DEFER_MAX_MS,
+    );
   }
 
   function monitorRecoveryPolicy(
@@ -3611,42 +3635,93 @@ export function heartbeatService(
       return;
     }
 
-    await enqueueWakeup(input.claimed.assigneeAgentId!, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_monitor_recovery",
-      idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
-      payload: withRecoveryContext(
-        {
-          issueId: input.claimed.id,
-          monitorAttemptCount: input.nextAttemptCount,
-          monitorNotes: input.claimed.monitorNotes ?? null,
+    const fallBackToRecoveryComment = async (reason: string) => {
+      // Falling back here (rather than letting the caller's exception
+      // propagate) avoids undoing the clear's accounting and silently
+      // dropping the recovery notice; same idea as escalate_to_board.
+      await db.insert(issueComments).values({
+        companyId: input.claimed.companyId,
+        issueId: input.claimed.id,
+        body: `${monitorRecoveryComment({
+          issue: input.claimed,
           clearReason: input.clearReason,
-          serviceName: input.monitor?.serviceName ?? null,
-          timeoutAt: input.monitor?.timeoutAt ?? null,
-          maxAttempts: input.monitor?.maxAttempts ?? null,
-          ...(reviewPathContext ?? {}),
-        },
-        "status_only",
-      ),
-      requestedByActorType: input.actorType,
-      requestedByActorId: input.actorId,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.claimed.id,
-          source: "issue.monitor.recovery",
-          wakeReason: "issue_monitor_recovery",
-          monitorAttemptCount: input.nextAttemptCount,
-          monitorNotes: input.claimed.monitorNotes ?? null,
-          clearReason: input.clearReason,
-          serviceName: input.monitor?.serviceName ?? null,
-          timeoutAt: input.monitor?.timeoutAt ?? null,
-          maxAttempts: input.monitor?.maxAttempts ?? null,
-          ...(reviewPathContext ?? {}),
-        },
-        "status_only",
-      ),
-    });
+          recoveryPolicy: input.recoveryPolicy,
+          nextAttemptCount: input.nextAttemptCount,
+        })}\n\nThe assignee could not be woken (${reason}); escalating here instead.`,
+      });
+
+      await logActivity(db, {
+        companyId: input.claimed.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: "issue.monitor_recovery_wake_skipped",
+        entityType: "issue",
+        entityId: input.claimed.id,
+        details: { ...details, reason },
+      });
+    };
+
+    const ownerAgent = await getAgent(input.claimed.assigneeAgentId!);
+    const ownerInvokability = await getAgentInvokability(ownerAgent);
+    if (!ownerInvokability.invokable) {
+      // The assignee is the same agent the monitor just failed to dispatch
+      // to (most commonly paused for budget/quota reasons) — waking them now
+      // would hit the identical failure.
+      await fallBackToRecoveryComment(ownerInvokability.reason ?? "not invokable");
+      return;
+    }
+
+    try {
+      await enqueueWakeup(input.claimed.assigneeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_monitor_recovery",
+        idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
+        payload: withRecoveryContext(
+          {
+            issueId: input.claimed.id,
+            monitorAttemptCount: input.nextAttemptCount,
+            monitorNotes: input.claimed.monitorNotes ?? null,
+            clearReason: input.clearReason,
+            serviceName: input.monitor?.serviceName ?? null,
+            timeoutAt: input.monitor?.timeoutAt ?? null,
+            maxAttempts: input.monitor?.maxAttempts ?? null,
+            ...(reviewPathContext ?? {}),
+          },
+          "status_only",
+        ),
+        requestedByActorType: input.actorType,
+        requestedByActorId: input.actorId,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.claimed.id,
+            source: "issue.monitor.recovery",
+            wakeReason: "issue_monitor_recovery",
+            monitorAttemptCount: input.nextAttemptCount,
+            monitorNotes: input.claimed.monitorNotes ?? null,
+            clearReason: input.clearReason,
+            serviceName: input.monitor?.serviceName ?? null,
+            timeoutAt: input.monitor?.timeoutAt ?? null,
+            maxAttempts: input.monitor?.maxAttempts ?? null,
+            ...(reviewPathContext ?? {}),
+          },
+          "status_only",
+        ),
+      });
+    } catch (err) {
+      // getAgentInvokability only rules out a paused/suspended agent; it
+      // doesn't see a company/project budget block, which enqueueWakeup
+      // also rejects with a 4xx. The agent is usually still not invokable
+      // at the moment a monitor exhausts (that's the realistic trigger for
+      // exhaustion), so this is expected to fire sometimes, not a bug.
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+        await fallBackToRecoveryComment(err.message);
+        return;
+      }
+      throw err;
+    }
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -3684,6 +3759,7 @@ export function heartbeatService(
           policy: input.policy,
           clearReason: input.clearReason,
           clearedAt: input.now,
+          nextAttemptCount: input.nextAttemptCount,
         })),
         updatedAt: input.now,
       })
@@ -3738,6 +3814,19 @@ export function heartbeatService(
     };
   }
 
+  function monitorDeferDispatchPatch(patch: ReturnType<typeof buildIssueMonitorDeferredPatch>) {
+    // Same rationale as monitorOnlyDispatchPatch above: admission and
+    // consumption are separate transactions, so merge only the monitor path
+    // of each JSONB column instead of overwriting the whole column.
+    const monitorPolicyValue = (patch.executionPolicy as { monitor?: unknown } | null)?.monitor ?? null;
+    return {
+      ...patch,
+      executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', ${JSON.stringify(monitorPolicyValue)}::jsonb)`,
+      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
+        '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
+    };
+  }
+
   function issueMonitorClaimCondition(claimed: IssueMonitorDispatchRow) {
     return and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId),
       eq(issues.assigneeAgentId, claimed.assigneeAgentId!), isNull(issues.assigneeUserId),
@@ -3770,6 +3859,16 @@ export function heartbeatService(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;
+    // `normalizeIssueExecutionPolicy` always redacts `monitor.externalRef` to
+    // "[redacted]" (it's the same schema used to validate untrusted PUT
+    // input). Read the real value straight off the raw DB column so a
+    // deferred retry can preserve it instead of overwriting the saved source
+    // reference with the redacted placeholder.
+    const rawMonitorExternalRef =
+      typeof (claimed.executionPolicy as { monitor?: { externalRef?: unknown } } | null)?.monitor
+        ?.externalRef === "string"
+        ? (claimed.executionPolicy as { monitor: { externalRef: string } }).monitor.externalRef
+        : null;
     const clearReason = issueMonitorLimitClearReason({
       monitor,
       nextAttemptCount,
@@ -3967,18 +4066,62 @@ export function heartbeatService(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          // A 4xx here is usually transient (most commonly the assignee
+          // being momentarily paused/quota-throttled), not a terminal
+          // condition for a monitor that may be scheduled weeks out.
+          // Defer with backoff instead of destroying it outright; only
+          // actually clear once the monitor's own bounds are exhausted, via
+          // the same recovery path a successful-dispatch exhaustion uses.
+          const deferClearReason = issueMonitorLimitClearReason({
+            monitor,
+            nextAttemptCount,
+            now: input.now,
+            attemptJustFailed: true,
+          });
+          if (deferClearReason) {
+            return clearIssueMonitorAndRecover({
+              claimed,
+              policy,
+              scheduledAtIso,
+              nextAttemptCount,
+              clearReason: deferClearReason,
+              recoveryPolicy,
+              monitor,
+              now: input.now,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              activitySource: input.activitySource,
+            });
+          }
+
+          const deferDelayMs = monitorDispatchDeferDelayMs(nextAttemptCount);
+          const monitorTimeoutAt = monitor?.timeoutAt ? new Date(monitor.timeoutAt) : null;
+          const uncappedDeferredTo = new Date(input.now.getTime() + deferDelayMs);
+          // Don't schedule the retry past the monitor's own timeout: tickDueIssueMonitors
+          // only selects rows whose monitorNextCheckAt is already due, so a deferredTo
+          // beyond timeoutAt would leave an expired monitor unable to be cleared until
+          // the backoff delay separately elapses.
+          const deferredTo =
+            monitorTimeoutAt && monitorTimeoutAt.getTime() < uncappedDeferredTo.getTime()
+              ? monitorTimeoutAt
+              : uncappedDeferredTo;
+          const deferred = await db
             .update(issues)
             .set({
-              ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
+              ...monitorDeferDispatchPatch(buildIssueMonitorDeferredPatch({
                 issue: claimed,
                 policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
+                nextCheckAt: deferredTo,
+                attemptCount: nextAttemptCount,
+                rawExternalRef: rawMonitorExternalRef,
               })),
               updatedAt: new Date(),
             })
-            .where(issueMonitorClaimCondition(claimed));
+            .where(issueMonitorClaimCondition(claimed))
+            .returning({ id: issues.id });
+          if (deferred.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -3996,6 +4139,11 @@ export function heartbeatService(
               notes: claimed.monitorNotes ?? null,
               reason: err.message,
               source: input.activitySource,
+              outcome: "deferred",
+              deferredTo: deferredTo.toISOString(),
+              deferDelayMs,
+              timeoutAt: monitor?.timeoutAt ?? null,
+              maxAttempts: monitor?.maxAttempts ?? null,
             },
           });
 
