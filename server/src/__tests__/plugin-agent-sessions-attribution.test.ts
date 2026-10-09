@@ -499,6 +499,49 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
     });
   });
 
+  it("gives each attributed send its own run instead of folding it into a queued run", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const firstUserId = await addMember(companyId);
+    const secondUserId = await addMember(companyId);
+    const firstProjectId = await addProject(companyId);
+    const secondProjectId = await addProject(companyId, { name: "Second" });
+    const host = pluginHost(["agent.sessions.create", "agent.sessions.send", "agent.sessions.send_human_attributed"]);
+    const session = await host.createSession(companyId, agentId);
+
+    const first = await host.send({
+      sessionId: session.sessionId,
+      companyId,
+      prompt: "first",
+      actorUserId: firstUserId,
+      projectId: firstProjectId,
+    });
+    const second = await host.send({
+      sessionId: session.sessionId,
+      companyId,
+      prompt: "second",
+      actorUserId: secondUserId,
+      projectId: secondProjectId,
+    });
+
+    expect(second.runId).not.toBe(first.runId);
+    const { run: firstRun } = await runAndWakeup(first.runId);
+    const { run: secondRun } = await runAndWakeup(second.runId);
+    expect(firstRun).toMatchObject({
+      responsibleUserId: firstUserId,
+      contextSnapshot: expect.objectContaining({
+        projectId: firstProjectId,
+        paperclipAgentMessage: expect.objectContaining({ text: "first" }),
+      }),
+    });
+    expect(secondRun).toMatchObject({
+      responsibleUserId: secondUserId,
+      contextSnapshot: expect.objectContaining({
+        projectId: secondProjectId,
+        paperclipAgentMessage: expect.objectContaining({ text: "second" }),
+      }),
+    });
+  });
+
   it("still refuses another plugin's session when attribution fields are passed", async () => {
     const { companyId, agentId } = await seedCompany();
     const actorUserId = await addMember(companyId);
