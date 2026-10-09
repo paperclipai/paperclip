@@ -1,4 +1,4 @@
-import { DOT_AGENT_TOOL_GUIDANCE } from "@paperclipai/shared";
+import { DOT_AGENT_TOOL_GUIDANCE } from "@paperclipai/shared/external-agent-guidance";
 
 /** The live Dot connection prompt; callers supply an in-memory, expiring pairing code. */
 export function buildDotSetupPrompt({ companyId, agentId, resourceUrl, pairingCode, expiresAt }: {
