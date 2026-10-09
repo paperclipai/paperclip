@@ -8,11 +8,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaces, issues, projects } from "@paperclipai/db";
+import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -68,6 +69,50 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(svc.selectTaskWorkspace({ ...request, requestKey: "stale" })).rejects.toThrow("binding changed");
   });
 
+  it.each(["binding", "configured_source"] as const)("supersedes an older queued selection when an ordinary update changes %s", async kind => {
+    const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+    const settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      const request = { ...f, selection: { kind: "task_directory" as const }, expectedBindingRevision: 1, requestKey: "older-choice" };
+      await svc.selectTaskWorkspace(request);
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "New source" }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "New files", cwd: `/tmp/new-source-${f.issueId}` }).returning();
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: null,
+        mode: "shared_workspace", strategyType: "project_primary", name: "New binding", cwd: `/tmp/new-binding-${f.issueId}` }).returning();
+      const patch = kind === "binding" ? { executionWorkspaceId: workspace.id } : { executionWorkspaceId: null, projectWorkspaceId: source.id };
+      await tasks.update(f.issueId, patch);
+      expect(await svc.applyPendingTaskWorkspaceSelection({ ...f, runId: randomUUID() })).toBe(false);
+      const view = await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor);
+      expect(view).toMatchObject({ bindingRevision: 2, pendingSelection: null, selection: null });
+      expect(view.workspace?.id ?? null).toBe(kind === "binding" ? workspace.id : null);
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(task.projectWorkspaceId).toBe(kind === "configured_source" ? source.id : null);
+      await expect(svc.selectTaskWorkspace(request)).rejects.toThrow("binding changed");
+      await tasks.update(f.issueId, { projectId: project.id, ...patch });
+      expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).bindingRevision).toBe(2);
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
+  });
+
+  it("rejects an ordinary source annotation on bound files and preserves active run ownership", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+    await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Other source" }).returning();
+    const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Other files", cwd: `/tmp/other-${f.issueId}` }).returning();
+    await expect(tasks.update(f.issueId, { projectWorkspaceId: source.id })).rejects.toThrow("already has bound files");
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Running worker", adapterType: "process", status: "active" }).returning();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id, status: "running", invocationSource: "on_demand", nativeIssueId: f.issueId, contextSnapshot: { issueId: f.issueId } });
+    const settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await expect(tasks.update(f.issueId, { executionWorkspaceId: null, projectWorkspaceId: source.id })).rejects.toThrow("still owns its workspace");
+      expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ bindingRevision: 1, workspace: { id: f.workspaceId } });
+      await expect(svc.selectTaskWorkspace({ ...f, selection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" },
+        expectedBindingRevision: 1, requestKey: "next-admission" })).resolves.toMatchObject({ kind: "scheduled" });
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
+  });
+
   it("defaults app and chat tasks to independent directories without hydrating legacy agent files", async () => {
     const f = await fixture();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "task-workspace-default-"));
@@ -102,6 +147,46 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       expect(nativeChatScope?.projectId).toBeNull();
       expect((await fs.stat(path.join(legacy, "unrelated.bin"))).size).toBe(1_200_000_000);
+    } finally { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["missing_path", "clone_failure", "deleted_source"] as const)("refuses sibling and session fallbacks for an explicit configured source: %s", async (failure) => {
+    const f = await fixture();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "task-source-selection-"));
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    try {
+      const projectId = randomUUID(), sourceId = randomUUID(), siblingId = randomUUID();
+      const siblingCwd = path.join(root, "usable-sibling");
+      await fs.mkdir(siblingCwd);
+      await fs.writeFile(path.join(siblingCwd, "source.txt"), "Other repository");
+      await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Multiple sources" });
+      await db.insert(projectWorkspaces).values([
+        { id: sourceId, companyId: f.companyId, projectId, name: "Selected", isPrimary: true,
+          sourceType: failure === "clone_failure" ? "git_repo" : "local_path",
+          cwd: failure === "clone_failure" ? null : path.join(root, "missing-source"),
+          // A nonexistent local remote exercises clone failure without network access.
+          repoUrl: failure === "clone_failure" ? path.join(root, "missing-remote.git") : null },
+        { id: siblingId, companyId: f.companyId, projectId, name: "Other", sourceType: "local_path", cwd: siblingCwd },
+      ]);
+      await db.update(issues).set({ projectId, projectWorkspaceId: sourceId,
+        workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } },
+      }).where(eq(issues.id, f.issueId));
+      if (failure === "deleted_source") await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, sourceId));
+      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Worker", adapterType: "process",
+        adapterConfig: { cwd: siblingCwd } }).returning();
+      await expect(createHeartbeatWorkspaceResolver(db).resolveWorkspaceForRun(agent!, { issueId: f.issueId }, { cwd: siblingCwd }))
+        .rejects.toMatchObject({ code: "workspace_validation_failed", resultJson: { workspaceValidation: {
+          reason: failure === "clone_failure" ? "git_worktree_base_materialization_failed" : "configured_workspace_unavailable",
+          issueProjectWorkspaceId: sourceId, baseCwdFallback: false,
+          materializationFailures: failure === "clone_failure" ? [expect.objectContaining({ projectWorkspaceId: sourceId })] : [],
+        } } });
+      expect(await fs.readFile(path.join(siblingCwd, "source.txt"), "utf8")).toBe("Other repository");
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionWorkspaceId).toBeNull();
+      if (failure === "missing_path") {
+        await fs.mkdir(path.join(root, "missing-source"));
+        const repaired = await createHeartbeatWorkspaceResolver(db).resolveWorkspaceForRun(agent!, { issueId: f.issueId }, { cwd: siblingCwd });
+        expect(repaired).toMatchObject({ workspaceId: sourceId, cwd: path.join(root, "missing-source"), baseCwdFallback: false });
+      }
     } finally { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); }
   });
 

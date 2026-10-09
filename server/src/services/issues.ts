@@ -11157,6 +11157,12 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
+            issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
+          Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
+            companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,
+          }, tx));
+        }
         if (expectedExecutionPolicy !== undefined && !isDeepStrictEqual(
           receiptExisting.executionPolicy ?? null,
           expectedExecutionPolicy,

@@ -30,7 +30,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
   const workspaces = useQuery({
     queryKey: ["channel-workspace-choices", companyId],
-    queryFn: () => executionWorkspacesApi.listSummaries(companyId, { status: "active" }),
+    queryFn: () => executionWorkspacesApi.listSummaries(companyId, { selectableForTask: true }),
   });
   const current = draft ?? value ?? {};
   const projectValue = current.projectId === undefined ? "inherit" : current.projectId ?? "none";

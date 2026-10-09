@@ -3351,12 +3351,15 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
+    const workspaceSelection = issueProjectRef?.workspaceSelection?.selection;
+    const configuredSourceId = workspaceSelection?.kind === "configured_source"
+      ? workspaceSelection.projectWorkspaceId : null;
     const preferredProjectWorkspaceId =
-      issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+      configuredSourceId ?? issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
     const [selectedSource] = preferredProjectWorkspaceId ? await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
       .where(and(eq(projectWorkspaces.id, preferredProjectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
     const resolvedProjectId = selectedSource?.projectId ?? issueProjectId ?? contextProjectId;
-    const forceTaskDirectory = issueProjectRef?.workspaceSelection?.selection.kind === "task_directory";
+    const forceTaskDirectory = workspaceSelection?.kind === "task_directory";
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace && !forceTaskDirectory ? resolvedProjectId : null;
 
@@ -3372,10 +3375,15 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           )
           .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
       : [];
-    const projectWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
+    const prioritizedWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
     );
+    // A durable source choice names the filesystem authority, not a preference
+    // among the project's repositories. Never label another checkout with it.
+    const projectWorkspaceRows = configuredSourceId
+      ? prioritizedWorkspaceRows.filter((workspace) => workspace.id === configuredSourceId)
+      : prioritizedWorkspaceRows;
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,
@@ -3384,7 +3392,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
-    if (projectWorkspaceRows.length > 0) {
+    if (projectWorkspaceRows.length > 0 || configuredSourceId) {
       const preferredWorkspace = preferredProjectWorkspaceId
         ? (projectWorkspaceRows.find(
             (workspace) => workspace.id === preferredProjectWorkspaceId,

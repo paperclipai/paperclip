@@ -38,3 +38,21 @@ it("keeps edits visible after a save failure and permits retry", async () => {
   expect(mocks.save).toHaveBeenLastCalledWith({ projectId: null, workspace: { kind: "task_directory" } });
   expect(container.textContent).toContain("Saved for new tasks.");
 });
+
+it("offers and saves an idle workspace from the shared task selection filter", async () => {
+  mocks.workspaces.mockResolvedValue([
+    { id: "active-workspace", name: "Active files", status: "active", closedAt: null },
+    { id: "idle-workspace", name: "Idle files", status: "idle", closedAt: null },
+  ]);
+  await render();
+  expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });
+  const options = [...container.querySelectorAll("select")[1].options].map((option) => option.value);
+  expect(options).toContain("existing:active-workspace");
+  expect(options).toContain("existing:idle-workspace");
+  await choose("existing:idle-workspace");
+  await save();
+  expect(mocks.save).toHaveBeenCalledWith({
+    projectId: null,
+    workspace: { kind: "existing", workspaceId: "idle-workspace" },
+  });
+});

@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1401,6 +1401,35 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     });
   }
 
+  /** Ordinary issue edits participate in the same binding revision transaction. */
+  async function prepareTaskWorkspaceUpdate(input: {
+    companyId: string; issueId: string; patch: TaskWorkspaceBindingPatch;
+  }, tx: DbTransaction) {
+    const [task] = await tx.select().from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )).for("no key update");
+    if (!task) throw notFound("Task not found");
+    const fields = ["executionWorkspaceId", "projectWorkspaceId", "executionWorkspacePreference", "executionWorkspaceSettings"] as const;
+    if (!fields.some(field => input.patch[field] !== undefined && !isDeepStrictEqual(input.patch[field], task[field]))) return {};
+    if (input.patch.projectWorkspaceId !== undefined && input.patch.projectWorkspaceId !== task.projectWorkspaceId &&
+        task.executionWorkspaceId && input.patch.executionWorkspaceId !== null) {
+      throw conflict("Task already has bound files; schedule a workspace selection or explicitly clear its binding when changing the source");
+    }
+    const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running"),
+      or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`,
+        task.executionRunId ? eq(heartbeatRuns.id, task.executionRunId) : undefined),
+    )).limit(1);
+    const [unsettled] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+      ne(nativeRunFinalizations.phase, "committed"),
+    )).limit(1);
+    if (holder || unsettled) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
+    return { workspaceBindingRevision: task.workspaceBindingRevision + 1,
+      workspacePendingSelection: null, workspaceSelection: null };
+  }
+
   const inspectDisplay = opts.inspectGitCloseReadiness
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
     : inspectGitForDisplay;
@@ -1999,7 +2028,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     requestTaskRepository: executionWorkspaceRepositoryService(db).request,
     listTaskRepositories: executionWorkspaceRepositoryService(db).list,
     prepareTaskRepositoriesForAdmission: executionWorkspaceRepositoryService(db).prepareForAdmission,
-    validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace,
+    validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
