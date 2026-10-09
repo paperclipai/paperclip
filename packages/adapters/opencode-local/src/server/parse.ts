@@ -88,8 +88,49 @@ export function parseOpenCodeJsonl(stdout: string) {
   };
 }
 
-export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
-  const haystack = `${stdout}\n${stderr}`
+export interface OpenCodeToolCallRuntimeEvent {
+  eventType: "opencode.tool_call";
+  stream: "stdout";
+  /** Tool name or invocation title, when the part carries one. */
+  message: string | null;
+  payload: {
+    name: string | null;
+    toolCallId: string | null;
+    status: string | null;
+  };
+}
+
+/**
+ * Parse one OpenCode `run --format json` stdout line for tool-call activity.
+ * A `tool_use` event is emitted for every tool-part update OpenCode streams
+ * (pending → running → completed/error), so callers see both the start and the
+ * outcome of each provider tool call — including the call that was still
+ * running when the provider died. Non-tool lines, and tool lines whose status
+ * or identity cannot be read, yield no events rather than guesses.
+ */
+export function extractOpenCodeToolCallEvents(
+  line: string,
+): OpenCodeToolCallRuntimeEvent[] {
+  const event = parseJson(line);
+  if (!event) return [];
+  if (asString(event.type, "") !== "tool_use") return [];
+  const part = parseObject(event.part);
+  const state = parseObject(part.state);
+  const toolCallId = asString(part.callID, "").trim() || asString(part.callId, "").trim() || asString(part.id, "").trim() || null;
+  const name = asString(part.tool, "").trim() || asString(state.title, "").trim() || null;
+  const status = asString(state.status, "").trim() || null;
+  if (!toolCallId && !name) return [];
+  return [
+    {
+      eventType: "opencode.tool_call",
+      stream: "stdout",
+      message: name,
+      payload: { name, toolCallId, status },
+    },
+  ];
+}
+
+export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {  const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
