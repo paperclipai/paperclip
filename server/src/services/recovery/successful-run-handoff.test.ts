@@ -328,6 +328,66 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("skips when the issue has a future nextCheckAt even if the caller boolean is false", () => {
+    const nextCheckAt = new Date(Date.now() + 60 * 60 * 1000);
+    const productive = {
+      hasPersistedMonitor: false,
+      detectedProgressSummary: "Implemented the handoff path and ran the focused test.",
+      livenessState: "advanced" as const,
+    };
+    expect(decide({
+      ...productive,
+      issue: {
+        ...issue,
+        monitorNextCheckAt: nextCheckAt,
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
+    });
+    expect(decide({
+      ...productive,
+      issue: {
+        ...issue,
+        monitorNextCheckAt: null,
+        executionPolicy: {
+          monitor: { nextCheckAt: nextCheckAt.toISOString() },
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
+    });
+  });
+
+  it("skips comment-only progress when a durable board or monitor wait still owns the issue", () => {
+    const commentOnly = {
+      detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+      livenessState: "advanced" as const,
+      hasPersistedMonitor: false,
+    };
+    expect(decide({
+      ...commentOnly,
+      issue: {
+        ...issue,
+        monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "comment-only progress does not own the next action while a durable waiting path exists",
+    });
+    expect(decide({
+      ...commentOnly,
+      issue: {
+        ...issue,
+        unblockDescriptor: { owner: "board", action: "Answer the pending confirmation" },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "comment-only progress does not own the next action while a durable waiting path exists",
+    });
+  });
+
   it("does not queue when another wake or dependency path already owns the next action", () => {
     expect(decide({ hasQueuedWake: true })).toEqual({
       kind: "skip",

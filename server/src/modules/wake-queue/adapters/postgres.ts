@@ -19,6 +19,10 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import {
+  hasHumanOrBoardUnblockWaitingPath,
+  hasScheduledIssueMonitorPath,
+} from "../domain/waiting-path.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -115,6 +119,8 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     originKind: row.originKind,
     monitorNextCheckAt: row.monitorNextCheckAt,
     executionState: (row.executionState as Record<string, unknown> | null) ?? null,
+    executionPolicy: (row.executionPolicy as Record<string, unknown> | null) ?? null,
+    unblockDescriptor: row.unblockDescriptor ?? null,
     responsibleUserId: row.responsibleUserId,
     parentId: row.parentId,
     originId: row.originId,
@@ -419,6 +425,27 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async reopenIssue({ companyId, issueId }) {
+      const current = await tx
+        .select({
+          status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+      if (
+        current.status === "blocked" &&
+        (hasHumanOrBoardUnblockWaitingPath(current.unblockDescriptor) ||
+          hasScheduledIssueMonitorPath(current, Date.now()))
+      ) {
+        return null;
+      }
       const updated = await issuesSvc.updateForCompany(issueId, companyId, { status: "todo", executionState: null }, tx);
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },

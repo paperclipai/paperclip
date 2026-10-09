@@ -12,6 +12,10 @@ import { retryNativeWorkspaceExport } from "../services/native-runtime/native-wo
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import {
+  hasHumanOrBoardUnblockWaitingPath,
+  hasScheduledIssueMonitorPath,
+} from "../services/recovery/issue-graph-liveness.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
@@ -2211,6 +2215,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
   requestAddsExplicitBlockers?: boolean;
+  unblockDescriptor?: unknown;
+  monitorNextCheckAt?: Date | string | null;
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
 }) {
   // A request that wires a non-empty blockedByIssueIds list is declaring that
   // the issue is waiting on other work. The implicit reopen exists for plain
@@ -2245,6 +2253,21 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
     input.assigneeAgentId.length === 0
   )
     return false;
+  if (input.issueStatus === "blocked") {
+    if (hasHumanOrBoardUnblockWaitingPath(input.unblockDescriptor)) return false;
+    if (
+      hasScheduledIssueMonitorPath(
+        {
+          monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+          executionPolicy: input.executionPolicy ?? null,
+          executionState: input.executionState ?? null,
+        },
+        Date.now(),
+      )
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -13618,6 +13641,10 @@ export function issueRoutes(
               requestAddsExplicitBlockers:
                 Array.isArray(req.body.blockedByIssueIds) &&
                 req.body.blockedByIssueIds.length > 0,
+              unblockDescriptor: existing.unblockDescriptor,
+              monitorNextCheckAt: existing.monitorNextCheckAt,
+              executionPolicy: existing.executionPolicy as Record<string, unknown> | null,
+              executionState: existing.executionState as Record<string, unknown> | null,
             })) ||
           shouldResumeInProgressScheduledRetry);
       const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -18048,6 +18075,10 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,
+            unblockDescriptor: issue.unblockDescriptor,
+            monitorNextCheckAt: issue.monitorNextCheckAt,
+            executionPolicy: issue.executionPolicy as Record<string, unknown> | null,
+            executionState: issue.executionState as Record<string, unknown> | null,
           }) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =

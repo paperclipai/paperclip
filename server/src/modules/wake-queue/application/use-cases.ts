@@ -34,6 +34,10 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+import {
+  hasScheduledIssueMonitorPath,
+  shouldRefuseBlockedReopen,
+} from "../domain/waiting-path.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -329,7 +333,9 @@ async function promoteDeferredWake(
 ): Promise<ReleaseTransactionResult | null> {
   let currentIssue = issue;
   let shouldReopen = false;
-  if (
+  if (shouldRefuseBlockedReopen(currentIssue, input.now)) {
+    shouldReopen = false;
+  } else if (
     !workingCandidate.authorizedFailedChatRetry &&
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
@@ -569,7 +575,7 @@ async function runReleaseRecoveryTail(
     readNonEmptyString(run.contextSnapshot.retryReason) !==
       ISSUE_DISPOSITION_REPAIR_RETRY_REASON &&
     !hasExistingExecutionPath &&
-    !issue.monitorNextCheckAt &&
+    !hasScheduledIssueMonitorPath(issue, input.now) &&
     !hasExplicitBlockerPath &&
     !suppressedByPauseHold &&
     !isStrandedRecoveryOrigin
@@ -603,7 +609,7 @@ async function runReleaseRecoveryTail(
     },
     shared: {
       hasExistingExecutionPath,
-      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
+      hasPersistedMonitor: hasScheduledIssueMonitorPath(issue, input.now),
       suppressedByPauseHold,
       isStrandedRecoveryOrigin,
       recoveryAgentPresent: recoveryAgent !== null,

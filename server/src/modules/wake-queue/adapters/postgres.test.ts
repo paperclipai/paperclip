@@ -649,6 +649,33 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow?.executionState).toBeNull();
   });
 
+  it("does not reopen a blocked issue that still has a board unblock descriptor", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "blocked" });
+    await db.update(issues).set({
+      executionState: { phase: "running" },
+      unblockDescriptor: { owner: "board", action: "Answer the pending confirmation" },
+    }).where(eq(issues.id, issueId));
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
+
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    const captured: { reopened: { status: string } | null } = { reopened: null };
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      captured.reopened = await ports.transaction.reopenIssue({ companyId, issueId, runId });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(captured.reopened).toBeNull();
+
+    const issueRow = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    expect(issueRow?.status).toBe("blocked");
+    expect(issueRow?.unblockDescriptor).toEqual({
+      owner: "board",
+      action: "Answer the pending confirmation",
+    });
+    expect(issueRow?.executionState).toEqual({ phase: "running" });
+  });
+
   // Review test (c): a deferred-status compare-and-set that affects no row
   // claims nothing, and no other write in the promotion path ever runs.
   it("fails the promotion claim when the deferred-status compare-and-set loses the race, before any other write", async () => {

@@ -39,6 +39,8 @@ export type IssueSnapshot = {
   originKind: string | null;
   monitorNextCheckAt: Date | null;
   executionState: Record<string, unknown> | null;
+  executionPolicy?: Record<string, unknown> | null;
+  unblockDescriptor?: unknown;
   /** Carried so the routine-env and responsible-user reader ports can use this
    * transaction-scoped snapshot instead of reading the issue again. */
   responsibleUserId: string | null;
