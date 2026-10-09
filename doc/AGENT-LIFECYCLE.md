@@ -62,7 +62,11 @@ company lock. A concurrent hire makes deletion fail or waits until deletion ends
 It cannot remove an agent with incomplete termination.
 
 The ordinary agent service owns reads, permissions, keys, and revision history.
-Credential checks remain in the agent configuration service code.
+Credential checks remain in the agent credential service.
+The service in `services/agent-lifecycle.ts` supplies these integrations to the
+module. The module does not import services or routes. Shared record queries
+and validation functions are in `lib/`. They do not call lifecycle commands.
+The application supplies the worker driver at startup.
 Configuration writes use the lifecycle module to invalidate an old verification
 result in the same transaction. They reject caller-supplied lifecycle fields.
 
@@ -117,8 +121,12 @@ Do not treat a host timeout as cancellation of the external effect.
 
 ## Verification and recovery
 
-The host uses the existing environment-test code for verification.
+The harness verification service uses the existing environment-test code.
+It owns test configuration, credential selection, and test result checks.
 It tests the saved agent configuration and the selected environment.
+A failed login or an incomplete probe cannot complete verification.
+The lifecycle module receives completion, pending work, or failure through its
+driver. It owns the state transition and has no harness test rules.
 The current UI can also run a test before the hire.
 Some adapters can charge for these tests.
 It uses the saved responsible user for managed credentials.
