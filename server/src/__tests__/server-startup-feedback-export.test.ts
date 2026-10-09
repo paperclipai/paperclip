@@ -44,6 +44,7 @@ const {
   const completionSweepMock = vi.fn(async () => undefined);
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
+      fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
       deliveryWork: {
         register: (_queue: string, task: { run: () => Promise<unknown> }) => ({
           ready: task.run().catch(() => undefined), wake: vi.fn(),

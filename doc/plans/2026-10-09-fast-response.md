@@ -21,7 +21,7 @@ Isolated checkout `codex/fast-response`, app at `http://127.0.0.1:3109`, cloned 
 - The dedicated OpenCode/OpenRouter agent subsequently produced a substantive recommendation in the same task. Its real run succeeded. The receipt did not complete the task; final task status remained in progress because the agent did not mark it done.
 - Provider and service tests cover duplicate workers, provenance/no fabricated run, unchanged task status, unanswered-turn protection, reply/cancel/delete/reassign/edit/revoke races, expiry, unknown billing and fixed sample isolation.
 - Full build passed after rebasing onto master, including the final UI refinements. Repository typecheck passed after the rebase; server typecheck also passed after review fixes. The full test run was stopped after setup timeouts and failures in workspace-runtime/execution-workspace suites; it is not green evidence.
-- All 40 provider contracts passed. Slack/GitHub shared intake/outbox contracts and the email reply-only outbox contract passed. Token gates passed after rebase. The regenerated migration follows master migration 0322 and passes migration safety checks.
+- All 40 provider contracts passed. Slack/GitHub shared intake/outbox contracts and the email reply-only outbox contract passed. Token gates passed after rebase. The regenerated migration 0324 follows master migration 0323 and passes migration safety checks.
 - Final review corrected accepted/queued wording: a run serving the current turn does not count as older work. Email uses the same state check.
 
 - The post-rebase focused provider/service/UI run passed all 62 tests. Review regressions now cover receipt labeling in native session handoff, model catalogs isolated from host CLI configuration, route transaction boundaries, Costs navigation, and email migration probe rollback.
@@ -31,6 +31,6 @@ Isolated checkout `codex/fast-response`, app at `http://127.0.0.1:3109`, cloned 
 
 - Live Slack bot creation and conversation; browser login completed. A narrow callback relay is prepared. Cloudflare tunneling was rejected by automatic approval review; explicit user authorization is pending.
 - Live GitHub test journey in `paperclipai/paperclip-permissions-smoke-20260926-pap57-fee7428e`.
-- Latest-head CI and automated review. Copied historical run recovery failed during live testing; execution in the cloned workspace is now disarmed, and the app health endpoint reports startup ready.
+- Latest-head CI and automated review. CI identified additional startup/route fixtures and exact guidance/wiring expectations that need to include fast responses; the corrected focused runs passed (12 closed-workspace routes, 5 native answer continuations, 36 startup tests, and 14 publication/reconciliation tests). Native continuation verification explicitly disables the ambient worktree suppression flag only in the test process. Copied historical run recovery failed during live testing; execution in the cloned workspace is now disarmed, and the app health endpoint reports startup ready.
 
 No credentials or prompt bodies belong in this record.
