@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import postgres from "postgres";
+import { connectPostgres as postgres } from "./postgres-connection.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -21,7 +21,8 @@ type RegisteredPostgresClient = ReturnType<typeof postgres>;
  */
 function hostPortKey(url: string): string {
   const parsed = new URL(url);
-  return `${parsed.hostname}:${parsed.port || "5432"}`;
+  const host = parsed.searchParams.get("host") || parsed.hostname;
+  return `${host}:${parsed.port || "5432"}`;
 }
 
 /**

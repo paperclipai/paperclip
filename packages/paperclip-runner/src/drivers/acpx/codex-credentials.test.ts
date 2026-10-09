@@ -189,70 +189,76 @@ describe("managed Codex credentials", () => {
     },
   );
 
-  it("prepares a fresh silent-primary fixture without taking over a foreign listener", async () => {
-    const foreignFixture = await silentPrimaryQuorumFixture();
-    const collision = foreignFixture.fixture;
-    const collisionPort = credentialLeasePorts(collision.home)[0];
-    const foreign = foreignFixture.occupied;
-    const nextFixture = vi
-      .fn()
-      .mockResolvedValueOnce(collision)
-      .mockImplementation(credentialFixture);
-    let prepared:
-      Awaited<ReturnType<typeof silentPrimaryQuorumFixture>> | undefined;
-    try {
-      prepared = await silentPrimaryQuorumFixture(nextFixture);
-      expect(nextFixture.mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(nextFixture.mock.calls.length).toBeLessThanOrEqual(8);
-      expect(prepared.fixture.home).not.toBe(collision.home);
-      await expect(listenSilently(collisionPort)).rejects.toMatchObject({
-        code: "EADDRINUSE",
-      });
-      await expect(
-        readFile(join(collision.home, "auth.json")),
-      ).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      await prepared?.occupied.close();
-      await foreign.close();
-    }
-  });
+  it.each([0, "both"] as const)(
+    "prepares a fresh %s occupied fixture without taking over a foreign listener",
+    async (occupiedIndex) => {
+      const foreignFixture = await silentPrimaryQuorumFixture();
+      const collision = foreignFixture.fixture;
+      const collisionPort = credentialLeasePorts(collision.home)[0];
+      const foreign = foreignFixture.occupied;
+      const nextFixture = vi
+        .fn()
+        .mockResolvedValueOnce(collision)
+        .mockImplementation(credentialFixture);
+      let prepared:
+        Awaited<ReturnType<typeof silentPrimaryQuorumFixture>> | undefined;
+      try {
+        prepared = await silentPrimaryQuorumFixture(nextFixture, occupiedIndex);
+        expect(nextFixture.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(nextFixture.mock.calls.length).toBeLessThanOrEqual(8);
+        expect(prepared.fixture.home).not.toBe(collision.home);
+        await expect(listenSilently(collisionPort)).rejects.toMatchObject({
+          code: "EADDRINUSE",
+        });
+        await expect(
+          readFile(join(collision.home, "auth.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await prepared?.occupied.close();
+        await foreign.close();
+      }
+    },
+  );
 
-  it("bounds silent-primary preparation and releases only its own partial reservations", async () => {
-    const foreignFixture = await silentPrimaryQuorumFixture(
-      credentialFixture,
-      1,
-    );
-    const collision = foreignFixture.fixture;
-    const ports = credentialLeasePorts(collision.home);
-    const foreign = foreignFixture.occupied;
-    const nextFixture = vi.fn(async () => collision);
-    let releasedPrimary: Awaited<ReturnType<typeof listenSilently>> | undefined;
-    try {
-      await expect(
-        silentPrimaryQuorumFixture(nextFixture),
-      ).rejects.toMatchObject({ code: "EADDRINUSE" });
-      expect(nextFixture).toHaveBeenCalledTimes(8);
-      releasedPrimary = await listenSilently(ports[0]);
-      await expect(listenSilently(ports[1])).rejects.toMatchObject({
-        code: "EADDRINUSE",
-      });
-      await expect(
-        readFile(join(collision.home, "auth.json")),
-      ).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      await releasedPrimary?.close();
-      await foreign.close();
-    }
-  });
+  it.each([0, "both"] as const)(
+    "bounds %s occupied preparation and releases only its own partial reservations",
+    async (occupiedIndex) => {
+      const foreignFixture = await silentPrimaryQuorumFixture(
+        credentialFixture,
+        1,
+      );
+      const collision = foreignFixture.fixture;
+      const ports = credentialLeasePorts(collision.home);
+      const foreign = foreignFixture.occupied;
+      const nextFixture = vi.fn(async () => collision);
+      let releasedPrimary: Awaited<ReturnType<typeof listenSilently>> | undefined;
+      try {
+        await expect(
+          silentPrimaryQuorumFixture(nextFixture, occupiedIndex),
+        ).rejects.toMatchObject({ code: "EADDRINUSE" });
+        expect(nextFixture).toHaveBeenCalledTimes(8);
+        releasedPrimary = await listenSilently(ports[0]);
+        await expect(listenSilently(ports[1])).rejects.toMatchObject({
+          code: "EADDRINUSE",
+        });
+        await expect(
+          readFile(join(collision.home, "auth.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await releasedPrimary?.close();
+        await foreign.close();
+      }
+    },
+  );
 
   it("fails before auth mutation when two quorum candidates are occupied", async () => {
-    const fixture = await credentialFixture();
+    const { fixture, occupied } = await silentPrimaryQuorumFixture(
+      credentialFixture,
+      "both",
+    );
     const destination = join(fixture.home, "auth.json");
-    await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
-    const ports = credentialLeasePorts(await realpath(fixture.home));
-    const first = await listenSilently(ports[0]);
-    const second = await listenSilently(ports[1]);
     try {
+      await writeFile(destination, '{"sentinel":true}', { mode: 0o600 });
       await expect(
         stageManagedCodexCredential({
           agentHomeDirectory: fixture.home,
@@ -265,7 +271,7 @@ describe("managed Codex credentials", () => {
         '{"sentinel":true}',
       );
     } finally {
-      await Promise.all([first.close(), second.close()]);
+      await occupied.close();
     }
   });
 
@@ -1654,7 +1660,7 @@ async function credentialFixture(): Promise<{ root: string; home: string }> {
 
 async function silentPrimaryQuorumFixture(
   nextFixture = credentialFixture,
-  occupiedIndex: 0 | 1 = 0,
+  occupiedIndex: 0 | 1 | "both" = 0,
 ) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const fixture = await nextFixture();
@@ -1674,22 +1680,32 @@ async function silentPrimaryQuorumFixture(
         continue;
       throw error;
     }
-    // Only fixture preparation may retry. Release the two free candidates
+    const occupied = owned.filter((_, index) =>
+      occupiedIndex === "both" ? index < 2 : index === occupiedIndex,
+    );
+    // Only fixture preparation may retry. Release the free candidates
     // immediately before the caller stages once. A foreign bind racing this
     // handoff remains a visible production-call failure, never a hidden retry.
     const released = await Promise.allSettled(
       owned
-        .filter((_, index) => index !== occupiedIndex)
+        .filter((listener) => !occupied.includes(listener))
         .map((listener) => listener.close()),
     );
     const releaseFailure = released.find(
       (result) => result.status === "rejected",
     );
     if (releaseFailure?.status === "rejected") {
-      await owned[occupiedIndex]!.close();
+      await Promise.allSettled(occupied.map((listener) => listener.close()));
       throw releaseFailure.reason;
     }
-    return { fixture, occupied: owned[occupiedIndex]! };
+    return {
+      fixture,
+      occupied: {
+        async close() {
+          await Promise.all(occupied.map((listener) => listener.close()));
+        },
+      },
+    };
   }
   throw new Error("Silent-primary credential fixture reservation exhausted.");
 }

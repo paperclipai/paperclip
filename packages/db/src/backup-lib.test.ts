@@ -1,11 +1,12 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
-import { ensurePostgresDatabase } from "./client.js";
+import { closeRegisteredClients, createDb, ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -661,5 +662,106 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       }
     },
     20_000,
+  );
+
+  it.skipIf(process.platform === "win32").for([
+    { backupEngine: "javascript", native: false },
+    { backupEngine: "auto", native: false },
+    { backupEngine: "auto", native: true },
+    { backupEngine: "pg_dump", native: true },
+  ] as const)(
+    "backs up and restores over a Unix socket with $backupEngine (native tools: $native)",
+    { timeout: 60_000 },
+    async ({ backupEngine, native }, context) => {
+      const nativeClientMajors: number[] = [];
+      if (native) {
+        for (const command of [process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump", process.env.PAPERCLIP_PSQL_PATH || "psql"]) {
+          const result = spawnSync(command, ["--version"], { timeout: 5_000, encoding: "utf8" });
+          if (result.status !== 0) {
+            context.skip("Native socket round trip requires both pg_dump and psql");
+          }
+          const major = result.stdout.match(/\(PostgreSQL\)\s+(\d+)/)?.[1];
+          if (!major) context.skip("Cannot determine native PostgreSQL client versions");
+          nativeClientMajors.push(Number(major));
+        }
+      }
+      const tcpUrl = await createTempDatabase();
+      const probe = postgres(tcpUrl, { max: 1 });
+      let socketDir: string;
+      try {
+        const [row] = await probe`SHOW unix_socket_directories`;
+        socketDir = row.unix_socket_directories.split(",")[0].trim();
+        if (native) {
+          const [version] = await probe`SHOW server_version_num`;
+          const serverMajor = Math.floor(Number(version.server_version_num) / 10_000);
+          const [pgDumpMajor] = nativeClientMajors;
+          // Older pg_dump refuses newer servers; auto would silently fall back
+          // to JS. Newer clients can work (18 -> 17 was round-trip tested), but
+          // pg_dump 17+ emits SET transaction_timeout, which PG <=16 rejects
+          // during restore even when the dump came from that same server.
+          if (pgDumpMajor < serverMajor) {
+            context.skip(`pg_dump ${pgDumpMajor} cannot dump PostgreSQL ${serverMajor}`);
+          }
+          if (serverMajor < 17 && pgDumpMajor >= 17) {
+            context.skip(`PostgreSQL ${serverMajor} cannot restore pg_dump ${pgDumpMajor}'s SET transaction_timeout`);
+          }
+          // Do not gate psql on major equality: its SQL/meta-command support is
+          // checked by the real restore below. Unknown incompatibilities fail
+          // the test rather than becoming a blanket skip for newer clients.
+        }
+      } finally {
+        await probe.end();
+      }
+      expect(path.isAbsolute(socketDir)).toBe(true);
+      const url = new URL(tcpUrl);
+      // A TCP fallback must fail rather than silently making this test pass.
+      url.hostname = "127.0.0.2";
+      url.searchParams.set("host", socketDir);
+      const sourceUrl = url.toString();
+      const targetUrl = await createSiblingDatabase(sourceUrl, "socket_restore_target");
+      const source = createDb(sourceUrl, { connectTimeoutSeconds: 2 }).$client;
+      const target = createDb(targetUrl, { connectTimeoutSeconds: 2 }).$client;
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      try {
+        if (!native) {
+          // Exercise both the direct JavaScript engine and automatic fallback,
+          // independently of which native utilities happen to be installed.
+          const missingTools = createTempDir("paperclip-no-native-tools-");
+          process.env.PAPERCLIP_PG_DUMP_PATH = path.join(missingTools, "pg_dump");
+          process.env.PAPERCLIP_PSQL_PATH = path.join(missingTools, "psql");
+        }
+        const [connection] = await source`SELECT inet_server_addr() AS address`;
+        expect(connection.address).toBeNull();
+        expect(await getPostgresDataDirectory(sourceUrl)).toBe(await getPostgresDataDirectory(tcpUrl));
+        await source`CREATE TABLE socket_probe (value text NOT NULL)`;
+        await source`INSERT INTO socket_probe VALUES ('socket-backup-fixture')`;
+        const backup = await runDatabaseBackup({
+          connectionString: sourceUrl,
+          backupDir: createTempDir("paperclip-socket-backup-"),
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          backupEngine,
+        });
+        const dump = gunzipSync(fs.readFileSync(backup.backupFile)).toString("utf8");
+        // Prove auto selected the intended engine, rather than merely producing
+        // some backup that the available restore tools can read.
+        expect(dump).toContain(native ? "-- PostgreSQL database dump" : "-- Paperclip database backup");
+        await runDatabaseRestore({ connectionString: targetUrl, backupFile: backup.backupFile });
+        const [restored] = await target`SELECT value FROM socket_probe`;
+        expect(restored.value).toBe("socket-backup-fixture");
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
+        }
+        await closeRegisteredClients(sourceUrl);
+      }
+    },
   );
 });

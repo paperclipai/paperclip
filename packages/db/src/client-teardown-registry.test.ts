@@ -101,6 +101,22 @@ describe("closeRegisteredClients", () => {
     await expect(closeRegisteredClients("postgres://test:test@127.0.0.1:1/test")).resolves.toBeUndefined();
   });
 
+  it("does not close TCP clients when closing a socket URI with the same authority", async () => {
+    const started = await startFakePostgresServer();
+    server = started.server;
+    const tcpUrl = `postgres://test:test@127.0.0.1:${started.port}/test`;
+    const db = createDb(tcpUrl, { connectTimeoutSeconds: 5 });
+    try {
+      await db.$client`select 1`;
+      await closeRegisteredClients(`${tcpUrl}?host=/other/postgres`);
+      await expect(db.$client`select 1`).resolves.toEqual([]);
+      await closeRegisteredClients(`postgres://test@localhost:${started.port}/test?host=127.0.0.1`);
+      await expect(db.$client`select 1`).rejects.toMatchObject({ code: "CONNECTION_ENDED" });
+    } finally {
+      await closeRegisteredClients(tcpUrl);
+    }
+  });
+
   it("does not throw when createDb receives a URL that new URL() cannot parse", async () => {
     let db: ReturnType<typeof createDb> | undefined;
     expect(() => {
