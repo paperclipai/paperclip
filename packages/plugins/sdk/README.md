@@ -1284,15 +1284,18 @@ await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
   another company is refused. A private project must list the session's
   agent as an access member, and also the `actorUserId` user when one is
   passed; otherwise the send is refused as "Project not found".
-- A send that passes either field always gets its own run. It is never folded
-  into a queued or running run for the same session, so each run keeps its
-  own user and project.
 - When either field is passed, the host writes an
   `agent.session_wakeup_requested` activity entry naming the agent, session,
   run, the project when given, and the user as the initiating actor when
   given.
-- There is no `issueId` option. Leave both fields out and the send behaves as
-  before, with no activity entry.
+- There is no `issueId` option. Leave both fields out and the plugin stays
+  the requester, with no activity entry.
+
+Every `sendMessage` call gets its own run, with or without these fields. A
+send is never folded into a queued or running run for the same session, so
+each prompt reaches the agent and each run keeps its own user and project.
+Sends to one session still run one after another under the agent's
+concurrency limit.
 
 Older hosts silently drop `projectId` (and `actorUserId`), and there is no
 runtime signal that tells a plugin whether the host applied them. A plugin

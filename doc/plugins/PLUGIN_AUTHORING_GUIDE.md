@@ -473,7 +473,8 @@ Authoring rules:
   send like an issue in that project: it uses the project's workspace and
   env, the project budget applies, and cost lands on the project. A private
   project must list the session's agent, and the `actorUserId` user when
-  given, as access members. Older hosts
+  given, as access members. Every send gets its own run; the host never
+  merges it into a queued or running run of the same session. Older hosts
   drop `projectId` without any signal, so state a minimum host version if
   your plugin relies on it.
 - Use managed routines for recurring or externally triggered work that should

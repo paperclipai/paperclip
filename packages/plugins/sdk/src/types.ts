@@ -1762,7 +1762,10 @@ export interface PluginAgentSessionsClient {
    * Requires `agent.sessions.send`.
    *
    * Leave `actorUserId` and `projectId` out and the wake is requested by the
-   * plugin itself, exactly as before.
+   * plugin itself.
+   *
+   * Every call gets its own run: a send is never folded into a queued or
+   * running run for the same session, so no prompt is lost.
    */
   sendMessage(sessionId: string, companyId: string, opts: {
     prompt: string;

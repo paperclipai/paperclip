@@ -3574,10 +3574,11 @@ export function buildHostServices(
           requestedByActorType: actorUserId ? "user" : "system",
           requestedByActorId: actorUserId ?? pluginId,
           // Every send to a session shares its taskKey, so the heartbeat would
-          // fold this wake into a queued or running run for the session. That
-          // run keeps its own responsible user while the merge overwrites its
-          // projectId and prompt, so an attributed send gets its own run.
-          ...(actorUserId || projectId ? { allowRunCoalescing: false } : {}),
+          // fold this wake into a queued or running run for the session. The
+          // merge overwrites that run's prompt and projectId while it keeps
+          // its own responsible user, so one message is lost and cost can land
+          // on the wrong user or project. Every send gets its own run.
+          allowRunCoalescing: false,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
 
