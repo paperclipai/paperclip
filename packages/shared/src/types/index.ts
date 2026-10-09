@@ -756,6 +756,7 @@ export type {
   PaperclipQuestionSetQuestion,
   PaperclipQuestionSetPayload,
   AskUserQuestionsPayload,
+  AskUserQuestionsDefaultResponse,
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
   RequestConfirmationIssueDocumentTarget,

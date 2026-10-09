@@ -1396,6 +1396,18 @@ export const paperclipQuestionSetPayloadSchema = z
     }
   });
 
+export const askUserQuestionsAnswerSchema = z.object({
+  questionId: z.string().trim().min(1).max(160),
+  optionIds: z.array(z.string().trim().min(1).max(160)).max(129),
+  otherText: multilineTextSchema
+    .pipe(z.string().trim().max(100000))
+    .nullable()
+    .optional(),
+});
+
+export const ASK_USER_QUESTIONS_DEFAULT_TIMEOUT_MIN_MINUTES = 5;
+export const ASK_USER_QUESTIONS_DEFAULT_TIMEOUT_MAX_MINUTES = 30 * 24 * 60;
+
 const askUserQuestionsPayloadFields = {
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
@@ -1406,6 +1418,16 @@ const askUserQuestionsPayloadFields = {
   questionSet: paperclipQuestionSetPayloadSchema.optional(),
   /** Stable correlation for draft handoff from a live runtime request. */
   runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
+  /**
+   * Optional fallback for reversible decisions: if nobody answers within
+   * `timeoutMinutes`, the scheduler answers with `answers` and wakes the agent.
+   */
+  defaultResponse: z
+    .object({
+      timeoutMinutes: z.number().int().min(ASK_USER_QUESTIONS_DEFAULT_TIMEOUT_MIN_MINUTES).max(ASK_USER_QUESTIONS_DEFAULT_TIMEOUT_MAX_MINUTES),
+      answers: z.array(askUserQuestionsAnswerSchema).min(1).max(64),
+    })
+    .optional(),
 };
 
 export const askUserQuestionsPayloadSchema = z
@@ -1451,21 +1473,50 @@ export const askUserQuestionsPayloadSchema = z
         }
       }
     }
+    if (value.defaultResponse) {
+      const questionsById = new Map(value.questions.map((question) => [question.id, question]));
+      const seenDefaultQuestionIds = new Set<string>();
+      for (const [answerIndex, answer] of value.defaultResponse.answers.entries()) {
+        const path = ["defaultResponse", "answers", answerIndex];
+        const question = questionsById.get(answer.questionId);
+        if (!question) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Default answer references an unknown question", path: [...path, "questionId"] });
+          continue;
+        }
+        if (seenDefaultQuestionIds.has(answer.questionId)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Each question may have at most one default answer", path: [...path, "questionId"] });
+        }
+        seenDefaultQuestionIds.add(answer.questionId);
+        const optionIds = new Set(question.options.map((option) => option.id));
+        for (const [optionIndex, optionId] of answer.optionIds.entries()) {
+          if (!optionIds.has(optionId)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Default answer references an unknown option", path: [...path, "optionIds", optionIndex] });
+          }
+        }
+        if (question.selectionMode === "single" && answer.optionIds.length > 1) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select questions take one default option", path: [...path, "optionIds"] });
+        }
+        if (question.required && answer.optionIds.length === 0 && !answer.otherText?.trim()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A default for a required question must select an option or give text", path: [...path, "optionIds"] });
+        }
+      }
+      for (const question of value.questions) {
+        if (question.required && !seenDefaultQuestionIds.has(question.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A default response must answer every required question",
+            path: ["defaultResponse", "answers"],
+          });
+          break;
+        }
+      }
+    }
   });
-
-export const askUserQuestionsAnswerSchema = z.object({
-  questionId: z.string().trim().min(1).max(160),
-  optionIds: z.array(z.string().trim().min(1).max(160)).max(129),
-  otherText: multilineTextSchema
-    .pipe(z.string().trim().max(100000))
-    .nullable()
-    .optional(),
-});
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
   outcome: z
-    .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
+    .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted", "default_applied"])
     .optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(64),
