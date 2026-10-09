@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  Moon,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -79,6 +80,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Code,
     recommended: true,
   },
+  paperclip_runner: {
+    label: "Paperclip Runner",
+    description: "Experimental Rust runner with a Codex provider",
+    icon: Cpu,
+    experimental: true,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",
@@ -88,6 +95,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Grok Build",
     description: "Grok Build harness",
     icon: Bot,
+  },
+  kimi_local: {
+    label: "Kimi Code",
+    description: "Kimi Code CLI harness",
+    icon: Moon,
   },
   hermes_gateway: {
     label: "Hermes Gateway",
@@ -114,6 +126,13 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Cursor",
     description: "Cursor CLI harness",
     icon: MousePointer2,
+  },
+  // Display-only choice: persisted as paperclip_runner with provider openai_dot.
+  openai_dot: {
+    label: "OpenAI Dot",
+    description: "Your Dot in ChatGPT",
+    icon: Bot,
+    experimental: true,
   },
   cursor_cloud: {
     label: "Cursor Cloud",

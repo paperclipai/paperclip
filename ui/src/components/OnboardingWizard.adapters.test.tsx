@@ -48,8 +48,22 @@ vi.mock("../context/CompanyContext", () => ({
 // here. An empty list is fine: the drafts in this file carry no
 // `createdCompanyId`, so there is no ownership question — but the fetch has to
 // succeed for the gate to treat the draft as decidable at all.
+// The company list is keyed by account, so it holds until the session query
+// *succeeds*. A seeded entry is stale under the test client and refetches, so
+// the refetch has to answer too — otherwise the identity errors and the list
+// never runs.
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+vi.mock("../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
+});
+
 vi.mock("../api/companies", () => ({
-  companiesApi: { create: vi.fn(), list: vi.fn().mockResolvedValue([]) },
+  companiesApi: {
+    create: vi.fn(),
+    list: vi.fn().mockResolvedValue([]),
+    detachInflightList: vi.fn(),
+  },
 }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
@@ -64,6 +78,9 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     description: "",
     icon: () => null,
   }),
+  getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
@@ -75,14 +92,13 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: false,
   }),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
 vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
-vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
+import { queryKeys } from "../lib/queryKeys";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -102,6 +118,12 @@ async function mount() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The company list is keyed by account, so it holds until the session is
+  // known. Seeding it is how this test says "signed in".
+  queryClient.setQueryData(queryKeys.auth.session, {
+    session: { id: "session-1", userId: "user-1" },
+    user: { id: "user-1", name: "Example", email: "user-1@example.com", image: null },
+  });
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -115,6 +137,10 @@ async function mount() {
 
 describe("OnboardingWizard adapter selection", () => {
   beforeEach(() => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Example", email: "user-1@example.com", image: null },
+    });
     window.localStorage.clear();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};
@@ -173,6 +199,71 @@ describe("OnboardingWizard adapter selection", () => {
       root.unmount();
     });
   });
+
+  it("keeps onboarding on legacy adapters even when Paperclip Runner is enabled", async () => {
+    mockAdapterRegistry.list = [
+      { type: "paperclip_runner" },
+      { type: "codex_local" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 0,
+        adapterType: "paperclip_runner",
+        model: "gpt-runner-only",
+        command: "runnerd",
+        args: "--native",
+        url: "ws://runner",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("codex_local");
+    expect(saved.model).toBe("");
+    expect(saved.command).toBe("");
+    expect(saved.args).toBe("");
+    expect(saved.url).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("normalizes a saved Paperclip Runner draft before adapter discovery resolves", async () => {
+    mockAdapterRegistry.loaded = false;
+    mockAdapterRegistry.list = [{ type: "codex_local" }];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 0,
+        adapterType: "paperclip_runner",
+        model: "gpt-runner-only",
+        command: "runnerd",
+        args: "--native",
+        url: "ws://runner",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("claude_local");
+    expect(saved.model).toBe("");
+    expect(saved.command).toBe("");
+    expect(saved.args).toBe("");
+    expect(saved.url).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not replace a saved adapter before the registry has loaded", async () => {
     // External adapter types are only registered once the adapters query
     // resolves. Until then `listUIAdapters()` returns the built-ins alone, so

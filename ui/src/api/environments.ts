@@ -2,6 +2,7 @@ import type {
   CancelEnvironmentCustomImageSetupSession,
   Environment,
   EnvironmentCapabilities,
+  EnvironmentDeleteBlastRadius,
   EnvironmentLease,
   EnvironmentProbeResult,
   EnvironmentCustomImageSetupSession,
@@ -20,8 +21,20 @@ export interface EnvironmentCustomImageOverview {
    * back to the base image until a new image is captured. `null` when unknown.
    */
   activeTemplateMatchesConfig?: boolean | null;
+  /**
+   * Boot-relevant drift attribution for the active template. It names the
+   * classification and the drifted paths with their `from`/`to` values, so the
+   * banner can name the changed field. `null` or absent when there is no active
+   * template or the driver is not `sandbox`.
+   */
+  activeTemplateDrift?: EnvironmentCustomImageActiveTemplateDrift | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
+}
+
+export interface EnvironmentCustomImageActiveTemplateDrift {
+  classification: EnvironmentCustomImageRelinkClassification;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
 }
 
 export type EnvironmentCustomImageReconciliation =
@@ -54,6 +67,32 @@ export interface EnvironmentCustomImageRollbackResult {
   supersededTemplate: EnvironmentCustomImageTemplate;
 }
 
+export type EnvironmentCustomImageRelinkClassification =
+  | "knob_only"
+  | "boot_source_drift"
+  | "unclassified";
+
+export interface EnvironmentCustomImageRelinkResult {
+  template: EnvironmentCustomImageTemplate;
+  classification: EnvironmentCustomImageRelinkClassification;
+}
+
+export interface EnvironmentCustomImageDriftedPath {
+  path: string;
+  from?: unknown;
+  to?: unknown;
+}
+
+/**
+ * The 409 conflict body a relink returns when the server cannot re-stamp without
+ * an operator confirmation. `driftedPaths` carries `from`/`to` only for paths
+ * that passed the secret containment check; excluded paths carry the name only.
+ */
+export interface EnvironmentCustomImageRelinkConflict {
+  classification: Exclude<EnvironmentCustomImageRelinkClassification, "knob_only">;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
+}
+
 function companyIdQuery(companyId: string): string {
   return `companyId=${encodeURIComponent(companyId)}`;
 }
@@ -74,6 +113,17 @@ export const environmentsApi = {
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
   secretRefs: (environmentId: string) =>
     api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
+  deleteBlastRadius: (environmentId: string) =>
+    api.get<EnvironmentDeleteBlastRadius>(`/environments/${environmentId}/delete-blast-radius`),
+  // The flag consents to destroying the environment's reusable sandbox leases
+  // inline so the delete can proceed; without it the server rejects with 409
+  // while such leases exist.
+  remove: (environmentId: string, options: { destroyReusableSandboxLeases?: boolean } = {}) =>
+    api.delete<Environment & { destroyedReusableSandboxLeaseCount?: number }>(
+      options.destroyReusableSandboxLeases
+        ? `/environments/${environmentId}?destroyReusableSandboxLeases=true`
+        : `/environments/${environmentId}`,
+    ),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;
@@ -161,6 +211,15 @@ export const environmentsApi = {
     api.post<EnvironmentCustomImageRollbackResult>(
       `/environments/${environmentId}/custom-image-template/rollback?${companyIdQuery(companyId)}`,
       {},
+    ),
+  relinkCustomImageTemplate: (
+    environmentId: string,
+    companyId: string,
+    options: { confirmBootSourceDrift?: boolean } = {},
+  ) =>
+    api.post<EnvironmentCustomImageRelinkResult>(
+      `/environments/${environmentId}/custom-image-template/relink?${companyIdQuery(companyId)}`,
+      { confirmBootSourceDrift: options.confirmBootSourceDrift === true },
     ),
   disableCustomImageTemplate: (
     environmentId: string,

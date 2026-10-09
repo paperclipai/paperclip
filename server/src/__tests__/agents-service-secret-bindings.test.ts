@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   companySecretBindings,
@@ -12,6 +13,7 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -44,6 +46,8 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
@@ -113,6 +117,15 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       versionSelector: "latest",
       required: true,
     });
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          action: "secret.binding.created",
+          entityType: "agent",
+          entityId: created.id,
+          details: expect.objectContaining({ configPath: "env.ANTHROPIC_API_KEY" }),
+        }),
+      ]));
   });
 
   it("stores approved class-3 env lease metadata on agent secret bindings", async () => {

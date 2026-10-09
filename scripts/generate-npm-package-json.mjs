@@ -110,7 +110,7 @@ const publishPkg = {
   homepage: cliPkg.homepage,
   bugs: cliPkg.bugs,
   files: cliPkg.files,
-  engines: { node: ">=20" },
+  engines: { node: ">=24.11.0" },
   dependencies: sortedDeps,
 };
 
@@ -119,7 +119,11 @@ if (Object.keys(sortedOptDeps).length > 0) {
 }
 
 const output = JSON.stringify(publishPkg, null, 2) + "\n";
-const outPath = resolve(repoRoot, "cli/package.json");
+const [outputFlag, outputPath, ...extraArgs] = process.argv.slice(2);
+if (extraArgs.length || (outputFlag !== undefined && (outputFlag !== "--output" || !outputPath))) {
+  throw new Error("Usage: generate-npm-package-json.mjs [--output <manifest-path>]");
+}
+const outPath = outputPath ? resolve(outputPath) : resolve(repoRoot, "cli/package.json");
 writeFileSync(outPath, output);
 
 console.log(`  ✓  Generated publishable package.json (${Object.keys(sortedDeps).length} deps)`);

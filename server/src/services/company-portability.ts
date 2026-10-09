@@ -1,3 +1,4 @@
+import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -70,13 +71,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
-import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -85,6 +86,7 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
@@ -95,7 +97,7 @@ import {
   readCatalogStringList,
   readPortableCatalogProvenance,
 } from "./catalog-provenance.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { resolvePortableExportAgentSelection } from "./company-portability-agent-selection.js";
 import { normalizePortablePath } from "./portable-path.js";
 import type {
   ImportIssueRow,
@@ -104,6 +106,38 @@ import type {
   ImportIssueWorkProductRow,
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+  validatePaperclipRunnerDotConfig,
+} from "./native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { remoteAgentProfileService } from "./remote-agent-profiles.js";
+
+const EXPORT_READ_CONCURRENCY = 8;
+const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+  return results;
+}
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -202,6 +236,25 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
       { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
     );
   }
+}
+
+/**
+ * Suffix a manifest-derived company name with " (2)", " (3)", … when it
+ * collides case-insensitively with an existing company, so repeat imports of
+ * the same package do not produce several identically named companies that
+ * only differ by issue prefix. Explicit user-typed names bypass this — they
+ * are the caller's deliberate choice.
+ */
+export function dedupeImportedCompanyName(baseName: string, existingNames: string[]): string {
+  const normalized = new Set(existingNames.map((name) => name.trim().toLowerCase()));
+  if (!normalized.has(baseName.trim().toLowerCase())) return baseName;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidate = `${baseName} (${suffix})`;
+    if (!normalized.has(candidate.toLowerCase())) return candidate;
+  }
+  // Pathological: thousands of identically named companies. Give up on the
+  // suffix rather than fail the import — names carry no uniqueness invariant.
+  return baseName;
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
@@ -504,6 +557,9 @@ function buildSkillExportDirMap(skills: CompanySkill[], companyIssuePrefix: stri
 function isSensitiveEnvKey(key: string) {
   const normalized = key.trim().toLowerCase();
   return (
+    normalized === "key" ||
+    normalized.endsWith("_key") ||
+    normalized.endsWith("-key") ||
     normalized === "token" ||
     normalized.endsWith("_token") ||
     normalized.endsWith("-token") ||
@@ -648,6 +704,7 @@ type ProjectLike = {
   targetDate: string | null;
   color: string | null;
   icon: string | null;
+  appearance?: import("@paperclipai/shared").AgentAppearance | null;
   status: string;
   env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -742,6 +799,10 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
   ],
   gemini_local: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 15 },
+  ],
+  kimi_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
@@ -1255,15 +1316,33 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
+function sanitizeImportedAgentRuntimeConfig(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
+  delete next.modelProfiles;
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
     heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
   next.heartbeat = heartbeat;
+  if (isPlainRecord(next.debug)) {
+    const debug = { ...next.debug };
+    // Company imports are available below the instance-admin trust boundary.
+    // Never let a portable bundle enable persistent capture of raw provider
+    // traffic; an administrator can opt in afterward through the guarded
+    // agent configuration route.
+    delete debug.providerTrace;
+    if (Object.keys(debug).length === 0) delete next.debug;
+    else next.debug = debug;
+  }
   return next;
+}
+
+function sanitizeImportedIssueAssigneeAdapterOverrides(value: unknown) {
+  const next = clonePortableRecord(value);
+  if (!next) return null;
+  delete next.modelProfile;
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -2345,7 +2424,6 @@ const YAML_KEY_PRIORITY = [
   "role",
   "icon",
   "capabilities",
-  "brandColor",
   "logoPath",
   "adapter",
   "runtime",
@@ -3005,6 +3083,16 @@ function readAgentSkillRefs(frontmatter: Record<string, unknown>) {
   ));
 }
 
+/** Uploaded avatars belong to one company/agent; portable packages retain the preset fallback. */
+function portableAgentAppearance(value: unknown, warnings: string[], slug: string) {
+  const appearance = agentAppearanceSchema.parse(value);
+  if (appearance.customAvatarAssetId) {
+    delete appearance.customAvatarAssetId;
+    warnings.push(`Agent ${slug} uploaded avatar was omitted because image assets are instance-local. Upload it again after import.`);
+  }
+  return appearance;
+}
+
 function buildManifestFromPackageFiles(
   files: Record<string, CompanyPortabilityFileEntry>,
   opts?: { sourceLabel?: { companyId: string; companyName: string } | null },
@@ -3100,12 +3188,7 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
-      brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
-      attachmentMaxBytes:
-        typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
-          ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
-          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -3168,6 +3251,7 @@ function buildManifestFromPackageFiles(
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
       title,
       icon: asString(extension.icon),
+      appearance: extension.appearance == null ? undefined : portableAgentAppearance(extension.appearance, warnings, slug),
       capabilities: asString(extension.capabilities),
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
@@ -3476,7 +3560,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
   const assetRecords = assetService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
   const access = accessService(db);
   const projects = projectService(db);
   const issues = issueService(db);
@@ -3520,9 +3604,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   }
 
   async function assertImportAdapterConfigConstraints(
+    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      let profile;
+      try {
+        if (adapterConfig.provider === "openai_dot") {
+          validatePaperclipRunnerDotConfig(adapterConfig, false);
+          return;
+        }
+        profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+      } catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) {
+          throw unprocessable(error.message, { code: error.code });
+        }
+        throw error;
+      }
+      if (profile.provider === "claude_managed") {
+        await managedAgentProfileService(db).requireQualified(
+          companyId,
+          profile.managedProfileId,
+        );
+      } else if (profile.provider === "aws_agentcore") {
+        await remoteAgentProfileService(db).requireQualified(
+          companyId,
+          profile.agentCoreProfileId,
+          "aws_bedrock_agentcore_harness",
+        );
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -3558,7 +3671,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       nextAdapterConfig,
       { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
     );
-    await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
+    await assertImportAdapterConfigConstraints(
+      companyId,
+      effectiveAdapterType,
+      normalizedAdapterConfig,
+    );
     return {
       adapterType: effectiveAdapterType,
       adapterConfig: normalizedAdapterConfig,
@@ -3738,6 +3855,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3780,67 +3898,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     );
 
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
-    const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
-    const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
-    const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
-    const companySkillRowsRaw = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
-    if (include.agents) {
-      const skipped = allAgentRows.length - liveAgentRows.length;
-      if (skipped > 0) {
-        warnings.push(`Skipped ${skipped} terminated agent${skipped === 1 ? "" : "s"} from export.`);
-      }
-      if (builtInAgentRows.length > 0) {
-        warnings.push(`Skipped ${builtInAgentRows.length} built-in managed agent${builtInAgentRows.length === 1 ? "" : "s"} from export.`);
-      }
-    }
+    warnings.push(...agentSelection.warnings);
     if (include.skills && managedSkillRows.length > 0) {
       warnings.push(`Skipped ${managedSkillRows.length} built-in managed skill${managedSkillRows.length === 1 ? "" : "s"} from export.`);
     }
 
-    const agentByReference = new Map<string, typeof liveAgentRows[number]>();
-    const builtInAgentByReference = new Map<string, typeof liveAgentRows[number]>();
-    const addAgentReferences = (map: Map<string, typeof liveAgentRows[number]>, agent: typeof liveAgentRows[number]) => {
-      map.set(agent.id, agent);
-      map.set(agent.name, agent);
-      const normalizedName = normalizeAgentUrlKey(agent.name);
-      if (normalizedName) {
-        map.set(normalizedName, agent);
-      }
-    };
-    for (const agent of portableAgentRows) {
-      addAgentReferences(agentByReference, agent);
-    }
-    for (const agent of builtInAgentRows) {
-      addAgentReferences(builtInAgentByReference, agent);
-    }
-
-    const selectedAgents = new Map<string, typeof liveAgentRows[number]>();
-    for (const selector of input.agents ?? []) {
-      const trimmed = selector.trim();
-      if (!trimmed) continue;
-      const normalized = normalizeAgentUrlKey(trimmed) ?? trimmed;
-      const match = agentByReference.get(trimmed) ?? agentByReference.get(normalized);
-      if (!match) {
-        const builtInMatch = builtInAgentByReference.get(trimmed) ?? builtInAgentByReference.get(normalized);
-        if (builtInMatch) {
-          warnings.push(`Agent selector "${selector}" is a built-in managed agent and was skipped.`);
-          continue;
-        }
-        warnings.push(`Agent selector "${selector}" was not found and was skipped.`);
-        continue;
-      }
-      selectedAgents.set(match.id, match);
-    }
-
-    if (include.agents && selectedAgents.size === 0) {
-      for (const agent of portableAgentRows) {
-        selectedAgents.set(agent.id, agent);
-      }
-    }
-
-    const agentRows = Array.from(selectedAgents.values())
+    const agentRows = agentSelection.agents
       .sort((left, right) => left.name.localeCompare(right.name));
 
     const usedSlugs = new Set<string>();
@@ -4021,7 +4088,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projectSlugById.set(project.id, uniqueSlug(baseSlug, usedProjectSlugs));
     }
     const sidebarOrder = requestedSidebarOrder ?? stripEmptyValues({
-      agents: sortAgentsBySidebarOrder(Array.from(selectedAgents.values()))
+      agents: sortAgentsBySidebarOrder(agentSelection.agents)
         .map((agent) => idToSlug.get(agent.id))
         .filter((slug): slug is string => Boolean(slug)),
       projects: selectedProjectRows
@@ -4094,27 +4161,56 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       .sort((left, right) => left.key.localeCompare(right.key));
 
     const skillExportDirs = buildSkillExportDirMap(selectedSkillRows, company.issuePrefix);
+    const skillFileJobs: Array<{ filePath: string; load: () => Promise<string | null> }> = [];
     for (const skill of selectedSkillRows) {
       const packageDir = skillExportDirs.get(skill.key) ?? `skills/${normalizeSkillSlug(skill.slug) ?? "skill"}`;
       if (shouldReferenceSkillOnExport(skill, Boolean(input.expandReferencedSkills))) {
-        files[`${packageDir}/SKILL.md`] = await buildReferencedSkillMarkdown(skill);
+        skillFileJobs.push({
+          filePath: `${packageDir}/SKILL.md`,
+          load: () => buildReferencedSkillMarkdown(skill),
+        });
         continue;
       }
 
       for (const inventoryEntry of skill.fileInventory) {
-        const fileDetail = await companySkills.readFile(companyId, skill.id, inventoryEntry.path).catch(() => null);
-        if (!fileDetail) continue;
-        const filePath = `${packageDir}/${inventoryEntry.path}`;
-        files[filePath] = inventoryEntry.path === "SKILL.md"
-          ? await withSkillSourceMetadata(skill, fileDetail.content)
-          : fileDetail.content;
+        skillFileJobs.push({
+          filePath: `${packageDir}/${inventoryEntry.path}`,
+          load: async () => {
+            const fileDetail = await companySkills
+              .readFile(companyId, skill.id, inventoryEntry.path)
+              .catch(() => null);
+            if (!fileDetail) return null;
+            return inventoryEntry.path === "SKILL.md"
+              ? withSkillSourceMetadata(skill, fileDetail.content)
+              : fileDetail.content;
+          },
+        });
       }
+    }
+    const skillFileResults = await mapWithConcurrency(
+      skillFileJobs,
+      EXPORT_READ_CONCURRENCY,
+      async (job) => ({ filePath: job.filePath, content: await job.load() }),
+    );
+    for (const result of skillFileResults) {
+      if (result.content !== null) files[result.filePath] = result.content;
     }
 
     if (include.agents) {
+      if (
+        !options.allowExternalInstructions
+        && agentRows.some((agent) => agentInstructionsBundleMode(agent) === "external")
+      ) {
+        throw forbidden("Instance admin access is required to export external instruction bundles");
+      }
+      const agentInstructionsById = new Map(
+        await mapWithConcurrency(agentRows, EXPORT_READ_CONCURRENCY, async (agent) => (
+          [agent.id, await instructions.exportFiles(agent)] as const
+        )),
+      );
       for (const agent of agentRows) {
         const slug = idToSlug.get(agent.id)!;
-        const exportedInstructions = await instructions.exportFiles(agent);
+        const exportedInstructions = agentInstructionsById.get(agent.id)!;
         warnings.push(...exportedInstructions.warnings);
 
         const envInputsStart = envInputs.length;
@@ -4176,6 +4272,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const extension = stripEmptyValues({
           role: agent.role !== "agent" ? agent.role : undefined,
           icon: agent.icon ?? null,
+          appearance: agent.appearance == null ? undefined : portableAgentAppearance(agent.appearance, warnings, slug),
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
@@ -4262,7 +4359,36 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     let unexportedParentEdgeCount = 0;
     let unportableWorkProductRefCount = 0;
     const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
+    // A task export needs several independent relations per task. Load a
+    // bounded number of task groups in parallel so large companies do not pay
+    // thousands of serialized database round trips, while still respecting
+    // the default database pool size.
+    const issueExportDetails = new Map(
+      await mapWithConcurrency(
+        selectedIssueRows,
+        EXPORT_ISSUE_READ_CONCURRENCY,
+        async (issue) => {
+          const [comments, relationSummaries, issueDocumentRows, workProductRows, attachmentRows] = await Promise.all([
+            issuesSvc.listComments(issue.id, { order: "asc" }),
+            issuesSvc.getRelationSummaries(issue.id),
+            documentsSvc.listIssueDocuments(issue.id, { includeSystem: true }),
+            workProductsSvc.listForIssue(issue.id),
+            issuesSvc.listAttachments(issue.id),
+          ]);
+          return [issue.id, {
+            comments,
+            relationSummaries,
+            issueDocumentRows,
+            workProductRows,
+            attachmentRows: attachmentRows
+              .slice()
+              .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()),
+          }] as const;
+        },
+      ),
+    );
     for (const issue of selectedIssueRows) {
+      const details = issueExportDetails.get(issue.id)!;
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
       // All tasks go in top-level tasks/ folder, never nested under projects/
@@ -4283,10 +4409,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
-      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      const comments = details.comments;
       // Blocker edges travel by task slug; only edges with both endpoints in
       // the export can be carried.
-      const relationSummaries = await issuesSvc.getRelationSummaries(issue.id);
+      const relationSummaries = details.relationSummaries;
       const blockedBySlugs: string[] = [];
       for (const blocker of relationSummaries.blockedBy) {
         const blockerSlug = taskSlugByIssueId.get(blocker.id);
@@ -4307,7 +4433,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         parentTaskSlug = taskSlugByIssueId.get(issue.parentId) ?? null;
         if (!parentTaskSlug) unexportedParentEdgeCount += 1;
       }
-      const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
+      const issueDocumentRows = details.issueDocumentRows;
       const documentEntries = issueDocumentRows.map((document) => {
         const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
         files[documentPath] = document.body ?? "";
@@ -4318,7 +4444,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           path: documentPath,
         };
       });
-      const workProductRows = await workProductsSvc.listForIssue(issue.id);
+      const workProductRows = details.workProductRows;
       const workProductEntries = workProductRows.map((workProduct) => {
         if (workProduct.executionWorkspaceId || workProduct.runtimeServiceId || workProduct.createdByRunId) {
           unportableWorkProductRefCount += 1;
@@ -4340,9 +4466,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       // Attachment bytes travel as content-addressed blobs/<sha256> entries,
       // deduped across the bundle; each per-task entry references its blob by
       // hash and its comment by index into the exported comments array.
-      const attachmentRows = (await issuesSvc.listAttachments(issue.id))
-        .slice()
-        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const attachmentRows = details.attachmentRows;
       const commentIndexById = new Map(comments.map((comment, index) => [comment.id, index] as const));
       const attachmentEntries: Array<Record<string, unknown>> = [];
       if (attachmentRows.length > 0 && !storage) {
@@ -4588,9 +4712,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         schema: "paperclip/v1",
         schemaVersion: BUNDLE_SCHEMA_VERSION,
         company: stripEmptyValues({
-          brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          attachmentMaxBytes: company.attachmentMaxBytes,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
@@ -4627,7 +4749,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     resolved.warnings.unshift(...warnings);
 
     // Generate org chart PNG from manifest agents
-    if (resolved.manifest.agents.length > 0) {
+    if (!options.preview && resolved.manifest.agents.length > 0) {
       try {
         const orgNodes = buildOrgTreeFromManifest(resolved.manifest.agents);
         const pngBuffer = await renderOrgChartPng(orgNodes);
@@ -4672,6 +4794,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function previewExport(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportPreviewResult> {
     const previewInput: CompanyPortabilityExport = {
       ...input,
@@ -4686,7 +4809,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (previewInput.include && previewInput.include.issues === undefined) {
       previewInput.include.issues = false;
     }
-    const exported = await exportBundle(companyId, previewInput);
+    const exported = await exportBundle(companyId, previewInput, {
+      preview: true,
+      allowExternalInstructions: options.allowExternalInstructions,
+    });
     return {
       ...exported,
       fileInventory: Object.keys(exported.files)
@@ -5131,6 +5257,36 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
+    if (include.agents) {
+      const importedAgentSlugs = new Set(
+        plan.preview.plan.agentPlans
+          .filter((entry) => entry.action !== "skip")
+          .map((entry) => entry.slug),
+      );
+      const runnerSelections = sourceManifest.agents.filter((agent) =>
+        importedAgentSlugs.has(agent.slug)
+        && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
+          === "paperclip_runner",
+      );
+      if (runnerSelections.length > 0) {
+        const experimental = await instanceSettingsService(db).getExperimental();
+        for (const agent of runnerSelections) {
+          const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
+          if (config.provider === "openai_dot") {
+            if (experimental.enableOpenAiDot !== true) throw unprocessable(
+              "OpenAI Dot is experimental and disabled on this instance.",
+              { code: "paperclip_runner_dot_disabled" },
+            );
+          } else if (experimental.enableNativeRunner !== true) {
+            throw unprocessable(
+              "Paperclip Runner is experimental and disabled on this instance.",
+              { code: "paperclip_runner_rollout_disabled" },
+            );
+          }
+        }
+      }
+    }
+
     // Content-addressed blobs double as the bundle's tamper seal. Verify every
     // blob before any row is written so a corrupted package cannot leave a
     // partially imported company behind.
@@ -5147,7 +5303,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       id: string;
       name: string;
       requireBoardApprovalForNewAgents?: boolean | null;
-      attachmentMaxBytes?: number | null;
     } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
@@ -5161,18 +5316,24 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           throw unprocessable("Safe new-company import requires at least one active user membership on the source company.");
         }
       }
+      const requestedCompanyName = asString(input.target.newCompanyName);
+      const manifestCompanyName =
+        sourceManifest.company?.name ?? sourceManifest.source?.companyName ?? "Imported Company";
+      // De-duplicate only for board-driven imports. The lookup reads every
+      // company name in the instance, and reflecting a collision back through
+      // the numeric suffix would let a company-scoped agent (agent_safe mode)
+      // probe for the existence of company names outside its own company.
       const companyName =
-        asString(input.target.newCompanyName) ??
-        sourceManifest.company?.name ??
-        sourceManifest.source?.companyName ??
-        "Imported Company";
+        requestedCompanyName ??
+        (mode === "agent_safe"
+          ? manifestCompanyName
+          : dedupeImportedCompanyName(
+              manifestCompanyName,
+              (await companies.list()).map((company) => company.name),
+            ));
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
-        brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
-        attachmentMaxBytes: include.company
-          ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
-          : undefined,
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
           : false,
@@ -5210,8 +5371,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
-          brandColor: sourceManifest.company.brandColor,
-          attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
@@ -5460,19 +5619,24 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             role: manifestAgent.role,
             title: manifestAgent.title,
             icon: manifestAgent.icon,
+            ...(manifestAgent.appearance ? { appearance: portableAgentAppearance(manifestAgent.appearance, warnings, manifestAgent.slug) } : {}),
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
           };
+          // "import", not "system": the UI reads this to explain that the
+          // agent was parked by the import safety default and to offer a
+          // scoped resume; "system" stays reserved for platform-managed
+          // pauses (plugins, built-ins).
           const automationPausePatch = pauseAutomations
             ? {
                 status: "paused",
-                pauseReason: "system",
+                pauseReason: "import",
                 pausedAt: importedAutomationPausedAt,
               }
             : {};
@@ -5530,7 +5694,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...patch,
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          });
+          }, { createdByUserId: actorUserId });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,
@@ -5784,7 +5948,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const parentSlugBySlug = new Map<string, string>();
         let unarmedMonitorCount = 0;
         let attachmentsSkippedNoStorage = 0;
-        const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
 
         // Import writes every issue and its children as a single batch instead
         // of one network round-trip per row. The loop below resolves each
@@ -6060,8 +6223,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             if (sha256HexOfBytes(body) !== attachmentEntry.sha256) {
               throw unprocessable(`Attachment blob ${blobPath} does not match its declared sha256; the package is corrupted or was tampered with.`);
             }
-            if (body.length > attachmentMaxBytes) {
-              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this board's attachment size limit of ${attachmentMaxBytes} bytes.`);
+            if (body.length > MAX_ATTACHMENT_BYTES) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this deployment's attachment size limit of ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}.`);
               continue;
             }
             let issueCommentId: string | null = null;
@@ -6109,7 +6272,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
             billingCode: manifestIssue.billingCode ?? null,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            assigneeAdapterOverrides: sanitizeImportedIssueAssigneeAdapterOverrides(
+              manifestIssue.assigneeAdapterOverrides,
+            ),
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
             labelIds: resolvedLabelIds,
             monitorNotes,

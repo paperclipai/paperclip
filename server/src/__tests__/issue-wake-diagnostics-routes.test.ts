@@ -267,6 +267,19 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
+  it.each(["chat_task_completed", "issue_execution_deferred"])("preserves the known %s reason without exposing completion payloads", async reason => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const issue = await seedIssue(db, { companyId: company.id, title: "Completion target", assigneeAgentId: agent.id });
+    await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "automation", reason, status: "deferred_issue_execution",
+      payload: { issueId: issue.id, chatCompletionDeliveryIds: ["PRIVATE_DELIVERY_ID"] } });
+    const res = await request(createApp(db, boardActor(company))).get(`/api/issues/${issue.id}/diagnostics/wakes`);
+    expect(res.status).toBe(200);
+    expect(res.body.events).toMatchObject([{ reason, status: "deferred_issue_execution", source: "automation" }]);
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE_DELIVERY_ID");
+  });
+
   it("returns null diagnosis for an unblocked issue with no wake history", async () => {
     const company = await seedCompany(db);
     const project = await seedProject(db, company.id, "Core");

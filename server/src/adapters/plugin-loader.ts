@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
+import { validateAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { logger } from "../middleware/logger.js";
 
 import {
@@ -145,7 +146,7 @@ function extractUiParserSource(
 // Load / reload
 // ---------------------------------------------------------------------------
 
-function validateAdapterModule(mod: unknown, packageName: string): ServerAdapterModule {
+export function validateAdapterModule(mod: unknown, packageName: string): ServerAdapterModule {
   const m = mod as Record<string, unknown>;
   const createServerAdapter = m.createServerAdapter;
   if (typeof createServerAdapter !== "function") {
@@ -161,6 +162,19 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
       `createServerAdapter() from "${packageName}" returned an invalid module (missing "type").`,
     );
   }
+
+  // Fail closed on a malformed login capability. The validator throws a clear
+  // error, so the loader rejects the adapter instead of loading it with a
+  // partial capability.
+  try {
+    validateAdapterLoginCapability(adapterModule);
+  } catch (err) {
+    throw new Error(
+      `createServerAdapter() from "${packageName}" returned an invalid login capability: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   return adapterModule;
 }
 

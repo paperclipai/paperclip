@@ -8,18 +8,20 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../services/agent-permissions.js";
+
+const invitedAgentId = "agent-1";
+const defaultAgentGrants = NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+  permissionKey,
+  scope: newStandardAgentGrantScope(permissionKey, invitedAgentId),
+}));
 
 describe("agentJoinGrantsFromDefaults", () => {
-  it("adds tasks:assign when invite defaults do not specify agent grants", () => {
-    expect(agentJoinGrantsFromDefaults(null)).toEqual([
-      {
-        permissionKey: "tasks:assign",
-        scope: null,
-      },
-    ]);
+  it("adds all new-agent grants when invite defaults do not specify grants", () => {
+    expect(agentJoinGrantsFromDefaults(null, invitedAgentId)).toEqual(defaultAgentGrants);
   });
 
-  it("preserves invite agent grants and appends tasks:assign", () => {
+  it("preserves invite agent grants and appends the missing defaults", () => {
     expect(
       agentJoinGrantsFromDefaults({
         agent: {
@@ -30,17 +32,8 @@ describe("agentJoinGrantsFromDefaults", () => {
             },
           ],
         },
-      }),
-    ).toEqual([
-      {
-        permissionKey: "agents:create",
-        scope: null,
-      },
-      {
-        permissionKey: "tasks:assign",
-        scope: null,
-      },
-    ]);
+      }, invitedAgentId),
+    ).toEqual([{ permissionKey: "agents:create", scope: null }, ...defaultAgentGrants]);
   });
 
   it("does not duplicate tasks:assign when invite defaults already include it", () => {
@@ -54,12 +47,19 @@ describe("agentJoinGrantsFromDefaults", () => {
             },
           ],
         },
-      }),
+      }, invitedAgentId),
     ).toEqual([
-      {
-        permissionKey: "tasks:assign",
-        scope: { projectId: "project-1" },
-      },
+      { permissionKey: "tasks:assign", scope: { projectId: "project-1" } },
+      ...defaultAgentGrants.filter((grant) => grant.permissionKey !== "tasks:assign"),
+    ]);
+  });
+
+  it("preserves an explicit scoped agent configuration grant", () => {
+    expect(agentJoinGrantsFromDefaults({
+      agent: { grants: [{ permissionKey: "agents:configure", scope: { agentIds: ["agent-1"] } }] },
+    }, invitedAgentId)).toEqual([
+      { permissionKey: "agents:configure", scope: { agentIds: ["agent-1"] } },
+      ...defaultAgentGrants.filter((grant) => grant.permissionKey !== "agents:configure"),
     ]);
   });
 });
@@ -75,6 +75,10 @@ describe("human invite roles", () => {
       { permissionKey: "users:manage_permissions", scope: null },
       { permissionKey: "tasks:assign", scope: null },
       { permissionKey: "joins:approve", scope: null },
+      { permissionKey: "tools:manage_connections", scope: null },
+      { permissionKey: "tools:manage_runtime", scope: null },
+      { permissionKey: "tools:use", scope: null },
+      { permissionKey: "tools:admin", scope: null },
     ]);
   });
 
@@ -87,6 +91,29 @@ describe("human invite roles", () => {
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "tasks:assign", scope: null },
       { permissionKey: "joins:approve", scope: null },
+      { permissionKey: "tools:manage_connections", scope: null },
+      { permissionKey: "tools:manage_runtime", scope: null },
+      { permissionKey: "tools:use", scope: null },
+      { permissionKey: "tools:admin", scope: null },
+    ]);
+  });
+
+  it("maps operator to company editing grants without join approval or member permissions", () => {
+    expect(grantsForHumanRole("operator")).toEqual([
+      { permissionKey: "agents:create", scope: null },
+      { permissionKey: "agents:configure", scope: null },
+      { permissionKey: "skills:create", scope: null },
+      { permissionKey: "environments:manage", scope: null },
+      { permissionKey: "users:invite", scope: null },
+      { permissionKey: "tasks:assign", scope: null },
+      { permissionKey: "pipelines:write", scope: null },
+      { permissionKey: "tools:manage_connections", scope: null },
+      { permissionKey: "tools:manage_profiles", scope: null },
+      { permissionKey: "tools:manage_runtime", scope: null },
+      { permissionKey: "tools:use", scope: null },
+      { permissionKey: "tools:admin", scope: null },
+      { permissionKey: "tools:view_audit", scope: null },
+      { permissionKey: "audit:view_agent_actions", scope: null },
     ]);
   });
 
@@ -106,9 +133,7 @@ describe("human invite roles", () => {
   });
 
   it("falls back to role grants when human invite defaults omit explicit grants", () => {
-    expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
-      { permissionKey: "tasks:assign", scope: null },
-    ]);
+    expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual(grantsForHumanRole("operator"));
   });
 
   it("preserves explicit human invite grants", () => {

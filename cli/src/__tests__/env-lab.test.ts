@@ -246,8 +246,8 @@ describe("env-lab doctor cleanup hint instance", () => {
   // `p.log`, so the test replaces each channel and reads the captured lines.
   function captureDoctorMessages(): string[] {
     const messages: string[] = [];
-    vi.spyOn(p.log, "message").mockImplementation((message?: string) => {
-      messages.push(message ?? "");
+    vi.spyOn(p.log, "message").mockImplementation((message?: string | string[]) => {
+      messages.push(Array.isArray(message) ? message.join("\n") : (message ?? ""));
     });
     vi.spyOn(p.log, "success").mockImplementation(() => {});
     vi.spyOn(p.log, "warn").mockImplementation(() => {});

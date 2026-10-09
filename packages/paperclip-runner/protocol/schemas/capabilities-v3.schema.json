@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/capabilities.schema.json",
+  "title": "PRP v3 negotiated capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "sessionReusePolicy",
+    "driver",
+    "steer",
+    "interrupt",
+    "resume",
+    "runtimeRequests",
+    "structuredResult",
+    "typedEvents",
+    "sessionGoals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.capabilities.v3"
+    },
+    "sessionReusePolicy": {
+      "enum": [
+        "new_per_run",
+        "reuse_per_issue",
+        "reuse_per_workspace"
+      ]
+    },
+    "driver": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "additionalProperties": true
+    },
+    "steer": {
+      "type": "boolean"
+    },
+    "interrupt": {
+      "type": "boolean"
+    },
+    "resume": {
+      "type": "boolean"
+    },
+    "runtimeRequests": {
+      "type": "boolean"
+    },
+    "structuredResult": {
+      "type": "boolean"
+    },
+    "typedEvents": {
+      "type": "boolean"
+    },
+    "sessionGoals": {
+      "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+    },
+    "unsupported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "externalProvider": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

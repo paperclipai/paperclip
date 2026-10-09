@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/runner/prp-v1-expressiveness-crosswalk.schema.json",
+  "title": "PRP v1 expressiveness crosswalk",
+  "description": "Machine-checked source for the PRP v1 expressiveness audit. Every required semantic-parity fact is classified against exactly one support strategy, justified by concrete wire evidence and an invariant that never rests on a permissive payload field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "facts"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "facts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/fact" }
+    }
+  },
+  "$defs": {
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "classification", "wire", "evidence", "invariant"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "classification": {
+          "enum": [
+            "direct_v1",
+            "compositional_v1_with_invariant",
+            "control_plane_local",
+            "additive_v1_change",
+            "missing_fixture_docs",
+            "breaking_v2_work"
+          ]
+        },
+        "wire": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "invariant": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Support justification. Must not rest on a permissive payload field.",
+          "not": { "pattern": "^[Pp]ayload" }
+        },
+        "correction": { "$ref": "#/$defs/correction" }
+      },
+      "allOf": [
+        {
+          "$comment": "Control-plane-local and breaking v2 facts are not runner-wire operations, so they carry no wire target.",
+          "if": {
+            "properties": {
+              "classification": {
+                "enum": ["control_plane_local", "breaking_v2_work"]
+              }
+            }
+          },
+          "then": { "properties": { "wire": { "const": "none" } } }
+        },
+        {
+          "$comment": "An accepted additive v1 change must name the correction target and the fixtures that graduate it to direct support.",
+          "if": {
+            "properties": {
+              "classification": { "const": "additive_v1_change" }
+            }
+          },
+          "then": { "required": ["correction"] }
+        }
+      ]
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "target", "fixtures"],
+      "properties": {
+        "kind": {
+          "enum": ["additive_schema", "additive_event"]
+        },
+        "target": { "type": "string", "minLength": 1 },
+        "fixtures": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "\\.json$" }
+        }
+      }
+    }
+  }
+}

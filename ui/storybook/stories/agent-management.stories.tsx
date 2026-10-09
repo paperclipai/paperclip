@@ -338,7 +338,6 @@ const adapterFixtures: AdapterInfo[] = [
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
-      supportsModelProfiles: true,
       supportsAcp: true,
     },
   },
@@ -354,7 +353,6 @@ const adapterFixtures: AdapterInfo[] = [
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
-      supportsModelProfiles: true,
       supportsAcp: true,
     },
   },
@@ -370,7 +368,6 @@ const adapterFixtures: AdapterInfo[] = [
       supportsSkills: false,
       supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
-      supportsModelProfiles: false,
       supportsAcp: false,
     },
   },
@@ -459,7 +456,10 @@ function StorybookQueryFixtures({ children }: { children: ReactNode }) {
   queryClient.setQueryData(queryKeys.adapters.all, adapterFixtures);
   queryClient.setQueryData(queryKeys.issues.list(COMPANY_ID), storybookIssues);
   queryClient.setQueryData([...queryKeys.issues.list(COMPANY_ID), "with-routine-executions"], storybookIssues);
-  queryClient.setQueryData([...queryKeys.liveRuns(COMPANY_ID), "dashboard"], liveRuns);
+  queryClient.setQueryData([...queryKeys.liveRuns(COMPANY_ID), "dashboard", { minRunCount: 4, fetchLimit: undefined }], liveRuns);
+  for (const issue of storybookIssues) {
+    queryClient.setQueryData(queryKeys.issues.detail(issue.id), issue);
+  }
   queryClient.setQueryData(queryKeys.instance.generalSettings, { censorUsernameInLogs: false });
   queryClient.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "codex_local"), [
     { id: "gpt-5.4", label: "GPT-5.4" },

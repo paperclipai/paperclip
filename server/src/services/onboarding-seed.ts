@@ -2,7 +2,10 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companyOnboardingSeeds, goals, issues, projects } from "@paperclipai/db";
 import type { ApplyOnboardingSeed } from "@paperclipai/shared";
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
+import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
@@ -31,9 +34,31 @@ const SEEDED_AGENT_ROLE = "ceo";
 const FALLBACK_SEEDED_AGENT_ADAPTER_TYPE = "claude_local";
 
 function seededAgentAdapterType() {
-  return process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
+  const configured = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
     || process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim()
     || FALLBACK_SEEDED_AGENT_ADAPTER_TYPE;
+  // Server-seeded onboarding deliberately stays on a direct adapter. Native
+  // runner rollout is an explicit post-onboarding configuration choice.
+  return configured === "paperclip_runner"
+    ? FALLBACK_SEEDED_AGENT_ADAPTER_TYPE
+    : configured;
+}
+
+/**
+ * Adapter config for the seeded CEO. The default CEO instructions tell the
+ * agent to use the core paperclip skills (hiring, memory, coordination), and
+ * an agent's runtime only receives skills listed in its own desired set — so
+ * a seeded CEO with an empty adapter config arrives with zero skills and
+ * truthfully reports its own toolkit as not installed. Enable the core set
+ * whenever the seeded adapter supports skill sync.
+ */
+function seededAgentAdapterConfig(adapterType: string): Record<string, unknown> {
+  const adapter = findActiveServerAdapter(adapterType);
+  if (!adapter?.listSkills && !adapter?.syncSkills) return {};
+  return writePaperclipSkillSyncPreference(
+    {},
+    PAPERCLIP_CORE_SKILL_KEYS.map((key) => ({ key, versionId: null })),
+  );
 }
 
 /**
@@ -164,6 +189,7 @@ export function onboardingSeedService(db: Db) {
     dbx: Db,
     companyId: string,
     seed: ApplyOnboardingSeed,
+    audit?: OnboardingSeedAuditActor,
   ): Promise<OnboardingSeedApplication> {
     const agentSvc = agentService(dbx);
     const goalSvc = goalService(dbx);
@@ -218,18 +244,19 @@ export function onboardingSeedService(db: Db) {
       if (agentId) {
         await agentSvc.update(agentId, { name: agentName, title: agentRole });
       } else {
+        const adapterType = seededAgentAdapterType();
         const created = await agentSvc.create(companyId, {
           name: agentName,
           role: SEEDED_AGENT_ROLE,
           title: agentRole,
-          adapterType: seededAgentAdapterType(),
-          adapterConfig: {},
+          adapterType,
+          adapterConfig: seededAgentAdapterConfig(adapterType),
           runtimeConfig: {},
           permissions: {},
           status: "idle",
           spentMonthlyCents: 0,
           lastHeartbeatAt: null,
-        });
+        }, { createdByUserId: audit?.actorType === "user" ? audit.actorId : null });
         agentId = created.id;
       }
     }
@@ -378,7 +405,7 @@ export function onboardingSeedService(db: Db) {
         sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:onboarding-seed:${companyId}`}, 0))`,
       );
       const dbx = tx as unknown as Db;
-      const applied = await applyWithin(dbx, companyId, seed);
+      const applied = await applyWithin(dbx, companyId, seed, audit);
 
       if (applied.changed && audit) {
         await logActivity(
