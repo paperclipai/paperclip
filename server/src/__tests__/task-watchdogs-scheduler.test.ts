@@ -5,12 +5,15 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvals,
   companies,
   createDb,
   documents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueApprovals,
+  issueThreadInteractions,
   issueWorkProducts,
   issues,
   issueWatchdogs,
@@ -41,6 +44,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueWorkProducts);
     await db.delete(issueDocuments);
     await db.delete(documents);
@@ -173,6 +179,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.agentId).toBe(agentId);
     expect(wakes[0]?.opts?.reason).toBe("task_watchdog_stopped_subtree");
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog:[^:]+:task_watchdog_stop:/);
     expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
       taskWatchdog: {
         watchedIssueId: sourceId,
@@ -213,6 +220,12 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.watchdogIssueId).toBe(watchdogIssues[0]?.id);
     expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
+    expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
+      version: 2,
+      fingerprint: watchdog?.lastObservedFingerprint,
+      materialLeaves: [],
+      waitsByIssueId: {},
+    });
     expect(watchdog?.triggerCount).toBe(1);
   });
 
@@ -408,6 +421,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(reviewed).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
     const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(reviewedWatchdog?.lastReviewedFingerprint).toBe(firstWatchdog?.lastObservedFingerprint);
+    expect(reviewedWatchdog?.lastReviewedStopSnapshot).toEqual(firstWatchdog?.lastObservedStopSnapshot);
 
     await db
       .update(issues)
@@ -428,6 +442,50 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .where(eq(issueComments.issueId, watchdogIssueId));
     expect(comments.some((comment) => comment.body.includes("Stopped fingerprint"))).toBe(true);
     expect(wakes.length).toBe(2);
+  });
+
+  it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_review" });
+    const waitingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_review" });
+    const siblingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_progress" });
+    const agentId = await seedAgent(companyId);
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: waitingLeafId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Confirm the stop." },
+      createdByAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [triggeredWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, triggeredWatchdog!.watchdogIssueId!));
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(reviewedWatchdog?.lastReviewedStopSnapshot).not.toBeNull();
+
+    // The sibling completing shrinks the material leaf set while the wait set
+    // is unchanged; the reviewed snapshot loaded back from jsonb (which does
+    // not preserve object key order) must still suppress the wake.
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, siblingLeafId));
+    const afterShrink = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterShrink).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("does not let an old terminal watchdog review mark a newer observed fingerprint reviewed", async () => {
@@ -473,6 +531,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(reviewedWatchdog?.lastReviewedFingerprint).toBe(oldFingerprint);
     expect(reviewedWatchdog?.lastReviewedFingerprint).not.toBe(newerFingerprint);
+    expect(reviewedWatchdog?.lastReviewedStopSnapshot).toBeNull();
     const [reopenedWatchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
     expect(reopenedWatchdogIssue).toMatchObject({
       status: "todo",
@@ -490,7 +549,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
-  it("revalidates stale watchdog reviews against current source evidence before allowing mutations", async () => {
+  it("keeps watchdog mutation scope valid across metadata-only source evidence", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-REVALIDATE", status: "blocked" });
     const agentId = await seedAgent(companyId);
@@ -522,16 +581,81 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       stopFingerprint: originalFingerprint,
     });
 
-    expect(revalidated.allowed).toBe(false);
-    expect(revalidated.reason).toContain("stop fingerprint changed");
+    expect(revalidated.allowed).toBe(true);
     expect(revalidated.classification?.state).toBe("stopped");
     if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
-    expect(revalidated.classification.stopFingerprint).not.toBe(originalFingerprint);
+    expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
     expect(revalidated.classification.stoppedLeaves[0]).toMatchObject({
       latestCommentAt: later.toISOString(),
       latestDocumentAt: new Date(later.getTime() + 1_000).toISOString(),
       latestWorkProductAt: new Date(later.getTime() + 2_000).toISOString(),
     });
+  });
+
+  it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const interactionId = randomUUID();
+    const approvalId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: sourceId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Confirm the reviewed stop." },
+      createdByAgentId: agentId,
+    });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      requestedByAgentId: agentId,
+      status: "pending",
+      payload: { summary: "Approve the reviewed stop." },
+    });
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: sourceId,
+      approvalId,
+      linkedByAgentId: agentId,
+    });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      taskWatchdog: {
+        pendingInteractions: {
+          [sourceId]: [{ id: interactionId, kind: "request_confirmation" }],
+        },
+        pendingApprovals: {
+          [sourceId]: [approvalId],
+        },
+      },
+    });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
+      waitsByIssueId: {
+        [sourceId]: {
+          pendingInteractionIds: [interactionId],
+          pendingApprovalIds: [approvalId],
+        },
+      },
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdog!.watchdogIssueId!));
+    expect(comments.at(-1)?.body).toContain(`pending request_confirmation ${interactionId.slice(0, 8)}…`);
+    expect(comments.at(-1)?.body).toContain(`approval ${approvalId.slice(0, 8)}…`);
+    const metadata = comments.at(-1)?.metadata as { sections?: Array<{ rows?: unknown[] }> } | null;
+    expect(metadata?.sections?.[0]?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "Pending waits", text: "2" }),
+    ]));
   });
 
   it("revalidates a stale watchdog review as live when the source gets a fresh run path", async () => {
@@ -662,5 +786,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(1);
+  });
+
+  it("handles an armed cutoff when no watchdogs are active", async () => {
+    const companyId = await seedCompany();
+    const { service } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({
+      companyId,
+      issueCreatedAtGte: new Date(),
+    });
+
+    expect(result).toMatchObject({ checked: 0, triggered: 0 });
   });
 });

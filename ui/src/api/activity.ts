@@ -1,10 +1,12 @@
-import type { ActivityEvent, RunLivenessState } from "@paperclipai/shared";
-import { api } from "./client";
+import type { ActivityEvent, ExecutionProjection, RunLivenessState } from "@paperclipai/shared";
+import { api, type RequestOptions } from "./client";
 
 export type { RunLivenessState } from "@paperclipai/shared";
 
 export interface RunForIssue {
   runId: string;
+  execution?: ExecutionProjection | null;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType: string;
@@ -14,6 +16,8 @@ export interface RunForIssue {
   invocationSource: string;
   responsibleUserId?: string | null;
   errorCode?: string | null;
+  /** Bounded provider message for a failed model rejection. */
+  error?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;
@@ -27,6 +31,10 @@ export interface RunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
+  wakeCommentIds?: string[] | null;
+  wakeCommentId?: string | null;
+  contextCommentId?: string | null;
+  contextIssueId?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
   environment?: {
     id: string;
@@ -57,14 +65,18 @@ export interface IssueForRun {
 }
 
 export const activityApi = {
-  list: (companyId: string, filters?: { entityType?: string; entityId?: string; agentId?: string; limit?: number }) => {
+  list: (
+    companyId: string,
+    filters?: { entityType?: string; entityId?: string; agentId?: string; limit?: number },
+    options?: RequestOptions,
+  ) => {
     const params = new URLSearchParams();
     if (filters?.entityType) params.set("entityType", filters.entityType);
     if (filters?.entityId) params.set("entityId", filters.entityId);
     if (filters?.agentId) params.set("agentId", filters.agentId);
     if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
-    return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`);
+    return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`, options);
   },
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),

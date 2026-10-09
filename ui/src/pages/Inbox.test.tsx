@@ -4,13 +4,22 @@ import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
+import {
+  clearLocalInboxArchive,
+  getLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
+import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
+}));
+
+const externalObjectMocks = vi.hoisted(() => ({
+  summaries: new Map(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -62,6 +71,7 @@ vi.mock("../api/execution-workspaces", () => ({
 vi.mock("../api/issues", () => ({
   issuesApi: {
     list: apiMocks.issuesList,
+    listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
     markRead: vi.fn(),
@@ -98,16 +108,16 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({ pushToast: vi.fn() }),
+}));
+
 vi.mock("../context/DialogContext", () => ({
   useDialogActions: () => ({ openNewIssue: vi.fn() }),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
-}));
-
-vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => ({ keyboardShortcutsEnabled: false }),
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -117,6 +127,14 @@ vi.mock("../hooks/useInboxBadge", () => ({
     readItems: new Set(),
     markRead: vi.fn(),
     markUnread: vi.fn(),
+  }),
+}));
+
+vi.mock("../hooks/useIssueExternalObjects", () => ({
+  useIssueExternalObjectSummaries: () => ({
+    summaries: externalObjectMocks.summaries,
+    isLoading: false,
+    isReady: true,
   }),
 }));
 
@@ -166,6 +184,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -247,8 +266,78 @@ function createJoinRequest(
   };
 }
 
+function createApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "approval-1",
+    companyId: "company-1",
+    type: "hire_agent",
+    requestedByAgentId: null,
+    requestedByUserId: "local-board",
+    status: "pending",
+    payload: { name: "New teammate" },
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  return {
+    id: "run-1",
+    issueId: null,
+    scopeKind: "company",
+    companyId: "company-1",
+    agentId: "agent-1",
+    responsibleUserId: null,
+    invocationSource: "assignment",
+    triggerDetail: null,
+    status: "failed",
+    error: "boom",
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processGroupId: null,
+    processStartedAt: null,
+    lastOutputAt: null,
+    lastOutputSeq: 0,
+    lastOutputStream: null,
+    lastOutputBytes: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
+    contextSnapshot: null,
+    startedAt: new Date("2026-03-11T00:00:00.000Z"),
+    finishedAt: new Date("2026-03-11T00:01:00.000Z"),
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:01:00.000Z"),
+    ...overrides,
+  };
+}
+
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
+  externalObjectMocks.summaries.clear();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -273,7 +362,10 @@ function resetInboxApiMocks() {
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
-  apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  apiMocks.experimentalSettings.mockResolvedValue({
+    enableIsolatedWorkspaces: false,
+    enableStreamlinedUi: true,
+  });
   apiMocks.projectsList.mockResolvedValue([]);
 }
 
@@ -281,13 +373,279 @@ describe("Inbox toolbar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    localStorage.clear();
     resetInboxApiMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
+    for (const issueId of getLocalInboxArchiveIssueIds("company-1")) {
+      clearLocalInboxArchive("company-1", issueId);
+    }
     container.remove();
+  });
+
+  it.each([
+    { tab: "mine", userId: "user-1", visible: ["own-failure"], hidden: ["other-failure", "unowned-failure"] },
+    { tab: "mine", userId: "user-2", visible: ["other-failure"], hidden: ["own-failure", "unowned-failure"] },
+    { tab: "mine", userId: "local-board", visible: ["unowned-failure"], hidden: ["own-failure", "other-failure"] },
+    { tab: "mine", userId: null, visible: [], hidden: ["own-failure", "other-failure", "unowned-failure"] },
+    { tab: "all", userId: "user-1", visible: ["own-failure", "other-failure", "unowned-failure"], hidden: [] },
+  ].flatMap((scenario) => [true, false].map((streamlined) => ({ ...scenario, streamlined }))))(
+    "scopes failed runs on $tab for $userId (streamlined=$streamlined)",
+    async ({ tab, userId, visible, hidden, streamlined }) => {
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+      routerMock.location.pathname = `/inbox/${tab}`;
+      apiMocks.authSession.mockResolvedValue(userId ? { user: { id: userId }, session: { userId } } : null);
+      apiMocks.heartbeatRunsList.mockResolvedValue([
+        createFailedRun({ id: "own-failure", agentId: "agent-1", responsibleUserId: "user-1" }),
+        createFailedRun({ id: "other-failure", agentId: "agent-2", responsibleUserId: "user-2", status: "timed_out" }),
+        createFailedRun({ id: "unowned-failure", agentId: "agent-3" }),
+      ]);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      try {
+        await act(async () => {
+          root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+        });
+        await vi.waitFor(() => {
+          expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
+          expect(queryClient.isFetching()).toBe(0);
+          for (const id of visible) expect(container.querySelector(`a[to$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[to$="/runs/${id}"]`)).toBeNull();
+        });
+      } finally {
+        act(() => root.unmount());
+        queryClient.clear();
+      }
+    },
+  );
+
+  it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedUi: false,
+    });
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "legacy-row", identifier: "PAP-1904", title: "Legacy inbox task" }),
+    ]);
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: {},
+        columns: [],
+      }),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Legacy inbox task"));
+
+    expect(container.querySelector('[data-slot="collection-toolbar"]')).toBeNull();
+    expect(container.querySelector('[role="toolbar"][aria-label="Inbox controls"]')).toBeNull();
+    expect(container.textContent).toContain("Mine");
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+    const issueLink = container.querySelector('[data-inbox-issue-link]');
+    // Production reads the legacy Inbox column key and must ignore the
+    // Streamlined collection envelope above when the experiment is disabled.
+    expect(issueLink?.parentElement?.textContent).toContain("PAP-1904");
+
+    act(() => root.unmount());
+  });
+
+  it("does not render external-object summaries in inbox rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issue = createIssue({ title: "Inbox row without external object column" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    externalObjectMocks.summaries.set(issue.id, {
+      total: 1,
+      highestSeverity: "failed",
+      byStatusCategory: { failed: 1 },
+      objects: [],
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(issue.title);
+    });
+
+    expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.approvalsList.mockResolvedValue([createApproval()]);
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Hire Agent: New teammate");
+      expect(container.textContent).toContain("Failed run");
+      expect(container.textContent).toContain("Jordan Example");
+    });
+
+    const rowFor = (text: string) =>
+      [...container.querySelectorAll("[data-inbox-item]")]
+        .find((row) => row.textContent?.includes(text));
+
+    for (const text of ["Hire Agent: New teammate", "Failed run", "Jordan Example"]) {
+      const row = rowFor(text);
+      expect(row, `missing inbox row for ${text}`).toBeDefined();
+      expect(row?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+      const archiveButton = row?.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      expect(archiveButton?.className).toContain("opacity-0");
+      expect(archiveButton?.className).toContain("group-hover:opacity-100");
+      expect(row?.querySelector("[data-inbox-row-surface]")).not.toBeNull();
+    }
+
+    const approvalRow = rowFor("Hire Agent: New teammate");
+    const approvalActions = [...(approvalRow?.querySelectorAll("button") ?? [])]
+      .filter((button) => button.textContent === "Approve" || button.textContent === "Reject");
+    expect(approvalActions.length).toBeGreaterThanOrEqual(2);
+    approvalActions.forEach((button) => {
+      expect(button.className).toContain("h-8");
+      expect(button.className).toContain("min-w-(--sz-64px)");
+      expect(button.className).toContain("justify-center");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("restores folded and unfolded sub-tasks across remounts", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const storageKey = "paperclip:inbox:collapsed-parents:company-1";
+    localStorage.removeItem(storageKey);
+
+    const parent = createIssue({
+      id: "parent-issue",
+      identifier: "PAP-1001",
+      title: "Parent inbox task",
+    });
+    const child = createIssue({
+      id: "child-issue",
+      identifier: "PAP-1002",
+      parentId: parent.id,
+      title: "Nested inbox task",
+    });
+    const grandchild = createIssue({
+      id: "grandchild-issue",
+      identifier: "PAP-1003",
+      parentId: child.id,
+      title: "Deeply nested inbox task",
+    });
+    apiMocks.issuesList.mockResolvedValue([parent, child, grandchild]);
+
+    const mountInbox = async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(parent.title);
+      });
+      return root;
+    };
+    const parentToggle = () => {
+      const parentRow = Array.from(container.querySelectorAll("[data-inbox-item]"))
+        .find((row) => row.textContent?.includes(parent.title));
+      return parentRow?.querySelector<HTMLButtonElement>('button[data-slot="icon-button"]') ?? null;
+    };
+
+    let root = await mountInbox();
+    try {
+      expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
+      const taskRowFor = (title: string) =>
+        Array.from(container.querySelectorAll('[data-slot="task-row"]'))
+          .find((row) => row.textContent?.includes(title));
+      const childTaskRow = taskRowFor(child.title);
+      const grandchildTaskRow = taskRowFor(grandchild.title);
+      expect(childTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(1);
+      expect(childTaskRow?.querySelector('button[aria-label="Collapse sub-tasks"]')).not.toBeNull();
+      expect(grandchildTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(2);
+      expect(grandchildTaskRow?.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain(child.title);
+        expect(container.textContent).not.toContain(grandchild.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([parent.id]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).not.toContain(child.title);
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(child.title);
+        expect(container.textContent).toContain(grandchild.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
+    } finally {
+      localStorage.removeItem(storageKey);
+      act(() => root.unmount());
+    }
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {
@@ -317,6 +675,194 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps Mine, Recent, Unread, Blocked, and All in the shared toolbar geometry", async () => {
+    for (const tab of ["mine", "recent", "unread", "blocked", "all"] as const) {
+      routerMock.location.pathname = `/inbox/${tab}`;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+
+      const toolbar = container.querySelector('[data-slot="collection-toolbar"]');
+      expect(toolbar?.getAttribute("aria-label")).toBe("Inbox controls");
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-context"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-search"] input[placeholder="Search inbox…"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-controls"]')).not.toBeNull();
+      expect(container.querySelectorAll('input[placeholder="Search inbox…"]')).toHaveLength(1);
+
+      act(() => root.unmount());
+      container.replaceChildren();
+    }
+  });
+
+  it("explains that live-run filtering is different from active task statuses", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+      allCategoryFilter: "everything",
+      allApprovalFilter: "all",
+      issueFilters: { liveOnly: true },
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="inbox-filter-scope-feedback"]')?.textContent)
+      .toBe("Live runs only — tasks currently connected to an agent run.");
+    const migrated = JSON.parse(
+      localStorage.getItem("paperclip:task-collection:v1:company-1:inbox") ?? "null",
+    ) as { companyId?: string; collectionKey?: string } | null;
+    expect(migrated).toMatchObject({ companyId: "company-1", collectionKey: "inbox" });
+
+    act(() => root.unmount());
+  });
+
+  it("groups ungrouped attention items by Today, Yesterday, and Earlier", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "yesterday", title: "Yesterday task", lastActivityAt: localNoon(1) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    const separators = [...container.querySelectorAll('[data-testid="inbox-date-group"]')];
+    expect(separators.map((node) => node.textContent?.trim()))
+      .toEqual(["Today", "Yesterday", "Earlier"]);
+    expect(separators.every((separator) => (
+      separator.querySelectorAll("[data-date-group-rule]").length === 2
+    ))).toBe(true);
+    expect(separators.every((separator) => (
+      separator.querySelector("[data-date-group-label]")?.classList.contains("text-muted-foreground/70")
+    ))).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("honors the saved Columns option for hiding date group separators", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({
+        companyId: "company-1",
+        collectionKey: "inbox",
+      }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: { showDateGroupSeparators: false },
+        columns: ["status", "id", "updated"],
+      }),
+    );
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    expect(container.querySelector('[data-testid="inbox-date-group"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows the resolved isolated workspace name in canonical task metadata", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
+      id: "execution-workspace-1",
+      name: "Workspace Aurora",
+      mode: "isolated_workspace",
+      projectWorkspaceId: "project-workspace-1",
+    }]);
+    apiMocks.projectsList.mockResolvedValue([{
+      id: "project-1",
+      name: "Launch",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Main" }],
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+      primaryWorkspace: null,
+    }]);
+    apiMocks.issuesList.mockResolvedValue([createIssue({
+      projectId: "project-1",
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Workspace-aware task",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    // Workspace metadata resolves independently of the task list.
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+    });
+
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
+    expect(taskRow?.textContent).toContain("Workspace Aurora");
+    expect(identifier?.textContent).toBe("PAP-904");
+    expect(timestamp).not.toBeNull();
+    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
   });
 
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
@@ -376,13 +922,18 @@ describe("Inbox toolbar", () => {
       true,
       true,
     ]);
+    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
+      500,
+      500,
+      500,
+    ]);
 
     act(() => {
       root.unmount();
     });
   });
 
-  it("syncs hover with j/k selection on inbox rows", async () => {
+  it("paints row hover via CSS only, without moving React selection state", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
@@ -406,38 +957,267 @@ describe("Inbox toolbar", () => {
 
     const rows = container.querySelectorAll("[data-inbox-item]");
 
-    const linkOf = (row: Element): HTMLAnchorElement | null =>
-      row.querySelector("a[data-inbox-issue-link]");
+    // The hover wash lives on the IssueRow root band (the overlay link's
+    // parent), not the overlay link itself.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
 
     // Nothing selected before hover — both rows show the hover-accent class.
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
+    // Hovering paints via CSS `:hover` only — it must NOT flip a row into the
+    // state-selected band (which would swap to hover:bg-transparent). Coupling
+    // hover to React state was the per-hover re-render storm behind the lag;
+    // scrubbing the list must not touch selection state. (Keyboard nav that
+    // continues from the hovered row is exercised in live/e2e verification.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
-
-    // After hovering row 1, that row is "selected" — same visual state as j/k selection.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
-    });
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
-
-    await act(async () => {
-      rows[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      rows[0]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
-    });
-
-    // Hovering a different row moves the selection to follow the mouse.
-    await vi.waitFor(() => {
-      expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
-    });
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+    expect(bandOf(rows[1]!)?.className).not.toContain("hover:bg-transparent");
 
     act(() => {
       root.unmount();
     });
+  });
+
+  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    // Two sibling leaf rows, one unread and one read, so their leading columns
+    // are directly comparable.
+    const unread = createIssue({
+      id: "issue-unread",
+      identifier: "PAP-2001",
+      title: "Unread inbox row",
+      isUnreadForMe: true,
+    });
+    const read = createIssue({
+      id: "issue-read",
+      identifier: "PAP-2002",
+      title: "Read inbox row",
+      isUnreadForMe: false,
+    });
+    apiMocks.issuesList.mockResolvedValue([unread, read]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Unread inbox row");
+      expect(container.textContent).toContain("Read inbox row");
+    });
+
+    const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
+    const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
+    const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
+    // The canonical spacer reserves the disclosure column on every leaf row.
+    const hasLeadingSpacer = (row: Element) =>
+      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
+    // The overlay anchor is present on read AND unread Inbox rows without
+    // consuming a layout column.
+    const dotSlot = (row: Element) =>
+      row.querySelector('[data-testid="issue-row-unread-slot"]');
+
+    const unreadRow = rowFor("Unread inbox row")!;
+    const readRow = rowFor("Read inbox row")!;
+
+    // Both rows share the canonical task-row geometry. The dot is absolutely
+    // positioned in the row gutter, so Inbox does not gain a column that Tasks
+    // lacks and unread state cannot shift status/title alignment.
+    const unreadSlot = dotSlot(unreadRow);
+    const readSlot = dotSlot(readRow);
+    expect(unreadSlot).not.toBeNull();
+    expect(readSlot).not.toBeNull();
+    expect(unreadSlot?.className).toContain("absolute");
+    // Only the unread row carries the dot button; the read slot is empty.
+    expect(markReadButton(unreadSlot!)).not.toBeNull();
+    expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(hasLeadingSpacer(unreadRow)).toBe(true);
+
+    // Read rows keep the same spacer, so both rows line up.
+    expect(hasLeadingSpacer(readRow)).toBe(true);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issueA = createIssue({ id: "issue-a", identifier: "PAP-2001", title: "Sync row A" });
+    const issueB = createIssue({ id: "issue-b", identifier: "PAP-2002", title: "Sync row B" });
+    const issueC = createIssue({ id: "issue-c", identifier: "PAP-2003", title: "Sync row C" });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Canonical task rows put the selected wash on the root band (the overlay
+    // link's parent); find the row with the standalone selected utility.
+    const bandOf = (row: Element): HTMLElement | null =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
+    const selectedRowIndex = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
+        bandOf(row)?.className.split(/\s+/).includes("bg-accent/50"),
+      );
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+
+      // Pointer physically moves, then hovers the middle row (index 1).
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+        const rows = container.querySelectorAll("[data-inbox-item]");
+        rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+      });
+
+      // A poll reshapes the list (row B's title changes → new nav array) before
+      // the keypress. This is what used to null the hovered index and strand
+      // j/k back at the top.
+      apiMocks.issuesList.mockResolvedValue([issueA, { ...issueB, title: "Sync row B (updated)" }, issueC]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Sync row B (updated)");
+      });
+
+      // j must continue from the hovered row (index 1) → index 2, not jump to
+      // the top of the list.
+      await act(async () => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+      });
+      expect(selectedRowIndex()).toBe(2);
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-3001",
+      title: "Pin row A",
+      lastActivityAt: new Date(base + 3000),
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-3002",
+      title: "Pin row B",
+      lastActivityAt: new Date(base + 2000),
+    });
+    const issueC = createIssue({
+      id: "issue-c",
+      identifier: "PAP-3003",
+      title: "Pin row C",
+      lastActivityAt: new Date(base + 1000),
+    });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Collapse each displayed row to its A/B/C identity so we can assert order.
+    const orderOf = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].flatMap((row) => {
+        const text = row.textContent ?? "";
+        if (text.includes("Pin row A")) return ["A"];
+        if (text.includes("Pin row B")) return ["B"];
+        if (text.includes("Pin row C")) return ["C"];
+        return [];
+      });
+
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    const setVisibility = (state: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    };
+    let nowValue = base + 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => nowValue);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // A poll makes row C the most-recently-active: the fresh sort is now [C, A, B].
+      apiMocks.issuesList.mockResolvedValue([
+        { ...issueA },
+        { ...issueB },
+        { ...issueC, lastActivityAt: new Date(base + 9000) },
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Pin row C");
+      });
+
+      // No attention boundary has fired, so the displayed order is held, not reshuffled.
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // The tab is hidden long enough to lose attention, then regains focus: that
+      // visibility boundary is a commit point, so the inbox adopts the fresh order.
+      await act(async () => {
+        setVisibility("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      nowValue += 31_000;
+      await act(async () => {
+        setVisibility("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await vi.waitFor(() => {
+        expect(orderOf()).toEqual(["C", "A", "B"]);
+      });
+    } finally {
+      nowSpy.mockRestore();
+      if (visibilityDescriptor) {
+        Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      } else {
+        setVisibility("visible");
+      }
+      act(() => {
+        root.unmount();
+      });
+    }
   });
 
   it("keeps other issue archive controls enabled while one archive is pending", async () => {
@@ -468,7 +1248,7 @@ describe("Inbox toolbar", () => {
     });
 
     const initialArchiveButtons = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Dismiss from inbox"]'),
+      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Archive"]'),
     );
     expect(initialArchiveButtons.length).toBeGreaterThanOrEqual(2);
 
@@ -483,7 +1263,7 @@ describe("Inbox toolbar", () => {
     });
 
     const remainingArchiveButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Dismiss from inbox"]',
+      'button[aria-label="Archive"]',
     );
     expect(remainingArchiveButton).not.toBeNull();
     expect(remainingArchiveButton?.disabled).toBe(false);
@@ -504,6 +1284,104 @@ describe("Inbox toolbar", () => {
       root.unmount();
     });
   });
+
+  it("keeps a successful archive hidden when stale query data arrives", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Archived inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Archived inbox row");
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-a");
+      expect(container.textContent).not.toContain("Archived inbox row");
+    });
+
+    await act(async () => {
+      queryClient.setQueriesData<Issue[]>(
+        { queryKey: ["issues", "company-1", "mine-by-me"] },
+        [archivedIssue],
+      );
+    });
+
+    expect(container.textContent).not.toContain("Archived inbox row");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("restores a locally hidden archive when undo is pressed", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Undoable inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+
+      const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      await act(async () => {
+        archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain("Undoable inbox row");
+        expect(queryClient.isMutating()).toBe(0);
+      });
+
+      await act(async () => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "u", bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(apiMocks.unarchiveFromInbox).toHaveBeenCalledWith("issue-a");
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+    } finally {
+      act(() => root.unmount());
+    }
+  });
 });
 
 describe("FailedRunInboxRow", () => {
@@ -520,51 +1398,7 @@ describe("FailedRunInboxRow", () => {
 
   it("suppresses accent hover styling when selected", () => {
     const root = createRoot(container);
-    const run = {
-      id: "run-1",
-      companyId: "company-1",
-      agentId: "agent-1",
-      responsibleUserId: null,
-      invocationSource: "assignment",
-      triggerDetail: null,
-      status: "failed",
-      error: "boom",
-      wakeupRequestId: null,
-      exitCode: null,
-      signal: null,
-      usageJson: null,
-      resultJson: null,
-      sessionIdBefore: null,
-      sessionIdAfter: null,
-      logStore: null,
-      logRef: null,
-      logBytes: null,
-      logSha256: null,
-      logCompressed: false,
-      lastOutputAt: null,
-      lastOutputSeq: 0,
-      lastOutputStream: null,
-      lastOutputBytes: null,
-      errorCode: null,
-      externalRunId: null,
-      processPid: null,
-      processGroupId: null,
-      processStartedAt: null,
-      retryOfRunId: null,
-      processLossRetryCount: 0,
-      livenessState: null,
-      livenessReason: null,
-      continuationAttempt: 0,
-      lastUsefulActionAt: null,
-      nextAction: null,
-      stdoutExcerpt: null,
-      stderrExcerpt: null,
-      contextSnapshot: null,
-      startedAt: new Date("2026-03-11T00:00:00.000Z"),
-      finishedAt: null,
-      createdAt: new Date("2026-03-11T00:00:00.000Z"),
-      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
-    } as const;
+    const run = createFailedRun();
 
     act(() => {
       root.render(

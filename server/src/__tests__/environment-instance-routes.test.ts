@@ -14,6 +14,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -48,6 +49,7 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForEphemeralAccess: vi.fn(),
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
+  replaceSecretRefsForInstanceTarget: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -71,6 +73,9 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),
@@ -116,7 +121,9 @@ function createApp(actor: Record<string, unknown>) {
     (req as typeof req & { actor: Record<string, unknown> }).actor = actor;
     next();
   });
-  app.use("/api", environmentRoutes({} as never));
+  app.use("/api", environmentRoutes({
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+  } as never));
   app.use(errorHandler);
   return app;
 }
@@ -126,6 +133,8 @@ describe("environment instance routes", () => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.create.mockReset();
@@ -145,6 +154,8 @@ describe("environment instance routes", () => {
     mockSecretService.resolveSecretValueForEphemeralAccess.mockReset();
     mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockResolvedValue([]);
 
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     mockEnvironmentService.list.mockResolvedValue([]);
@@ -252,16 +263,19 @@ describe("environment instance routes", () => {
         driver: "local",
         status: "active",
       }),
+      undefined,
+      { db: expect.anything() },
     );
-    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
-      "company-1",
+    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
       { targetType: "environment", targetId: "env-1" },
       [],
+      { db: expect.anything() },
     );
     expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
       {},
+      { db: expect.anything() },
     );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
     expect(mockLogActivity.mock.calls.map((call) => call[1].companyId)).toEqual(["company-1", "company-2"]);
@@ -295,11 +309,16 @@ describe("environment instance routes", () => {
       envVars,
       expect.objectContaining({ fieldPath: "envVars" }),
     );
-    expect(mockEnvironmentService.create).toHaveBeenCalledWith(expect.objectContaining({ envVars }));
+    expect(mockEnvironmentService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ envVars }),
+      undefined,
+      { db: expect.anything() },
+    );
     expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
       envVars,
+      { db: expect.anything() },
     );
   });
 

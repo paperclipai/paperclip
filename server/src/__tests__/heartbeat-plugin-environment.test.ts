@@ -43,7 +43,6 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
-  listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));
 
@@ -213,6 +212,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       companyId,
       environmentId,
       executionWorkspaceId: expect.any(String),
+      executionWorkspaceSettings: null,
       issueId: null,
       config: { template: "base" },
       agentId,
@@ -674,6 +674,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       companyId,
       environmentId: newEnvironmentId,
       executionWorkspaceId: expect.any(String),
+      executionWorkspaceSettings: { mode: "shared_workspace" },
       issueId,
       config: { template: "new" },
       agentId,

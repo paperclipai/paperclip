@@ -1,6 +1,6 @@
 ---
 name: index-refresh
-description: Use when an operation issue is an index refresh — typically the hourly index-refresh routine. Rebuild `wiki/index.md` so each entry has a tight, scannable one-line summary and the catalog tracks the actual contents of `wiki/`. Resolve drift between the index and recent log activity, but do not edit page content.
+description: Use when an LLM Wiki operation issue requests an index refresh. Rebuild `wiki/index.md` from the actual wiki tree, reconcile missing/deleted entries, and log counts without editing page bodies.
 ---
 
 # Index Refresh

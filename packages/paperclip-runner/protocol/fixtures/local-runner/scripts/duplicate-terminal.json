@@ -1,0 +1,45 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "duplicate-terminal",
+  "steps": [
+    {
+      "kind": "result",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "done",
+        "summary": "The duplicate terminal guard accepted one result.",
+        "completionClaim": {
+          "contractRevision": "local_runner-contract-v1",
+          "objectiveSatisfied": true,
+          "criteria": [],
+          "remainingWork": []
+        },
+        "evidence": [],
+        "verification": [],
+        "attentionRequests": [],
+        "artifacts": []
+      }
+    },
+    { "kind": "event", "event_type": "turn.completed", "payload": {} },
+    { "kind": "event", "event_type": "session.closed", "payload": {} },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done"
+      }
+    },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "failed",
+        "runTerminalState": "failed",
+        "reportedWorkDisposition": "yielded"
+      }
+    },
+    { "kind": "exit", "code": 0 }
+  ]
+}

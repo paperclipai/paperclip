@@ -45,6 +45,15 @@ export interface AgentOrgChainHealth {
   firstInvalidAncestor: AgentInvalidOrgChainAncestor | null;
   invalidAncestors: AgentInvalidOrgChainAncestor[];
   repairGuidance: string | null;
+  /**
+   * Paused ancestors of a non-paused agent. A paused manager does not make
+   * the chain invalid (the agent stays invokable), but escalations routed to
+   * it dead-letter: assigned work never runs and nothing surfaces it. This is
+   * a warning, not a block.
+   */
+  pausedAncestors?: AgentInvalidOrgChainAncestor[];
+  /** Human-readable warning when the escalation path routes to a paused agent. */
+  escalationWarning?: string | null;
 }
 
 export interface AgentWorkEligibility {
@@ -121,6 +130,7 @@ export function getAgentOrgChainHealth(input: {
   const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
   const fullChain: AgentOrgChainEntry[] = [chainEntry(input.agent, 0, "self")];
   const invalidAncestors: AgentInvalidOrgChainAncestor[] = [];
+  const pausedAncestors: AgentInvalidOrgChainAncestor[] = [];
   const seen = new Set<string>([input.agent.id]);
 
   let current = input.agent;
@@ -171,12 +181,25 @@ export function getAgentOrgChainHealth(input: {
     if (parent.status === "terminated") {
       invalidAncestors.push(invalidAncestor(parent));
     }
+    if (parent.status === "paused") {
+      pausedAncestors.push({ id: parent.id, name: parent.name, status: "paused" });
+    }
 
     current = parent;
     depth += 1;
   }
 
   const firstInvalidAncestor = invalidAncestors[0] ?? null;
+  // Only warn for agents that can themselves receive and run work: a paused,
+  // terminated, or unknown-status agent's escalation path is moot until it is
+  // invokable again. Allowlist on purpose — a denylist complement would treat
+  // unrecognized statuses as workable and warn misleadingly.
+  const agentCanWork = isAgentStatusInvokable(input.agent.status);
+  const firstPausedAncestor = pausedAncestors[0] ?? null;
+  const escalationWarning = agentCanWork && firstPausedAncestor
+    ? `Escalations from ${input.agent.name} route to paused agent ${firstPausedAncestor.name}. ` +
+      `Work assigned to a paused agent never runs; unpause ${firstPausedAncestor.name} or change who this agent reports to.`
+    : null;
   return {
     status: firstInvalidAncestor ? "invalid_org_chain" : "healthy",
     reason: firstInvalidAncestor
@@ -192,6 +215,8 @@ export function getAgentOrgChainHealth(input: {
     repairGuidance: firstInvalidAncestor
       ? buildRepairGuidance(input.agent, firstInvalidAncestor)
       : null,
+    pausedAncestors,
+    escalationWarning,
   };
 }
 

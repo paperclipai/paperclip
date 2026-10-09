@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
@@ -47,14 +47,36 @@ import {
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
   notFound,
   unauthorized,
-  badRequest
+  badRequest,
+  tooManyRequests
 } from "../errors.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
+import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
+
+/**
+ * Floor: when the hosting operator hides the Instance Access surface
+ * (`instance.access` in PAPERCLIP_HIDDEN_SETTINGS), instance-admin user
+ * management is rejected alongside it — user administration then belongs to
+ * the operator's own control plane. Applies to the Access page's reads too;
+ * invite and company-membership routes are company-scoped and stay open.
+ */
+function assertAccessAdminVisible() {
+  if (getHiddenSettings().has("instance.access")) {
+    throw forbidden("Instance user administration is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
+    });
+  }
+}
+import {
+  createInviteRateLimiter,
+  type InviteRateLimiter,
+} from "../services/invite-rate-limit.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { collectReachableInterfaceHosts } from "../runtime-api.js";
@@ -71,7 +93,7 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
-import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
+import { agentJoinGrantsFromDefaults as standardAgentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
@@ -90,23 +112,18 @@ function hashToken(token: string) {
 }
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";
-const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
-const INVITE_TOKEN_SUFFIX_LENGTH = 8;
+// 32 random bytes = 256 bits of entropy, base64url-encoded (43 chars). The
+// invite token is public (anyone with the link can GET/accept the invite), so
+// it must not be brute-forceable. The previous 8-char base36 suffix carried only
+// ~41 bits, which is online-enumerable. The token is stored hashed (sha256) in
+// `invites.tokenHash`; the raw value is only returned once on creation.
+const INVITE_TOKEN_ENTROPY_BYTES = 32;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 
-type MemberGrantPayload = {
-  permissionKey: PermissionKey;
-  scope?: Record<string, unknown> | null;
-};
-
-function createInviteToken() {
-  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
-  let suffix = "";
-  for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
-    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
-  }
+export function createInviteToken() {
+  const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
   return `${INVITE_TOKEN_PREFIX}${suffix}`;
 }
 
@@ -134,6 +151,13 @@ function requestBaseUrl(req: Request) {
     req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
   if (!host) return "";
   return `${proto}://${host}`;
+}
+
+function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
+  const runtimeOrigin = runtimeCanonicalOrigin();
+  if (runtimeOrigin) return runtimeOrigin;
+  if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
+  return requestBaseUrl(req);
 }
 
 function buildCliAuthApprovalPath(challengeId: string, token: string) {
@@ -647,6 +671,17 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
   );
 }
 
+export function assertLegacyAgentInviteAdapterType(
+  adapterType: string | null | undefined,
+) {
+  if (adapterType === "paperclip_runner") {
+    throw badRequest(
+      "Paperclip Runner is not available through agent invite onboarding.",
+      { code: "paperclip_runner_invite_onboarding_disabled" },
+    );
+  }
+}
+
 function summarizeSecretForLog(
   value: unknown
 ): { present: true; length: number; sha256Prefix: string } | null {
@@ -1070,15 +1105,15 @@ function toInviteSummaryResponse(
     | string
     | {
       name: string | null;
-      brandColor: string | null;
       logoUrl: string | null;
     }
-    | null = null
+    | null = null,
+  authPublicBaseUrl?: string
 ) {
   const companyInfo = typeof company === "string"
-    ? { name: company, brandColor: null, logoUrl: null }
+    ? { name: company, logoUrl: null }
     : company;
-  const baseUrl = requestBaseUrl(req);
+  const baseUrl = resolveBaseUrl(req, authPublicBaseUrl);
   const invitePath = `/invite/${token}`;
   const onboardingPath = `/api/invites/${token}/onboarding`;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
@@ -1089,7 +1124,6 @@ function toInviteSummaryResponse(
     companyId: invite.companyId,
     companyName: companyInfo?.name ?? null,
     companyLogoUrl: companyInfo?.logoUrl ?? null,
-    companyBrandColor: companyInfo?.brandColor ?? null,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     humanRole: extractInviteHumanRole(invite),
@@ -1631,7 +1665,13 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_private_host_not_allowed",
       level: "warn",
       message: `Onboarding host "${apiHost}" is not in allowed hostnames for authenticated/private mode.`,
-      hint: `Run pnpm paperclipai allowed-hostname ${apiHost}`
+      // `apiHost` comes from the request base URL, so a requester controls it.
+      // Never put that value into the guidance command. An operator or an agent
+      // can paste the command into a shell, and that outer shell evaluates a
+      // metacharacter span in the host before any CLI receives argv. A
+      // direct-exec form such as `npx` does not stop the outer shell. Emit
+      // a static `<host>` placeholder and keep the raw host in the message only.
+      hint: `Run npx paperclipai allowed-hostname <host>`
     });
   }
 
@@ -1693,9 +1733,10 @@ function buildInviteOnboardingManifest(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
   }
 ) {
-  const baseUrl = requestBaseUrl(req);
+  const baseUrl = resolveBaseUrl(req, opts.authPublicBaseUrl);
   const skillPath = `/api/invites/${token}/skills/paperclip`;
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
@@ -1724,7 +1765,8 @@ function buildInviteOnboardingManifest(
       req,
       token,
       invite,
-      opts.companyName ?? null
+      opts.companyName ?? null,
+      opts.authPublicBaseUrl
     ),
     onboarding: {
       instructions:
@@ -1763,7 +1805,7 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
+            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `npx paperclipai allowed-hostname <host>`."
             : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
       },
       textInstructions: {
@@ -1791,6 +1833,7 @@ export function buildInviteOnboardingTextDocument(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
   }
 ) {
   const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
@@ -1985,7 +2028,7 @@ export function buildInviteOnboardingTextDocument(
 
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
-      - pnpm paperclipai allowed-hostname <host>
+      - npx paperclipai allowed-hostname <host>
       - then restart Paperclip and retry onboarding.
     `);
   }
@@ -2203,22 +2246,13 @@ function grantsFromDefaults(
 }
 
 export function agentJoinGrantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  agentId: string,
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
-  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    return grants;
-  }
-  return [
-    ...grants,
-    {
-      permissionKey: "tasks:assign",
-      scope: null
-    }
-  ];
+  return standardAgentJoinGrantsFromDefaults(defaultsPayload, agentId);
 }
 
 type JoinRequestManagerCandidate = {
@@ -2598,6 +2632,8 @@ export function accessRoutes(
     bindHost: string;
     allowedHostnames: string[];
     inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
+    inviteRateLimiter?: InviteRateLimiter;
+    authPublicBaseUrl?: string;
   }
 ) {
   const router = Router();
@@ -2607,6 +2643,37 @@ export function accessRoutes(
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
+
+  // Per-IP rate limit for the public, unauthenticated invite-token endpoints
+  // (`/invites/:token*`). The token is looked up by hash, so without a limit the
+  // token space would be online-enumerable. Applied as a router-level middleware
+  // so every current and future `/invites/:token` sub-route is covered.
+  //
+  // The key is deliberately NOT `requestIp()`: that helper prefers the
+  // client-supplied `X-Forwarded-For` header (fine for log/audit fields,
+  // but trivially spoofable as a rate-limit key — rotating fake XFF values
+  // would mint a fresh budget per request). `req.ip` honors Express's
+  // `trust proxy` setting (configured from TRUST_PROXY in app.ts, default:
+  // trust nothing), so it is the socket's remote address unless the
+  // operator explicitly trusts a proxy — an unforgeable key either way.
+  const inviteRateLimiter = opts.inviteRateLimiter ?? createInviteRateLimiter();
+  router.use("/invites/:token", (req, res, next) => {
+    const result = inviteRateLimiter.consume(
+      req.ip || req.socket?.remoteAddress || "unknown",
+    );
+    res.setHeader("X-RateLimit-Limit", String(result.limit));
+    res.setHeader("X-RateLimit-Remaining", String(result.remaining));
+    if (!result.allowed) {
+      res.setHeader("Retry-After", String(result.retryAfterSeconds));
+      next(
+        tooManyRequests("Too many invite requests", {
+          retryAfterSeconds: result.retryAfterSeconds,
+        }),
+      );
+      return;
+    }
+    next();
+  });
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -2716,12 +2783,13 @@ export function accessRoutes(
     const token =
       typeof req.query.token === "string" ? req.query.token.trim() : "";
     if (!id || !token) throw notFound("CLI auth challenge not found");
+    if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
     const challenge = await boardAuth.describeCliAuthChallenge(id, token);
     if (!challenge) throw notFound("CLI auth challenge not found");
 
     const isSignedInBoardUser =
       req.actor.type === "board" &&
-      (req.actor.source === "session" || isLocalImplicit(req)) &&
+      (req.actor.source === "session" || req.actor.source === "cloud_tenant" || isLocalImplicit(req)) &&
       Boolean(req.actor.userId);
     const canApprove =
       isSignedInBoardUser &&
@@ -2748,6 +2816,7 @@ export function accessRoutes(
       ) {
         throw unauthorized("Sign in before approving CLI access");
       }
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
 
       const userId = req.actor.userId ?? "local-board";
       const approved = await boardAuth.approveCliAuthChallenge(
@@ -2795,6 +2864,7 @@ export function accessRoutes(
     validate(resolveCliAuthChallengeSchema),
     async (req, res) => {
       const id = (req.params.id as string).trim();
+      if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
       const cancelled = await boardAuth.cancelCliAuthChallenge(id, req.body.token);
       res.json({
         status: cancelled.status,
@@ -3003,6 +3073,15 @@ export function accessRoutes(
       input.allowedJoinTypes === "agent"
         ? null
         : input.humanRole ?? "operator";
+    if (effectiveHumanRole) {
+      // An invitation must not delegate the membership powers its creator lacks.
+      const roleGrants = grantsForHumanRole(effectiveHumanRole);
+      for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+        if (roleGrants.some((grant) => grant.permissionKey === permissionKey)) {
+          await assertCompanyPermission(input.req, input.companyId, permissionKey);
+        }
+      }
+    }
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,
@@ -3127,17 +3206,15 @@ export function accessRoutes(
     inviteToken: string | null = null,
   ): Promise<{
     name: string | null;
-    brandColor: string | null;
     logoAssetId: string | null;
     logoUrl: string | null;
   }> {
     if (!companyId) {
-      return { name: null, brandColor: null, logoAssetId: null, logoUrl: null };
+      return { name: null, logoAssetId: null, logoUrl: null };
     }
     const company = await db
       .select({
         name: companies.name,
-        brandColor: companies.brandColor,
         logoAssetId: companyLogos.assetId,
       })
       .from(companies)
@@ -3169,7 +3246,6 @@ export function accessRoutes(
 
     return {
       name: company?.name ?? null,
-      brandColor: company?.brandColor ?? null,
       logoAssetId: company?.logoAssetId ?? null,
       logoUrl,
     };
@@ -3281,7 +3357,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3335,7 +3412,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3375,7 +3453,7 @@ export function accessRoutes(
         )
       : null;
     res.json({
-      ...toInviteSummaryResponse(req, token, invite, companyBranding),
+      ...toInviteSummaryResponse(req, token, invite, companyBranding, opts.authPublicBaseUrl),
       invitedByUserName: inviterName,
       joinRequestStatus: inviteJoinRequest?.status ?? null,
       joinRequestType: inviteJoinRequest?.requestType ?? null,
@@ -3688,6 +3766,11 @@ export function accessRoutes(
           })
         );
       const adapterType = req.body.adapterType ?? null;
+      if (requestType === "agent") {
+        assertLegacyAgentInviteAdapterType(
+          adapterType ?? existingJoinRequestForInvite?.adapterType ?? null,
+        );
+      }
       if (
         inviteAlreadyAccepted &&
         !canReplayHumanInviteAccept &&
@@ -4167,6 +4250,7 @@ export function accessRoutes(
           req.actor.userId ?? null
         );
       } else {
+        assertLegacyAgentInviteAdapterType(existing.adapterType);
         const existingAgents = await agents.list(companyId);
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
         if (!managerId) {
@@ -4213,7 +4297,8 @@ export function accessRoutes(
           "active"
         );
         const grants = agentJoinGrantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null
+          invite.defaultsPayload as Record<string, unknown> | null,
+          created.id,
         );
         await access.setPrincipalGrants(
           companyId,
@@ -4425,69 +4510,7 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        return tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: new Date(),
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-      });
+      const updated = await access.updateMember(companyId, memberId, req.body);
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {
@@ -4522,98 +4545,16 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        const now = new Date();
-        const updatedMember = await tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: now,
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-
-        await tx
-          .delete(principalPermissionGrants)
-          .where(
-            and(
-              eq(principalPermissionGrants.companyId, companyId),
-              eq(principalPermissionGrants.principalType, existing.principalType),
-              eq(principalPermissionGrants.principalId, existing.principalId),
-            ),
-          );
-
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
-        if (grants.length > 0) {
-          await tx.insert(principalPermissionGrants).values(
-            grants.map((grant) => ({
-              companyId,
-              principalType: existing.principalType,
-              principalId: existing.principalId,
-              permissionKey: grant.permissionKey,
-              scope: grant.scope ?? null,
-              grantedByUserId: req.actor.userId ?? null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          );
-        }
-
-        return updatedMember;
-      });
+      const updated = await access.updateMemberAndPermissions(
+        companyId,
+        memberId,
+        {
+          membershipRole: req.body.membershipRole,
+          status: req.body.status,
+          grants: req.body.grants ?? [],
+        },
+        req.actor.userId ?? null,
+      );
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {
@@ -4719,6 +4660,7 @@ export function accessRoutes(
     "/admin/users/:userId/promote-instance-admin",
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       const result = await access.promoteInstanceAdmin(userId);
       res.status(201).json(result);
@@ -4727,6 +4669,7 @@ export function accessRoutes(
 
   router.get("/admin/users", async (req, res) => {
     await assertInstanceAdmin(req);
+    assertAccessAdminVisible();
     const query = searchAdminUsersQuerySchema.parse(req.query);
     const needle = query.query.trim().toLowerCase();
     const users = await db
@@ -4789,6 +4732,7 @@ export function accessRoutes(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       const removed = await access.demoteInstanceAdmin(userId);
       if (!removed) throw notFound("Instance admin role not found");
@@ -4798,6 +4742,7 @@ export function accessRoutes(
 
   router.get("/admin/users/:userId/company-access", async (req, res) => {
     await assertInstanceAdmin(req);
+    assertAccessAdminVisible();
     const userId = req.params.userId as string;
     res.json(await loadUserCompanyAccessResponse(db, access, userId));
   });
@@ -4807,6 +4752,7 @@ export function accessRoutes(
     validate(updateUserCompanyAccessSchema),
     async (req, res) => {
       await assertInstanceAdmin(req);
+      assertAccessAdminVisible();
       const userId = req.params.userId as string;
       await access.setUserCompanyAccess(
         userId,

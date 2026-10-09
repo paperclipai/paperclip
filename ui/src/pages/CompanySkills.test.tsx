@@ -1,11 +1,21 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import {
+  DiscoveryGrid,
+  InstallPreviewDialog,
+  SkillDetailPage,
+  buildDiscoveryCards,
+  defaultInstallAgentSelection,
+  getSkillVersionDiffSelection,
+  resolveDiscoveryTab,
+  withDiscoveryTab,
+  skillDetailBreadcrumbs,
+} from "./CompanySkills";
+import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -40,7 +50,7 @@ vi.mock("@/components/ui/dialog", () => ({
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
-  DropdownMenuContent: () => null,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) => (
     <button type="button" onClick={onSelect}>{children}</button>
   ),
@@ -50,6 +60,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     <button type="button" onClick={onSelect}>{children}</button>
   ),
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSub: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuSubContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
@@ -90,11 +103,9 @@ let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
   });
-  await result;
 }
 
 afterEach(() => {
@@ -111,6 +122,9 @@ function makeVersion(revisionNumber: number, content: string): CompanySkillVersi
     companySkillId: "skill-1",
     revisionNumber,
     label: null,
+    releaseId: null,
+    releaseName: null,
+    releasedAt: null,
     fileInventory: [
       {
         path: "SKILL.md",
@@ -226,6 +240,96 @@ async function renderSkillDetail(
   return container;
 }
 
+async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof DiscoveryGrid>> = {}) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+
+  await act(async () => {
+    root?.render(
+      <DiscoveryGrid
+        tab="installed"
+        categories={[]}
+        categoryTotal={0}
+        activeCategory={null}
+        onCategoryChange={vi.fn()}
+        search=""
+        onSearchChange={vi.fn()}
+        sort="agents"
+        onSortChange={vi.fn()}
+        cards={[]}
+        onOpenCard={vi.fn()}
+        loading={false}
+        error={null}
+        totalCount={0}
+        onCreate={vi.fn()}
+        onImport={vi.fn()}
+        onImportFromProject={vi.fn()}
+        onBrowseDiscover={vi.fn()}
+        onScan={vi.fn()}
+        scanPending={false}
+        scanStatus={null}
+        {...props}
+      />,
+    );
+  });
+
+  return container;
+}
+
+const projectFolderResult: FolderListResult = {
+  kind: "skill",
+  allCount: 1,
+  unfiledCount: 0,
+  folders: [
+    {
+      id: "projects-root",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: null,
+      name: "Projects",
+      slug: "projects",
+      systemKey: "projects",
+      path: "projects",
+      depth: 1,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+    {
+      id: "project-folder",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: "projects-root",
+      name: "Acme",
+      slug: "acme",
+      systemKey: "project:project-1",
+      path: "projects/acme",
+      depth: 2,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+  ],
+};
+
+function projectFolderGridProps() {
+  return {
+    folderResult: projectFolderResult,
+    onFolderSelect: vi.fn(),
+    onCreateFolder: vi.fn(),
+    onCreateFolderIn: vi.fn(),
+    onRenameFolder: vi.fn(),
+    onEditFolder: vi.fn(),
+    onMoveFolder: vi.fn(),
+    onDeleteFolder: vi.fn(),
+  } satisfies Partial<ComponentProps<typeof DiscoveryGrid>>;
+}
+
 function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
@@ -268,6 +372,392 @@ describe("getSkillVersionDiffSelection", () => {
   });
 });
 
+describe("DiscoveryGrid IA presentation", () => {
+  it("makes the search scope explicit for Installed and Discover", async () => {
+    let node = await renderDiscoveryGrid({ tab: "installed" });
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
+
+    root?.unmount();
+    container?.remove();
+    root = null;
+    container = null;
+
+    node = await renderDiscoveryGrid({ tab: "discover" });
+    expect(node.querySelector('input[aria-label="Search discoverable skills"]')).not.toBeNull();
+    expect(node.textContent).not.toContain("Catalog");
+  });
+
+  it("distinguishes installation from agent enablement on cards", async () => {
+    const installedCard = {
+      key: "installed",
+      skillId: "skill-installed",
+      catalogRef: null,
+      name: "Installed Skill",
+      slug: "installed",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+      sourceBadge: "local" as const,
+      sourceLabel: "Local workspace",
+    };
+    const availableCard = {
+      ...installedCard,
+      key: "available",
+      skillId: null,
+      catalogRef: "catalog-available",
+      name: "Available Skill",
+      slug: "available",
+      installed: false,
+      sourceBadge: "catalog" as const,
+      sourceLabel: "Paperclip catalog",
+    };
+    const node = await renderDiscoveryGrid({
+      tab: "discover",
+      cards: [installedCard, availableCard],
+      totalCount: 2,
+    });
+
+    expect(node.textContent).toContain("Not enabled for any agents");
+    expect(node.textContent).toContain("Available to install");
+    expect(node.textContent).toContain("Local workspace");
+    expect(node.textContent).toContain("Paperclip catalog");
+  });
+
+  it("uses the create callback from the New menu and empty state", async () => {
+    const onCreate = vi.fn();
+    const node = await renderDiscoveryGrid({ onCreate });
+
+    await click(buttonsNamed(node, "Create new skill")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
+
+    expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses one Discover action instead of Catalog or Bundled navigation", async () => {
+    const onBrowseDiscover = vi.fn();
+    const node = await renderDiscoveryGrid({ onBrowseDiscover });
+
+    await click(buttonsNamed(node, "Discover skills")[0] as HTMLButtonElement);
+
+    expect(onBrowseDiscover).toHaveBeenCalledOnce();
+    expect(node.textContent).not.toContain("Browse catalog");
+    expect(node.textContent).not.toContain("Bundled tab");
+  });
+
+  it("keeps folder creation in the compact rail control", async () => {
+    const props = projectFolderGridProps();
+    const node = await renderDiscoveryGrid(props);
+    const compactCreateButton = node.querySelector<HTMLButtonElement>('button[title="New folder"]');
+
+    expect(buttonsNamed(node, "New folder")).toHaveLength(0);
+    expect(compactCreateButton).not.toBeNull();
+
+    await click(compactCreateButton!);
+
+    expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
+    expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("removes category and folder browse rails while keeping search available", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      categories: [{ slug: "design", count: 1 }],
+      categoryTotal: 1,
+      showBrowseRails: false,
+    });
+
+    expect(node.querySelector('nav[aria-label="Skill folders"]')).toBeNull();
+    expect(node.querySelector("aside")).toBeNull();
+    expect(node.textContent).not.toContain("Browse by category");
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
+  });
+
+  it("omits bulk selection when its entry point is not supplied", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      onToggleSelectMode: undefined,
+    });
+
+    expect(buttonsNamed(node, "Select")).toHaveLength(0);
+  });
+
+  it("keeps folder creation available when no folder rail exists", async () => {
+    const onCreateFolder = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderResult: { ...projectFolderResult, folders: [] },
+      onCreateFolder,
+    });
+    const createButton = buttonsNamed(node, "New folder")[0] as HTMLButtonElement;
+
+    expect(createButton).toBeDefined();
+
+    await click(createButton);
+
+    expect(onCreateFolder).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes only the project represented by the active project folder", async () => {
+    const onScan = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderSelection: "project-folder",
+      onScan,
+    });
+    const refreshButton = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh Acme project skills"]',
+    );
+
+    expect(refreshButton).not.toBeNull();
+
+    await click(refreshButton!);
+
+    expect(onScan).toHaveBeenCalledOnce();
+    expect(onScan).toHaveBeenCalledWith("project-1");
+  });
+
+  it("does not open a skill when keyboard-activating its actions button", async () => {
+    const onOpenCard = vi.fn();
+    const card = {
+      key: "demo-skill",
+      skillId: "skill-1",
+      folderId: null,
+      catalogRef: null,
+      name: "Demo Skill",
+      slug: "demo-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      onOpenCard,
+      folderResult: { kind: "skill", folders: [], allCount: 1, unfiledCount: 1 },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+    });
+    const actionsButton = node.querySelector<HTMLButtonElement>('[aria-label="More actions for Demo Skill"]');
+
+    await act(async () => {
+      actionsButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onOpenCard).not.toHaveBeenCalled();
+  });
+
+  it("does not offer move actions for skills in the bundled folder", async () => {
+    const card = {
+      key: "bundled-skill",
+      skillId: "skill-1",
+      folderId: "bundled-folder",
+      catalogRef: null,
+      name: "Bundled Skill",
+      slug: "bundled-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      selectMode: true,
+      folderResult: {
+        kind: "skill",
+        folders: [{
+          id: "bundled-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "Bundled",
+          slug: "bundled",
+          systemKey: "bundled",
+          path: "bundled",
+          depth: 1,
+          color: null,
+          position: 0,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+          updatedAt: new Date("2026-01-01T00:00:00Z"),
+          itemCount: 1,
+        }],
+        allCount: 1,
+        unfiledCount: 0,
+      },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onOpenMoveCard: vi.fn(),
+    });
+
+    expect(node.querySelector('[aria-label="More actions for Bundled Skill"]')).toBeNull();
+    expect(node.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(node.textContent).not.toContain("Move to folder");
+  });
+});
+
+describe("skills discovery tab routing", () => {
+  it("opens the folder-first installed view when the URL has no tab", () => {
+    expect(resolveDiscoveryTab(null)).toBe("installed");
+    expect(resolveDiscoveryTab("all")).toBe("discover");
+    expect(resolveDiscoveryTab("catalog")).toBe("discover");
+    expect(resolveDiscoveryTab("bundled")).toBe("discover");
+  });
+
+  it("uses Discover as the only explicit discovery URL and Installed as the default", () => {
+    const discoverParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "discover");
+    expect(discoverParams.toString()).toBe("tab=discover");
+
+    const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
+    expect(installedParams.toString()).toBe("folder=my");
+  });
+});
+
+describe("skills discovery card reconciliation", () => {
+  it("renders one installed card when installed and catalog data share a key", () => {
+    const installed = {
+      id: "installed-new",
+      key: "PaperclipAI/Review",
+      name: "Review",
+      slug: "review",
+      updatedAt: new Date("2026-08-30T00:00:00Z"),
+      folderId: null,
+      authorName: "Paperclip",
+      packageVersion: "2.0.0",
+      sourceRef: null,
+      tagline: null,
+      description: "Installed copy",
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      attachedAgentCount: 2,
+      forkCount: 0,
+      catalogKind: "optional",
+      forkedFromSkillId: null,
+      sourceBadge: "catalog",
+      sourceLabel: "Paperclip",
+    } as unknown as CompanySkillListItem;
+    const olderDuplicate = {
+      ...installed,
+      id: "installed-old",
+      key: "paperclipai/review",
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+    } as CompanySkillListItem;
+    const catalog = {
+      id: "catalog-review",
+      key: "paperclipai/review",
+      name: "Review",
+      slug: "review",
+      kind: "optional",
+      category: "quality",
+      description: "Catalog copy",
+      packageName: "Paperclip",
+      packageVersion: "2.0.0",
+      tags: [],
+    } as unknown as CatalogSkill;
+
+    const cards = buildDiscoveryCards([olderDuplicate, installed], [catalog, { ...catalog, id: "catalog-duplicate" }]);
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      skillId: "installed-new",
+      catalogRef: "catalog-review",
+      installed: true,
+      agentCount: 2,
+      sourceKind: "optional",
+    });
+  });
+});
+
+describe("skill detail breadcrumbs", () => {
+  it("links each folder ancestor back to the installed folder view", () => {
+    const folders: FolderListResult = {
+      kind: "skill",
+      allCount: 1,
+      unfiledCount: 0,
+      folders: [
+        {
+          id: "my-root",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "My Skills",
+          slug: "my",
+          systemKey: "my",
+          path: "my",
+          depth: 1,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+        {
+          id: "review-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: "my-root",
+          name: "Review",
+          slug: "review",
+          systemKey: null,
+          path: "my/review",
+          depth: 2,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+      ],
+    };
+
+    expect(skillDetailBreadcrumbs({ name: "Deal with PR", folderId: "review-folder" }, folders)).toEqual([
+      { label: "Skills", href: "/skills" },
+      { label: "My Skills", href: "/skills?folder=my-root" },
+      { label: "Review", href: "/skills?folder=review-folder" },
+      { label: "Deal with PR" },
+    ]);
+  });
+});
+
+describe("skillStudioNewRoute", () => {
+  it("builds a direct fork draft URL for a specific skill", () => {
+    expect(skillStudioNewRoute("skill 1")).toBe("/skills/studio/new?forkFrom=skill%201");
+  });
+});
+
 describe("SkillDetailPage versions tab", () => {
   it("opens per-row version diffs for newest and oldest revisions", async () => {
     const v1 = makeVersion(1, "# Demo Skill\n\nFirst line");
@@ -299,6 +789,61 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
+  it("humanizes the server folder path on a cold detail render", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, { folderPath: "engineering/code-review" }),
+    });
+
+    expect(node.textContent).toContain("Organization / Engineering / Code Review");
+  });
+
+  it("shows a direct make-a-copy action for read-only GitHub skills", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onFork = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        editable: false,
+        editableReason: "Remote GitHub skills are read-only. Fork or import locally to edit them.",
+        sourceBadge: "github",
+        sourceLabel: "GitHub",
+        sourceType: "github",
+      }),
+      onFork,
+    });
+
+    expect(node.textContent).not.toContain("Fork or import locally");
+
+    const forkButton = buttonsNamed(node, "Make a copy")[0] as HTMLButtonElement;
+    expect(forkButton).toBeTruthy();
+
+    await click(forkButton);
+
+    expect(onFork).toHaveBeenCalledOnce();
+  });
+
+  it("renders long source paths in full so they can wrap inside the sidebar", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const longSourcePath = "/srv/paperclip/home/paperclipai/paperclip/.agents/skills/prepare-pr/SKILL.md";
+    const node = await renderSkillDetail([v1], {
+      activeTab: "agents",
+      detail: makeDetail(v1, {
+        sourcePath: longSourcePath,
+        sourceLocator: null,
+      }),
+    });
+
+    const sourceValue = Array.from(node.querySelectorAll("div")).find((element) =>
+      element.textContent === longSourcePath,
+    );
+
+    expect(sourceValue).toBeTruthy();
+    expect(sourceValue?.className).toContain("[overflow-wrap:anywhere]");
+    expect(node.textContent).not.toContain("...");
+  });
+
   it("saves normalized category edits from the settings dialog", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onUpdateSettings = vi.fn();
@@ -318,12 +863,12 @@ describe("SkillDetailPage settings", () => {
 
     expect(categoryInput.value).toBe("engineering");
 
-    await inputValue(categoryInput, " Memory, review, memory ,,");
+    await inputValue(categoryInput, " Memory Tools, review, memory tools ,,");
     await click(saveButton);
 
     expect(onUpdateSettings).toHaveBeenCalledWith({
       sharingScope: "company",
-      categories: ["memory", "review"],
+      categories: ["Memory Tools", "review"],
     });
   });
 
@@ -433,5 +978,149 @@ describe("SkillDetailPage settings", () => {
     });
 
     expect((node.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe("memory");
+  });
+});
+
+describe("install-time agent enablement", () => {
+  const agentOptions = [
+    { id: "agent-ceo", name: "CEO", adapterType: "claude_local", supportsSkills: true, required: false, icon: null, paused: false },
+    { id: "agent-designer", name: "Designer", adapterType: "claude_local", supportsSkills: true, required: false, icon: null, paused: true },
+    { id: "agent-gateway", name: "Gateway", adapterType: "openclaw_gateway", supportsSkills: false, required: false, icon: null, paused: false },
+    { id: "agent-builtin", name: "Summarizer", adapterType: "claude_local", supportsSkills: true, required: true, icon: null, paused: false },
+  ];
+
+  function makeCatalogSkill(): CatalogSkill {
+    return {
+      id: "catalog-1",
+      key: "paperclipai/bundled/product/wireframe",
+      kind: "bundled",
+      category: "product",
+      slug: "wireframe",
+      name: "wireframe",
+      description: "Draw wireframes.",
+      path: "catalog/bundled/product/wireframe",
+      entrypoint: "SKILL.md",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      defaultInstall: false,
+      recommendedForRoles: [],
+      requires: [],
+      tags: [],
+      files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 128, sha256: "abc" }],
+      contentHash: "sha256:abc",
+    };
+  }
+
+  it("defaults to every skills-capable, non-required agent", () => {
+    expect(defaultInstallAgentSelection(agentOptions)).toEqual(new Set(["agent-ceo", "agent-designer"]));
+  });
+
+  it("passes the default agent selection through onConfirm for fresh installs", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="install"
+          agents={agentOptions}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).toContain("Enable for agents");
+
+    await click(buttonsNamed(node, "Install skill")[0] as HTMLButtonElement);
+
+    expect(onConfirm).toHaveBeenCalledWith({
+      slug: "wireframe",
+      force: false,
+      agentIds: expect.arrayContaining(["agent-ceo", "agent-designer"]),
+    });
+    expect(onConfirm.mock.calls[0][0].agentIds).toHaveLength(2);
+  });
+
+  it("keeps tracking the agent default when agents load after the dialog opens", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const renderDialog = (agents: typeof agentOptions) =>
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="install"
+          agents={agents}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+
+    // Dialog opens before the agents query resolves: nothing to select yet.
+    await act(async () => renderDialog([]));
+
+    // The agents arrive later; the untouched selection must pick them up.
+    await act(async () => renderDialog(agentOptions));
+
+    await click(buttonsNamed(container as ParentNode, "Install skill")[0] as HTMLButtonElement);
+
+    expect(onConfirm.mock.calls[0][0].agentIds).toHaveLength(2);
+  });
+
+  it("skips agent enablement for updates and replacements", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="update"
+          agents={agentOptions}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).not.toContain("Enable for agents");
+
+    await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
+
+    expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
   });
 });

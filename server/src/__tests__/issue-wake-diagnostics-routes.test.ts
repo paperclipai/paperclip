@@ -267,6 +267,19 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
+  it.each(["chat_task_completed", "issue_execution_deferred"])("preserves the known %s reason without exposing completion payloads", async reason => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const issue = await seedIssue(db, { companyId: company.id, title: "Completion target", assigneeAgentId: agent.id });
+    await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "automation", reason, status: "deferred_issue_execution",
+      payload: { issueId: issue.id, chatCompletionDeliveryIds: ["PRIVATE_DELIVERY_ID"] } });
+    const res = await request(createApp(db, boardActor(company))).get(`/api/issues/${issue.id}/diagnostics/wakes`);
+    expect(res.status).toBe(200);
+    expect(res.body.events).toMatchObject([{ reason, status: "deferred_issue_execution", source: "automation" }]);
+    expect(JSON.stringify(res.body)).not.toContain("PRIVATE_DELIVERY_ID");
+  });
+
   it("returns null diagnosis for an unblocked issue with no wake history", async () => {
     const company = await seedCompany(db);
     const project = await seedProject(db, company.id, "Core");
@@ -445,7 +458,9 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     const res = await request(createApp(db, agentActor(companyB, agentB, runB!.id)))
       .get(`/api/issues/${issueA.id}/diagnostics/wakes`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Uniform 404 so cross-tenant ids are indistinguishable from missing ones.
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
   });
 
   it("projects activity records and wake failures without raw blobs", async () => {

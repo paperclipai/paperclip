@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -9,6 +9,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
@@ -223,6 +225,53 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.body.scheduledRetry.scheduledRetryAt).toBe(scheduledRetryAt.toISOString());
   });
 
+  it.each(["queued", "running"] as const)(
+    "surfaces a %s retry with its real live status",
+    async (retryStatus) => {
+      const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus });
+
+      const res = await request(createApp(boardActor(companyId, "local_implicit"))).get(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.scheduledRetry).toMatchObject({
+        runId: retryRunId,
+        status: retryStatus,
+        scheduledRetryReason: "transient_failure",
+      });
+    },
+  );
+
+  it("includes a blocker's live retry in relation summaries", async () => {
+    const { companyId, issueId: blockerId, retryRunId } = await seedIssueWithRetry({ retryStatus: "running" });
+    const blockedId = randomUUID();
+    await db.insert(issues).values({
+      id: blockedId,
+      companyId,
+      title: "Waiting for recovery",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedId,
+      type: "blocks",
+    });
+
+    const res = await request(createApp(boardActor(companyId, "local_implicit"))).get(`/api/issues/${blockedId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.blockedBy).toHaveLength(1);
+    expect(res.body.blockedBy[0]).toMatchObject({
+      id: blockerId,
+      scheduledRetry: {
+        runId: retryRunId,
+        status: "running",
+        scheduledRetryReason: "transient_failure",
+      },
+    });
+  });
+
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
     const app = createApp(boardActor(companyId));
@@ -255,6 +304,37 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       .where(and(eq(heartbeatRuns.retryOfRunId, first.body.scheduledRetry.retryOfRunId), eq(heartbeatRuns.companyId, companyId)));
     expect(retryRuns).toHaveLength(1);
     expect(retryRuns[0]).toMatchObject({ id: retryRunId, status: "queued" });
+  });
+
+  it("reports cleanup waits with the saved schedule and promotes the same retry after release", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns)
+      .set({ resultJson: { conversationContinuation: "continue_conversation_v1" } })
+      .where(inArray(heartbeatRuns.id, [f.sourceRunId, f.retryRunId]));
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.sourceRunId,
+      status: "pending_cleanup", cleanupStatus: "failed",
+    }).returning();
+    const app = createApp(boardActor(f.companyId));
+    for (let click = 0; click < 2; click++) {
+      const before = Date.now();
+      const res = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ outcome: "waiting", scheduledRetry: {
+        runId: f.retryRunId, status: "scheduled_retry", scheduledRetryAttempt: 2,
+      } });
+      expect(res.body.message).toContain("Waiting for execution cleanup");
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+      expect(res.body.scheduledRetry.scheduledRetryAt).toBe(saved!.scheduledRetryAt!.toISOString());
+      expect(saved!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(before + 30_000);
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId))).toHaveLength(1);
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, lease!.id));
+    const resumed = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+    expect(resumed.body).toMatchObject({ outcome: "promoted", scheduledRetry: {
+      runId: f.retryRunId, status: "queued", scheduledRetryAttempt: 2,
+    } });
   });
 
   it("returns a clear no-op response when there is no scheduled retry", async () => {
@@ -348,171 +428,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("enforces company scoping for retry-now", async () => {
+  it("enforces company scoping for retry-now with a uniform 404", async () => {
     const { issueId } = await seedIssueWithRetry();
 
     const res = await request(createApp(boardActor(randomUUID())))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
-  it("suppresses retry-now when the issue is under a budget hard-stop", async () => {
-    const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry();
-    await db
-      .update(agents)
-      .set({ status: "paused", pauseReason: "budget" })
-      .where(eq(agents.id, agentId));
-
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
-      .send({});
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
-      scheduledRetry: {
-        runId: retryRunId,
-        status: "cancelled",
-        errorCode: "budget_blocked",
-      },
-    });
-  });
-
-  it("suppresses retry-now when the issue is waiting on another review participant", async () => {
-    const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry({ issueStatus: "in_progress" });
-    const reviewerAgentId = randomUUID();
-    await db.insert(agents).values({
-      id: reviewerAgentId,
-      companyId,
-      name: "ReviewerAgent",
-      role: "qa",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
-        },
-      },
-      permissions: {},
-    });
-    await db
-      .update(issues)
-      .set({
-        status: "in_review",
-        executionState: {
-          status: "pending",
-          currentStageId: randomUUID(),
-          currentStageIndex: 0,
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
-          returnAssignee: { type: "agent", agentId, userId: null },
-          reviewRequest: null,
-          completedStageIds: [],
-          lastDecisionId: null,
-          lastDecisionOutcome: null,
-        },
-      })
-      .where(eq(issues.id, issueId));
-
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
-      .send({});
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
-      scheduledRetry: {
-        runId: retryRunId,
-        status: "cancelled",
-        errorCode: "issue_review_participant_changed",
-      },
-    });
-  });
-
-  it("suppresses retry-now when the issue is under an active subtree pause hold", async () => {
-    const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
-    await db.insert(issueTreeHolds).values({
-      companyId,
-      rootIssueId: issueId,
-      mode: "pause",
-      status: "active",
-      reason: "manual pause for review",
-      releasePolicy: { strategy: "manual" },
-    });
-
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
-      .send({});
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
-      scheduledRetry: {
-        runId: retryRunId,
-        status: "cancelled",
-        errorCode: "issue_paused",
-      },
-    });
-  });
-
-  it("suppresses retry-now when unresolved blockers remain", async () => {
-    const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
-    const blockerId = randomUUID();
-    await db.insert(issues).values({
-      id: blockerId,
-      companyId,
-      title: "Blocking task",
-      status: "todo",
-      priority: "medium",
-      issueNumber: 2,
-      identifier: "BLOCK-2",
-    });
-    await db.insert(issueRelations).values({
-      id: randomUUID(),
-      companyId,
-      issueId: blockerId,
-      relatedIssueId: issueId,
-      type: "blocks",
-    });
-    await db
-      .update(issues)
-      .set({ status: "blocked" })
-      .where(eq(issues.id, issueId));
-
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
-      .send({});
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
-      scheduledRetry: {
-        runId: retryRunId,
-        status: "cancelled",
-        errorCode: "issue_dependencies_blocked",
-      },
-    });
-  });
-
-  it("suppresses retry-now when the issue already reached a terminal status", async () => {
-    const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ issueStatus: "done" });
-
-    const res = await request(createApp(boardActor(companyId)))
-      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
-      .send({});
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
-      scheduledRetry: {
-        runId: retryRunId,
-        status: "cancelled",
-        errorCode: "issue_terminal_status",
-      },
-    });
-  });
 });

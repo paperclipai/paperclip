@@ -18,6 +18,7 @@ export type ServerGitInfo =
       available: true;
       fullSha: string;
       shortSha: string;
+      branchName: string | null;
       subject: string;
       committedAt: string | null;
       localChanges: ServerGitLocalChanges;

@@ -12,6 +12,7 @@ vi.mock("../adapters/registry.js", async (orig) => ({
 }));
 
 vi.mock("./adapter-plugin-store.js", () => ({
+  listAdapterPlugins: () => [],
   setAdapterDisabled: (type: string, disabled: boolean) => setAdapterDisabled(type, disabled),
 }));
 

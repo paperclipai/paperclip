@@ -16,6 +16,7 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -53,6 +54,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(routines);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -257,5 +259,24 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
+  });
+
+  it("removes routines before deleting company agents", async () => {
+    const { agentId, companyId } = await seedFixture();
+    const routineId = randomUUID();
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily cleanup",
+      assigneeAgentId: agentId,
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(routines).where(eq(routines.id, routineId))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 });

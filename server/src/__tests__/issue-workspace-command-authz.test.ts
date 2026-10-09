@@ -81,6 +81,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/execution-workspaces.js", () => ({
     executionWorkspaceService: () => mockExecutionWorkspaceService,
+    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
   }));
 
   vi.doMock("../services/feedback.js", () => ({
@@ -105,10 +106,13 @@ function registerRouteMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
@@ -259,7 +263,7 @@ describe("issue workspace command authorization", () => {
     }));
   });
 
-  it("rejects agent callers that create issue workspace provision commands", async () => {
+  it("rejects agent callers that create issue workspace runtime provision commands", async () => {
     const app = await createApp({
       type: "agent",
       agentId: "agent-1",
@@ -275,7 +279,7 @@ describe("issue workspace command authorization", () => {
         executionWorkspaceSettings: {
           workspaceStrategy: {
             type: "git_worktree",
-            provisionCommand: "touch /tmp/paperclip-rce",
+            runtimeProvisionCommand: "touch /tmp/paperclip-rce",
           },
         },
       });

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebar } from "../context/SidebarContext";
 
@@ -8,7 +9,7 @@ export interface PageTabItem {
 }
 
 interface PageTabBarProps {
-  items: PageTabItem[];
+  items: readonly PageTabItem[];
   value?: string;
   onValueChange?: (value: string) => void;
   align?: "center" | "start";
@@ -19,17 +20,21 @@ export function PageTabBar({ items, value, onValueChange, align = "center" }: Pa
 
   if (isMobile && value !== undefined && onValueChange) {
     return (
-      <select
-        value={value}
-        onChange={(e) => onValueChange(e.target.value)}
-        className="h-9 rounded-md border border-border bg-background px-2 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
-      >
-        {items.map((item) => (
-          <option key={item.value} value={item.value}>
-            {typeof item.label === "string" ? item.label : item.value}
-          </option>
-        ))}
-      </select>
+      <div className="relative inline-flex">
+        <select
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="h-9 appearance-none rounded-md border border-border bg-background pl-3 pr-9 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
+          aria-label="Page section"
+        >
+          {items.map((item) => (
+            <option key={item.value} value={item.value}>
+              {typeof item.label === "string" ? item.label : item.value}
+            </option>
+          ))}
+        </select>
+        <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      </div>
     );
   }
 
