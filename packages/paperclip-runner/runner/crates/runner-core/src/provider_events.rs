@@ -669,6 +669,51 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
+/// Optional, closed per-turn billing authority; legacy placeholder cost stays unknown.
+fn provider_usage_billing(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    let object = value.as_object()?;
+    if object.len() != 9
+        || value["schema"] != "paperclip.usage.billing/v1"
+        || value["source"] != "provider_reported"
+        || value["biller"] != "openrouter"
+        || value["currency"] != "USD"
+    {
+        return None;
+    }
+    let complete = value["complete"].as_bool()?;
+    let requests = value["requestCount"].as_u64()?;
+    let reported = value["reportedRequestCount"].as_u64()?;
+    let amount = value["amountUsd"].as_f64()?;
+    let exact = value["amountUsdExact"].as_str()?;
+    let (whole, fraction) = exact.split_once('.')?;
+    if whole.is_empty()
+        || whole.len() > 7
+        || (whole.len() > 1 && whole.starts_with('0'))
+        || !whole.bytes().all(|c| c.is_ascii_digit())
+        || fraction.len() != 9
+        || !fraction.bytes().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let units = whole
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(fraction.parse::<u64>().ok()?)?;
+    if requests > 9_007_199_254_740_991
+        || reported > requests
+        || (complete && reported != requests)
+        || units > 1_000_000_000_000_000
+        || !amount.is_finite()
+        || amount != units as f64 / 1_000_000_000.0
+        || (reported == 0 && amount != 0.0)
+    {
+        return None;
+    }
+    Some(value.clone())
+}
+
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
@@ -1144,6 +1189,7 @@ fn normalize_acpx_status(
 ) -> Vec<NormalizedProviderEvent> {
     let tag = string(payload.get("tag"));
     if tag == "usage_update" {
+        let billing = provider_usage_billing(payload.get("billing"));
         let breakdown = payload.get("breakdown").unwrap_or(&Value::Null);
         let cache_read = breakdown
             .get("cachedReadTokens")
@@ -1208,23 +1254,24 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": billing.as_ref().map(|receipt| receipt["amountUsd"].clone()).unwrap_or(json!(0.0)),
         });
+        let mut usage_payload = json!({
+            "provider": "acpx",
+            "model": payload.get("model").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
+            "providerSessionId": Value::Null,
+            "providerRequestId": Value::Null,
+            "cumulative": cumulative,
+            "runDeltaAvailable": run_delta_available,
+            "runDelta": run_delta,
+        });
+        if let Some(billing) = billing {
+            usage_payload["billing"] = billing;
+        }
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
-            payload: json!({
-                "provider": "acpx",
-                "model": payload
-                    .get("model")
-                    .and_then(Value::as_str)
-                    .map(|value| bounded_text(value, 240)),
-                "providerSessionId": Value::Null,
-                "providerRequestId": Value::Null,
-                "cumulative": cumulative,
-                "runDeltaAvailable": run_delta_available,
-                "runDelta": run_delta,
-            }),
+            payload: usage_payload,
         }];
     }
     if tag == "current_mode_update" {

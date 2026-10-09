@@ -1,7 +1,7 @@
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
-import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
+import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, isHermesCommittedHumanInputCompletion, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
 
 import type {
@@ -87,6 +87,7 @@ import {
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage } from "./usage-accounting.js";
+import type { ProviderUsageBilling } from "../../contracts/usage-billing.js";
 
 const MAX_BUFFERED_EVENTS = 512;
 const TERMINAL_EVENT_RESERVE = 3;
@@ -764,6 +765,7 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string;
   } | null = null;
   #usage: Record<string, unknown> | null = null;
+  #accountingUsageEvent: PrpEvent | null = null;
   #assistantText = "";
   #assistantMessageId: string | null = null;
   #closed = false;
@@ -884,15 +886,21 @@ class CodexAcpxSession implements HarnessSession {
     }
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#activeTurnId = turnId;
+    this.#accountingUsageEvent = null;
     this.#turnControls.begin(turnId);
     this.#assistantText = "";
     this.#assistantMessageId = null;
     this.#emit("turn.submitted", { text: input.message.text }, { turnId });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
+    let billing: ProviderUsageBilling | undefined;
     const extensions = bindAcpxExtensionTurn({
       adapter: createAcpxProfileExtensionAdapter(this.#agent, {
         workspacePath: this.#input.workingDirectory, sessionId: this.#host.identity().backendSessionId, turnId,
+        onBilling: receipt => {
+          if (billing) throw new Error("Hermes supplied more than one terminal billing receipt");
+          billing = receipt;
+        },
       }),
       active: () => this.#activeTurnId === turnId && !this.#closingStarted,
       sessionId: this.#host.identity().backendSessionId,
@@ -937,7 +945,7 @@ class CodexAcpxSession implements HarnessSession {
       );
       throw error;
     }
-    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore, activity, toolEvidence);
+    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore, activity, toolEvidence, () => billing);
     this.#activePump = pump;
     void pump
       .finally(() => {
@@ -1245,6 +1253,10 @@ class CodexAcpxSession implements HarnessSession {
     return this.#usage === null ? null : structuredClone(this.#usage);
   }
 
+  async accountingUsageEvent(): Promise<PrpEvent | null> {
+    return this.#accountingUsageEvent === null ? null : structuredClone(this.#accountingUsageEvent);
+  }
+
   async transcript(): Promise<HarnessTranscriptSnapshot> {
     return {
       schema: "paperclip-runner/harness-transcript/v1",
@@ -1442,18 +1454,25 @@ class CodexAcpxSession implements HarnessSession {
       .catch(() => undefined);
   }
 
-  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence): Promise<void> {
+  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence, readBilling?: () => ProviderUsageBilling | undefined): Promise<void> {
     try {
       let index = 0;
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
       const normalizeMessage = this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+      const committedQuestions: AcpRuntimeEvent[] = [];
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
-        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
+        const normalized = normalizeMessage(normalizeToolEvent(projected));
+        if (this.#agent === "hermes" && isHermesCommittedHumanInputCompletion(normalized, this.#input.runId)) {
+          if (committedQuestions.length >= 16) throw new Error("Hermes committed question limit exceeded");
+          committedQuestions.push(normalized);
+          continue;
+        }
+        this.#mapRuntimeEvent(normalized, turnId, ++index);
       }
       const result = await turn.result;
       await drainExtensions();
@@ -1463,12 +1482,13 @@ class CodexAcpxSession implements HarnessSession {
         const notice = activity.usageNotice?.(usageBefore, usageAfter, turn.requestId, turnId);
         if (notice) { validateAcpxRichEvent(notice); this.#emit(notice.eventType, notice.payload, { turnId, itemId: notice.itemId }); }
       } catch { /* Partial native diagnostics are optional, never settlement authority. */ }
-      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent);
+      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent, readBilling?.());
       if (receipt) {
         this.#mapRuntimeEvent(receipt as unknown as AcpRuntimeEvent, turnId, ++index);
         const estimate = acpxUsageEstimateNotice(receipt, `${turnId}:usage-estimate`);
         if (estimate) { validateAcpxRichEvent(estimate); this.#emit(estimate.eventType, estimate.payload, { turnId, itemId: estimate.itemId }); }
       }
+      for (const event of committedQuestions) this.#mapRuntimeEvent(event, turnId, ++index);
       this.#cancelPendingRuntimeRequests("provider turn settled", turnId);
       if (this.#terminalTurns.has(turnId)) return;
       if (result.status === "completed") {
@@ -1994,6 +2014,8 @@ class CodexAcpxSession implements HarnessSession {
       return false;
     }
     this.#sourceSequence = sourceSeq;
+    if (eventType === "item.completed" && payload.kind === "usage")
+      this.#accountingUsageEvent = structuredClone(event);
     this.#retainTranscriptEvent(event);
     return true;
   }

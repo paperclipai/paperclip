@@ -223,6 +223,7 @@ jobs:
       needs_runner_typescript: ${{ steps.catalog.outputs.needs_runner_typescript }}
       needs_native_binaries: ${{ steps.catalog.outputs.needs_native_binaries }}
       needs_remote_provider_pack: ${{ steps.catalog.outputs.needs_remote_provider_pack }}
+      candidate_providers: ${{ steps.catalog.outputs.candidate_providers }}
       execution_ids: ${{ steps.catalog.outputs.execution_ids }}
       max_parallel: ${{ steps.catalog.outputs.max_parallel }}
       daytona_image_content_id: ${{ steps.daytona_image_content.outputs.content_id }}
@@ -270,12 +271,6 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-
-      # The v2 contract fails closed unless every Docker FROM is digest-pinned,
-      # and hashes those exact base references into the immutable image tag.
-      - name: Compute Daytona image content ID with pinned bases
-        id: daytona_image_content
-        run: echo "content_id=$(pnpm --silent test:e2e:runner:image-id)" >> "$GITHUB_OUTPUT"
 
       - name: Validate selectors and emit matrix
         id: catalog
@@ -341,6 +336,7 @@ jobs:
             echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
             echo "needs_native_binaries=$(jq -r '[.include[] | select((.profileId | startswith("runner-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
             echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
+            echo "candidate_providers=$(jq -r 'if any(.include[]; .qualificationCandidate == "hermes") then "hermes" else "" end' <<< "$catalog_json")"
             echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
           } >> "$GITHUB_OUTPUT"
           if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
@@ -359,6 +355,14 @@ jobs:
             MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
           fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
+
+      # Exact optional provider assets are part of the immutable image identity.
+      # Selecting assets never promotes a pending profile to qualified.
+      - name: Compute Daytona image content ID with pinned bases
+        id: daytona_image_content
+        env:
+          CANDIDATE_PROVIDERS: ${{ steps.catalog.outputs.candidate_providers }}
+        run: echo "content_id=$(pnpm --silent test:e2e:runner:image-id "--candidate-providers=$CANDIDATE_PROVIDERS")" >> "$GITHUB_OUTPUT"
 
   daytona_image:
     name: Publish verified Daytona image
@@ -433,6 +437,7 @@ jobs:
           IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+          CANDIDATE_PROVIDERS: ${{ needs.catalog.outputs.candidate_providers }}
           TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -467,6 +472,7 @@ jobs:
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}" \
+              --build-arg "PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=${CANDIDATE_PROVIDERS}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
               "${cache_args[@]}" \
@@ -705,21 +711,28 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
-          path: runner-e2e-build
+          path: ${{ runner.temp }}/runner-e2e-build
 
       - name: Verify and restore shared TypeScript outputs
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         run: |
           set -euo pipefail
           (
-            cd runner-e2e-build
+            cd "$RUNNER_TEMP/runner-e2e-build"
             sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
           )
           tar --extract --gzip \
-            --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
+            --file "$RUNNER_TEMP/runner-e2e-build/runner-e2e-build-bundle.tar.gz" \
             --directory "$GITHUB_WORKSPACE"
           test -d packages/paperclip-eval-kernel/dist
           test -d packages/paperclip-runner/dist
+
+      - name: Provision pinned Hermes assets before assembling the remote pack
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true' && needs.catalog.outputs.candidate_providers == 'hermes'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-venv
+          bash tests/runner-e2e/provision-hermes-linux.sh
 
       - name: Assemble native remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
@@ -728,7 +741,8 @@ jobs:
           # content ID. Matching that revision lets remote execution reuse the
           # verified pack already installed in the immutable image.
           PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
-        run: node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack
+          CANDIDATE_PROVIDERS: ${{ needs.catalog.outputs.candidate_providers }}
+        run: node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack "--candidate-providers=$CANDIDATE_PROVIDERS"
 
       - name: Package verified remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
@@ -890,6 +904,13 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
+      - name: Provision pinned Hermes before the paid local test
+        if: matrix.environmentId == 'local' && matrix.qualificationCandidate == 'hermes'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-venv bubblewrap
+          bash tests/runner-e2e/provision-hermes-linux.sh
+
       - name: Install checksum-verified Grok executable
         if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')
         run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok
@@ -899,14 +920,14 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
-          path: runner-e2e-build
+          path: ${{ runner.temp }}/runner-e2e-build
 
       - name: Download immutable remote provider pack
         if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_remote_provider_pack.outputs.provider_pack_artifact_name }}
-          path: runner-e2e-provider-pack
+          path: ${{ runner.temp }}/runner-e2e-provider-pack
 
       - name: Verify and restore campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
@@ -916,11 +937,11 @@ jobs:
         run: |
           set -euo pipefail
           (
-            cd runner-e2e-build
+            cd "$RUNNER_TEMP/runner-e2e-build"
             sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
           )
           tar --extract --gzip \
-            --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
+            --file "$RUNNER_TEMP/runner-e2e-build/runner-e2e-build-bundle.tar.gz" \
             --directory "$GITHUB_WORKSPACE"
           test -d packages/paperclip-eval-kernel/dist
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
@@ -937,11 +958,11 @@ jobs:
         run: |
           set -euo pipefail
           (
-            cd runner-e2e-provider-pack
+            cd "$RUNNER_TEMP/runner-e2e-provider-pack"
             sha256sum --check runner-e2e-provider-pack.tar.gz.sha256
           )
           tar --extract --gzip \
-            --file runner-e2e-provider-pack/runner-e2e-provider-pack.tar.gz \
+            --file "$RUNNER_TEMP/runner-e2e-provider-pack/runner-e2e-provider-pack.tar.gz" \
             --directory "$GITHUB_WORKSPACE"
           jq -e \
             --arg revision "$IMAGE_SOURCE_REVISION" \
@@ -1058,11 +1079,13 @@ jobs:
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ matrix.credentialName == 'GEMINI_API_KEY' && secrets.GEMINI_API_KEY || '' }}
           GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
+          PAPERCLIP_RUNNER_E2E_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}

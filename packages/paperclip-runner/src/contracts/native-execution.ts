@@ -4,7 +4,7 @@ import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drive
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
 import { parseNativeUserAttachments, type NativeUserAttachment } from "./user-attachments.js";
-import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
+import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
 
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
@@ -296,6 +296,8 @@ export interface NativeSessionExecutionResult {
   nativeEventCount: number;
   highestContiguousSourceSeq: number;
   usage: Record<string, unknown> | null;
+  /** Optional v1 PRP usage fact retained after verified per-turn shutdown. */
+  settledUsageEvent?: PrpEvent;
   /** The active durable goal reached a safe turn boundary for run rollover. */
   goalRolloverRequired?: boolean;
 }

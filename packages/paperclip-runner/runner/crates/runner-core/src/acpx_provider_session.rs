@@ -1287,10 +1287,14 @@ fn bootstrap(
     )?;
     verify_initialize_response(&initialized, transport.process_id())?;
 
-    let opened = transport.request(
-        GeneratedAcpxSidecarCommand::SessionOpen,
-        session_open_params(config, &sidecar_tools),
-    )?;
+    let open_params = session_open_params(config, &sidecar_tools);
+    let opened = if config.agent == "hermes" {
+        // The pinned Python closure is verified and privately copied before
+        // native initialization. This also applies to per-turn restoration.
+        transport.open_session(open_params, Duration::from_secs(60))?
+    } else {
+        transport.request(GeneratedAcpxSidecarCommand::SessionOpen, open_params)?
+    };
     let identity = verify_open_response(&opened, transport.process_id(), config)?;
     let turn_controls = verified_turn_controls(opened.get("turnControls"), &config.agent)?;
 

@@ -246,6 +246,8 @@ Shell variables take precedence over the local file. The recognized names are:
 - `KIMI_MODEL_API_KEY` (local-only pending Kimi CLI/ACP profiles)
 - `XAI_API_KEY` (local Grok API-key profile)
 - `GROK_AUTH_JSON` (local native Grok subscription profile)
+- `GEMINI_API_KEY` (Hermes Google API profile)
+- `AWS_BEARER_TOKEN_BEDROCK` (explicit Hermes Bedrock profile; use a short-lived token for the declared region)
 - `DAYTONA_API_KEY`
 - `CURSOR_AUTH_TOKEN` (extended Cursor candidate)
 - `COPILOT_GITHUB_TOKEN` (extended Copilot candidate)
@@ -1465,14 +1467,73 @@ immutable Daytona image; no private hooks or fixture database writes are used.
 
 ## Extended ACP harnesses (explicit only)
 
-`--suite extended-harnesses` declares 30 Product E2E cells: Cursor, Copilot,
-and Pi on local and Daytona, each exercising authenticated completion,
+`--suite extended-harnesses` declares 40 Product E2E cells: Cursor, Copilot,
+Pi and Hermes on local and Daytona, each exercising authenticated completion,
 question/answer continuation, revision-bound semantic plan approval, restart
 with pending input, and file edit plus independent byte validation. The file
 case uses a public project workspace so Daytona copy-back is graded too.
 These are candidate definitions, not a claim of provider qualification. Native
 provider-specific questions, plan decisions, restrictive permissions and steering
 need their separate conformance/qualification evidence.
+Hermes uses an existing managed OpenRouter connection through the ordinary
+connection fixture. It remains pending qualification; the native transport
+fixture does not substitute for these browser and remote workflows.
+The ten Hermes/OpenRouter cells default to 200-cent company and agent budgets and
+verify them through public reads before creating work. Before cleanup, every
+run, including a run that yields for human input, must have settled reported
+wire cost and healthy budget state. The per-run receipts are retained in
+`hermes-openrouter-workflow-settlement.json`; `api-state.json` also retains all
+selected runs. Extended-harnesses definition version 2 records this stronger
+oracle. Older behavioral passes do not prove this accounting requirement.
+Before launching, `PAPERCLIP_RUNNER_E2E_HERMES_BUDGET_CENTS` can lower both
+budgets to a whole number from 1 through 200 cents. Missing configuration keeps
+the 200-cent default; malformed, zero, and higher limits fail before credential
+handoff. The public setting can also come from `.env.runner-e2e.local`. It is
+validated before catalog construction and pinned into the child environment;
+explicit environment configuration takes precedence. This early step loads no
+credentials or other file settings. The campaign captures one immutable value
+for fixture creation, public budget readback, settlement health, and catalog
+definition identity. Every
+observed budget must match it exactly. A lower cap does not settle unknown
+charges or release a previous attempt's reservation. Definition versions 5
+(extended harnesses), 4 (Hermes API/Bedrock), and 8 (native interactions) record
+this bounded option, consistent settings capture and the Stop card receipt.
+Native answer receipts
+must also retain the original runner and normalized session identities.
+
+The credential-free native Stop fixture checks usage provenance on its durable
+PRP carrier before the cancelled terminal, including runner, session, run and
+turn identity. Informational notices are not part of the normalized lifecycle
+stream. This transport proof does not replace a paid browser campaign's charge
+settlement or process-cleanup checks.
+
+Native Stop leaves a versioned cancellation result on the expired question,
+with zero submitted answers. The browser fixture requires that exact receipt,
+the original card payload and company/task/run identity, and native cancellation
+evidence. A missing result or a result containing answers cannot pass. Historical
+failed campaigns keep their original machine grades after this oracle repair.
+
+Before loading local credentials, the launcher records the checked-out controller
+SHA and ref for every selected Hermes candidate, including API and Bedrock cells.
+It rejects tracked/untracked source changes or an explicit
+`PAPERCLIP_RUNNER_E2E_SOURCE_SHA` that differs from Git HEAD. The public
+`hermes-source-before-execution.json` receipt is retained in the campaign root,
+and the same source values reach result writers and prerequisite children.
+Detached checkouts record `HEAD` unless an explicitly matched target SHA supplies
+its ref. Read-only `--list` and `--matrix-json` discovery require no source
+admission or credentials. This receipt identifies the controller; runtime/image
+provenance and live behavior still require their independent checks.
+The paid workflow may restore its reviewed target lockfile: only an unstaged
+modification of the tracked `pnpm-lock.yaml` is allowed, and its complete bytes
+must match `PAPERCLIP_RUNNER_E2E_LOCK_SHA256`. The receipt records that approved
+digest and the actual working-tree cleanliness. Other edits remain rejected.
+
+When a Hermes cell is selected, the trusted workflow provisions its pinned
+Python closure on Linux before exposing credentials, and selects the same
+candidate assets for the image content identity, Docker build and remote
+provider pack. The workflow must be available on the default branch before
+dispatching a branch campaign; dispatching from a development branch remains
+forbidden. The asset selection leaves Hermes pending qualification.
 
 ```sh
 pnpm test:e2e:runner -- --list --suite extended-harnesses
@@ -1502,9 +1563,124 @@ materialized under the runner package, and build the TypeScript sidecar before
 local execution. Daytona additionally requires that branch's immutable Linux
 candidate image and the matching controller-owned provider pack described in
 [`docker/daytona-runner/README.md`](../../docker/daytona-runner/README.md).
+The explicit-only `hermes-api-connections` suite adds ten one-turn completion
+cells: managed OpenRouter, Anthropic, OpenAI, xAI and Google API accounts on
+local and Daytona. Select one exact execution ID. The October 7 authenticated
+catalog choices are pending inference qualification, and no production default
+changes. Each fixture creates its personal account through the public
+Connections API, removes agent credential overrides, and independently checks
+the native run's company/task/agent scope, responsible user, selected account,
+provider/method, native Hermes harness and requested/effective model. Missing or mismatched metadata
+fails even when the answer is correct. The report retains the checks alongside
+the ordinary completion, screenshot, token/cost and cleanup evidence.
+Each cell admits one attempt and configures the selected bounded company and agent budgets (200 cents by default).
+Public budget readback must pass before task creation. Unpriced model usage
+remains unknown; this configured limit is not an exact billing receipt.
+The OpenRouter cell additionally waits for its public run's reported wire cost
+to settle and checks that the company remains active and the agent idle with
+no pause reason before cleanup. Its separate settlement snapshot rejects missing
+price evidence, estimates and an unpriced budget pause even when the answer is
+correct. Other providers retain completion-only coverage.
+Before creating the task, public account readback must identify the selected
+connected personal account, its company and owner, and the authenticated caller.
+Both run attribution fields must match that independently recorded owner.
+The pre-turn owner receipt is retained; agreement between two run fields alone
+cannot establish the expected user.
+
+```sh
+pnpm test:e2e:runner -- --list --suite hermes-api-connections
+pnpm test:e2e:runner -- --id hermes-api-connections.runner-acpx-hermes-api-anthropic.local.hello-complete --max-automatic-retries 0
+```
+
+These cells prove API-account native completion only. Subscriptions, custom
+protocols, Bedrock, refresh/revocation, images and live controls need their own
+qualification. The selected candidate metadata drives pre-credential Hermes
+provisioning and image/provider-pack selection for every Hermes profile.
+
+The separate explicit-only `hermes-bedrock-connections` suite declares two
+pending one-turn cells, on local and Daytona, for
+`us.anthropic.claude-haiku-4-5-20251001-v1:0` in `us-east-1`.
+Supply `AWS_BEARER_TOKEN_BEDROCK` ephemerally to the launcher after verifying
+the runtime and AWS identity. This suite creates a personal managed connection
+with Bedrock routing and selects its returned grant explicitly; routed accounts
+do not become responsible-user provider defaults. Public readback before and
+after the task must match the region, protocol, authentication, model catalog
+and account owner. The native run must match the selected connection, grant,
+owner, Hermes harness and exact inference profile. Both selected bounded budget checks,
+the single-attempt rule and normal evidence/cleanup contracts also apply.
+This scope proves Bedrock completion only; it does not qualify credential
+refresh or make a local AWS run equivalent to Daytona. The paid GitHub workflow
+does not provision this short-lived credential; use the explicit CLI path.
+
+```sh
+pnpm test:e2e:runner -- --list --suite hermes-bedrock-connections
+pnpm test:e2e:runner -- --id hermes-bedrock-connections.runner-acpx-hermes-bedrock.local.hello-complete --max-automatic-retries 0
+```
+
+The explicit-only `hermes-native-interactions` suite declares question/reconnect
+cells on local and Daytona, plus a separate local native Stop cell. One native Hermes
+`clarify` call asks an ordered batch of single choice, multiple choice with a
+custom answer, and free text. The browser reloads while the original run remains
+active, checks the same durable request and complete form, then submits all
+answers through the production UI. A scoped, ordered native delivery receipt
+must contain the exact answers. A late duplicate submission must return HTTP
+409, and the terminal event history must retain exactly one delivery and one
+original succeeded run without a continuation. The final answer must contain
+the reviewer's undisclosed free text returned by the native callback; a
+semantic `request_human_input` call or a guessed completion cannot pass.
+
+This suite uses the same managed OpenRouter account/model, public bounded
+budgets, settled reported billing, pre-credential source admission and cleanup
+pipeline. It allows one attempt and records its harness source digest. Its
+browser-reconnect scope does not qualify controller restart, cancellation,
+Stop, subscriptions, or Daytona until each corresponding live check passes.
+Definition version 2 checks the question-only objective against the production
+file/document delivery guard before any live execution. The first version's
+comma-separated prohibition triggered a file-output requirement: its native
+callback/reconnect checks passed, but completion rejected and the run timed out.
+That failed attempt is retained. Standalone prohibitions clarify the same
+question-only task; the production delivery guard and positive file requirements
+remain in force.
+
+```sh
+pnpm test:e2e:runner -- --list --suite hermes-native-interactions
+pnpm test:e2e:runner -- --id hermes-native-interactions.runner-acpx-hermes.local.native-question-batch-reconnect --max-automatic-retries 0
+```
+
 The separate Runner Evals `extended-harnesses` campaign lives in the private
 `paperclip-evals` repository and grades semantic protocol behavior against the
 mock control plane. Neither suite substitutes for the other.
+
+### Hermes native image input (explicit-only)
+
+`hermes-image-input` declares one local and one Daytona `image-code-complete`
+cell. Its separate candidate profile uses `google/gemini-2.5-flash-lite` through
+the selected managed OpenRouter account. The public model catalog reports image
+input and tools; this metadata is preparation, not inference qualification.
+The existing DeepSeek profile remains text-only.
+
+The browser uploads a generated PNG in the ordinary task-creation flow. Its
+eight-character hexadecimal code is present only in pixels, absent from the
+prompt, filename and PNG text metadata. An exact native final response must
+contain that undisclosed code once. Public attachment metadata and a downloaded
+copy must match the independent source bytes, MIME type, size, company and task.
+The durable run history must contain native semantic completion and no file,
+OCR or image-analysis tool substitute. Explicit titles prevent an unrelated
+automatic title-generation operation from preceding the image turn.
+Version 2 requires every saved image check to pass before the overall result
+can pass. It evaluates this gate after collecting account and billing evidence,
+so wrong image bytes or forbidden tools cannot qualify on a correct final code.
+
+The suite reuses managed account attribution, pre-credential source/runtime
+admission, bounded company/agent budgets, per-run reported billing and cleanup.
+It admits one attempt with no automatic retry. Remote selection still requires
+the verified immutable image and authorized Daytona credential. Neither target
+is qualified by the fixture's unit tests or public model discovery.
+
+```sh
+pnpm test:e2e:runner -- --list --suite hermes-image-input
+pnpm test:e2e:runner -- --id hermes-image-input.runner-acpx-hermes-vision.local.image-code-complete --max-automatic-retries 0
+```
 
 The explicit-only `confirmation-replies` suite also includes `unanswered-question-return` for native Claude and Codex (three provider turns). The browser asks a saved color question, dismisses and reopens the fresh form, sends an unrelated message, verifies the reply while the original stays pending, reloads, reopens the history entry, submits Blue, and verifies the saved answer plus a later agent acknowledgement. After dismissing the fresh form and before and after reload, the history card is the only pending-question reminder; the composer has no duplicate pending-input badge. It checks that no tasks were created. Unique, UI-ready screenshots show each checkpoint; individual checks are included in the report. This is a bounded mechanical workflow check, not broader semantic answer-quality qualification.
 ## Direct blocker guidance
@@ -1732,3 +1908,20 @@ Private traces and database files must not be published. Unconfirmed cleanup
 always preserves recovery state regardless of this optional diagnostic flag.
 
 The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.
+
+The suite now declares three explicit cells: question/reconnect on local and
+Daytona, plus local `native-question-batch-stop`. The Stop cell uses the real
+browser composer control while the complete native question remains unanswered.
+It binds the cancellation response to the retained request and exact native turn,
+requires an audited run-only cancellation and an expired unanswerable card, and
+rejects a late answer with HTTP 409. One cancelled run must leave the task In
+Progress. A read-only PID/start-time journal captures the public per-turn owner
+and descendants before Stop and verifies retirement before and through cleanup.
+Its selected account/model and reported wire usage must settle with healthy
+company and agent budgets (200 cents by default). One attempt, zero retries, one provider turn.
+Remote Stop is deliberately excluded until its remote retirement observer exists;
+the release requirement remains pending.
+
+```sh
+pnpm test:e2e:runner -- --id hermes-native-interactions.runner-acpx-hermes.local.native-question-batch-stop --max-automatic-retries 0
+```

@@ -95,6 +95,45 @@ const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
+function runnerdCommandTimeoutMs(
+  type: string,
+  provider?: string,
+  acpxAgent?: string,
+): number {
+  // Session admission can copy the pinned Python tree and restore its native
+  // history. Leave room around the sidecar's 60 s open bound for PRP bootstrap.
+  // Subsequent turn execution, tool/control commands and stop retain their bounds.
+  return provider === "acpx"
+    && acpxAgent === "hermes"
+    && ["session.open", "runner.drain", "turn.start"].includes(type)
+      ? 75_000
+      : 30_000;
+}
+
+async function awaitRunnerdCommand(input: {
+  type: string;
+  command: () => { status: string; result?: unknown } | undefined;
+  throwIfFailed: () => void;
+  runnerHasExited: () => Promise<boolean>;
+  deadline: number;
+  timeoutPrefix: () => string;
+}): Promise<void> {
+  while (Date.now() < input.deadline) {
+    input.throwIfFailed();
+    const command = input.command();
+    if (command?.status === "completed") return;
+    if (command !== undefined && command.status !== "pending") {
+      throw new Error(
+        `PRP command ${input.type} ${command.status}: ${JSON.stringify(command.result)}`,
+      );
+    }
+    if (await input.runnerHasExited())
+      throw new Error(`runnerd exited while waiting for ${input.type}`);
+    await new Promise(resolveWait => setTimeout(resolveWait, 10));
+  }
+  throw new Error(`${input.timeoutPrefix()}: PRP command ${input.type} timed out`);
+}
+
 function readLocalProcessStartedAt(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
@@ -1795,6 +1834,7 @@ export function rehydrateRunnerdUsageNotification(
       // authority beside the counters so ACPX/managed driver projections and
       // durable replay cannot certify an incomplete delta as a free receipt.
       runDeltaComplete: rawParams.runDeltaAvailable === true,
+      ...(rawParams.billing === undefined ? {} : { billing: rawParams.billing }),
     },
   };
 }
@@ -5748,7 +5788,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #startTurn(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const turnStartTimeoutMs = this.options.turnStartTimeoutMs ?? 30_000;
+    const turnStartTimeoutMs = this.options.turnStartTimeoutMs
+      ?? runnerdCommandTimeoutMs(
+        "turn.start", this.options.provider, this.options.acpxAgent,
+      );
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
@@ -6003,29 +6046,25 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitCommand(
     type: string,
     commandId?: string,
-    deadline = Date.now() + 30_000,
+    deadline = Date.now() + runnerdCommandTimeoutMs(
+      type, this.options.provider, this.options.acpxAgent,
+    ),
   ): Promise<void> {
-    while (Date.now() < deadline) {
-      this.#throwIfFailed();
-      const command =
+    return awaitRunnerdCommand({
+      type,
+      deadline,
+      throwIfFailed: () => this.#throwIfFailed(),
+      runnerHasExited: () => this.#runnerHasExited(),
+      command: () =>
         commandId === undefined
           ? this.#core?.store.state.commands.find(
               (candidate) => candidate.type === type,
             )
-          : this.#core?.getCommand(commandId);
-      if (command?.status === "completed") return;
-      if (command !== undefined && command.status !== "pending") {
-        throw new Error(
-          `PRP command ${type} ${command.status}: ${JSON.stringify(command.result)}`,
-        );
-      }
-      if (await this.#runnerHasExited())
-        throw new Error(`runnerd exited while waiting for ${type}`);
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-    }
-    throw new Error(
-      `${this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode}: PRP command ${type} timed out`,
-    );
+          : this.#core?.getCommand(commandId),
+      timeoutPrefix: () => this.#startupComplete
+        ? "provider_transport_failed"
+        : this.#startupFailureCode,
+    });
   }
 
 
@@ -6933,6 +6972,8 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 });
 
 export const runnerdRecoveryInternals = Object.freeze({
+  runnerdCommandTimeoutMs,
+  awaitRunnerdCommand,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   readControlPlaneState,

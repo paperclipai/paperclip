@@ -5,6 +5,7 @@ import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./nativ
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
+import { HERMES_API_CONNECTION_BUDGET_CENTS, HERMES_NATIVE_INTERACTION_SUITE, HERMES_IMAGE_INPUT_SUITE, HERMES_IMAGE_INPUT_MODEL, hermesImageInputTask, hermesApiConnectionChoices, hermesApiConnectionDefinitionDigest, hermesBedrockConnectionChoice, hermesNativeQuestionTask, hermesNativeQuestionStopTask } from "./hermes-api-connections.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
@@ -174,11 +175,12 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "hermes";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
   ranking?: RunnerProfileFixture["ranking"];
+  managedConnectionRouting?: RunnerProfileFixture["managedConnectionRouting"];
 }): RunnerProfileFixture {
   return {
     ...input,
@@ -339,6 +341,11 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
 // defaults. Cursor has local/Daytona proof; Copilot and Pi remain pending.
 export const extendedHarnessProfiles: readonly RunnerProfileFixture[] = [
   nativeProfile({
+    id: "runner-acpx-hermes", label: "Runner Hermes (candidate)", provider: "acpx", acpxAgent: "hermes",
+    qualificationCandidate: "hermes", credential: "OPENROUTER_API_KEY", model: "deepseek/deepseek-v4-flash-0731",
+    modelQualification: { source: "candidate_runner_profile", qualificationId: "hermes:v2026.9.24:openrouter:pending" },
+  }),
+  nativeProfile({
     id: "runner-acpx-cursor", label: "Runner Cursor", provider: "acpx", acpxAgent: "cursor",
     qualificationCandidate: "cursor", credential: "CURSOR_AUTH_TOKEN",
     model: "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
@@ -355,6 +362,28 @@ export const extendedHarnessProfiles: readonly RunnerProfileFixture[] = [
     modelQualification: { source: "candidate_runner_profile", qualificationId: "pi:0.0.33:0.84.2:openrouter" },
   }),
 ];
+
+export const hermesApiConnectionProfiles: readonly RunnerProfileFixture[] = [
+  extendedHarnessProfiles.find(profile => profile.qualificationCandidate === "hermes")!,
+  ...hermesApiConnectionChoices.map(choice => nativeProfile({
+    id: `runner-acpx-hermes-api-${choice.provider}`, label: `Hermes ${choice.provider} API (candidate)`,
+    provider: "acpx", acpxAgent: "hermes", qualificationCandidate: "hermes",
+    credential: choice.credential, model: choice.model,
+    modelQualification: {
+      source: "candidate_runner_profile",
+      qualificationId: `hermes:v2026.9.24:${choice.provider}:api:catalog-2026-10-07:pending`,
+    },
+  })),
+];
+
+/** Region-bound Bedrock credentials enter only through a managed connection. */
+export const hermesBedrockConnectionProfile = nativeProfile({
+  id: "runner-acpx-hermes-bedrock", label: "Hermes Bedrock (candidate)",
+  provider: "acpx", acpxAgent: "hermes", qualificationCandidate: "hermes",
+  credential: hermesBedrockConnectionChoice.credential, model: hermesBedrockConnectionChoice.model,
+  managedConnectionRouting: structuredClone(hermesBedrockConnectionChoice.routing),
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "hermes:v2026.9.24:bedrock:us-east-1:discovery-2026-10-07:pending" },
+});
 
 /** Narrow legacy ACP lanes used only by the explicit context-integrity matrix. */
 export const legacyAcpxProfiles: readonly RunnerProfileFixture[] = [
@@ -1180,8 +1209,66 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
     tasks: [...openRouterBreadthTasks, localIntegrityTasks[1]!, extendedHarnessFileTask],
-    expectedMatrixSize: 30,
-    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28" },
+    expectedMatrixSize: 40,
+    definitionMetadata: { version: 5, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28",
+      hermesBilling: "per-run-reported-cost-and-budget-health", hermesBudgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, hermesSettlementSourceDigest: hermesApiConnectionDefinitionDigest },
+  },
+  {
+    id: HERMES_NATIVE_INTERACTION_SUITE, label: "Hermes native interactions", manualOnly: true,
+    description: "A native Hermes question batch receives exact answers through reconnect; browser Stop cancels an unanswered local callback and retires its owned process tree.",
+    groups: ["native"], profiles: [extendedHarnessProfiles.find(profile => profile.qualificationCandidate === "hermes")!],
+    environments: runnerEnvironments, tasks: [hermesNativeQuestionTask, hermesNativeQuestionStopTask],
+    excludedExecutionIds: [`${HERMES_NATIVE_INTERACTION_SUITE}.runner-acpx-hermes.daytona.native-question-batch-stop`], expectedMatrixSize: 3,
+    definitionMetadata: {
+      version: 8, qualification: "pending", scheduling: "explicit-only", accountMethod: "api_key", accountMode: "responsible_user",
+      providerTurns: 1, lifecycle: "per-turn", nativeMethod: "_hermes/ask_questions", maximumAttemptsPerCell: 1,
+      objectiveAdmission: "production-delivery-guard-question-only",
+      budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, billing: "reported-cost-and-budget-health",
+      coverage: "native-question-batch-browser-reconnect-exact-delivery-and-local-stop",
+      stopBoundary: "retained-unanswered-native-question-before-browser-click", stopProcessEvidence: "local-public-per-turn-owner-and-descendants-through-cleanup",
+      remoteStopQualification: "pending-separate-remote-retirement-observer", sourceDigest: hermesApiConnectionDefinitionDigest,
+    },
+  },
+  {
+    id: HERMES_IMAGE_INPUT_SUITE, label: "Hermes native image input", manualOnly: true,
+    description: "An undisclosed image-only code passes through browser upload and the native Hermes prompt, with independent content and account checks.",
+    groups: ["native"], environments: runnerEnvironments, tasks: [hermesImageInputTask], expectedMatrixSize: 2,
+    profiles: [nativeProfile({
+      id: "runner-acpx-hermes-vision", label: "Hermes vision (candidate)", provider: "acpx", acpxAgent: "hermes",
+      qualificationCandidate: "hermes", credential: "OPENROUTER_API_KEY", model: HERMES_IMAGE_INPUT_MODEL,
+      modelQualification: { source: "candidate_runner_profile", qualificationId: "hermes:v2026.9.24:openrouter:gemini-2.5-flash-lite:vision:catalog-2026-10-08:pending" },
+    })],
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", providerTurns: 1,
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, lifecycle: "per-turn",
+      input: "browser-upload-authorized-native-image", oracle: "undisclosed-pixel-code-exact-bytes-no-file-tools",
+      billing: "per-run-reported-cost-and-budget-health", sourceDigest: hermesApiConnectionDefinitionDigest },
+  },
+  {
+    id: "hermes-api-connections", label: "Hermes managed API connections", manualOnly: true,
+    description: "One native browser task per exact model using an independently selected managed API account; catalog discovery is not inference proof.",
+    groups: ["native"], profiles: hermesApiConnectionProfiles, environments: runnerEnvironments,
+    tasks: [{ ...openRouterBreadthTasks.find(task => task.id === "hello-complete")!, automaticRetryPolicy: "single_attempt" }],
+    expectedMatrixSize: 10,
+    definitionMetadata: {
+      version: 4, qualification: "pending", scheduling: "explicit-only", authenticatedDiscoveryDate: "2026-10-07",
+      accountMethod: "api_key", accountMode: "responsible_user", providerTurns: 1, expectedUserSource: "public-account-owner-before-task",
+      budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, maximumAttemptsPerCell: 1,
+      coverage: "api-account-native-completion-only", sourceDigest: hermesApiConnectionDefinitionDigest,
+    },
+  },
+  {
+    id: "hermes-bedrock-connections", label: "Hermes managed Bedrock connection", manualOnly: true,
+    description: "One native browser task using an explicitly selected personal Bedrock account, exact inference profile and independently verified region.",
+    groups: ["native"], profiles: [hermesBedrockConnectionProfile], environments: runnerEnvironments,
+    tasks: [{ ...openRouterBreadthTasks.find(task => task.id === "hello-complete")!, automaticRetryPolicy: "single_attempt" }],
+    expectedMatrixSize: 2,
+    definitionMetadata: {
+      version: 4, qualification: "pending", scheduling: "explicit-only", authenticatedDiscoveryDate: "2026-10-07",
+      accountMethod: "api_key", accountMode: "delegated", providerTurns: 1, expectedUserSource: "public-account-owner-before-task",
+      routingSource: "public-selected-account-before-and-after-task", credentialScope: "ephemeral-region-bound-bearer",
+      budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, maximumAttemptsPerCell: 1,
+      coverage: "bedrock-account-native-completion-only", sourceDigest: hermesApiConnectionDefinitionDigest,
+    },
   },
   {
     id: "instruction-persistence", label: "Instruction Persistence",
@@ -1563,6 +1650,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: profile.id,
           model: profile.model,
           qualification: profile.modelQualification,
+          ...(profile.managedConnectionRouting ? { managedConnectionRouting: profile.managedConnectionRouting } : {}),
         })),
         environments: suite.environments.map((environment) => ({
           id: environment.id,
@@ -1659,7 +1747,7 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 
 export function validateRunnerCatalog(): MatrixExecution[] {
   const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
-  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, hermesBedrockConnectionProfile, ...hermesApiConnectionProfiles.filter(p => !extendedHarnessProfiles.some(existing => existing.id === p.id)), ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
     ...connectionSuite.tasks,
     extendedHarnessFileTask,

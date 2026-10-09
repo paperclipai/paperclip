@@ -41,7 +41,9 @@ if sys.platform == "darwin":
     if not shutil.which("install_name_tool") or not shutil.which("codesign"):
         raise ValueError("Hermes provisioning requires macOS Command Line Tools (install_name_tool and codesign)")
     subprocess.run(["install_name_tool", "-id", "@rpath/libpython3.12.dylib", str(library)], check=True)
-    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier", "paperclip.hermes.libpython3.12", "--timestamp=none", str(library)], check=True)
+    # macOS 15 and 26 default to different code-signing page granularities.
+    # Keep the reviewed library's 16 KiB hash slots on every provisioning host.
+    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier", "paperclip.hermes.libpython3.12", "--timestamp=none", "--pagesize", "16384", str(library)], check=True)
 site = destination / "python/lib/python3.12/site-packages"
 site.mkdir(parents=True, exist_ok=True)
 # Do not retain editable-install locators, virtualenv hooks, or provenance files
@@ -56,7 +58,7 @@ for item in (source / ".venv/lib/python3.12/site-packages").iterdir():
     elif item.suffix not in (".pyc", ".pyo"):
         shutil.copy2(item, site / item.name)
 copy_tree(source, destination / "app", (".venv", ".git", ".github", "tests", "website", "docs", ".pytest_cache"))
-for name in ("bridge.py", "policy.py", "tool_process.py", "entry.py", "version.json"):
+for name in ("bridge.py", "billing.py", "policy.py", "tool_process.py", "entry.py", "version.json"):
     shutil.copy2(provider / name, destination / name)
 # Installed RECORD and direct_url metadata can contain mutable build locations.
 for item in destination.rglob("*.dist-info/direct_url.json"):

@@ -103,6 +103,8 @@ interface AcpxRuntimeExtensionBoundary {
   active: AcpxRuntimeExtensionTurn | null;
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
+  cancelledReceiptOwner: AcpxRuntimeExtensionTurn | null;
+  receiptAdmissionClosed: boolean;
 }
 
 class AcpxRuntimeCloseTimeoutError extends Error {
@@ -280,6 +282,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
     agent: options.profile.agent, active: null, sessionIds: new Set(), steering: null,
+    cancelledReceiptOwner: null, receiptAdmissionClosed: false,
   };
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -309,6 +312,25 @@ export async function openQualifiedAcpxRuntime(
   const cursorInstructions = options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
+  const acceptExtensionNotification: NonNullable<AcpRuntimeOptions["onExtensionNotification"]> = (method, params) => {
+    const active = extensionBoundary.active;
+    if (options.profile.agent === "hermes" && method === "_hermes/turn_started") {
+      if (!active || !ownsExtensionTurn(active, params) || params.version !== 1 || typeof params.turnToken !== "string" || !/^[0-9a-f-]{36}$/.test(params.turnToken) || active.nativeTurnToken) throw new Error("Invalid Hermes turn binding");
+      active.nativeTurnToken = params.turnToken;
+      active.acknowledgeNativeTurn();
+      return;
+    }
+    // Stop revokes requests and activity immediately. Only the admitted native
+    // prompt's exact final usage may cross its cancelled boundary until result
+    // settlement. Stream/process closure retires this receipt window.
+    const cancelledUsage = options.profile.agent === "hermes" && method === "_hermes/usage"
+      && active !== null && extensionBoundary.cancelledReceiptOwner === active && extensionBoundary.active === active
+      && params.sessionId === active.sessionId && params.version === 1
+      && !!active.nativeTurnToken && params.turnToken === active.nativeTurnToken;
+    if (!extensionNotifications.has(method) || !active?.onNotification || (!ownsExtensionTurn(active, params) && !cancelledUsage)) return;
+    if (options.profile.agent === "hermes" && (params.version !== 1 || !active.nativeTurnToken || params.turnToken !== active.nativeTurnToken)) throw new Error("Hermes activity belongs to a stale turn");
+    active.onNotification(method, params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params);
+  };
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
     ...(cursorInstructions || modeBinding ? { protocolGuardFactory: () => {
@@ -350,17 +372,20 @@ export async function openQualifiedAcpxRuntime(
       return response;
     },
     onExtensionNotification: (method, params) => {
-      const active = extensionBoundary.active;
-      if (options.profile.agent === "hermes" && method === "_hermes/turn_started") {
-        if (!active || !ownsExtensionTurn(active, params) || params.version !== 1 || typeof params.turnToken !== "string" || !/^[0-9a-f-]{36}$/.test(params.turnToken) || active.nativeTurnToken) throw new Error("Invalid Hermes turn binding");
-        active.nativeTurnToken = params.turnToken;
-      active.acknowledgeNativeTurn();
-        return;
-      }
-      if (!extensionNotifications.has(method) || !active?.onNotification || !ownsExtensionTurn(active, params)) return;
-      if (options.profile.agent === "hermes" && (params.version !== 1 || !active.nativeTurnToken || params.turnToken !== active.nativeTurnToken)) throw new Error("Hermes activity belongs to a stale turn");
-      active.onNotification(method, params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params);
+      // Hermes usage has one wire-observer path, including before cancellation.
+      // Do not deliver it twice through ACPX's ordinary extension callback.
+      if (options.profile.agent === "hermes" && method === "_hermes/usage") return;
+      acceptExtensionNotification(method, params);
     },
+    ...(options.profile.agent === "hermes" ? { onAcpMessage: (direction: "inbound" | "outbound", message: unknown) => {
+      // Pinned ACPX 0.13.1 aborts its elicitation controller before Hermes emits
+      // final usage, and drops extensions at that inner gate. Its public wire
+      // observer still sees the notification. Reapply our exact turn/session
+      // admission here; this grants no request or activity authority after Stop.
+      const wire = objectRecord(message);
+      if (direction !== "inbound" || wire.jsonrpc !== "2.0" || "id" in wire || wire.method !== "_hermes/usage") return;
+      acceptExtensionNotification("_hermes/usage", objectRecord(wire.params));
+    } } : {}),
     nonInteractivePermissions: "fail",
     permissionPolicy: {
       ...options.permissionPolicy,
@@ -1211,6 +1236,8 @@ function runtimePort(
       attemptNumber: number;
     };
   }): Promise<void> {
+    extensionBoundary.receiptAdmissionClosed = true;
+    extensionBoundary.cancelledReceiptOwner = null;
     extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
     if (runtimeClosed) return;
     if (
@@ -1409,7 +1436,10 @@ function runtimePort(
         onRequest: input.onExtensionRequest, onNotification: input.onExtensionNotification,
       };
       extensionBoundary.active = extensionTurn;
+      let receiptWindowClosed = false;
       const releaseExtensionTurn = (): void => {
+        receiptWindowClosed = true;
+        if (extensionBoundary.cancelledReceiptOwner === extensionTurn) extensionBoundary.cancelledReceiptOwner = null;
         controller.abort(new Error("ACPX extension turn expired"));
         if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
       };
@@ -1460,10 +1490,13 @@ function runtimePort(
         ...guarded,
         result,
         cancel: (input) => {
+          if (!extensionBoundary.receiptAdmissionClosed && !receiptWindowClosed && extensionBoundary.active === extensionTurn) extensionBoundary.cancelledReceiptOwner = extensionTurn;
           controller.abort(new Error("ACPX extension turn cancelled"));
           return guarded.cancel(input);
         },
         closeStream: (input) => {
+          receiptWindowClosed = true;
+          if (extensionBoundary.cancelledReceiptOwner === extensionTurn) extensionBoundary.cancelledReceiptOwner = null;
           controller.abort(new Error("ACPX extension stream closed"));
           return guarded.closeStream(input);
         },

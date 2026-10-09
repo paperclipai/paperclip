@@ -48,6 +48,8 @@ export interface CodexAppServerDriverOptions {
   }) => CodexAppServerTransport;
   /** Additional control-plane tools exposed to the provider for this run. */
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
+  /** Native Hermes stops at committed human input and sends final usage first. */
+  deferCommittedHumanInputResults?: boolean;
   /** Executes an admitted additional tool call. Completion tools remain driver-owned. */
   dynamicToolHandler?: (call: {
     tool: string;

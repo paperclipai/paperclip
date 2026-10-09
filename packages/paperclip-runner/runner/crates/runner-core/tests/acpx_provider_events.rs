@@ -288,6 +288,39 @@ fn maps_usage_and_review_status_but_ignores_inventory_updates() {
 }
 
 #[test]
+fn retains_only_closed_per_turn_reported_billing_without_reusing_cumulative_cost() {
+    let billing = json!({"schema":"paperclip.usage.billing/v1","source":"provider_reported", "biller":"openrouter", "currency":"USD",
+        "complete":true,"requestCount":2,"reportedRequestCount":2,"amountUsd":0.0042,"amountUsdExact":"0.004200000"});
+    let status = json!({"type":"status","tag":"usage_update","billing":billing,
+        "breakdown":{"inputTokens":12,"outputTokens":4,"thoughtTokens":0,"cachedReadTokens":2,"cachedWriteTokens":0},
+        "cost":{"amount":999}});
+    let usage = normalize(AcpxRuntimeEventKind::Status, status.clone());
+    assert_eq!(usage[0].payload["billing"], billing);
+    assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.0042);
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 999.0);
+    let mut partial = status.clone();
+    partial["billing"]["complete"] = json!(false);
+    partial["billing"]["reportedRequestCount"] = json!(1);
+    assert_eq!(
+        normalize(AcpxRuntimeEventKind::Status, partial)[0].payload["billing"]["complete"],
+        false
+    );
+    for (key, value) in [
+        ("source", json!("estimate")),
+        ("currency", json!("EUR")),
+        ("amountUsdExact", json!("0.004200001")),
+        ("reportedRequestCount", json!(1)),
+        ("credential", json!("private")),
+    ] {
+        let mut invalid = status.clone();
+        invalid["billing"][key] = value;
+        let projected = normalize(AcpxRuntimeEventKind::Status, invalid);
+        assert!(projected[0].payload.get("billing").is_none());
+        assert_eq!(projected[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+}
+
+#[test]
 fn does_not_claim_missing_or_partial_usage_breakdowns_are_exact() {
     for payload in [
         json!({

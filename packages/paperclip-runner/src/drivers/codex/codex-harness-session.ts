@@ -59,6 +59,8 @@ export class CodexHarnessSession
   extends CodexSessionState
   implements HarnessSession
 {
+  readonly #notificationPump: Promise<void>;
+
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -67,8 +69,9 @@ export class CodexHarnessSession
     initializeCodexSessionEvents(this, input);
     if (this.terminal) {
       this.eventQueue.close();
+      this.#notificationPump = Promise.resolve();
     } else {
-      void pumpNotifications(this);
+      this.#notificationPump = pumpNotifications(this);
     }
   }
 
@@ -119,6 +122,8 @@ export class CodexHarnessSession
       this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
     }
     this.runId = input.runId;
+    this.lastAccountingUsageEvent = null;
+    this.committedHumanInputResults.clear();
     this.result = null;
     this.resultFingerprint = null;
     this.resultCallId = null;
@@ -783,6 +788,12 @@ export class CodexHarnessSession
       : structuredClone(this.usageSnapshot);
   }
 
+  async accountingUsageEvent(): Promise<PrpEvent | null> {
+    this.assertProtocolIntegrity();
+    return this.lastAccountingUsageEvent === null
+      ? null : structuredClone(this.lastAccountingUsageEvent);
+  }
+
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
     return {
@@ -826,6 +837,9 @@ export class CodexHarnessSession
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     await this.transport.close(input?.reason);
+    // Shutdown drains the authenticated provider tail. Join its mapper so a
+    // late usage frame cannot be observed only after close has returned.
+    await this.#notificationPump;
   }
 
   async detachControllerForRestart(): Promise<void> {

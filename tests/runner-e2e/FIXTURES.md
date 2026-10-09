@@ -293,6 +293,35 @@ the model's claimed result by reading the actual final bytes, and also exercises
 remote copy-back. Keep candidate admission scoped to the selected model and the
 isolated operator environment; ordinary agent configuration must not enable it.
 
+`hermes-api-connections` reuses the one-turn completion journey for five managed
+API providers on local and Daytona. Its independent oracle reads the public run
+ledger and native checkpoint model metadata, requiring exactly one successful
+native run with the fixture's company, agent, task, account, method and
+responsible user. Calibration rejects foreign accounts/companies/tasks/users,
+wrong providers/methods/models/harnesses, missing evidence and extra runs. The suite's
+definition includes the account/runner harness source digest. Its API-only scope
+does not substitute for subscription or lifecycle qualification.
+The task permits one attempt. Both public budgets must match the fixture's
+immutable campaign limit: 200 cents by default, or a validated whole-number
+`PAPERCLIP_RUNNER_E2E_HERMES_BUDGET_CENTS` from 1 through 200. Catalog metadata
+records the same selected limit. Both public budgets must match the fixture
+scope before task creation; unlimited or foreign budget records fail admission.
+OpenRouter also requires a settled provider-reported price with an exact USD
+amount and healthy company/agent budget state before fixture teardown. The
+oracle reads scoped public run, company and agent records; it never derives
+billing or health from the model's answer or the cleanup pause.
+
+`hermes-native-interactions` adds one native question-batch journey on local and
+Daytona. The original run remains active while Chromium reloads and answers the
+same native callback. The oracle requires full form/run/request/turn binding,
+single and multiple selections, a custom answer, undisclosed free text, one
+ordered native delivery receipt, HTTP 409 for a late duplicate answer, and the
+original run's final reply derived from the returned free text. It rejects
+semantic tool substitutions, foreign or malformed event envelopes, mismatched
+answers, duplicate callbacks/outcomes and changed forms. The explicit-only,
+single-attempt managed-account/budget/settlement rules also apply. These two
+registered cells remain pending until their own live evidence passes.
+
 ## Persistent agent files
 
 The `instruction_persistence` flow uses production managed storage and public file
@@ -359,3 +388,25 @@ as completed and end the native turn; Paperclip must retain a failed run with
 missing semantic finalization and an unfinished task. That is a denial outcome,
 not task success or operator cancellation. Stop during an unresolved permission
 remains a separate `native-active-stop/pending-permission-stop` gate.
+
+`native-question-batch-stop` adds a separate local native Stop case. It retains
+one pending Hermes callback before the browser click, never submits its answers,
+and grades exact callback cancellation, turn cancellation and same-scope audited
+Stop acknowledgement. It requires the original card to expire, the task to stay
+In Progress, a stale answer to receive HTTP 409, and no follow-up run. The public
+run PID/group/start identity supplies ownership for a read-only descendant
+journal; observed owners must retire before cleanup and stay retired through it.
+Cancelled-run cost settlement remains required. Remote Stop is a separate pending
+gate and cannot pass from this local observation.
+
+`hermes-image-input` adds one local and one Daytona image-code cell using a
+separate vision-capable candidate profile. The existing UI helper uploads the
+PNG before creating the assigned task. The code is an eight-character challenge
+rendered only in pixels; prompt and filename disclose no answer. Independent
+checks download the company/task-bound image and compare exact PNG bytes, MIME,
+size and SHA-256. Native tool history allows only semantic completion, task
+context, title and progress operations, rejecting file reads, shell/OCR and
+image-analysis substitutes. The final marker must contain the pictured code
+exactly once. The suite preserves selected-account attribution, settled reported
+cost, bounded budgets, one attempt and verified cleanup. Declared remote coverage
+is pending until the actual Daytona cell passes on a verified immutable image.

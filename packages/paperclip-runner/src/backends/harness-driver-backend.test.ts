@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import { HarnessOperationAlreadyTerminalError } from "../contracts/harness-driver.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {
@@ -1008,6 +1009,22 @@ describe("HarnessDriverBackend", () => {
     await expect(session.startTurn({ message: { role: "user", text: "cancelled work" } }))
       .rejects.toThrow("native_session_cancelled");
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("treats only a typed already-terminal interruption as settled cleanup (%s)", async alreadyTerminal => {
+    class TerminalRaceSession extends FakeHarnessSession {
+      async interrupt() {
+        throw alreadyTerminal ? new HarnessOperationAlreadyTerminalError("interruption") : new Error("provider stop failed");
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new TerminalRaceSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" }, workingDirectory: "/workspace",
+    });
+    const cancelled = session.cancel({ reason: "governed stop", signal: new AbortController().signal });
+    if (alreadyTerminal) await expect(cancelled.cleanup).resolves.toBeUndefined();
+    else await expect(cancelled.cleanup).rejects.toThrow("provider stop failed");
+    await expect(session.startTurn({ message: { role: "user", text: "No further work" } })).rejects.toThrow("native_session_cancelled");
   });
 
   it("does not synthesize a fallback after explicit run cancellation", async () => {

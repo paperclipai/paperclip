@@ -544,6 +544,8 @@ export interface HarnessSession {
   read?(): Promise<Record<string, unknown>>;
   reconcile?(): Promise<Record<string, unknown>>;
   usage?(): Promise<Record<string, unknown> | null>;
+  /** Read the last bound usage fact, including a passive shutdown suffix. */
+  accountingUsageEvent?(): Promise<PrpEvent | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
   /** Relinquish controller authority without semantically closing the session. */

@@ -1,4 +1,7 @@
 import { runPlanTaskFlow } from "./plan-task-flow.js";
+import { captureHermesApiAccountOwner, captureHermesApiBudgets, captureHermesOpenRouterSettlement, gradeHermesApiConnection, isHermesConnectionSuite, isHermesOpenRouterWorkflow, hasExactHermesNativeQuestionResponse, hasHermesNativeQuestionBatch, hermesNativeAnswerText, runHermesNativeQuestionStop, HERMES_IMAGE_INPUT_SUITE, hermesImageChallenge, gradeHermesImageInput } from "./hermes-api-connections.js";
+import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
+import { isDeepStrictEqual } from "node:util";
 import { assertNativeCompletionSelection, NATIVE_COMPLETION_PREFLIGHT_ENV, verifyNativeCompletionPreflight } from "./native-completion-admission.js";
 import { assertNativeInstructionSelection, verifyNativeInstructionPreflight, NATIVE_INSTRUCTION_PREFLIGHT_ENV, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_DEFAULT_SHA256 } from "./native-instruction-consolidation.js";
 import { captureNativeDefault, gradeNativeDefault, nativeCompletionWorkspaceDigest } from "./native-completion-defaults.js";
@@ -19,7 +22,7 @@ import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
 import { runAccountingFlow } from "./accounting-flow.js";
-import type { Issue } from "../../packages/shared/src/types/issue.js";
+import type { Issue, PaperclipQuestionSetPayload } from "../../packages/shared/src/types/issue.js";
 import { lifecycleLiveCase, gradeLifecycleRepair } from "./lifecycle-live-cases.js";
 import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
@@ -30,7 +33,7 @@ import { verifyStockHarnessPreflight, STOCK_PREFLIGHT_ENV } from "./stock-harnes
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
 import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
-import { runChatFlow } from "./chat-flow.js";
+import { chatQuestionPresentation, runChatFlow } from "./chat-flow.js";
 import { restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -111,6 +114,8 @@ interface RunRecord {
   id: string;
   companyId: string;
   agentId: string;
+  issueId?: string | null;
+  responsibleUserId?: string | null;
   status: string;
   runtimeMode?: string;
   continuationAttempt?: number;
@@ -155,6 +160,9 @@ interface InteractionRecord {
   continuationPolicy?: string;
   payload?: {
     version?: number;
+    submitLabel?: string | null;
+    questionSet?: PaperclipQuestionSetPayload;
+    runtimeRequestId?: string | null;
     acceptLabel?: string;
     rejectLabel?: string;
     target?: {
@@ -584,7 +592,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "cursor_native", "native_active_stop", "native_provider_loss", "native_question_stop", "public_mcp"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -595,6 +603,7 @@ for (const execution of executions) {
     const nativeWorkspaceDigest = () => execution.task.id === "native-blocked-report"
       ? nativeCompletionWorkspaceDigest(workspacePath!) : Promise.resolve(null);
     let fixtures: LiveFixtureValues | undefined;
+    let hermesApiAccountOwner: Awaited<ReturnType<typeof captureHermesApiAccountOwner>> | undefined;
     let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
     let selectedRuns: RunRecord[] = [];
@@ -891,6 +900,23 @@ for (const execution of executions) {
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
       });
 
+      if (isHermesConnectionSuite(execution.suite.id)) {
+        if (!fixtures.aiConnection) throw new Error("Hermes API account is missing before task creation");
+        hermesApiAccountOwner = await captureHermesApiAccountOwner({ api, companyId: fixtures.company.id,
+          connectionId: fixtures.aiConnection.connectionId, provider: fixtures.aiConnection.binding.provider,
+          ...(execution.profile.managedConnectionRouting ? { expectedRouting: execution.profile.managedConnectionRouting,
+            expectedGrantId: fixtures.aiConnection.binding.mode === "delegated" ? fixtures.aiConnection.binding.grantId : "" } : {}) });
+        await writeSanitizedJson(snapshotsDir, "hermes-api-owner-before-execution.json", hermesApiAccountOwner, secrets);
+        if (!hermesApiAccountOwner.checks.every(check => check.passed)) throw new Error("Hermes API owner failed admission before task creation");
+        const receipt = await captureHermesApiBudgets({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id });
+        await writeSanitizedJson(snapshotsDir, "hermes-api-budgets-before-execution.json", receipt, secrets);
+        if (!receipt.checks.every(check => check.passed)) throw new Error("Hermes API budgets failed admission before task creation");
+      }
+      if (isHermesOpenRouterWorkflow(execution)) {
+        const receipt = await captureHermesApiBudgets({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id });
+        await writeSanitizedJson(snapshotsDir, "hermes-workflow-budgets-before-execution.json", receipt, secrets);
+        if (!receipt.checks.every(check => check.passed)) throw new Error("Hermes workflow budgets failed admission before task creation");
+      }
       if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {
         const receipt = await captureNativeDefault({ api, agentId: fixtures.agent.id, companyId: fixtures.company.id });
         const grade = gradeNativeDefault(receipt, execution.suite.id === NATIVE_INSTRUCTION_SUITE ? NATIVE_INSTRUCTION_DEFAULT_SHA256 : undefined);
@@ -1021,6 +1047,16 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeProviderLoss.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "native_question_stop") {
+        const story = await runHermesNativeQuestionStop({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          callerUserId: hermesApiAccountOwner?.expectedResponsibleUserId ?? "",
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          registerCleanupAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `hermesNativeStop.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "native_active_stop") {
         const story = await runNativeActiveStopFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1132,6 +1168,9 @@ for (const execution of executions) {
           { timeout: Math.max(1, startedAtMs + deadlineMs - Date.now()) })
           .catch((cause: unknown) => new Error("Could not capture task creation response", { cause }))
         : null;
+      const imageChallenge = execution.suite.id === HERMES_IMAGE_INPUT_SUITE ? hermesImageChallenge(nonce) : null;
+      const imagePath = imageChallenge ? path.join(temporaryRoot, imageChallenge.filename) : null;
+      if (imagePath && imageChallenge) await writeFile(imagePath, imageChallenge.bytes, { flag: "wx", mode: 0o600 });
       const createdTask = await createTaskThroughUi({
           page,
           issuePrefix,
@@ -1140,7 +1179,8 @@ for (const execution of executions) {
           prompt,
           workMode: execution.task.workMode,
           projectName: fixtures.project?.name,
-          requireExplicitTitle: execution.suite.id === "task-titles" && Boolean(title),
+          requireExplicitTitle: (execution.suite.id === "task-titles" && Boolean(title)) || Boolean(imageChallenge),
+          ...(imagePath ? { attachments: [imagePath] } : {}),
         });
       turnSubmissionTimesMs.push(createdTask.submittedAtMs);
 
@@ -1235,12 +1275,98 @@ for (const execution of executions) {
 
       let planLifecycleEvidence: Record<string, unknown> | null = null;
       let questionLifecycleEvidence: Record<string, unknown> | null = null;
+      const nativeQuestionChecks: MatcherResult[] = [];
+      let nativeQuestionIdentity: (Omit<Parameters<typeof hasExactHermesNativeQuestionResponse>[0], "events"> & { interactionId: string }) | undefined;
       let warmLifecycleEvidence: Record<string, unknown> | null = null;
       let expectedQuestionResolution: {
         interactionId: string;
         optionId: string;
       } | null = null;
-      if (execution.task.flow === "governed_tool_review") {
+      if (execution.task.flow === "native_question_completion") {
+        const check = (id: string, passed: boolean, detail: string) => {
+          const result: MatcherResult = { matcher: { kind: "json_path", path: `hermesNativeQuestion.${id}`, expected: true }, passed, detail };
+          nativeQuestionChecks.push(result);
+          matcherResults.push(result);
+          expect(passed, detail).toBe(true);
+        };
+        const loadNativeState = async () => {
+          const state = await loadTaskState();
+          const events = state.taskRuns.length === 1 ? await collectRunEvents<RunEventRecord>((afterSeq, limit) =>
+            api.get(`/api/heartbeat-runs/${state.taskRuns[0]!.id}/events?afterSeq=${afterSeq}&limit=${limit}`)) : [];
+          return { ...state, events };
+        };
+        const nativeCreated = (events: RunEventRecord[], requestId: string | null | undefined) => events
+          .map(row => record(row.payload?.prpEvent)).filter(event => event.eventType === "runtime_request.created"
+            && record(record(event.payload).request).requestId === requestId
+            && hasAcpxNativeOrigin(record(record(event.payload).request).origin, "hermes", "_hermes/ask_questions"));
+        const rejectNative = (state: Awaited<ReturnType<typeof loadNativeState>>) =>
+          definitiveRunFailure(state.taskRuns) ?? (state.taskRuns.length > 1 ? "Native Hermes clarification dispatched an extra provider turn" : undefined);
+        const pending = await pollUntil({
+          label: "native Hermes question batch in its original active turn", deadlineAt, load: loadNativeState,
+          accept: state => state.taskRuns.length === 1 && state.taskRuns[0]!.status === "running"
+            && state.interactions.some(card => card.status === "pending" && card.kind === "ask_user_questions"
+              && card.payload?.runtimeRequestId && nativeCreated(state.events, card.payload.runtimeRequestId).length > 0),
+          reject: state => rejectNative(state) ?? (state.taskRuns.some(run => run.status === "succeeded")
+            ? "Hermes completed without the required native clarification callback; qualification remains pending" : undefined),
+        });
+        check("one-native-card", pending.interactions.length === 1, "Exactly one durable question card is created within one native run.");
+        const card = pending.interactions[0]!, created = nativeCreated(pending.events, card.payload?.runtimeRequestId);
+        check("one-native-callback", created.length === 1, "Exactly one native Hermes callback created the displayed request.");
+        const event = created[0]!, native = record(record(event.payload).request), set = card.payload?.questionSet;
+        check("full-native-card-binding", card.sourceRunId === pending.taskRuns[0]!.id && card.continuationPolicy === "none"
+          && isDeepStrictEqual(set, native.input), "The durable card retains the complete native form and the original run without queuing a continuation.");
+        check("three-native-question-modes", hasHermesNativeQuestionBatch(set), "The ordered batch retains single choice, multiple choice with custom input, and free text.");
+        const requestId = card.payload!.runtimeRequestId!;
+        check("native-turn-identity", typeof event.turnId === "string" && native.turnId === event.turnId
+          && native.requestId === requestId && native.type === "input" && native.status === "pending", "The form is bound to the native session's exact active turn and pending request.");
+        await writeSanitizedJson(snapshotsDir, "hermes-native-question-pending.json", { card, event, checks: nativeQuestionChecks }, secrets);
+        await expect(page.getByRole("radio", { name: set!.questions[0]!.options![0]!.label, exact: true }).last()).toBeVisible();
+        await captureScreenshot("hermes-native-question-pending", "Hermes native question batch awaiting answers", "hermes-native-question-pending.png");
+        await page.reload();
+        const reconnected = await loadNativeState(), same = reconnected.interactions.find(row => row.id === card.id);
+        check("browser-reconnect-identity", reconnected.taskRuns.length === 1 && reconnected.taskRuns[0]!.id === card.sourceRunId
+          && reconnected.taskRuns[0]!.status === "running" && reconnected.interactions.length === 1 && same?.status === "pending"
+          && same.payload?.runtimeRequestId === requestId && same.sourceRunId === card.sourceRunId && same.continuationPolicy === "none"
+          && isDeepStrictEqual(same.payload?.questionSet, set), "Reload preserves the same pending request, complete form and active provider turn.");
+        await writeSanitizedJson(snapshotsDir, "hermes-native-question-reconnected.json", { card: same, runId: reconnected.taskRuns[0]!.id, checks: nativeQuestionChecks }, secrets);
+        await expect(page.getByRole("radio", { name: set!.questions[0]!.options![0]!.label, exact: true }).last()).toBeVisible();
+        await captureScreenshot("hermes-native-question-reconnected", "Same native Hermes form after browser reconnect", "hermes-native-question-reconnected.png");
+        await page.getByRole("radio", { name: set!.questions[0]!.options![0]!.label, exact: true }).last().click();
+        await page.getByRole("button", { name: "Next", exact: true }).last().click();
+        for (const option of set!.questions[1]!.options!) await page.getByRole("checkbox", { name: option.label, exact: true }).last().click();
+        await page.getByRole("checkbox", { name: set!.questions[1]!.customAnswer?.label ?? "Other", exact: true }).last().click();
+        await page.getByTestId("question-other-answer-composer").last().locator('[contenteditable="true"],textarea').first().fill("FreeBSD");
+        await page.getByRole("button", { name: "Next", exact: true }).last().click();
+        const notes = hermesNativeAnswerText(nonce);
+        await page.getByTestId("question-text-answer-composer").last().locator('[contenteditable="true"],textarea').first().fill(notes);
+        const response = { schema: "paperclip.question_response.v1", answers: {
+          q0: { selectedOptionIds: ["o0"] }, q1: { selectedOptionIds: ["o0", "o1"], customText: "FreeBSD" }, q2: { text: notes },
+        } };
+        nativeQuestionIdentity = { runId: pending.taskRuns[0]!.id, turnId: event.turnId as string, requestId, questionSet: set, response, interactionId: card.id };
+        await page.getByRole("button", { name: set!.submitLabel ?? "Submit answers", exact: true }).last().click();
+        const delivered = await pollUntil({
+          label: "exact Hermes native callback answer delivery", deadlineAt, load: loadNativeState, reject: rejectNative,
+          accept: state => state.taskRuns.length === 1 && state.interactions.length === 1
+            && state.interactions[0]!.id === card.id && state.interactions[0]!.status === "answered"
+            && hasExactHermesNativeQuestionResponse({ ...nativeQuestionIdentity!, events: state.events }),
+        });
+        check("exact-native-answer-delivery", hasExactHermesNativeQuestionResponse({ ...nativeQuestionIdentity, events: delivered.events }),
+          "One ordered post-write native receipt contains the exact single choice, multiple choices, custom input and undisclosed free text.");
+        let duplicateRejected = false;
+        try {
+          await api.postSensitive(`/api/issues/${issue.id}/interactions/${card.id}/respond`, { answers: [
+            { questionId: "q0", optionIds: ["o0"] }, { questionId: "q1", optionIds: ["o0", "o1"], otherText: "FreeBSD" },
+            { questionId: "q2", optionIds: [], otherText: notes },
+          ] });
+        } catch (error) {
+          duplicateRejected = error instanceof Error && error.message === `Sensitive POST /api/issues/${issue.id}/interactions/${card.id}/respond returned 409; response body withheld`;
+          if (!duplicateRejected) throw error;
+        }
+        check("late-answer-rejected", duplicateRejected, "The public response API returns HTTP 409 for a second answer to the settled native request.");
+        questionLifecycleEvidence = { native: true, interaction: delivered.interactions[0], identity: nativeQuestionIdentity,
+          browserReloadedWhileRunActive: true, duplicateRejected, checks: nativeQuestionChecks };
+        await writeSanitizedJson(snapshotsDir, "hermes-native-question-delivered.json", questionLifecycleEvidence, secrets);
+      } else if (execution.task.flow === "governed_tool_review") {
         await expect(page.getByRole("button", { name: "Approve & run", exact: true })).toBeVisible({ timeout: Math.max(1, deadlineAt - Date.now()) });
         expect(reviewProvider!.invocationCount()).toBe(0);
         await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
@@ -1571,9 +1697,17 @@ for (const execution of executions) {
           .last()
           .check();
         // The one-question form is on its last page, so selecting the radio
-        // records the answer and the existing form button submits it.
+        // records the answer. Use the form's durable/native submit label.
+        const questionPresentation = chatQuestionPresentation({
+          ...questionInteraction.payload,
+          version: 1,
+          questions,
+        });
         await page
-          .getByRole("button", { name: "Submit answers", exact: true })
+          .getByRole("button", {
+            name: questionPresentation.submitLabel ?? "Submit answers",
+            exact: true,
+          })
           .last()
           .click();
         questionLifecycleEvidence = {
@@ -2286,6 +2420,23 @@ for (const execution of executions) {
           }),
         ),
       );
+      if (nativeQuestionIdentity) {
+        const captured = runEventsByRun.find(value => value.runId === nativeQuestionIdentity.runId)?.events ?? [];
+        const exactDelivery = hasExactHermesNativeQuestionResponse({ ...nativeQuestionIdentity, events: captured });
+        const originalCard = terminal.interactions.find(card => card.id === nativeQuestionIdentity.interactionId);
+        const sameTurn = selectedRuns.length === 1 && selectedRuns[0]!.id === nativeQuestionIdentity.runId
+          && terminal.interactions.length === 1 && originalCard?.status === "answered" && originalCard.sourceRunId === nativeQuestionIdentity.runId
+          && originalCard.continuationPolicy === "none" && isDeepStrictEqual(originalCard.payload?.questionSet, nativeQuestionIdentity.questionSet);
+        nativeQuestionChecks.push(
+          { matcher: { kind: "json_path", path: "hermesNativeQuestion.terminal-exact-delivery", expected: true }, passed: exactDelivery,
+            detail: "The full terminal event history retains exactly one ordered native delivery without a later duplicate or cancellation." },
+          { matcher: { kind: "json_path", path: "hermesNativeQuestion.original-turn-completed", expected: true }, passed: sameTurn,
+            detail: "The original native run completes with exactly one answered card and no queued continuation or substitute question." },
+        );
+        matcherResults.push(...nativeQuestionChecks);
+        questionLifecycleEvidence = { ...questionLifecycleEvidence, terminalInteraction: originalCard, checks: nativeQuestionChecks };
+        await writeSanitizedJson(snapshotsDir, "hermes-native-question-terminal.json", questionLifecycleEvidence, secrets);
+      }
       const failedMatchers = matcherResults.filter((result) => !result.passed);
       const exactMessageMatcher = taskMatchers.find(
         (matcher) => matcher.kind === "message_exact",
@@ -2691,6 +2842,7 @@ for (const execution of executions) {
         {
           issue,
           run,
+          runs: selectedRuns,
           comments: terminal.comments,
           interactions: terminal.interactions,
           planLifecycleEvidence,
@@ -2861,6 +3013,86 @@ for (const execution of executions) {
               detail: "The rendered final reply link opens this task's saved document and shows its original content marker." });
             await writeSanitizedJson(snapshotsDir, "native-document-navigation.json", { href, documentKey: document.key, revisionId: document.latestRevisionId, opened }, secrets);
           }
+        }
+      }
+      if (isHermesConnectionSuite(execution.suite.id)) {
+        if (!fixtures?.aiConnection || !issue?.id || !hermesApiAccountOwner?.expectedResponsibleUserId) throw new Error("Hermes connection qualification is missing its selected account, expected user or task");
+        let imageChecks: ReturnType<typeof gradeHermesImageInput> | undefined;
+        if (execution.suite.id === HERMES_IMAGE_INPUT_SUITE) {
+          const attachments = await api.get<Record<string, unknown>[]>(`/api/issues/${issue.id}/attachments`);
+          const image = attachments[0];
+          const expectedImage = hermesImageChallenge(nonce);
+          let downloadedBytes: Buffer = Buffer.alloc(0);
+          if (attachments.length === 1 && typeof image?.id === "string" && image.companyId === fixtures.company.id
+            && image.issueId === issue.id && image.contentType === "image/png"
+            && image.byteSize === expectedImage.bytes.length && image.sha256 === expectedImage.sha256) {
+            const response = await api.request.get(`/api/attachments/${encodeURIComponent(image.id)}/content`);
+            if (response.ok()) downloadedBytes = await response.body();
+          }
+          const events = selectedRuns.length === 1 ? await collectRunEvents<RunEventRecord>((afterSeq, limit) =>
+            api.get(`/api/heartbeat-runs/${selectedRuns[0]!.id}/events?afterSeq=${afterSeq}&limit=${limit}`)) : [];
+          imageChecks = gradeHermesImageInput({ nonce, companyId: fixtures.company.id, issueId: issue.id,
+            runId: selectedRuns[0]?.id ?? "", attachments, downloadedBytes, events });
+          matcherResults.push(...imageChecks.map(check => ({ matcher: { kind: "json_path" as const, path: `hermesImage.${check.id}`, expected: true },
+            passed: check.passed, detail: "The authorized uploaded image must match its source bytes and be read without a file-tool substitute." })));
+          await writeSanitizedJson(snapshotsDir, "hermes-image-input.json", { attachments,
+            downloadedByteSize: downloadedBytes.length, downloadedSha256: createHash("sha256").update(downloadedBytes).digest("hex"),
+            checks: imageChecks, oracle: "undisclosed-image-pixels-and-independent-authorized-download" }, secrets);
+        }
+        const expectedRunStatus = execution.task.flow === "native_question_stop" ? "cancelled" : "succeeded";
+        const checks = gradeHermesApiConnection({ companyId: fixtures.company.id, agentId: fixtures.agent.id,
+          issueId: issue.id, connectionId: fixtures.aiConnection.connectionId, provider: fixtures.aiConnection.binding.provider,
+          expectedResponsibleUserId: hermesApiAccountOwner.expectedResponsibleUserId, model: execution.profile.model, runs: selectedRuns,
+          expectedRunStatus,
+          accountMode: fixtures.aiConnection.binding.mode,
+          ...(execution.profile.managedConnectionRouting ? { expectedGrantId: fixtures.aiConnection.binding.mode === "delegated" ? fixtures.aiConnection.binding.grantId : "" } : {}) });
+        if (execution.profile.managedConnectionRouting) {
+          const after = await captureHermesApiAccountOwner({ api, companyId: fixtures.company.id,
+            connectionId: fixtures.aiConnection.connectionId, provider: fixtures.aiConnection.binding.provider,
+            expectedRouting: execution.profile.managedConnectionRouting,
+            expectedGrantId: fixtures.aiConnection.binding.mode === "delegated" ? fixtures.aiConnection.binding.grantId : "" });
+          checks.push(...after.checks.map(check => ({ ...check, id: `after-task-${check.id}` })),
+            { id: "account-owner-preserved", passed: after.expectedResponsibleUserId === hermesApiAccountOwner.expectedResponsibleUserId });
+          await writeSanitizedJson(snapshotsDir, "hermes-api-owner-after-execution.json", after, secrets);
+        }
+        if (fixtures.aiConnection.binding.provider === "openrouter") {
+          const settlementScope = { companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue.id,
+            runId: selectedRuns[0]?.id ?? "missing" };
+          let receipt: Awaited<ReturnType<typeof captureHermesOpenRouterSettlement>> | undefined;
+          try {
+            await expect.poll(async () => {
+              receipt = await captureHermesOpenRouterSettlement({ api, ...settlementScope, expectedRunStatus });
+              return receipt.checks.every(check => check.passed);
+            }, { timeout: 30_000, message: "OpenRouter billing must settle without pausing the agent before cleanup" }).toBe(true);
+          } finally {
+            if (receipt) {
+              await writeSanitizedJson(snapshotsDir, "hermes-openrouter-settlement.json", receipt, secrets);
+              matcherResults.push(...receipt.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `hermesBilling.${check.id}`, expected: true },
+                passed: check.passed, detail: "Public reported cost and company/agent budget health must pass before teardown." })));
+            }
+          }
+        }
+        matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `hermesConnection.${check.id}`, expected: true }, passed: check.passed, detail: "Public native run metadata must match the selected managed API account and exact model." })));
+        await writeSanitizedJson(snapshotsDir, "hermes-api-connection.json", { checks }, secrets);
+        expect(checks.every(check => check.passed), "Hermes managed account and native model attribution").toBe(true);
+        if (execution.suite.id === HERMES_IMAGE_INPUT_SUITE) {
+          expect(imageChecks?.every(check => check.passed), "Hermes image bytes and native tool evidence").toBe(true);
+        }
+      }
+      if (isHermesOpenRouterWorkflow(execution)) {
+        let receipts: Array<Awaited<ReturnType<typeof captureHermesOpenRouterSettlement>>> = [];
+        try {
+          await expect.poll(async () => {
+            receipts = await Promise.all(selectedRuns.map(run => captureHermesOpenRouterSettlement({ api,
+              companyId: fixtures!.company.id, agentId: fixtures!.agent.id, issueId: issue!.id, runId: run.id })));
+            return receipts.length === selectedRuns.length && receipts.every(receipt => receipt.checks.every(check => check.passed));
+          }, { timeout: 30_000, message: "Every Hermes workflow run must settle reported cost and retain budget health before cleanup" }).toBe(true);
+        } finally {
+          await writeSanitizedJson(snapshotsDir, "hermes-openrouter-workflow-settlement.json", { receipts }, secrets);
+          matcherResults.push(...receipts.flatMap((receipt, index) => receipt.checks.map(check => ({
+            matcher: { kind: "json_path" as const, path: `hermesBilling.run${index + 1}.${check.id}`, expected: true }, passed: check.passed,
+            detail: "Each public run, including input-yield runs, must have settled reported cost and healthy budgets before teardown.",
+          }))));
         }
       }
       if (runsCompletionUpdateProbe(execution) && credentials.OPENAI_API_KEY) {

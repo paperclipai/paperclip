@@ -1,4 +1,4 @@
-import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
+import { isAcpxCanonicalInputMethod, isHermesCommittedHumanInputCompletion } from "../acpx/profile-extensions.js";
 import { isSemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
@@ -133,19 +133,23 @@ async function handleServerRequestBody(
               turnId,
               arguments: request.params.arguments,
             });
-            state.emit(
-              "item.completed",
-              {
-                kind: "dynamicToolCall",
-                item: {
-                  type: "tool_result",
-                  id: callId,
-                  tool_use_id: callId,
-                  result,
-                },
+            const completed = {
+              kind: "dynamicToolCall",
+              item: {
+                type: "tool_result",
+                id: callId,
+                tool_use_id: callId,
+                result,
               },
-              { turnId, itemId: callId },
-            );
+            };
+            if (state.deferCommittedHumanInputResults && tool === "request_human_input"
+              && isHermesCommittedHumanInputCompletion({ type: "tool_call", tag: "tool_call_update", status: "completed",
+                title: "mcp__paperclip__request_human_input", rawOutput: result }, state.runId)) {
+              if (state.committedHumanInputResults.size >= 16) throw new Error("Hermes committed human input result limit exceeded");
+              state.committedHumanInputResults.set(callId, { payload: structuredClone(completed), turnId, itemId: callId });
+            } else {
+              state.emit("item.completed", completed, { turnId, itemId: callId });
+            }
             return dynamicToolResponse(result);
           } catch (error) {
             // Preserve uncertain effects for the durable controller. A normal

@@ -83,6 +83,19 @@ fn start_error(config: &AcpxProviderSessionConfig) -> String {
 }
 
 #[test]
+fn hermes_cold_bootstrap_has_a_separate_startup_deadline() {
+    let mut slow = config("bootstrap-slow-open");
+    slow.transport.request_timeout = Duration::from_millis(250);
+    assert!(start_error(&slow).contains("timed out at session.open"));
+    slow.agent = "hermes".to_owned();
+    slow.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+    let mut session = AcpxProviderSession::start(&slow)
+        .expect("Hermes startup admits the same delayed session response");
+    assert_eq!(session.identity().agent_session_id, "agent-1");
+    session.shutdown("startup deadline test").unwrap();
+}
+
+#[test]
 fn controls_goals_and_observes_updates_without_an_active_prompt() {
     let mut session = AcpxProviderSession::start(&config("goals")).unwrap();
     let initial = session

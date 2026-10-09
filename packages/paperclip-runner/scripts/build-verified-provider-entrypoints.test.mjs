@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -30,6 +30,7 @@ test("written provider entrypoints satisfy qualified launch permissions", async 
     return;
   }
   await bundleVerifiedProviderEntrypoints();
+  assert.equal(await readFile(new URL("../dist/providers/hermes/materialize-hermes.py", import.meta.url), "utf8"), await readFile(new URL("./materialize-hermes.py", import.meta.url), "utf8"));
   for (const entrypoint of verifiedProviderEntrypoints) {
     for (const output of [entrypoint.output, entrypoint.verifiedOutput]) {
       const mode = (await stat(output)).mode;

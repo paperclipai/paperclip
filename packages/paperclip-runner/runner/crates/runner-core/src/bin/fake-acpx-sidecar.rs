@@ -55,6 +55,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if mode == "slow-commands" || (mode == "bootstrap-slow-open" && command == "session.open") {
+            std::thread::sleep(Duration::from_millis(600));
+        }
         if let Some(journal) = admission_journal.as_mut() {
             write_json(journal, &json!({"request":request}))?;
             let response = if command == "tool.resolve" {
@@ -261,6 +264,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(9);
             }
             "bootstrap"
+            | "bootstrap-slow-open"
             | "goals"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
@@ -760,7 +764,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     next_sequence += 1;
                 }
             }
-            "happy" => {
+            "happy" | "slow-commands" => {
                 write_event(&mut stdout, next_sequence)?;
                 next_sequence += 1;
                 write_json(&mut stdout, &success(id, command, &request))?;

@@ -117,6 +117,38 @@ fn times_out_and_terminates_a_silent_sidecar() {
 }
 
 #[test]
+fn cold_session_admission_does_not_extend_later_command_deadlines() {
+    let mut transport = transport("slow-commands", Duration::from_millis(200));
+    let result = transport
+        .open_session(json!({}), Duration::from_secs(2))
+        .expect("cold admission should accept its delayed response");
+    assert_eq!(result["command"], "session.open");
+    let started = Instant::now();
+    let error = transport
+        .request(GeneratedAcpxSidecarCommand::SessionRead, json!({}))
+        .expect_err("ordinary commands retain the short configured deadline");
+    assert!(error.to_string().contains("timed out at session.read"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(transport
+        .request(GeneratedAcpxSidecarCommand::SessionRead, json!({}))
+        .unwrap_err()
+        .to_string()
+        .contains("unavailable"));
+}
+
+#[test]
+fn an_invalid_startup_bound_does_not_send_or_poison_a_command() {
+    let mut transport = transport("happy", Duration::from_secs(1));
+    for timeout in [Duration::ZERO, Duration::from_secs(121)] {
+        assert!(transport.open_session(json!({}), timeout).is_err());
+    }
+    transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("invalid local bounds do not consume or poison the wire");
+    transport.shutdown().unwrap();
+}
+
+#[test]
 fn an_empty_event_poll_does_not_poison_the_transport() {
     let mut transport = transport("silent", Duration::from_secs(1));
     assert_eq!(

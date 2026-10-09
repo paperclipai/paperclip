@@ -27,6 +27,7 @@ import {
   nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import {
+  validatePrpEvent,
   validatePrpStructuredRunResult,
   type PrpEvent,
   type PrpStructuredRunResult,
@@ -2922,8 +2923,40 @@ export async function executeNativeSession(
           : descriptor.version,
       usage,
     };
+    let settledUsageEvent: PrpEvent | undefined;
+    if (input.provider.kind === "acpx" && input.provider.agent === "hermes"
+        && options.requireSessionCloseBeforeReturn && !options.keepSessionOpen
+        && session.accountingUsageEvent) {
+      // Governed questions stop transcript consumption before Hermes emits
+      // terminal billing. Read the passive usage suffix only after this exact
+      // per-turn close proves shutdown. It cannot reopen task/tool authority.
+      void closeSession("Hermes per-turn accounting shutdown").catch(() => undefined);
+      await (sessionCloseRecoveryPromise ?? sessionClosePromise);
+      try {
+        const candidate = await runAbortableOperationWithin({
+          timeoutMs: FAILED_OPERATION_SETTLEMENT_GRACE_MS,
+          timeoutMessage: "native shutdown accounting read timed out",
+          operation: () => session.accountingUsageEvent!(),
+        });
+        const validation = candidate === null ? null : validatePrpEvent(candidate);
+        if (candidate !== null) {
+          if (!validation?.ok || candidate.sourceKind !== "runner"
+              || candidate.sourceInstanceId !== consumed.event?.sourceInstanceId
+              || candidate.runId !== identity.runId
+              || candidate.normalizedSessionId !== normalizedSessionId
+              || candidate.turnId !== durableExecutionResult.turnId
+              || candidate.eventType !== "item.completed" || candidate.payload.kind !== "usage") {
+            throw new Error("native shutdown accounting event binding mismatch");
+          }
+          settledUsageEvent = structuredClone(candidate);
+        }
+      } catch (error) {
+        await observeEnrichmentFailure("usage", error);
+      }
+    }
     executionSucceeded = true;
-    return { ...durableExecutionResult, ...enrichment };
+    return { ...durableExecutionResult, ...enrichment,
+      ...(settledUsageEvent ? { settledUsageEvent } : {}) };
   } catch (error) {
     executionFailure = { error };
     throw error;

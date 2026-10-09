@@ -40,6 +40,13 @@ export interface UsageSummary {
 }
 
 /** Accounting-only snapshot. Never include prompt, response, or credentials. */
+export interface AdapterAccountingSettlement {
+  schema: "paperclip.accounting.settlement/v1";
+  /** Owned provider work ended; unknown measurements remain explicitly unknown. */
+  providerWorkEnded: true;
+  usageComplete: boolean;
+}
+
 export interface AdapterUsageCheckpoint {
   attemptId?: string;
   usage?: UsageSummary;
@@ -57,6 +64,7 @@ export interface AdapterUsageCheckpoint {
   cacheAdjustedCostUsd?: number | null;
   providerRequestId?: string | null;
   complete: boolean;
+  settlement?: AdapterAccountingSettlement;
 }
 
 export type AdapterBillingType =
@@ -143,6 +151,7 @@ export interface AdapterExecutionResult {
   pricingProvenance?: { source: "provider_reported" | "provider_invoice" | "operator" | "rate_card" | "unknown"; version?: string; evidence?: string; inputCentsPerMillion?: string; cachedInputCentsPerMillion?: string; cacheWriteCentsPerMillion?: string; outputCentsPerMillion?: string; serviceTier?: string; contextTier?: "short" | "long" };
   providerRequestId?: string | null;
   usageComplete?: boolean;
+  settlement?: AdapterAccountingSettlement;
   /**
    * Provider-billed cost after prompt-cache discounts. Adapters should set
    * this when they expose it separately; otherwise the server treats a

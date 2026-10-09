@@ -1,3 +1,5 @@
+import type { AiProviderRouting } from "../../packages/shared/src/ai-provider-routing.js";
+
 export const CREDENTIAL_NAMES = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -6,6 +8,7 @@ export const CREDENTIAL_NAMES = [
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "GEMINI_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
   "DAYTONA_API_KEY",
   "CURSOR_AUTH_TOKEN",
   "COPILOT_GITHUB_TOKEN",
@@ -31,6 +34,8 @@ export type RunnerTaskFlow =
   | "single_turn"
   | "plan_revision_acceptance"
   | "question_resume_completion"
+  | "native_question_completion"
+  | "native_question_stop"
   | "plan_approval_completion"
   | "warm_three_turn"
   | "instruction_persistence"
@@ -78,7 +83,7 @@ export interface RunnerProfileFixture {
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
-  qualificationCandidate?: "cursor" | "copilot" | "pi";
+  qualificationCandidate?: "cursor" | "copilot" | "pi" | "hermes";
   ranking?: {
     rank: number;
     canonicalModelId: string;
@@ -87,6 +92,8 @@ export interface RunnerProfileFixture {
     sourceUrl: string;
   };
   credential: Exclude<CredentialName, "DAYTONA_API_KEY">;
+  /** Value-free routing saved on an explicitly selected managed connection. */
+  managedConnectionRouting?: AiProviderRouting;
   supportedEnvironments: readonly RunnerEnvironmentId[];
   expectedRuntimeMode: RunnerGeneration;
   expectedRuntimeMetadata: {
@@ -200,6 +207,7 @@ export interface RunnerSuiteFixture {
 }
 
 export interface MatrixJob {
+  qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   executionId: string;
   suiteId: string;
   profileId: string;

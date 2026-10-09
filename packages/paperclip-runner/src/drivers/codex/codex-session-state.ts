@@ -105,10 +105,13 @@ export class CodexSessionState {
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
+  readonly deferCommittedHumanInputResults: boolean;
+  readonly committedHumanInputResults = new Map<string, { payload: Record<string, unknown>; turnId: string; itemId: string }>();
   readonly eventQueue = new AsyncQueue<PrpEvent>();
   sourceSequence: number;
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
+  lastAccountingUsageEvent: PrpEvent | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
@@ -179,6 +182,7 @@ export class CodexSessionState {
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
+    deferCommittedHumanInputResults?: boolean;
   }) {
     this.codexUsageBaseline = input.codexUsageBaseline ?? null;
     if (this.codexUsageBaseline) this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
@@ -203,6 +207,7 @@ export class CodexSessionState {
     this.reasoningEffort = input.reasoningEffort;
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
+    this.deferCommittedHumanInputResults = input.deferCommittedHumanInputResults === true;
     this.completionFeedback = input.completionFeedback;
     this.currentGoal = input.goal === undefined ? null : structuredClone(input.goal);
     for (const entry of input.lineage ?? [input.opened.lineage]) {
@@ -297,11 +302,17 @@ export class CodexSessionState {
     }
   }
 
-  cancelPendingRequests(reason: string): void {
+  cancelPendingRequests(reason: string, cancelledTurnId?: string): void {
     for (const pending of this.pendingRuntimeRequestMap.values()) {
+      // Only an authoritative cancelled terminal can retire its input as
+      // cancelled. Other terminal/transport losses keep the durable fallback.
+      const cancelledInput = pending.request.input !== undefined &&
+        pending.request.turnId === cancelledTurnId;
       this.emit(
-        pending.request.input === undefined ? "runtime_request.cancelled" : "runtime_request.expired",
-        pending.request.input === undefined
+        pending.request.input === undefined || cancelledInput ? "runtime_request.cancelled" : "runtime_request.expired",
+        cancelledInput
+          ? { ...harnessRuntimeRequestOutcome(pending.request, { reason, action: "cancel" }), requestKind: "runtime" }
+          : pending.request.input === undefined
           ? harnessRuntimeRequestOutcome(pending.request, { reason })
           : harnessRuntimeInputExpiredOutcome(pending.request, "provider_process_lost"),
         { turnId: pending.request.turnId, itemId: pending.request.itemId },
@@ -434,8 +445,18 @@ export class CodexSessionState {
     payload: Record<string, unknown>,
     refs: { turnId?: string; itemId?: string } = {},
   ): void {
+    if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(eventType)) {
+      // Native terminal notification follows the final prompt receipt. Release
+      // the bridge's own completed tool facts here, before publishing terminal,
+      // so controller parking cannot interrupt delivery of that receipt.
+      for (const [id, completed] of this.committedHumanInputResults) {
+        if (completed.turnId !== refs.turnId) continue;
+        this.committedHumanInputResults.delete(id);
+        this.emit("item.completed", completed.payload, { turnId: completed.turnId, itemId: completed.itemId });
+      }
+    }
     const sourceSeq = ++this.sourceSequence;
-    this.eventQueue.push({
+    const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
       sourceEventId: `${this.runnerInstanceId}:${this.runId}:${sourceSeq}`,
       sourceSeq,
@@ -450,7 +471,12 @@ export class CodexSessionState {
       priority: eventType === "run.result.proposed" ? 0 : 1,
       emittedAt: this.now().toISOString(),
       payload,
-    });
+    };
+    // A governed wait revokes accepted output before transport shutdown.
+    // Keep only its usage fact independently of the closed transcript queue.
+    if (eventType === "item.completed" && payload.kind === "usage")
+      this.lastAccountingUsageEvent = structuredClone(event);
+    this.eventQueue.push(event);
   }
 
   emitGoalCapabilities(): void {

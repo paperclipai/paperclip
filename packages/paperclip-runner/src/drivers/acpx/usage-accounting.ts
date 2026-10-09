@@ -1,5 +1,6 @@
 import type { CanonicalProviderEvent } from "../../provider-events.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import { parseProviderUsageBilling, type ProviderUsageBilling } from "../../contracts/usage-billing.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -40,6 +41,7 @@ export function persistedAcpxTurnUsage(
   after: unknown,
   requestId: string,
   agent: QualifiedAcpxAgent | null = null,
+  billing?: ProviderUsageBilling,
 ): Record<string, unknown> | null {
   const current = record(after);
   if (current.lastRequestId !== requestId) return null;
@@ -48,8 +50,9 @@ export function persistedAcpxTurnUsage(
   const added = Object.keys(receipts).filter(
     (key) => !Object.hasOwn(previousReceipts, key),
   );
-  if (added.length !== 1) return null;
-  const usage = record(receipts[added[0]!]);
+  if (added.length !== 1 && !(agent === "hermes" && billing && added.length === 0)) return null;
+  const usage = added.length === 1 ? record(receipts[added[0]!]) : {};
+  const boundBilling = agent === "hermes" && billing ? parseProviderUsageBilling(billing) : null;
   const piReceipt = agent === "pi" ? record(usage.paperclip_pi) : {};
   const piReceiptVerified = piReceipt.provenance === "assistant_message_receipts"
     || piReceipt.provenance === "assistant_message_and_compaction_receipts";
@@ -62,6 +65,7 @@ export function persistedAcpxTurnUsage(
     // Pi calculates cost from catalog prices, not billing receipts. Never feed
     // this estimate into the authoritative/cumulative provider spend channel.
     cost: agent === "pi" || agent === "hermes" ? undefined : current.usageCost,
+    ...(boundBilling ? { billing: boundBilling } : {}),
     ...(piReceiptVerified ? { usageProvenance: `pi_${piReceipt.provenance}` } : {}),
     ...(estimate === undefined ? {} : { pricingEstimateUsd: estimate }),
     breakdown: {

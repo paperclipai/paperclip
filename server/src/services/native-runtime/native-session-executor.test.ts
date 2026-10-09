@@ -1,3 +1,4 @@
+import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -323,6 +324,7 @@ import {
   buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
   nativeUsageCostUsd,
+  createNativeTurnAccounting,
   nativeUsageBiller,
   normalizeNativeUsage,
   resolveNativeBilling,
@@ -1001,6 +1003,45 @@ describe("native incomplete-bootstrap evidence", () => {
 });
 
 describe("native provider usage normalization", () => {
+  const hermes = { kind: "acpx", agent: "hermes", model: "fixture-model" } as NativeExecutionInput["provider"];
+  const billing = { schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
+    complete: true, requestCount: 2, reportedRequestCount: 2, amountUsd: 0.25, amountUsdExact: "0.250000000" };
+  const priced = { runDelta: { inputTokens: 20, outputTokens: 5, providerCostUsd: 0.25 }, billing };
+  it("requires exact selected-account price authority for Hermes instead of a scalar or cumulative cost", () => {
+    expect(nativeUsageCostUsd(priced, hermes, "openrouter")).toBe(0.25);
+    for (const selectedBiller of [undefined, "unknown", "anthropic"]) expect(nativeUsageCostUsd(priced, hermes, selectedBiller)).toBeUndefined();
+    for (const candidate of [{ ...priced, billing: undefined }, { ...priced, billing: { ...billing, source: "rate_card" } },
+      { ...priced, runDelta: { ...priced.runDelta, providerCostUsd: 1 } }]) {
+      expect(nativeUsageCostUsd(candidate, hermes, "openrouter")).toBeUndefined();
+    }
+    expect(nativeUsageCostUsd({ ...priced, billing: { ...billing, complete: false, reportedRequestCount: 1 } }, hermes, "openrouter")).toBe(0.25);
+    const zero = { ...priced, runDelta: { ...priced.runDelta, providerCostUsd: 0 }, billing: { ...billing, amountUsd: 0, amountUsdExact: "0.000000000" } };
+    expect(nativeUsageCostUsd(zero, hermes, "openrouter")).toBe(0);
+    expect(nativeUsageCostUsd({ ...zero, billing: { ...zero.billing, complete: false } }, hermes, "openrouter")).toBeUndefined();
+  });
+  it("rebuilds exact per-turn price totals across replay and preserves unknown earlier work", () => {
+    const accounting = createNativeTurnAccounting(hermes, "openrouter");
+    let sequence = 0;
+    const event = (eventType: string, turnId: string, payload: object = {}) => ({
+      eventType, turnId, payload, sourceSeq: ++sequence, sourceInstanceId: "provider",
+    }) as unknown as PrpEvent;
+    accounting.observe(event("turn.started", "first"));
+    const price = event("item.completed", "first", { kind: "usage", usage: priced });
+    accounting.observe(price); accounting.observe(price);
+    expect(accounting.snapshot().complete).toBe(false);
+    accounting.observe(event("turn.completed", "first"));
+    expect(accounting.snapshot().usage?.accountingCostUsdExact).toBe("0.250000000");
+    accounting.observe(event("turn.started", "second"));
+    accounting.observe(event("item.completed", "second", { kind: "usage", usage: {
+      runDelta: { inputTokens: 10, outputTokens: 2, providerCostUsd: 999 },
+    } }));
+    accounting.observe(event("turn.completed", "second"));
+    const snapshot = accounting.snapshot();
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.usage).toMatchObject({ accountingCostUsdExact: "0.250000000", accountingCostIncomplete: true,
+      billing: { complete: false, amountUsd: 0.25 } });
+    expect(nativeUsageCostUsd(snapshot.usage, hermes, "openrouter")).toBe(0.25);
+  });
   it.each([
     {}, { inputTokens: 1 }, { outputTokens: 1 },
     { inputTokens: 0, outputTokens: -1 }, { inputTokens: 0.5, outputTokens: 1 },
@@ -2515,6 +2556,33 @@ describe("runtime question fallback", () => {
     ],
   };
 
+  it.each(["provider_process_lost", "durable_handoff"])("preserves a complete custom-answer batch after %s", reason => {
+    const form = { schema: "paperclip.question_set.v1" as const, questions: [
+      { id: "color", prompt: "Choose color", required: true, answerMode: "single_select" as const,
+        options: [{ id: "cobalt", label: "Cobalt" }], customAnswer: { enabled: true, label: "Another color" } },
+      { id: "targets", prompt: "Choose targets", required: true, answerMode: "multi_select" as const,
+        options: [{ id: "paperclip_custom_answer", label: "Linux" }], customAnswer: { enabled: true, placeholder: "Name a target" } },
+      { id: "notes", prompt: "Describe constraint", required: true, answerMode: "text" as const },
+    ] };
+    const fallback = runtimeQuestionFallbackFromEvent({ eventType: "runtime_request.expired", runId: "00000000-0000-4000-8000-000000000001",
+      payload: { requestId: "native-batch", requestKind: "runtime", requestType: "input", reason, replayAllowed: false,
+        request: { schema: "paperclip.runtime_request.v2", requestKind: "runtime", type: "input", status: "pending",
+          requestId: "native-batch", turnId: "turn", itemId: "item", input: form } } });
+    expect(fallback).not.toBeNull();
+    expect(createIssueThreadInteractionSchema.safeParse(fallback).success).toBe(true);
+    expect(fallback!.payload.questionSet).toEqual(form);
+    expect(fallback!.payload.questions[0]!.options).toEqual([{ id: "cobalt", label: "Cobalt" },
+      { id: "paperclip_custom_answer", label: "Another color", freeText: true }]);
+    expect(fallback!.payload.questions[1]!.options).toEqual([{ id: "paperclip_custom_answer", label: "Linux" },
+      { id: "paperclip_custom_answer_2", label: "Other", description: "Name a target", freeText: true }]);
+    expect(fallback!.payload.questions[1]!.selectionMode).toBe("multi");
+    expect(fallback!.payload.questions[2]!.options[0]!.freeText).toBe(true);
+    const incomplete = structuredClone(fallback!);
+    incomplete.payload.questions[1]!.options.pop();
+    incomplete.payload.questions[1]!.allowOther = false;
+    expect(createIssueThreadInteractionSchema.safeParse(incomplete).success).toBe(false);
+  });
+
   it.each(["provider_process_lost", "durable_handoff"])(
     "materializes one idempotent durable interaction after %s",
     (reason) => {
@@ -2562,7 +2630,7 @@ describe("runtime question fallback", () => {
             {
               id: "replicas",
               selectionMode: "single",
-              options: [{ id: "__paperclip_text__", freeText: true }],
+              options: [{ id: "paperclip_text_answer", freeText: true }],
             },
           ],
         },
@@ -5513,6 +5581,94 @@ describe("native terminal-turn accounting", () => {
     expect(result.costStatus).toBe(scenario === "late_update" ? undefined : "unpriced");
     expect(onUsage.mock.calls.at(-1)![0]).toMatchObject({ complete, costUsd: cost, costStatus: result.costStatus });
     if (scenario === "late_update") expect(result.usage).toMatchObject({ inputTokens: 32, outputTokens: 8 });
+  });
+
+  it.each(["reported", "partial", "partial_missing_tokens", "reported_missing_tokens", "legacy", "wrong_account", "zero"] as const)("settles bound Hermes billing through the executor (%s)", async scenario => {
+    const previous = process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+    process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify([{ agent: "hermes", model: "fixture-model" }]);
+    try {
+      const onUsage = vi.fn(async (_receipt: import("@paperclipai/adapter-utils").AdapterUsageCheckpoint) => {});
+      const amount = scenario === "zero" ? 0 : 0.25;
+      const tokensMissing = scenario.endsWith("missing_tokens");
+      const partialPrice = scenario.startsWith("partial");
+      const billing = { schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
+        complete: !partialPrice, requestCount: 2, reportedRequestCount: partialPrice ? 1 : 2,
+        amountUsd: amount, amountUsdExact: amount.toFixed(9) };
+      const notification = (await import("@paperclipai/paperclip-runner/live")).rehydrateRunnerdUsageNotification({
+        runDeltaAvailable: !tokensMissing, runDelta: { inputTokens: 20, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2, providerCostUsd: amount },
+        ...(scenario === "legacy" ? {} : { billing }),
+      }, "session", "turn");
+      const event = (eventType: string, sourceSeq: number, payload: object = {}) => ({ eventType, turnId: "turn", payload,
+        sourceSeq, sourceInstanceId: "provider", emittedAt: new Date().toISOString() }) as unknown as PrpEvent;
+      state.execute.mockReset().mockImplementationOnce(async () => {
+        await accountingEvents.committed!(event("turn.started", 1));
+        const usage = event("item.completed", 2, { kind: "usage", usage: notification.tokenUsage });
+        await accountingEvents.committed!(usage);
+        expect(onUsage.mock.calls.at(-1)![0].complete).toBe(false);
+        expect(onUsage.mock.calls.at(-1)![0].settlement).toBeUndefined();
+        await accountingEvents.committed!(event("turn.completed", 3));
+        await accountingEvents.duplicate!(usage);
+        return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" }, turnId: "turn",
+          normalizedSessionId: "session", providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: 3,
+          highestContiguousSourceSeq: 3, usage: null };
+      });
+      const known = !["legacy", "wrong_account"].includes(scenario);
+      const result = await executePaperclipNativeSession({ db: leaseDb(), runnerInstanceId: "runner", onUsage,
+        billingIdentity: { provider: "deepseek", biller: scenario === "wrong_account" ? "anthropic" : "openrouter", billingType: "metered_api" },
+        execution: { ...execution, provider: { kind: "acpx", agent: "hermes", model: "fixture-model", permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.hermes } } as NativeExecutionInput });
+      expect(result).toMatchObject({ usageComplete: !tokensMissing, costUsd: known ? amount : null,
+        costStatus: known && !partialPrice ? "reported" : "unpriced" });
+      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: !tokensMissing, costUsd: result.costUsd, costStatus: result.costStatus }));
+      if (known) expect(result.settlement).toEqual({ schema: "paperclip.accounting.settlement/v1", providerWorkEnded: true, usageComplete: !tokensMissing });
+      else expect(result.settlement).toBeUndefined();
+      if (tokensMissing) expect(result.usage).toBeUndefined();
+      if (known) expect(result.pricingProvenance).toMatchObject({ source: "provider_reported", version: "hermes-openrouter-wire/v1" });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+      else process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = previous;
+    }
+  });
+
+  it.each(["shutdown", "duplicate", "wrong_biller"] as const)("journals closed Hermes usage after governed input yield (%s)", async scenario => {
+    const previous = process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+    process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify([{ agent: "hermes", model: "fixture-model" }]);
+    try {
+      const onUsage = vi.fn(async (_receipt: import("@paperclipai/adapter-utils").AdapterUsageCheckpoint) => {});
+      const usage: PrpEvent = {
+        schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId: "provider",
+        sourceEventId: "provider:shutdown-usage:2", sourceSeq: 2, priority: 1,
+        runId: execution.binding.runId, normalizedSessionId: "session", turnId: "turn",
+        eventType: "item.completed", emittedAt: new Date().toISOString(),
+        payload: { kind: "usage", usage: {
+          runDelta: { inputTokens: 31, outputTokens: 7, providerCostUsd: 0.25 }, runDeltaComplete: true,
+          billing: { schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
+            complete: true, requestCount: 1, reportedRequestCount: 1, amountUsd: 0.25, amountUsdExact: "0.250000000" },
+        } },
+      };
+      state.execute.mockReset().mockImplementationOnce(async () => {
+        await accountingEvents.committed!({ ...usage, sourceSeq: 1, sourceEventId: "provider:shutdown-usage:1",
+          eventType: "turn.started", payload: {} });
+        if (scenario === "duplicate") await accountingEvents.committed!(usage);
+        return { result: { summary: "Waiting for an answer", reportedWorkDisposition: "yielded" },
+          terminal: { runTerminalState: "succeeded", reportedWorkDisposition: "yielded" }, turnId: "turn",
+          normalizedSessionId: "session", providerSessionId: null, driverKind: "test", driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1,
+          // An unrelated attachment/session snapshot must not supply billing.
+          usage: { runDelta: { inputTokens: 999, outputTokens: 999, providerCostUsd: 999 } },
+          settledUsageEvent: usage };
+      });
+      const result = await executePaperclipNativeSession({ db: leaseDb(), runnerInstanceId: "runner", onUsage,
+        billingIdentity: { provider: "deepseek", biller: scenario === "wrong_biller" ? "anthropic" : "openrouter", billingType: "metered_api" },
+        execution: { ...execution, provider: { kind: "acpx", agent: "hermes", model: "fixture-model", permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.hermes } } as NativeExecutionInput });
+      expect(result).toMatchObject({ usageComplete: true, costUsd: scenario === "wrong_biller" ? null : 0.25,
+        costStatus: scenario === "wrong_biller" ? "unpriced" : "reported", usage: { inputTokens: 31, outputTokens: 7 } });
+      expect(onUsage.mock.calls.at(-1)![0]).toMatchObject({ costUsd: result.costUsd, complete: true });
+      if (scenario === "wrong_biller") expect(result.settlement).toBeUndefined();
+      else expect(result.settlement).toMatchObject({ providerWorkEnded: true, usageComplete: true });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+      else process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = previous;
+    }
   });
 
   it.each(["committed", "duplicate"] as const)("saves completed usage before returning to result commitment (%s)", async mode => {

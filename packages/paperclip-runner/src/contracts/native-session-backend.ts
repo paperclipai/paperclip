@@ -235,6 +235,8 @@ export interface NativeSession {
     turnId: string | null;
   } | null>;
   usage?(): Promise<Record<string, unknown> | null>;
+  /** Read-only accounting fact. Call only after the exact close owner succeeds. */
+  accountingUsageEvent?(): Promise<PrpEvent | null>;
   snapshot(
     options?: NativeSessionSnapshotOptions,
   ): Promise<PersistedNativeSession>;

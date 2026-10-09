@@ -2,9 +2,10 @@ import { createCursorProfileExtensionAdapter, CURSOR_CLIENT_CAPABILITIES } from 
 import { createHash } from "node:crypto";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
 import { parsePaperclipQuestionSet, parsePaperclipQuestionResponse, type PaperclipQuestionSet } from "../../contracts/question-set.js";
-import { isCanonicalProviderEventType, type CanonicalProviderEvent } from "../../provider-events.js";
+import { isCanonicalProviderEventType, type AcpRuntimeEventShape, type CanonicalProviderEvent } from "../../provider-events.js";
 import { validatePrpEvent } from "../../protocol/replay-contract.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import { parseProviderUsageBilling, type ProviderUsageBilling } from "../../contracts/usage-billing.js";
 
 export const ACPX_CANONICAL_INPUT_METHODS = [
   "elicitation/create", "cursor/ask_question", "cursor/create_plan", "_hermes/ask_questions",
@@ -31,6 +32,7 @@ export interface AcpxProfileExtensionContext {
   workspacePath: string;
   sessionId: string;
   turnId: string;
+  onBilling?(receipt: ProviderUsageBilling): void;
 }
 
 /** ACPX 0.13.1 bounds the complete encoded extension response at 256 KiB.
@@ -103,13 +105,21 @@ export function createAcpxProfileExtensionAdapter(
           throw new Error("Invalid Hermes usage provenance");
         }
         const estimated = params.cost === "estimated";
+        const billing = params.billing === undefined ? null : parseProviderUsageBilling(params.billing);
+        if (billing) {
+          if (!context.onBilling) throw new Error("Hermes billing receipts were not negotiated");
+          context.onBilling(billing);
+        }
         const itemId = `${context.turnId}:hermes-usage`;
         return [{ eventType: "provider.notice.recorded", itemId, payload: {
           schema: "paperclip.provider.notice.v1", noticeId: itemId, severity: "info", category: "hermes_usage_provenance", scope: "turn",
           recoverable: true, userActionable: false,
-          summary: estimated ? `Hermes estimates this turn at $${(params.estimatedUsd as number).toFixed(6)}. Billing cost is unverified.`
+          summary: billing ? `OpenRouter reports $${billing.amountUsd.toFixed(6)}${billing.complete ? " for this turn." : "; remaining billing is unavailable."}`
+            : estimated ? `Hermes estimates this turn at $${(params.estimatedUsd as number).toFixed(6)}. Billing cost is unverified.`
             : "Hermes billing cost is unavailable.",
-          details: [{ name: "Token usage", value: String(params.tokens) }, { name: "Cost source", value: estimated ? "Hermes model pricing estimate" : "Unavailable" },
+          details: [{ name: "Token usage", value: String(params.tokens) }, { name: "Cost source", value: billing ? "OpenRouter response usage.cost" : estimated ? "Hermes model pricing estimate" : "Unavailable" },
+            ...(billing ? [{ name: "Reported USD", value: billing.amountUsdExact }, { name: "Billing complete", value: String(billing.complete) },
+              { name: "Reported requests", value: `${billing.reportedRequestCount}/${billing.requestCount}` }] : []),
             ...(estimated ? [{ name: "Estimated USD", value: String(params.estimatedUsd) }] : [])],
         } }];
       }
@@ -121,7 +131,36 @@ export function createAcpxProfileExtensionAdapter(
 }
 export function acpxProfileClientCapabilities(agent: QualifiedAcpxAgent): Record<string, unknown> {
   if (agent === "cursor") return structuredClone(CURSOR_CLIENT_CAPABILITIES);
-  return agent === "hermes" ? { _meta: { paperclipHermes: { version: 1 } } } : {};
+  return agent === "hermes" ? { _meta: { paperclipHermes: { version: 1, billingReceipts: 1 } } } : {};
+}
+
+/** Delay this tool's display completion until its native prompt receipt is read.
+ * This grants no wait or accounting authority; the controller validates both.
+ */
+export function isHermesCommittedHumanInputCompletion(event: AcpRuntimeEventShape, runId: string): boolean {
+  if (event.type !== "tool_call" || event.tag !== "tool_call_update" || event.status !== "completed"
+    || !(event.title === "mcp__paperclip__request_human_input"
+      || event.title?.startsWith("mcp__paperclip__request_human_input: "))) return false;
+  const object = (value: unknown): Record<string, unknown> | null => {
+    if (typeof value === "string") {
+      if (value.length > 65_536) return null;
+      try { value = JSON.parse(value); } catch { return null; }
+    }
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  };
+  let result = object(event.rawOutput);
+  if (!result || "error" in result) return false;
+  if (!("disposition" in result)) {
+    if (Object.keys(result).some(key => !["result", "structuredContent", "_meta"].includes(key))) return false;
+    result = object(result.structuredContent ?? result.result);
+  }
+  if (!result || "error" in result || result.disposition !== "applied") return false;
+  const interaction = object(result.interaction);
+  return interaction !== null && typeof interaction.kind === "string"
+    && ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"].includes(interaction.kind)
+    && interaction.status === "pending"
+    && interaction.continuationPolicy === "wake_assignee" && interaction.sourceRunId === runId
+    && ["id", "companyId", "issueId"].every(key => typeof interaction[key] === "string" && Boolean(interaction[key]));
 }
 
 /** Reject an oversized approval document; never silently approve a truncated revision. */

@@ -211,6 +211,7 @@ export function buildMatrixJobs(
       executionId: execution.id,
       suiteId: execution.suite.id,
       profileId: execution.profile.id,
+      ...(execution.profile.qualificationCandidate ? { qualificationCandidate: execution.profile.qualificationCandidate } : {}),
       credentialName: execution.profile.credential,
       environmentId: execution.environment.id,
       caseId: execution.task.id,

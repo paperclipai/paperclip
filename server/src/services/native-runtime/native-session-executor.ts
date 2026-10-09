@@ -4,6 +4,7 @@ import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { CURSOR_DISTRIBUTION_PINS, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
+import { readProviderUsageBilling } from "../../vendor/paperclip-runner/index.js";
 import { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
@@ -76,7 +77,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
 } from "../../adapters/index.js";
-import { usdToUnits, type NativeFinalizationResult } from "@paperclipai/shared";
+import { usdToUnits, questionSetToAskUserQuestionsPayload, type AskUserQuestionsPayload, type NativeFinalizationResult } from "@paperclipai/shared";
 import type {
   HarnessRuntimeRequestResolution,
   NativeExecutionInput,
@@ -721,24 +722,12 @@ type RuntimeQuestionFallback = {
   continuationPolicy: "wake_assignee";
   payload: {
     version: 1;
-    title?: string;
-    submitLabel?: string;
+    title?: string | null;
+    submitLabel?: string | null;
     supersedeOnUserComment: false;
     runtimeRequestId: string;
     questionSet: PaperclipQuestionSet;
-    questions: Array<{
-      id: string;
-      prompt: string;
-      helpText?: string;
-      selectionMode: "single" | "multi";
-      required: boolean;
-      options: Array<{
-        id: string;
-        label: string;
-        description?: string;
-        freeText?: boolean;
-      }>;
-    }>;
+    questions: AskUserQuestionsPayload["questions"];
   };
 };
 
@@ -774,35 +763,7 @@ export function runtimeQuestionFallbackFromEvent(
   } catch {
     return null;
   }
-  const questions = questionSet.questions.map((question) => ({
-    id: question.id,
-    prompt: question.prompt,
-    ...(question.helpText ? { helpText: question.helpText } : {}),
-    selectionMode:
-      question.answerMode === "multi_select"
-        ? ("multi" as const)
-        : ("single" as const),
-    required: question.required,
-    options:
-      question.answerMode === "text"
-        ? [
-            {
-              id: "__paperclip_text__",
-              label:
-                question.textValidation?.inputType === "integer"
-                  ? "Enter an integer"
-                  : question.textValidation?.inputType === "number"
-                    ? "Enter a number"
-                    : "Enter your answer",
-              freeText: true,
-            },
-          ]
-        : (question.options ?? []).map((option) => ({
-            id: option.id,
-            label: option.label,
-            ...(option.description ? { description: option.description } : {}),
-          })),
-  }));
+  const storagePayload = questionSetToAskUserQuestionsPayload(questionSet);
   return {
     kind: "ask_user_questions",
     idempotencyKey: `runtime-input-durable:v1:${event.runId}:${request.requestId}`,
@@ -811,15 +772,11 @@ export function runtimeQuestionFallbackFromEvent(
     summary: questionSet.description?.slice(0, 1000) ?? null,
     continuationPolicy: "wake_assignee",
     payload: {
-      version: 1,
-      ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
-      ...(questionSet.submitLabel
-        ? { submitLabel: questionSet.submitLabel.slice(0, 120) }
-        : {}),
+      ...storagePayload,
       supersedeOnUserComment: false,
       runtimeRequestId: request.requestId,
       questionSet,
-      questions,
+      questions: storagePayload.questions,
     },
   };
 }
@@ -7975,9 +7932,11 @@ async function executePaperclipNativeSessionWithinScope(
   let observedAccountingUsage: Record<string, unknown> | null = null;
   let observedAccountingTurn: string | undefined;
   let nativeAccountingComplete = false;
+  let nativeSettlementReady = false;
   // OpenCode and ACPX report their current turn; Codex reports a cumulative run delta.
   // Rebuild per-turn state from the durable event log when a controller resumes.
-  const turnAccounting = ["opencode", "acpx"].includes(input.execution.provider.kind) ? createNativeTurnAccounting(input.execution.provider) : null;
+  const selectedBiller = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity).biller;
+  const turnAccounting = ["opencode", "acpx"].includes(input.execution.provider.kind) ? createNativeTurnAccounting(input.execution.provider, selectedBiller) : null;
   if (turnAccounting) {
     const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
@@ -7986,22 +7945,28 @@ async function executePaperclipNativeSessionWithinScope(
     )).orderBy(heartbeatRunEvents.seq);
     for (const row of history) turnAccounting.observe(record(row.payload).prpEvent as PrpEvent);
   }
-  const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean) => {
+  const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean, settlementReady = false) => {
     const accountingUsage = normalizeNativeUsage(usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
-    const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider) : undefined;
+    const hermes = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "hermes";
+    const accountingCost = accountingUsage || hermes ? nativeUsageCostUsd(usage, input.execution.provider, selectedBiller) : undefined;
     complete = complete && accountingUsage !== undefined;
-    const costStatus = complete && usage?.accountingCostIncomplete !== true
-      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" as const : undefined
+    const settlement = hermes && settlementReady ? { schema: "paperclip.accounting.settlement/v1" as const, providerWorkEnded: true as const, usageComplete: complete } : undefined;
+    const costStatus = (complete || settlementReady) && usage?.accountingCostIncomplete !== true
+      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" as const : nativeHermesPriceEvidence(usage, input.execution.provider, selectedBiller) ? "reported" as const : undefined
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
-    await input.onUsage?.({ usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
-      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus });
+    await input.onUsage?.({ usage: accountingUsage, ...billing, complete, settlement, usageBasis: "per_run", costUsdExact,
+      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
+      ...nativeHermesPriceEvidence(usage, input.execution.provider, selectedBiller) });
     if (!input.onUsage) await input.db.update(heartbeatRuns).set({
       costAccountingPending: true,
       usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
-        ...accountingUsage, ...billing, accountingReceiptReady: complete, model: input.execution.provider.model ?? "unknown",
+        ...(settlement?.usageComplete === false ? { inputTokens: null, outputTokens: null, cachedInputTokens: null, cacheWriteTokens: null } : accountingUsage),
+        ...billing, accountingReceiptReady: complete || !!settlement, accountingSettlement: settlement ?? null,
+        accountingUsageComplete: complete, model: input.execution.provider.model ?? "unknown",
         costUsd: accountingCost ?? null, costUsdExact: costUsdExact ?? null, costStatus: costStatus ?? null, usageSource: "per_run",
+        ...nativeHermesPriceEvidence(usage, input.execution.provider, selectedBiller),
       })}::jsonb`,
     }).where(and(eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), isNull(heartbeatRuns.costAccountedAt)));
   };
@@ -8850,14 +8815,29 @@ async function executePaperclipNativeSessionWithinScope(
     // session.usage() may be an attachment baseline, a partial report, or a
     // cumulative session total. Use the observed run delta, and require its
     // turn to match the terminal result before certifying it as complete.
+    if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "hermes"
+        && native.settledUsageEvent) {
+      // The runtime returns this fact only after the exact per-turn close.
+      // Persist through the existing durable receipt path; never infer price
+      // from a session usage baseline or reopen the terminated event consumer.
+      const event = native.settledUsageEvent;
+      if (!validatePrpEvent(event).ok || event.runId !== input.execution.binding.runId
+          || event.normalizedSessionId !== native.normalizedSessionId
+          || event.turnId !== native.turnId || event.eventType !== "item.completed"
+          || event.sourceKind !== "runner" || event.payload.kind !== "usage") {
+        throw new Error("native shutdown accounting event binding mismatch");
+      }
+      await observeAccountingEvent(event);
+    }
     if (turnAccounting) {
       const snapshot = turnAccounting.finish(native.turnId);
       observedAccountingUsage = snapshot.usage;
       nativeAccountingComplete = snapshot.complete && snapshot.turnId === native.turnId;
+      nativeSettlementReady = snapshot.settlementReady && snapshot.turnId === native.turnId;
     } else nativeAccountingComplete = observedAccountingUsage !== null
       && observedAccountingTurn !== undefined && observedAccountingTurn === native.turnId;
     native = { ...native, usage: observedAccountingUsage };
-    await persistAccountingUsage(native.usage, nativeAccountingComplete);
+    await persistAccountingUsage(native.usage, nativeAccountingComplete, nativeSettlementReady);
     try {
       await completeManagedNativeCredentialTurn(managedCredentialSession);
     } catch {
@@ -9500,13 +9480,15 @@ async function executePaperclipNativeSessionWithinScope(
     ...resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity),
     model: input.execution.provider.model,
     usage: normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" }),
-    costUsd: input.execution.provider.kind !== "openai_dot" && normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" })
-      ? nativeUsageCostUsd(native.usage, input.execution.provider) ?? null : null,
+    costUsd: input.execution.provider.kind !== "openai_dot" && ((input.execution.provider.kind === "acpx" && input.execution.provider.agent === "hermes") || normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" }))
+      ? nativeUsageCostUsd(native.usage, input.execution.provider, selectedBiller) ?? null : null,
     costUsdExact: typeof native.usage?.accountingCostUsdExact === "string" ? native.usage.accountingCostUsdExact : undefined,
-    costStatus: nativeAccountingComplete && native.usage?.accountingCostIncomplete !== true
-      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" : undefined
+    costStatus: (nativeAccountingComplete || nativeSettlementReady) && native.usage?.accountingCostIncomplete !== true
+      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" : nativeHermesPriceEvidence(native.usage, input.execution.provider, selectedBiller) ? "reported" : undefined
       : "unpriced",
     usageComplete: nativeAccountingComplete,
+    ...(nativeSettlementReady ? { settlement: { schema: "paperclip.accounting.settlement/v1" as const, providerWorkEnded: true as const, usageComplete: nativeAccountingComplete } } : {}),
+    ...nativeHermesPriceEvidence(native.usage, input.execution.provider, selectedBiller),
     usageBasis: "per_run",
     nativeFinalization: finalization,
   };
@@ -9575,25 +9557,41 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
   return "openai";
 }
 
-function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
+export function createNativeTurnAccounting(provider: NativeExecutionInput["provider"], selectedBiller?: string | null) {
+  const hermes = provider.kind === "acpx" && provider.agent === "hermes";
   const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean }>();
   const sequences = new Map<string, number>();
   let currentTurn: string | undefined;
   const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
   const snapshot = () => {
-    if (turns.size === 0) return { usage: null, turnId: undefined, complete: false };
+    if (turns.size === 0) return { usage: null, turnId: undefined, complete: false, settlementReady: false };
     let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
     let cost = 0n, costKnown = false, costIncomplete = false, complete = true;
+    let requestCount = 0, reportedRequestCount = 0;
+    let tokensComplete = true;
+    let settlementReady = hermes;
     for (const [turnId, turn] of turns) {
       const normalized = normalizeNativeUsage(turn.usage);
+      tokensComplete &&= normalized !== undefined;
       complete &&= turnId !== "unattributed" && turn.terminal && normalized !== undefined;
       inputTokens += (normalized?.inputTokens ?? 0) - (normalized?.cacheWriteTokens ?? 0);
       outputTokens += normalized?.outputTokens ?? 0;
       cacheReadTokens += normalized?.cachedInputTokens ?? 0;
       cacheWriteTokens += normalized?.cacheWriteTokens ?? 0;
-      const price = nativeUsageCostUsd(turn.usage, provider);
+      const price = nativeUsageCostUsd(turn.usage, provider, selectedBiller);
+      const billing = provider.kind === "acpx" && provider.agent === "hermes"
+        ? readProviderUsageBilling(turn.usage?.billing) : null;
+      settlementReady &&= turnId !== "unattributed" && turn.terminal && billing !== null
+        && selectedBiller === billing.biller && turn.usage !== null && nativeUsageMeasurement(turn.usage).providerCostUsd === billing.amountUsd;
       if (price === undefined) costIncomplete = true;
-      else { cost += usdToUnits(price); costKnown = true; }
+      else {
+        cost += usdToUnits(billing?.amountUsdExact ?? price); costKnown = true;
+        if (billing) {
+          costIncomplete ||= !billing.complete;
+          requestCount += billing.requestCount;
+          reportedRequestCount += billing.reportedRequestCount;
+        }
+      }
     }
     // A free empty attempt contributes no price evidence for later paid work.
     // Keep an incomplete zero subtotal absent so complete aggregate tokens can
@@ -9602,9 +9600,16 @@ function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) 
     const runDelta = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
       ...(retainCost ? { providerCostUsd: Number(cost) / 1_000_000_000 } : {}) };
     const current = currentTurn ? turns.get(currentTurn) : undefined;
-    return { usage: { runDelta, accountingCostIncomplete: costIncomplete,
-      ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
-      turnId: current && normalizeNativeUsage(current.usage) ? currentTurn : undefined, complete };
+    const costExact = `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}`;
+    return { usage: { runDelta, runDeltaComplete: hermes ? tokensComplete : true, accountingCostIncomplete: costIncomplete,
+      ...(retainCost && provider.kind === "acpx" && provider.agent === "hermes" ? { billing: {
+        schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
+        complete: !costIncomplete, requestCount, reportedRequestCount,
+        amountUsd: Number(costExact), amountUsdExact: costExact,
+      } } : {}),
+      ...(retainCost ? { accountingCostUsdExact: costExact } : {}) },
+      turnId: current && (normalizeNativeUsage(current.usage) || (settlementReady && readProviderUsageBilling(current.usage?.billing))) ? currentTurn : undefined,
+      complete, settlementReady };
   };
   return {
     observe(event: PrpEvent) {
@@ -9628,7 +9633,8 @@ function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) 
       if (payload.kind === "usage") {
         const usage = record(payload.usage);
         turn.usage = Object.hasOwn(usage, "runDelta")
-          ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete } : null;
+          ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete,
+            ...(usage.billing === undefined ? {} : { billing: usage.billing }) } : null;
       }
       if (terminal) turn.terminal = true;
       turns.set(key, turn);
@@ -9646,11 +9652,20 @@ function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) 
 export function nativeUsageCostUsd(
   usage: Record<string, unknown> | null,
   provider?: NativeExecutionInput["provider"],
+  selectedBiller?: string | null,
 ) {
   // The ACP normalization contract fills absent per-turn cost with zero and
   // reports actual cost cumulatively. Until it carries an authoritative run
   // delta with provenance, neither value is a candidate's billed USD receipt.
-  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi", "hermes"].includes(provider.agent)) return undefined;
+  if (provider?.kind === "acpx" && provider.agent === "hermes") {
+    const billing = readProviderUsageBilling(usage?.billing);
+    if (!usage || !billing || selectedBiller !== billing.biller
+      || nativeUsageMeasurement(usage).providerCostUsd !== billing.amountUsd) return undefined;
+    // Explicit provider-reported zero is authoritative only for a complete
+    // receipt. Positive observed subtotals survive an incomplete request set.
+    return billing.complete || billing.amountUsd > 0 ? billing.amountUsd : undefined;
+  }
+  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
@@ -9666,6 +9681,12 @@ export function nativeUsageCostUsd(
     typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
   if (currency !== "USD") return undefined;
   return numericUsageField(cost, ["amount", "total"]);
+}
+
+function nativeHermesPriceEvidence(usage: Record<string, unknown> | null, provider: NativeExecutionInput["provider"], selectedBiller?: string | null) {
+  if (provider.kind !== "acpx" || provider.agent !== "hermes" || nativeUsageCostUsd(usage, provider, selectedBiller) === undefined) return undefined;
+  return { pricingProvenance: { source: "provider_reported" as const, version: "hermes-openrouter-wire/v1",
+    evidence: "Selected-account OpenRouter response usage.cost; incomplete attempts remain unpriced." } };
 }
 
 /** Billing identity follows the selected runtime and resolved credentials.

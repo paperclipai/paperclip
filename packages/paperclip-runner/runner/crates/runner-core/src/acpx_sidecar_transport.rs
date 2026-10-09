@@ -225,12 +225,41 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<Value, LocalRunnerError> {
+        self.request_with_timeout(command, params, self.request_timeout)
+    }
+
+    /// Cold native admission has a separate bound; later commands retain the
+    /// configured transport deadline, including cancellation and shutdown.
+    pub fn open_session(
+        &mut self,
+        params: Value,
+        startup_timeout: Duration,
+    ) -> Result<Value, LocalRunnerError> {
+        if startup_timeout < Duration::from_millis(1) || startup_timeout > Duration::from_secs(120)
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX session startup timeout must be in the range 1 ms through 120 s",
+            ));
+        }
+        self.request_with_timeout(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            params,
+            startup_timeout,
+        )
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, LocalRunnerError> {
         if self.poisoned {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar transport is unavailable after a protocol failure",
             ));
         }
-        let result = self.request_inner(command, params);
+        let result = self.request_inner(command, params, timeout);
         match result {
             Ok(CommandOutcome::Success(value)) => Ok(value),
             Ok(CommandOutcome::Rejected(error)) => Err(error),
@@ -277,6 +306,7 @@ impl AcpxSidecarTransport {
         &mut self,
         command: GeneratedAcpxSidecarCommand,
         params: Value,
+        timeout: Duration,
     ) -> Result<CommandOutcome, LocalRunnerError> {
         if !params.is_object() {
             return Err(LocalRunnerError::invalid(
@@ -311,7 +341,7 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let deadline = Instant::now() + self.request_timeout;
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {

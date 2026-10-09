@@ -13,6 +13,7 @@ import type {
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import { HarnessOperationAlreadyTerminalError } from "../contracts/harness-driver.js";
 import type {
   PrpEvent,
   PrpTerminalState,
@@ -762,7 +763,11 @@ class HarnessNativeSession implements NativeSession {
                 reason: input.reason,
                 signal: input.signal,
               }),
-            ),
+            ).catch(error => {
+              // Cancellation already revoked output synchronously. A native
+              // turn that ended before its passive interrupt needs no stop.
+              if (!(error instanceof HarnessOperationAlreadyTerminalError)) throw error;
+            }),
     };
   }
 
@@ -871,6 +876,10 @@ class HarnessNativeSession implements NativeSession {
 
   async usage(): Promise<Record<string, unknown> | null> {
     return this.#withProtocolIntegrity(() => this.#session.usage?.() ?? null);
+  }
+
+  async accountingUsageEvent(): Promise<PrpEvent | null> {
+    return this.#withProtocolIntegrity(() => this.#session.accountingUsageEvent?.() ?? null);
   }
 
   close(input: { reason: string }) {

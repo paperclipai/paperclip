@@ -157,7 +157,7 @@ export function mapTerminalTurn(
           : status === "cancelled"
             ? "turn.cancelled"
             : "turn.completed";
-    state.cancelPendingRequests("turn_terminal");
+    state.cancelPendingRequests("turn_terminal", status === "cancelled" ? turnId : undefined);
     state.activeTurnId = null;
     state.turnStarted = false;
     state.emit(

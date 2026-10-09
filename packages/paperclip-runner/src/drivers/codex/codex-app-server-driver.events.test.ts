@@ -68,6 +68,43 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "canonical delta channel verified" });
   });
 
+  it.each([true, false].flatMap(defer => ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation"].map(kind => ({ defer, kind }))))("orders committed bridge human input results after native usage only for the managed policy ($kind, $defer)", async ({ defer, kind }) => {
+    const transport = new FakeCodexTransport();
+    const committed = { disposition: "applied", interaction: { id: "question", companyId: "company", issueId: "issue",
+      sourceRunId: "run-question", kind, status: "pending", continuationPolicy: "wake_assignee" } };
+    const session = await makeDriver([transport], { deferCommittedHumanInputResults: defer,
+      dynamicTools: [{ name: "request_human_input", inputSchema: { type: "object" } }],
+      dynamicToolHandler: async () => committed,
+    }).openSession({ runId: "run-question", normalizedSessionId: "normalized-question", workingDirectory: WORKSPACE });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Ask the assigned question" } });
+    const events: PrpEvent[] = [];
+    const collected = (async () => {
+      for await (const event of session.events()) {
+        events.push(event);
+        if (["turn.completed", "turn.interrupted", "turn.failed"].includes(event.eventType)) return;
+      }
+    })();
+    await transport.invoke({ id: "question-rpc", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId, callId: "question-call", tool: "request_human_input", arguments: {},
+    } });
+    const completedQuestion = (event: PrpEvent) => event.eventType === "item.completed" && event.payload.kind === "dynamicToolCall";
+    await vi.waitFor(() => expect(events.some(event => event.eventType === "item.started")).toBe(true));
+    if (defer) expect(events.some(completedQuestion)).toBe(false);
+    else await vi.waitFor(() => expect(events.some(completedQuestion)).toBe(true));
+    transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId,
+      tokenUsage: { total: { inputTokens: 10, outputTokens: 5 } },
+    });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "interrupted", items: [] } });
+    await collected;
+    const questionIndex = events.findIndex(completedQuestion);
+    const usageIndex = events.findIndex(event => event.payload.kind === "usage");
+    expect(questionIndex).toBeGreaterThanOrEqual(0);
+    if (defer) expect(questionIndex).toBeGreaterThan(usageIndex);
+    else expect(questionIndex).toBeLessThan(usageIndex);
+    expect(events[questionIndex]?.payload.item).toMatchObject({ id: "question-call", result: committed });
+    await session.close({ reason: "bridge question ordering verified" });
+  });
+
   it("admits a strictly bound semantic result from the durable runner", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -372,6 +409,32 @@ describe("Codex app-server Codex driver", () => {
     expect(await session.usage()).toMatchObject({
       total: { inputTokens: 10, outputTokens: 4 },
     });
+  });
+
+  it("retains bound usage from shutdown after the transcript consumer relinquishes ownership", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-shutdown-usage", normalizedSessionId: "normalized-shutdown-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Ask a question." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const originalClose = transport.close.bind(transport);
+    transport.close = async () => {
+      transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId,
+        tokenUsage: { total: { inputTokens: 31, outputTokens: 7 } } });
+      transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "interrupted", items: [] } });
+      await originalClose();
+    };
+    // The public event queue closes before transport.close emits its suffix.
+    expect(await session.accountingUsageEvent?.()).toBeNull();
+    await session.close({ reason: "durable question yield" });
+    const receipt = await session.accountingUsageEvent?.();
+    expect(receipt).toMatchObject({ sourceKind: "runner", runId: "run-shutdown-usage",
+      normalizedSessionId: "normalized-shutdown-usage", turnId: turn.turnId,
+      eventType: "item.completed", payload: { kind: "usage", usage: { runDelta: { inputTokens: 31, outputTokens: 7 }, runDeltaComplete: true } } });
+    expect(validatePrpEvent(receipt).ok).toBe(true);
+    receipt!.payload.kind = "mutated";
+    expect((await session.accountingUsageEvent?.())?.payload.kind).toBe("usage");
   });
 
   it("normalizes provider message and reasoning phases onto every streamed item event", async () => {

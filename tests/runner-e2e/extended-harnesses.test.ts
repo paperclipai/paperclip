@@ -7,7 +7,7 @@ import { findSecretLeak, redactText } from "./redaction.js";
 const selected = runnerMatrix.filter(cell => cell.suite.id === "extended-harnesses");
 describe("extended ACP harness qualification", () => {
   it("has exactly five real product journeys per provider in both environments, excluded from all", () => {
-    expect(selected).toHaveLength(30);
+    expect(selected).toHaveLength(40);
     expect(new Set(selected.map(cell => cell.environment.id))).toEqual(new Set(["local", "daytona"]));
     expect(new Set(selected.map(cell => cell.task.id))).toEqual(new Set([
       "hello-complete", "question-resume-complete", "plan-approve-complete", "structured-question-restart-resume", "file-edit-validate",
@@ -18,6 +18,7 @@ describe("extended ACP harness qualification", () => {
   });
   it("uses exact discovered models, encrypted credential references and current qualification metadata", () => {
     expect(extendedHarnessProfiles.map(profile => profile.model)).toEqual([
+      "deepseek/deepseek-v4-flash-0731",
       "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "gpt-5.6-luna", "openrouter/deepseek/deepseek-v4-flash-0731",
     ]);
     for (const profile of extendedHarnessProfiles) {
@@ -28,7 +29,7 @@ describe("extended ACP harness qualification", () => {
     }
   });
   it("replaces ambient admission with the selected exact pairs and strips raw provider credentials from server", () => {
-    const cell = selected[0]!;
+    const cell = selected.find(cell => cell.profile.qualificationCandidate === "cursor")!;
     const ambient = { PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient", CURSOR_AUTH_TOKEN: "cursor", CURSOR_API_KEY: "cursor-key", COPILOT_GITHUB_TOKEN: "copilot", GH_TOKEN: "github", GITHUB_TOKEN: "github" };
     const env = buildRunnerE2EProcessEnvironment(ambient, [cell]);
     expect(env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();

@@ -69,6 +69,8 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
+    { "if": { "properties": { "eventType": { "const": "usage.reported" } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "billing": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing" } } } } } },
+    { "if": { "properties": { "payload": { "type": "object", "required": ["kind", "usage"], "properties": { "kind": { "const": "usage" }, "usage": { "type": "object", "required": ["billing"] } } } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "usage": { "type": "object", "properties": { "billing": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing" } } } } } } } },
     { "if": { "properties": { "eventType": { "const": "plan.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan" } } } },
     { "if": { "properties": { "eventType": { "enum": ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution" } } } },
     { "if": { "properties": { "eventType": { "enum": ["research.started", "research.progressed", "research.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/research" } } } },

@@ -21,12 +21,21 @@ node packages/paperclip-runner/scripts/provision-hermes.mjs \
 # Linux amd64 uses the linux-x64 destination instead.
 ```
 
+For an installed public package, run `paperclipai runtime setup hermes` as the
+same OS user that runs Paperclip. The command uses the packaged setup entrypoint
+and materializer, downloads public pinned dependencies without model calls, and
+verifies all execution bytes before publishing the runtime to
+`~/.paperclip/runtimes/hermes/<platform>/<closure-digest>`. It re-verifies an
+existing installation and refuses to overwrite invalid state. Setup is explicit;
+npm lifecycle hooks and agent turns do not provision Python. Read-only or global
+npm installations use this account cache without writing to the package directory.
+
 The materializer emits a complete closure digest. Compare it with the reviewed
-platform pin in `hermes-installation.ts`; never adopt an unexpected digest at
+platform pin in `hermes-distributions.ts`; never adopt an unexpected digest at
 runtime. Runtime launch verifies the installed bytes and host sandbox before
 credential staging, then opens a private verified snapshot for execution.
 Python uses `-I -B` and the bundled interpreter.
-The npm package carries the bridge and provisioner; Python is a separately
+The public server package carries the bridge, provisioner and materializer; Python is a separately
 provisioned asset, included by `--candidate-providers=hermes` in provider packs.
 
 macOS command tools require `sandbox-exec`. Linux command tools require
@@ -67,6 +76,13 @@ working copy and assigned tool bindings. The session still pins prompt, bundle,
 skill, connection, model, and permission identities. Unknown policy changes and
 changes within the same run are rejected.
 
+Native session admission has a 60-second bound for the verified private Python
+copy and ACP initialization. The controller allows 75 seconds around cold
+startup, recovery and later-turn restoration. Once a turn is accepted, its
+start-event deadline remains 30 seconds. Ordinary commands, cancellation and
+process cleanup retain their existing bounds; this startup allowance does not
+extend the task's execution deadline.
+
 ## Interaction contract
 
 - Reasoning and assistant text use distinct message identities. Native tool
@@ -90,8 +106,53 @@ changes within the same run are rejected.
 - Restored history is recorded without becoming new assistant text or live tools.
 - Restoration requires nonempty native history and follows the native
   compaction chain. Missing history and failed persistence are errors.
-- Usage is a per-prompt delta. Native price calculations are labeled estimates;
-  missing receipts and unverified billed cost are unavailable, not zero.
+- Usage is a per-prompt delta. Clients negotiate `billingReceipts: 1` inside
+  `_meta.paperclipHermes`; the optional closed `paperclip.usage.billing/v1`
+  receipt remains replay-compatible with older events.
+- For the managed OpenRouter Chat Completions route, the bridge observes the
+  pinned SDK's wire responses and sums provider-reported `usage.cost`, including
+  retries and auxiliary synchronous calls. The receipt carries request counts,
+  completeness and an exact nine-decimal USD amount. Paperclip binds it to the
+  selected OpenRouter billing identity and the current native turn before
+  using it for accounting. Cumulative session cost and native model-price
+  estimates cannot supply this receipt.
+- During Stop, requests and steering close immediately. The same admitted
+  Hermes prompt may still deliver its final usage notification with the exact
+  native session and turn token before prompt settlement. Stream or process
+  closure ends that receipt window. Missing charges remain unpriced.
+- Failed, interrupted, unsupported asynchronous and background delegated work
+  leave measurement totals incomplete. Known positive reported subtotals survive, but
+  missing charges remain unpriced. Explicit reported zero is accepted only for
+  a complete receipt. Other provider/protocol routes retain their existing
+  unavailable billed-cost behavior. Complete live billing, including delegated
+  work, remains a qualification gate; these checks do not qualify a provider.
+- Once the native provider boundary closes, an optional versioned accounting
+  settlement can acknowledge that known subtotal even when tokens or charges
+  are incomplete. Missing token totals stay unknown, incomplete charges stay
+  unpriced, and the existing controller finalization and capture-failure fences
+  still control acknowledgement. Older incomplete receipts remain pending.
+- A governed input wait can stop transcript consumption before native usage
+  arrives. For Hermes's per-turn lifecycle, the runtime joins the authenticated
+  notification mapper after owned shutdown and reads its last usage event.
+  This read-only fact must match the original runner, session, run and turn,
+  then enters the existing durable accounting journal. It cannot reopen tool
+  authority. Missing, invalid or timed-out reads do not invent usage or cost.
+  This optional execution-result field carries an existing v1 PRP event; it
+  does not change persisted execution inputs or the Rust wire contract.
+- An applied pending `request_human_input` response for a question, confirmation
+  or checkbox confirmation stops Hermes in its native
+  tool completion callback, before another model request. The bridge publishes
+  that tool's completed result after native finalization. Both Runner event
+  pumps read the prompt usage receipt before forwarding this completion to the
+  controller. The tool bridge also defers its own completed human-input fact until
+  the native terminal notification, which follows that receipt. The managed
+  Hermes profile selects this launch policy; other profiles retain their
+  existing order. Other tool activity still streams immediately. Tool identities
+  and results are preserved; wait and accounting authority remain with the
+  controller. Missing usage remains unknown.
+- Paperclip owns task titles. Hermes keeps its immediate derived session title;
+  its paid background title upgrade is disabled in the managed profile so it
+  cannot start inference after a turn's usage receipt has closed.
 
 The managed execution middleware applies planning/read-only, protected-path and
 permission policy to inline, concurrent and delegated native tools. Assigned
@@ -139,10 +200,24 @@ pnpm test:e2e:runner -- --id extended-harnesses.runner-acpx-hermes.local.hello-c
 
 The opt-in transport tests execute the pinned native process against a
 deterministic HTTP model fixture. It is not paid-model, browser or Daytona
-qualification. One test exercises the ACPX host directly; the other includes
-TypeScript, Rust PRP, the packaged sidecar, image delivery and semantic task
-completion. The companion Product E2E catalog contains five local and five Daytona
+qualification. The fixtures exercise the ACPX host and the full TypeScript,
+Rust PRP and packaged sidecar path, including image delivery and semantic task
+completion. Native question batches cover single selection, multiple selection,
+custom answers and free text. They require one callback result, reject a second
+answer, and check both question cancellation and Stop during a pending question.
+Stop must prevent a later model request and cannot produce task completion.
+The companion Product E2E catalog contains five local and five Daytona
 Hermes cells using a managed OpenRouter connection. Each connection method,
 native control, attachment, persistence, remote restoration and permission mode
 must pass its release criterion with inspectable live evidence before promotion.
 The implementation record is included in that qualification PR.
+
+The `Hermes Native Transport` PR workflow builds and runs the same native fixtures
+on GitHub-hosted Linux amd64 and Mac arm64, with a stripped provider environment
+and deterministic loopback endpoints. Its CI artifacts include source checkout
+and tree identity, runtime closure, tool versions, fixture logs, and a checksum
+for the exact staged daemon used by the fixtures. A binary archive preserves
+executable permissions for subsequent acceptance work without local Rust builds.
+Check the recorded job and fixture outcome before using an artifact; failed jobs
+also retain evidence. This is credential-free transport and host-sandbox evidence;
+it does not replace paid-provider, browser, subscription or Daytona qualification.

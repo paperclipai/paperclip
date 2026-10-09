@@ -25,7 +25,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:AWS|OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -116,6 +116,7 @@ export function buildRunnerE2EProcessEnvironment(
     const agent = execution.profile.qualificationCandidate;
     if (!agent || agent === "cursor") continue;
     const admittedSuite = execution.suite.id === "extended-harnesses"
+      || (["hermes-api-connections", "hermes-bedrock-connections", "hermes-native-interactions", "hermes-image-input"].includes(execution.suite.id) && agent === "hermes")
       || execution.suite.id === "rich-acp-warm-continuity";
     if (!admittedSuite || !execution.suite.manualOnly) {
       throw new Error("Candidate qualification requires an explicit provider qualification suite");

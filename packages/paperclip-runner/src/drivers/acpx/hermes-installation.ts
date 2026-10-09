@@ -3,28 +3,27 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
 import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
+import { resolveHermesDistributionRoot } from "./hermes-runtime-cache.js";
+import { HERMES_CLOSURES } from "./hermes-distributions.js";
+export { HERMES_CLOSURES } from "./hermes-distributions.js";
 import type { QualifiedAcpxProfile } from "./qualified-profiles.js";
 
 // Pins are produced by explicit provisioning and reviewed alongside the bridge.
 // An unbuilt target has no admission pin; it must not inherit a different ABI.
-export const HERMES_CLOSURES: Readonly<Record<string, string>> = Object.freeze({
-  "darwin-arm64": "bfcecaac5e187b083955eba33490ac6772dc60ced8dec830b97f9d70456b1c3e",
-  "linux-x64": "ce8ffb831b113e569f537a37bd3841e561c6f157959959fbba8c6e5b7898f6f8",
-});
 export async function verifyHermesInstallation(profile: QualifiedAcpxProfile): Promise<VerifiedAcpxInstallation> {
   if (profile.agent !== "hermes" || profile.agentServerPackage !== "builtin:hermes-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:hermes" || profile.agentRuntimeVersion !== "v2026.9.24") throw new Error("Hermes native profile identity mismatch");
   const platform = `${process.platform}-${process.arch}`;
   const expectedClosureSha256 = HERMES_CLOSURES[platform];
   if (!expectedClosureSha256) throw Object.assign(new Error(`Hermes ${platform} runtime is pending qualification; provision and verify its pinned Python distribution first`), { code: "HERMES_RUNTIME_UNAVAILABLE" });
-  const distributionRoot = join(resolveRunnerProviderAssetsRoot(import.meta.url, "hermes"), platform);
   let installation: VerifiedAcpxInstallation;
   try {
+    const distributionRoot = resolveHermesDistributionRoot(resolveRunnerProviderAssetsRoot(import.meta.url, "hermes"), expectedClosureSha256, process.platform, process.arch);
     installation = await verifyNativeAcpxInstallation({
       distributionRoot, manifestPath: join(distributionRoot, "manifest.json"), expectedClosureSha256,
       executable: "python/bin/python3.12", pythonEntrypoint: "entry.py", fixedArguments: [],
     });
   } catch (error) {
-    throw Object.assign(new Error(`Hermes runtime is unavailable or does not match the pinned distribution. Run scripts/provision-hermes.mjs for ${platform} before selecting Hermes.`, { cause: error }), { code: "HERMES_RUNTIME_UNAVAILABLE" });
+    throw Object.assign(new Error(`Hermes runtime is unavailable or does not match the pinned distribution. Run paperclipai runtime setup hermes as the OS user that runs Paperclip for ${platform}. An invalid installation is never replaced automatically.`, { cause: error }), { code: "HERMES_RUNTIME_UNAVAILABLE" });
   }
   await verifyHermesCommandSandbox();
   return Object.freeze({ ...installation, commandDigest: profile.commandDigest });

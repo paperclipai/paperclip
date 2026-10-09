@@ -9,6 +9,12 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const verifiedProviderEntrypoints = Object.freeze([
   Object.freeze({
+    name: "provision-hermes",
+    source: resolve(packageRoot, "scripts/setup-hermes-runtime.mjs"),
+    output: resolve(packageRoot, "dist/cli/provision-hermes.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/provision-hermes.cjs"),
+  }),
+  Object.freeze({
     name: "provision-cursor",
     source: resolve(packageRoot, "scripts/provision-cursor.mjs"),
     output: resolve(packageRoot, "dist/cli/provision-cursor.js"),
@@ -59,6 +65,7 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
   if (write) {
     await mkdir(resolve(packageRoot, "dist/providers"), { recursive: true });
     await cp(resolve(packageRoot, "src/providers"), resolve(packageRoot, "dist/providers"), { recursive: true });
+    await copyFile(resolve(packageRoot, "scripts/materialize-hermes.py"), resolve(packageRoot, "dist/providers/hermes/materialize-hermes.py"));
     await copyFile(resolve(packageRoot, "cursor-distributions.json"), resolve(packageRoot, "dist/cursor-distributions.json"));
   }
   const results = [];

@@ -15,6 +15,115 @@ const everydayOracleImage =
   "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
+  it("runs native Hermes fixtures for shared sources, patches, and build inputs", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-hermes-native.yml"), "utf8");
+    const filter = workflow.slice(workflow.indexOf("    paths:"), workflow.indexOf("  workflow_dispatch:"));
+    const patterns = [...filter.matchAll(/^      - (.+)$/gmu)].map(match => match[1]!);
+    const triggers = (file: string) => patterns.some(pattern => path.matchesGlob(file, pattern));
+    for (const file of [
+      "patches/acpx@0.13.1.patch",
+      "packages/paperclip-runner/src/contracts/user-attachments.ts",
+      "packages/paperclip-runner/src/backends/codex-native-backend.ts",
+      "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+      "packages/paperclip-runner/runner/crates/runner-core/src/durable/runner.rs",
+      "packages/paperclip-runner/runner/Cargo.lock",
+      "packages/paperclip-runner/package.json",
+      "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
+      "packages/paperclip-eval-kernel/src/index.ts",
+      "packages/adapter-utils/src/paperclip-runner-permissions.ts",
+      "packages/shared/src/ai-connections.ts",
+      "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.json",
+      "tests/runner-e2e/provision-hermes-linux.sh",
+    ]) expect(triggers(file), `Missing native fixture trigger: ${file}`).toBe(true);
+    expect(triggers("README.md")).toBe(false);
+  });
+  it("keeps native Hermes PR fixtures outside paid authority and strips their child environment", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-hermes-native.yml"), "utf8");
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).not.toContain("pull_request_target:");
+    expect(workflow).not.toMatch(/\bsecrets\.|\benvironment:|\bwrite\b/);
+    expect(workflow).toContain("contents: read");
+    expect(workflow).toContain("persist-credentials: false");
+    const fixtures = workflow.slice(workflow.indexOf("      - name: Run native fixtures"), workflow.indexOf("      - name: Record source"));
+    expect(fixtures).toContain('env -i PATH="$PATH" HOME="$RUNNER_TEMP/hermes-fixture-home"');
+    expect(fixtures).toContain("PAPERCLIP_HERMES_QUALIFY=1");
+    expect(fixtures).not.toMatch(/(?:API_KEY|TOKEN|AUTH_JSON|KEEP)/);
+    expect(workflow.indexOf("Provision the pinned Python closure")).toBeLessThan(workflow.indexOf("Run native fixtures"));
+    expect(workflow.indexOf("Qualify the job's provider Node interpreter")).toBeLessThan(workflow.indexOf("Run native fixtures"));
+    expect(workflow).toContain("fs.chmodSync(process.execPath, mode & ~0o022)");
+    expect(workflow).toContain("no paid model, browser or Daytona proof");
+    const upload = workflow.slice(workflow.indexOf("      - name: Upload fixture evidence"));
+    expect(upload).toContain("hermes-native-evidence/");
+    expect(upload).not.toMatch(/hermes-fixture-home|provider-assets|runtimeDirectory/);
+  });
+  it("qualifies both native targets in cloud and binds the exported binary to the tested artifact", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-hermes-native.yml"), "utf8");
+    const targets = workflow.slice(workflow.indexOf("    strategy:"), workflow.indexOf("    timeout-minutes:"));
+    expect(targets).toContain("fail-fast: false");
+    expect(targets.match(/- name:/gu)).toHaveLength(2);
+    expect(targets).toMatch(/name: Linux amd64\s+runner: ubuntu-22\.04\s+platform: linux\s+architecture: x64/u);
+    expect(targets).toMatch(/name: Mac arm64\s+runner: macos-15\s+platform: darwin\s+architecture: arm64/u);
+    expect(targets).toContain("runs-on: ${{ matrix.runner }}");
+    expect(workflow).toContain("process.platform !== process.env.EXPECTED_PLATFORM || process.arch !== process.env.EXPECTED_ARCHITECTURE");
+    const provision = workflow.slice(workflow.indexOf("      - name: Provision the pinned Python closure"), workflow.indexOf("      - name: Run native fixtures"));
+    expect(provision).toContain('test "$(uname -s)" = Darwin');
+    expect(provision).toContain('test "$(uname -m)" = arm64');
+    expect(provision).toContain("uv==0.12.17");
+    expect(provision).toContain("provider-assets/hermes/darwin-arm64");
+    expect(provision).toContain("materializePinnedHermesDistribution");
+    expect(provision).toContain("runpy.run_path(");
+    expect(provision).toContain("scripts/materialize-hermes.py");
+    expect(provision).toContain("shutil.copyfile(Path(sys.argv[2]) / 'manifest.json'");
+    expect(provision).toContain("candidate-manifest.json");
+    expect(provision).not.toContain("HERMES_CLOSURES[");
+    const fixtures = workflow.slice(workflow.indexOf("      - name: Run native fixtures"), workflow.indexOf("      - name: Record source"));
+    expect(fixtures).toContain('PAPERCLIP_RUNNER_BINARY="$PWD/dist/bin/paperclip-runnerd"');
+    expect(fixtures).toContain('TMPDIR="$RUNNER_TEMP"');
+    const evidence = workflow.slice(workflow.indexOf("      - name: Record source"));
+    expect(evidence).toContain("prHeadSha: process.env.HERMES_PR_HEAD_SHA");
+    expect(evidence).toContain("['rev-parse', 'HEAD^{tree}']");
+    expect(evidence).toContain("const binaryPath = join(root, 'dist/bin/paperclip-runnerd')");
+    expect(evidence).toContain("createHash('sha256').update(binary).digest('hex')");
+    expect(evidence).toContain("runnerBinaryTarget(binary) !== platform");
+    expect(evidence).toContain("binarySha256, binaryBytes: binary?.byteLength ?? null");
+    expect(evidence).toContain("paperclip-runnerd.tar.gz");
+    expect(evidence).toContain("SHA256SUMS");
+    expect(evidence).toContain("hermes-native-${{ matrix.platform }}-${{ matrix.architecture }}");
+  });
+  it("provisions selected Hermes assets before credentials and uses the same selection for image identity and packs", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
+    const catalog = workflow.slice(workflow.indexOf("  catalog:"), workflow.indexOf("  daytona_image:"));
+    expect(catalog).toContain('if any(.include[]; .qualificationCandidate == "hermes") then "hermes" else "" end');
+    expect(catalog.indexOf("Validate selectors and emit matrix")).toBeLessThan(catalog.indexOf("Compute Daytona image content ID"));
+    expect(catalog).toContain('"--candidate-providers=$CANDIDATE_PROVIDERS"');
+    const image = workflow.slice(workflow.indexOf("  daytona_image:"), workflow.indexOf("  build_runner_artifacts:"));
+    expect(image).toContain('--build-arg "PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=${CANDIDATE_PROVIDERS}"');
+    const pack = workflow.slice(workflow.indexOf("  build_remote_provider_pack:"), workflow.indexOf("  test:"));
+    expect(pack).toContain("needs.catalog.outputs.candidate_providers == 'hermes'");
+    expect(pack.indexOf("Provision pinned Hermes assets")).toBeLessThan(pack.indexOf("Assemble native remote provider pack"));
+    expect(pack).toContain('"--candidate-providers=$CANDIDATE_PROVIDERS"');
+    expect(pack).not.toContain("secrets.");
+    const paid = workflow.slice(workflow.indexOf("  test:"), workflow.indexOf("  aggregate:"));
+    expect(paid).toContain("matrix.environmentId == 'local' && matrix.qualificationCandidate == 'hermes'");
+    const setup = paid.indexOf("Provision pinned Hermes before the paid local test");
+    expect(setup).toBeGreaterThan(0);
+    expect(setup).toBeLessThan(paid.indexOf("secrets.OPENROUTER_API_KEY"));
+    expect(paid.slice(setup, paid.indexOf("Install checksum-verified Grok"))).not.toContain("secrets.");
+    const provision = await readFile(path.join(repositoryRoot, "tests/runner-e2e/provision-hermes-linux.sh"), "utf8");
+    expect(provision).toContain("uv==0.12.17");
+    expect(provision).toContain("scripts/provision-hermes.mjs");
+  });
+  it("downloads and verifies qualification archives outside controller source", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
+    expect(workflow.match(/path: \$\{\{ runner.temp \}\}\/runner-e2e-build/gu)).toHaveLength(2);
+    expect(workflow.match(/path: \$\{\{ runner.temp \}\}\/runner-e2e-provider-pack/gu)).toHaveLength(1);
+    expect(workflow.match(/cd "\$RUNNER_TEMP\/runner-e2e-build"/gu)).toHaveLength(2);
+    expect(workflow).toContain('cd "$RUNNER_TEMP/runner-e2e-provider-pack"');
+    expect(workflow.match(/--file "\$RUNNER_TEMP\/runner-e2e-build\/runner-e2e-build-bundle.tar.gz"/gu)).toHaveLength(2);
+    expect(workflow).toContain('--file "$RUNNER_TEMP/runner-e2e-provider-pack/runner-e2e-provider-pack.tar.gz"');
+    expect(workflow).not.toMatch(/path: runner-e2e-(?:build|provider-pack)\n/u);
+    expect(workflow).not.toMatch(/--file runner-e2e-(?:build|provider-pack)\//u);
+  });
   it("keeps the manual EC2 image build credential-free and pins the authorized target", async () => {
     const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
     const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
@@ -545,6 +654,7 @@ describe("public repository paid workflow security", () => {
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
       OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
       XAI_API_KEY: "matrix.credentialName == 'XAI_API_KEY'",
+      GEMINI_API_KEY: "matrix.credentialName == 'GEMINI_API_KEY'",
       GROK_AUTH_JSON: "matrix.credentialName == 'GROK_AUTH_JSON'",
       DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
     })) {
@@ -573,7 +683,7 @@ describe("public repository paid workflow security", () => {
       );
       const providerSecretReferences = [
         ...contents.matchAll(
-          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g,
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GEMINI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GEMINI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g,
         ),
       ];
       if (providerSecretReferences.length > 0) {

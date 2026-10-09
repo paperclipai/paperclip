@@ -25957,10 +25957,14 @@ export function heartbeatService(
         const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
           ? null : resolveCacheAdjustedCostUsd(adapterResult);
         const usageJson: Record<string, unknown> = {
-          accountingReceiptReady: adapterResult.usageComplete !== false,
+          accountingReceiptReady: adapterResult.usageComplete !== false || adapterResult.settlement?.providerWorkEnded === true,
+          accountingSettlement: adapterResult.settlement ?? null,
+          accountingUsageComplete: adapterResult.usageComplete !== false,
           costUsdExact: adapterResult.costUsdExact ?? null,
           providerRequestId: adapterResult.providerRequestId ?? null,
-          ...(normalizedUsage ?? {}),
+          ...(adapterResult.settlement?.usageComplete === false
+            ? { inputTokens: null, outputTokens: null, cachedInputTokens: null, cacheWriteTokens: null }
+            : normalizedUsage ?? {}),
           ...(adapterResult.usageByModel ? { usageByModel: adapterResult.usageByModel } : {}),
           ...(rawUsage
             ? {

@@ -92,6 +92,13 @@ describe("live runner fixtures", () => {
   });
 
   it.each([
+    ["runner-acpx-hermes", "extended-harnesses", "hello-complete"],
+    ["runner-acpx-hermes-api-anthropic", "hermes-api-connections", "hello-complete"],
+    ["runner-acpx-hermes-api-openai", "hermes-api-connections", "hello-complete"],
+    ["runner-acpx-hermes-api-xai", "hermes-api-connections", "hello-complete"],
+    ["runner-acpx-hermes-api-google", "hermes-api-connections", "hello-complete"],
+    ["runner-acpx-hermes", "extended-harnesses", "question-resume-complete"],
+    ["runner-acpx-hermes-bedrock", "hermes-bedrock-connections", "hello-complete"],
     ["runner-codex", "hiring-templates", "hire-coder-template-reuse"],
     ["runner-acpx-claude", "hiring-templates", "hire-coder-template-reuse"],
     ["runner-codex", "everyday-workflows", "hire-reuse"],
@@ -110,12 +117,15 @@ describe("live runner fixtures", () => {
           e.environment.id === "local",
       )!;
       const provider =
-        profile === "runner-acpx-claude" ? "anthropic" : profile === "runner-opencode" ? "openrouter" : "openai";
+        profile === "runner-acpx-hermes-api-xai" ? "xai" : profile === "runner-acpx-hermes-api-google" ? "google"
+          : ["runner-acpx-claude", "runner-acpx-hermes-api-anthropic", "runner-acpx-hermes-bedrock"].includes(profile) ? "anthropic"
+          : ["runner-opencode", "runner-acpx-hermes"].includes(profile) ? "openrouter" : "openai";
       let connected = false;
+      let companyBody: any;
       let agentBody: any;
       const api = {
         async post(url: string, data: any) {
-          if (url === "/api/companies") return { id: "company", name: "Test" };
+          if (url === "/api/companies") { companyBody = data; return { id: "company", name: "Test" }; }
           if (url.endsWith("/agents")) {
             agentBody = data;
             return { id: "lead", ...data };
@@ -133,7 +143,8 @@ describe("live runner fixtures", () => {
               allAgents: false,
             });
             connected = true;
-            return { connectionId: "managed-account" };
+            expect(data.routing).toEqual(execution.profile.managedConnectionRouting);
+            return { connectionId: "managed-account", grantId: "managed-grant" };
           }
           return { id: "secret" };
         },
@@ -151,11 +162,17 @@ describe("live runner fixtures", () => {
         },
       });
       expect(connected).toBe(true);
+      if (["hermes-api-connections", "hermes-bedrock-connections"].includes(suite) || profile === "runner-acpx-hermes") {
+        expect(companyBody.budgetMonthlyCents).toBe(200);
+        expect(agentBody.budgetMonthlyCents).toBe(200);
+      }
       expect(agentBody.adapterConfig.env).toBeUndefined();
       expect(agentBody.runtimeConfig.aiConnection).toEqual({
         provider,
         method: "api_key",
-        mode: "responsible_user",
+        ...(execution.profile.managedConnectionRouting
+          ? { mode: "delegated", connectionId: "managed-account", grantId: "managed-grant" }
+          : { mode: "responsible_user" }),
       });
       expect((fixtures as any).aiConnection.connectionId).toBe(
         "managed-account",

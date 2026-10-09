@@ -30,6 +30,28 @@ public structured evidence. Treat changes to the workflow, harness, fixture
 prompts, evidence packager, and publisher as security-sensitive production
 changes.
 
+Hermes qualification defaults to 200-cent company and agent hard stops. The
+launcher can set `PAPERCLIP_RUNNER_E2E_HERMES_BUDGET_CENTS` to lower that limit
+to a whole number from 1 through 200. Invalid or unlimited values fail before
+credential handoff. Public company/agent reads and post-run settlement must
+match the captured limit. Provider-key limits, campaign reservations, and
+unknown-cost holds remain separate spending controls.
+The public budget setting is resolved from the environment or local settings
+file before catalog construction, then pinned for children. Other file settings
+and credentials still load only at the normal later admission boundary.
+
+## Short-lived Bedrock qualification
+
+The explicit-only `hermes-bedrock-connections` suite accepts a short-lived,
+region-bound `AWS_BEARER_TOKEN_BEDROCK` from the launcher. The browser fixture
+posts it through the sensitive public Connections API into encrypted storage;
+the agent selects that exact personal grant. The isolated server inherits no
+ambient `AWS_*` values, including profile, credential-file paths, static keys,
+session tokens or container-role endpoints. The selected bearer joins the
+attempt redaction set. Do not persist it in catalog data or evidence, copy an
+operator's AWS files, create a long-lived key for this fixture, or widen IAM
+permissions. The paid GitHub workflow does not supply this credential.
+
 ## GitHub authorization
 
 Set `RUNNER_E2E_ALLOWED_ACTOR_IDS` to a non-empty JSON array of numeric GitHub
@@ -318,3 +340,41 @@ Candidates have no automatic infrastructure retries; spending must be reconciled
 before a deliberate repeat.
 
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
+
+The explicit-only `hermes-native-interactions` question batch uses fixture-only
+choices and reviewer text through the normal browser and public interaction API.
+It retains only the scoped native form, callback identity, exact response and
+grading receipts alongside the existing sanitized run evidence. No private
+runner hook supplies the answer. The late duplicate probe uses the existing
+untraced public POST helper and requires its actual HTTP 409 status; response
+bodies are withheld. Source admission precedes credential handoff, both public
+budgets match the captured bounded limit, OpenRouter cost must settle, and automatic retries remain
+disabled. Registered local/Daytona cells are pending qualification, not permission
+to launch a paid campaign or a claim of remote coverage.
+
+The local native question Stop cell reads the OS process table only to observe
+the isolated run's public PID/group/start identity and descendants. It records
+PID/start-time evidence; command lines stay in memory. The fixture never signals
+those PIDs. Cancellation goes through the normal browser Stop control and public
+board API. No question answer is delivered; the only response attempt is a late
+fixture answer that must be rejected. Retained evidence uses the existing
+sanitizer and screenshot publication gates. The cell reuses the selected key
+allocation and captured bounded budgets, with zero automatic retries. It neither creates
+remote resources nor grants permission to use another secret.
+
+The expired native question must retain its versioned cancellation receipt with
+zero answers, bound to the original payload, card, company, task and source run.
+A missing result, answer actor, changed payload or submitted answer fails the
+oracle. Correcting this assertion does not regrade historical failed campaigns.
+
+`hermes-image-input` uploads a synthetic, non-secret PNG through the ordinary
+task creation UI. Its filename contains only the fixture nonce; no answer or
+instruction is placed in PNG text metadata. The expected code stays in the
+grader and is not sent in model text. Attachment downloads require the expected
+company, task, MIME, bounded size and SHA-256 before reading bytes. Persisted
+evidence retains sanitized metadata and independent content hashes, not an
+unmarked raw image or provider payload. The existing final-state screenshot
+policy still applies. Qualification is admitted only for explicit Hermes cells
+and their selected exact model. The suite reuses the existing OpenRouter key
+allocation and public company/agent budgets; it does not authorize another
+secret, a paid retry, or unconfigured remote resource creation.

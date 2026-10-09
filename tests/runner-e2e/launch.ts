@@ -47,6 +47,7 @@ import {
   selectRunnerExecutions,
 } from "./selectors.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import { prepareHermesQualificationSource } from "./hermes-source.js";
 import {
   CREDENTIAL_NAMES,
   type MatrixExecution,
@@ -970,12 +971,15 @@ async function main() {
   assertRunnerE2EPrerequisites(executions);
   assertNativeCompletionSelection(executions);
   assertNativeInstructionSelection(executions);
+  const hermesSource = prepareHermesQualificationSource(executions, repositoryRoot, process.env);
   const campaignId = cleanId(
     process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
       `local-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
   const summaryDir = path.join(resultsRoot, campaignId);
   await mkdir(summaryDir, { recursive: true });
+  if (hermesSource) await writeFile(path.join(summaryDir, "hermes-source-before-execution.json"),
+    `${JSON.stringify(hermesSource, null, 2)}\n`, "utf8");
   if (executions.some(execution => execution.suite.id === "native-completion")) {
     process.env[NATIVE_COMPLETION_PREFLIGHT_ENV] = prepareNativeCompletionPreflight(summaryDir);
   }

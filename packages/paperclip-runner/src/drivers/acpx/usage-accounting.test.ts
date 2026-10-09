@@ -170,3 +170,23 @@ describe("Pi prompt accounting authority", () => {
     });
   });
 });
+
+describe("owned Hermes wire billing", () => {
+  const billingFixture = { schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
+    complete: true, requestCount: 2, reportedRequestCount: 2, amountUsd: 0.0042, amountUsdExact: "0.004200000" } as const;
+  const after = { lastRequestId: "active", requestTokenUsage: { current: { input_tokens: 10, output_tokens: 4,
+    cache_read_input_tokens: 0, cache_creation_input_tokens: 0, thought_tokens: 0 } } };
+  it("joins billing only to the exact current Hermes receipt and keeps cumulative price separate", () => {
+    expect(persistedAcpxTurnUsage({}, after, "active", "hermes", billingFixture)).toMatchObject({ billing: billingFixture, cost: undefined });
+    expect(persistedAcpxTurnUsage({}, after, "stale", "hermes", billingFixture)).toBeNull();
+    expect(persistedAcpxTurnUsage({}, after, "active", "pi", billingFixture)?.billing).toBeUndefined();
+    expect(persistedAcpxTurnUsage({}, { ...after, requestTokenUsage: { first: {}, second: {} } }, "active", "hermes", billingFixture)).toBeNull();
+  });
+  it("retains billing when the native token receipt is unavailable without making its breakdown complete", () => {
+    const usage = persistedAcpxTurnUsage({}, { lastRequestId: "active", requestTokenUsage: {} }, "active", "hermes", {
+      ...billingFixture, complete: false, reportedRequestCount: 1,
+    });
+    expect(usage?.billing).toMatchObject({ complete: false, amountUsd: 0.0042 });
+    expect((usage?.breakdown as Record<string, unknown>).inputTokens).toBeUndefined();
+  });
+});

@@ -30,7 +30,10 @@ const checkpointSchema = z.object({
   pricingProvenance: pricingProvenanceSchema.optional(),
   costUsdExact: z.string().max(160).refine(value => { try { return !value.startsWith("-") && usdToUnits(value) >= 0n; } catch { return false; } }, "Invalid exact USD amount").nullable().optional(),
   providerRequestId: z.string().max(250).nullable().optional(), complete: z.boolean(),
-});
+  settlement: z.object({ schema: z.literal("paperclip.accounting.settlement/v1"),
+    providerWorkEnded: z.literal(true), usageComplete: z.boolean() }).strict().optional(),
+}).refine(receipt => !receipt.settlement || receipt.settlement.usageComplete === receipt.complete,
+  "Settlement must preserve usage completeness");
 const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
@@ -74,11 +77,13 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
     await tx.update(heartbeatRuns).set({
       costAccountingPending: true,
       accountingLastError: previous.accountingCaptureFailed === true ? "usage_capture_failed" : null,
-      usageJson: { ...previous, ...receipt.usage,
+      usageJson: { ...previous, ...(receipt.settlement?.usageComplete === false
+          ? { inputTokens: null, outputTokens: null, cachedInputTokens: null, cacheWriteTokens: null } : receipt.usage),
         provider: receipt.provider ?? "unknown", biller: receipt.biller ?? receipt.provider ?? "unknown", model: receipt.model ?? "unknown", billingType,
         costUsd: receipt.costUsd ?? null, costUsdExact: receipt.costUsdExact ?? null, cacheAdjustedCostUsd: receipt.cacheAdjustedCostUsd ?? null,
         usageByModel: receipt.usageByModel ?? null, usageSource: receipt.usageBasis ?? "per_run", providerRequestId: receipt.providerRequestId ?? null,
-        accountingReceiptReady: previous.accountingCaptureFailed !== true && receipt.complete && receipt.usageBasis !== "session_cumulative", accountingReceiptId: envelope.id,
+        accountingReceiptReady: previous.accountingCaptureFailed !== true && (receipt.complete || receipt.settlement?.providerWorkEnded === true) && receipt.usageBasis !== "session_cumulative", accountingReceiptId: envelope.id,
+        accountingSettlement: receipt.settlement ?? null, accountingUsageComplete: receipt.complete,
         accountingReceiptSequence: envelope.sequence, accountingReceiptReceivedAt: envelope.receivedAt,
         costStatus: receipt.costStatus ?? null,
         pricingProvenance: receipt.pricingProvenance ?? { source: receipt.costUsd != null || receipt.costUsdExact != null ? "provider_reported" : "unknown", version: "accounting-receipt/v1" },
@@ -238,7 +243,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     const attempt = parsed.attemptId ?? currentAttempt;
     if (!attempts.has(attempt)) currentAttempt = attempt;
     const previous = attempts.get(attempt);
-    const priced = priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.usage ?? previous?.usage,
+    const priced = priceAnthropicReceipt(priceCodexReceipt({ ...parsed, usage: parsed.settlement?.usageComplete === false ? undefined : parsed.usage ?? previous?.usage,
       complete: parsed.complete && !(previous?.usage && !parsed.usage) }));
     priced.pricingProvenance ??= {
       source: priced.costUsd != null || priced.costUsdExact != null || priced.cacheAdjustedCostUsd != null ? "provider_reported" : "unknown",
@@ -281,6 +286,14 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
+    // A closed provider boundary can settle a known subtotal while token or
+    // price totals remain unknown. Old incomplete checkpoints have no such
+    // authority; capture failure and an unfinished attempt still keep debt open.
+    if (parts.some(part => part.settlement)) {
+      receipt.settlement = !captureFailed && parts.every(part => part.complete || part.settlement?.providerWorkEnded === true)
+        ? { schema: "paperclip.accounting.settlement/v1", providerWorkEnded: true, usageComplete: receipt.complete } : undefined;
+      if (parts.some(part => part.settlement?.usageComplete === false)) receipt.usage = undefined;
+    }
     const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt };
     const file = await spoolUsageReceipt(envelope, directory);
     try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
@@ -298,7 +311,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // A bounded stdout tail can lose a terminal record already saved from the
       // full stream. Keep that stronger evidence, but never hide additional
       // usage/charges or certify a snapshot inherited from a replaced recorder.
-      if (sequence > 0 && previous?.complete && result.usageComplete === false) {
+      if (sequence > 0 && previous?.complete && result.usageComplete === false && !result.settlement) {
         const moreTokens = (["inputTokens", "cachedInputTokens", "cacheWriteTokens", "outputTokens"] as const)
           .some(key => (final.usage?.[key] ?? 0) > (previous.usage?.[key] ?? 0));
         const finalPrice = final.cacheAdjustedCostUsd ?? final.costUsdExact ?? final.costUsd;

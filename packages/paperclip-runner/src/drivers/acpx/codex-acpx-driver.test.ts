@@ -22,6 +22,45 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it("reads Hermes prompt usage before the committed question completion while ordinary tools stream", async () => {
+    const result = { disposition: "applied", interaction: { id: "question", companyId: "company", issueId: "issue",
+      sourceRunId: "run-question", kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee" } };
+    const fixture = driverFixture({ agent: "hermes", providerPolicy: { readOnly: false } }, { runtimeEvents: [
+      { type: "tool_call", tag: "tool_call", toolCallId: "ordinary", title: "Read", kind: "read", text: "Reading" },
+      { type: "tool_call", tag: "tool_call_update", toolCallId: "ordinary", status: "completed", rawOutput: "Read done", text: "Read done" },
+      { type: "tool_call", tag: "tool_call", toolCallId: "question", title: "mcp__paperclip__request_human_input", kind: "other", text: "Asking" },
+      { type: "tool_call", tag: "tool_call_update", toolCallId: "question", status: "completed", rawOutput: JSON.stringify({ result: JSON.stringify(result) }), text: "Saved" },
+    ] });
+    const session = await fixture.driver.openSession({ runId: "run-question", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    let settled = false;
+    fixture.host.status.mockImplementation(async () => ({ agentSessionId: "agent-1",
+      models: { currentModelId: "gpt-5.6-sol", availableModelIds: ["gpt-5.6-sol"] },
+      ...(settled ? { lastRequestId: "provider-turn-1", requestTokenUsage: { receipt: {
+        input_tokens: 10, output_tokens: 5, total_tokens: 15, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+      } } } : { requestTokenUsage: {} }),
+    }));
+    await session.startTurn({ message: { text: "Ask the assigned question" } });
+    const events: PrpEvent[] = [];
+    let usageAtQuestion: unknown;
+    const collected = (async () => {
+      for await (const event of session.events()) {
+        events.push(event);
+        if (event.eventType === "tool.execution.completed" && event.payload.executionId === "question") usageAtQuestion = await session.usage();
+        if (event.eventType === "turn.interrupted") return;
+      }
+    })();
+    const completedTool = (event: PrpEvent, id: string) => event.eventType === "tool.execution.completed" && event.payload.executionId === id;
+    await vi.waitFor(() => expect(events.some(event => completedTool(event, "ordinary"))).toBe(true));
+    expect(events.some(event => completedTool(event, "question"))).toBe(false);
+    settled = true;
+    fixture.finishTurn({ status: "cancelled", stopReason: "cancelled" });
+    await collected;
+    const questionIndex = events.findIndex(event => completedTool(event, "question"));
+    expect(questionIndex).toBeGreaterThan(events.findIndex(event => completedTool(event, "ordinary")));
+    expect(usageAtQuestion).toMatchObject({ cumulative: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } });
+    await session.close({ reason: "question receipt ordering verified" });
+  });
+
   it("delivers negotiated steering and follow-up distinctly, once, for the active turn", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
     fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: true });

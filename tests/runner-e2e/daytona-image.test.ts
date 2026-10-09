@@ -225,6 +225,29 @@ describe("runner E2E Daytona image contract", () => {
     expect(contentId).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it.each(["packages/paperclip-runner/scripts/hermes-provisioning-config.mjs", "packages/paperclip-runner/scripts/setup-hermes-runtime.mjs", "packages/paperclip-runner/scripts/hermes-provisioner-layout.mjs"])("changes the image identity when Hermes setup input %s changes", async requiredPath => {
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-hermes-image-id-"));
+    try {
+      for (const inputPath of new Set(DAYTONA_IMAGE_INPUT_PATHS)) {
+        const destination = path.join(root, inputPath);
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, "initial\n");
+      }
+      const options = {
+        repositoryRoot: root,
+        baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+        frontendDigest: `sha256:${"c".repeat(64)}`,
+        candidateProviders: ["hermes"],
+      };
+      const before = await computeDaytonaImageContentId(options);
+      await writeFile(path.join(root, requiredPath), "changed\n");
+      expect(await computeDaytonaImageContentId(options)).not.toBe(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("changes for runtime source, package, lockfile, Dockerfile, frontend, base, or platform inputs", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "paperclip-daytona-image-id-"),
