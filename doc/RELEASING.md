@@ -100,6 +100,7 @@ It:
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
 - installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; only npm `ETARGET` install failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
 

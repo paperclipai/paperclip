@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -479,4 +481,225 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
   }
+});
+
+
+// Exercise the real startup helper and child-process boundary without registry
+// traffic. The npm fixture installs a real executable into its isolated prefix.
+async function canaryStartup({ mode, onboard = "success", budget = 5000, delay = 5, cancelAtKind, playwright = false }) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "canary-startup-test-"));
+  const calls = path.join(root, "calls.jsonl");
+  const fixtureBin = path.join(root, "bin");
+  mkdirSync(fixtureBin);
+  const npmFixture = path.join(fixtureBin, "npm");
+  const port = await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(() => resolve(port)); });
+  });
+  const cli = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({kind:"onboard", pid:process.pid, args:process.argv.slice(2)}) + "\\n");
+if (process.env.FIXTURE_ONBOARD === "fail") { console.error("npm error code ETARGET"); process.exit(17); }
+if (process.env.FIXTURE_ONBOARD === "hang") { setTimeout(() => {}, 10000); }
+if (process.env.FIXTURE_ONBOARD === "serve") {
+ const { spawn } = require("node:child_process");
+ const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{}); setTimeout(()=>process.exit(0),10000)"], {stdio:"ignore"});
+ appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({kind:"descendant", pid:child.pid}) + "\\n");
+ process.on("SIGTERM", () => {});
+ setTimeout(() => process.exit(0), 10000);
+ require("node:http").createServer((req,res) => {res.end("ok");}).listen(Number(process.env.FIXTURE_PORT), "127.0.0.1");
+}
+`;
+  writeFileSync(npmFixture, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const entries = fs.existsSync(process.env.FIXTURE_CALLS) ? fs.readFileSync(process.env.FIXTURE_CALLS, "utf8").trim().split("\\n").filter(Boolean).map(JSON.parse) : [];
+const attempt = entries.filter(e => e.kind === "npm").length + 1;
+fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({kind:"npm", pid:process.pid, args, cache:process.env.npm_config_cache}) + "\\n");
+const mode = process.env.FIXTURE_MODE;
+if (mode === "hang") { setTimeout(() => {}, 10000); }
+else if (mode === "permanent" || (mode === "recover" && attempt === 1)) { console.error("npm error code ETARGET"); process.exit(1); }
+else if (mode === "auth") { console.error("npm error code E401"); process.exit(1); }
+else if (mode === "mixed") { console.error("npm error code ETARGET\\nnpm error code E401"); process.exit(1); }
+else if (mode === "network") { console.error("npm error code ECONNRESET"); process.exit(1); }
+else {
+ const prefix = args[args.indexOf("--prefix") + 1];
+ const bin = path.join(prefix, "node_modules", ".bin");
+ fs.mkdirSync(bin, {recursive:true});
+ fs.writeFileSync(path.join(bin, "paperclipai"), ${JSON.stringify(cli).replaceAll('$','\$')});
+ fs.chmodSync(path.join(bin, "paperclipai"), 0o755);
+}
+`);
+  chmodSync(npmFixture, 0o755);
+  const helper = new URL("../../tests/canary-onboarding/start-published-canary.mjs", import.meta.url).href;
+  const driver = path.join(root, "driver.mjs");
+  writeFileSync(driver, `import { startPublishedCanary } from ${JSON.stringify(helper)};
+try { await startPublishedCanary({version:"2026.1009.0-canary.1", workspace:${JSON.stringify(root)}, dataDir:${JSON.stringify(path.join(root,"data"))}, installBudgetMs:${budget}, retryDelayMs:${delay}}); }
+catch (error) { console.error(error.message); process.exitCode = 1; }
+`);
+  const playwrightConfig = path.join(root, "playwright.config.mjs");
+  if (playwright) {
+    const originalConfig = path.join(repoRoot, "tests/canary-onboarding/playwright.config.ts");
+    const testApi = new URL("../../node_modules/@playwright/test/index.mjs", import.meta.url).href;
+    writeFileSync(path.join(root,"fixture.spec.mjs"), `import { test } from ${JSON.stringify(testApi)}; test("fixture", async()=>{});`);
+    writeFileSync(playwrightConfig, `import original from ${JSON.stringify(originalConfig)};
+export default {...original, testDir:${JSON.stringify(root)}, testMatch:"fixture.spec.mjs", reporter:"list", projects:[{name:"fixture"}], webServer:{...original.webServer, timeout:${mode === "hang" ? 2500 : 300000}}};`);
+  }
+  const started = Date.now();
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, playwright
+        ? [path.join(repoRoot, "node_modules/@playwright/test/cli.js"), "test", "--config", playwrightConfig]
+        : cancelAtKind
+          ? [fileURLToPath(helper), "2026.1009.0-canary.1", root, path.join(root, "data")]
+          : [driver], { cwd: repoRoot, env: {
+        ...process.env, PATH: fixtureBin + path.delimiter + process.env.PATH,
+        FIXTURE_MODE: mode, FIXTURE_ONBOARD: onboard, FIXTURE_CALLS: calls, FIXTURE_PORT: String(port),
+        PAPERCLIPAI_VERSION: "2026.1009.0-canary.1", PAPERCLIP_CANARY_SMOKE_BASE_URL: `http://127.0.0.1:${port}`, PAPERCLIP_CANARY_SMOKE_SERVER_LOG: path.join(root,"server.log"),
+        npm_config_cache: path.join(root, "fresh-cache"),
+      }, stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      const cancellation = cancelAtKind && setInterval(() => {
+        if (!existsSync(calls)) return;
+        const rows = readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+        if (rows.some(row => row.kind === cancelAtKind)) {
+          clearInterval(cancellation);
+          child.kill("SIGTERM");
+        }
+      }, 10);
+      child.stdout.on("data", (data) => { output += data; });
+      child.stderr.on("data", (data) => { output += data; });
+      child.on("error", reject);
+      child.on("close", (code) => { clearInterval(cancellation); resolve({code, output}); });
+    });
+    if (playwright && existsSync(path.join(root,"server.log"))) result.output += readFileSync(path.join(root,"server.log"), "utf8");
+    const records = existsSync(calls) ? readFileSync(calls,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
+    const prefixes = records.filter(call => call.kind === "npm").map(call => call.args[call.args.indexOf("--prefix") + 1]);
+    if (playwright) {
+      const deadline = Date.now() + 2000;
+      while (prefixes.some(prefix => existsSync(prefix)) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+    assert.deepEqual(prefixes.filter(prefix => existsSync(prefix)), [], "helper-owned install prefixes must be removed");
+    return { ...result, elapsed: Date.now()-started, calls: records };
+
+  } finally { rmSync(root, {recursive:true, force:true}); }
+}
+
+test("canary startup refreshes an incomplete dependency publication, then onboards once", async () => {
+  const result = await canaryStartup({ mode: "recover" });
+  assert.equal(result.code, 0, result.output);
+  const installs = result.calls.filter(call => call.kind === "npm");
+  const onboarding = result.calls.filter(call => call.kind === "onboard");
+  assert.equal(installs.length, 2);
+  assert.equal(onboarding.length, 1);
+  for (const call of installs) {
+    assert.equal(call.args[0], "install");
+    assert.ok(call.args.includes("paperclipai@2026.1009.0-canary.1"));
+    assert.ok(call.args.includes("--no-package-lock"));
+    assert.ok(call.args.includes("--no-save"));
+  }
+  assert.ok(!installs[0].args.includes("--prefer-online"));
+  assert.ok(installs[1].args.includes("--prefer-online"));
+  assert.notEqual(installs[0].args[2], installs[1].args[2]);
+  assert.equal(installs[0].cache, installs[1].cache);
+  assert.deepEqual(onboarding[0].args.slice(0, 3), ["onboard", "--yes", "--data-dir"]);
+});
+
+test("permanent missing versions stop after three attempts without onboarding", async () => {
+  const result = await canaryStartup({ mode: "permanent" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 3);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 0);
+  assert.match(result.output, /installation failed.*onboarding was not started/);
+});
+
+test("npm failures other than ETARGET fail immediately without onboarding", async () => {
+  const result = await canaryStartup({ mode: "auth" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.length, 1);
+  assert.match(result.output, /E401/);
+});
+
+test("onboarding failures are never retried, even when they mention ETARGET", async () => {
+  const result = await canaryStartup({ mode: "success", onboard: "fail" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 1);
+  assert.match(result.output, /onboarding failed \(exit 17\)/);
+});
+
+test("a hanging npm install is stopped within the shared acquisition budget", async () => {
+  const result = await canaryStartup({ mode: "hang", budget: 1000 });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 0);
+  assert.ok(result.elapsed < 4000, `install exceeded bounded cancellation: ${result.elapsed}ms`);
+  assert.match(result.output, /exceeded its startup budget/);
+});
+
+test("backoff consumes the shared budget and does not begin another install after expiry", async () => {
+  const result = await canaryStartup({ mode: "permanent", budget: 1000, delay: 5000 });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.length, 1);
+  assert.match(result.output, /exceeded its startup budget/);
+});
+
+
+test("Playwright cancellation stops an onboarding process without replay", async () => {
+  const result = await canaryStartup({ mode: "success", onboard: "hang", cancelAtKind: "onboard" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  const onboarding = result.calls.filter(call => call.kind === "onboard");
+  assert.equal(onboarding.length, 1);
+  assert.throws(() => process.kill(onboarding[0].pid, 0), {code:"ESRCH"});
+  assert.match(result.output, /stopped by SIGTERM/);
+  assert.ok(result.elapsed < 2500, `onboarding cancellation took ${result.elapsed}ms`);
+});
+
+test("canary install retries retain the existing overall Playwright startup deadline", async () => {
+  const { INSTALL_BUDGET_MS } = await import("../../tests/canary-onboarding/start-published-canary.mjs");
+  const config = readFileSync(path.join(repoRoot, "tests/canary-onboarding/playwright.config.ts"), "utf8");
+  assert.equal(INSTALL_BUDGET_MS, 120_000);
+  assert.match(config, /timeout: 300_000/);
+  assert.match(config, /start-published-canary\.mjs/);
+  assert.match(config, /reuseExistingServer: false/);
+});
+
+
+test("nested ETARGET output does not retry a final authentication or network failure", async () => {
+  for (const mode of ["mixed", "network"]) {
+    const result = await canaryStartup({ mode });
+    assert.equal(result.code, 1);
+    assert.equal(result.calls.length, 1);
+  }
+});
+
+test("actual Playwright teardown stops the CLI and descendants that ignore SIGTERM", async () => {
+  const result = await canaryStartup({ mode: "success", onboard: "serve", playwright: true });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 1);
+  const processes = result.calls.filter(call => ["onboard", "descendant"].includes(call.kind));
+  assert.equal(processes.length, 2);
+  for (const call of processes) {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try { process.kill(call.pid, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.throws(() => process.kill(call.pid, 0), {code:"ESRCH"}, `fixture ${call.kind} outlived bounded teardown`);
+  }
+});
+
+test("actual Playwright startup timeout cancels a detached npm install", async () => {
+  const result = await canaryStartup({ mode: "hang", playwright: true });
+  assert.equal(result.code, 1);
+  const installs = result.calls.filter(call => call.kind === "npm");
+  assert.equal(installs.length, 1, result.output);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 0);
+  assert.throws(() => process.kill(installs[0].pid,0), {code:"ESRCH"});
+  assert.ok(result.elapsed < 10000, `startup timeout did not stop npm: ${result.elapsed}ms`);
 });
