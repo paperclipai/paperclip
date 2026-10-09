@@ -60,7 +60,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "embat",
   "kernel",
   "local-falcon",
-  "make",
   "manufact",
   "oreilly",
   "planetscale",

@@ -317,6 +317,15 @@ only `customer` must not silently fall through to generic DCR. A method
 containing `dcr` permits the automatic CIMD/DCR tiers. Deployment-preconfigured
 credentials still take precedence when present.
 
+A reviewed remote OAuth method may set `oauthClientRegistration: "dcr"` when
+live provider evidence shows that its advertised CIMD route fails while DCR
+works. Airtable uses this compatibility option. It requires `dcr` in
+`ownershipModes`; a deployment-preconfigured client still wins, and a missing
+registration endpoint fails with `oauth_dcr_not_supported`. Existing CIMD
+bindings are re-registered through DCR when the method changes. Other methods
+keep the normal resolution order. This option does not relax issuer, resource,
+redirect URI, PKCE, or registration-response validation.
+
 ### Credential source is not OAuth client ownership
 
 `ownershipModes` says who owns the OAuth client registration. It does not say
@@ -352,6 +361,16 @@ Paperclip gateway capability. At invocation time the gateway rechecks company,
 connection, grant, catalog, profile, policy, and run state; resolves the needed
 secret version; projects only the reviewed headers/arguments; calls the
 provider; and writes redacted audit evidence.
+
+For a reviewed remote MCP method that accepts discovery before initialization
+but requires an initialized session for calls, set
+`defaults.mcpSessionRequired: true`. Tavily uses this compatibility preference.
+Setup persists it for new connections; discovery and execution also resolve the
+curated method default for retained connections without the config flag. The
+existing session cache stays scoped to the connection, grant, actor, endpoint,
+and effective credential headers. Other methods retain their existing discovery fallback
+and direct-call behavior. Initialize before dispatch; never retry `tools/call`
+automatically after a provider error, since the first call may have mutated data.
 
 ## Secret Storage And Lifecycle
 
@@ -770,7 +789,10 @@ remove it there, and increment its version when changing the default. There is
 no central instruction-template registry. See
 [Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
-1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
+1. Add or update the provider in `scripts/ingest-app-definitions.mjs` or its
+   reviewed source inputs at `scripts/app-definition-overrides/<slug>.json`.
+   Overrides use the complete AppDefinition shape and pass through the same
+   branding, permission-review, instruction-template, and validation pipeline.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to
    that program.
 3. Add branding provenance and assets first; generation fails closed when
@@ -1719,10 +1741,16 @@ supports public clients (`token_endpoint_auth_method: "none"` plus PKCE S256)
 need **no pre-provisioned OAuth app at all**. At first connect the broker
 registers a client on the fly and stores it on the connection:
 
-- Registration request: `client_name` `Paperclip (<instance host>)`,
+- Registration request: `client_name` `Paperclip <sanitized instance host>`,
   `redirect_uris` = the instance's own callback, `grant_types`
   `["authorization_code", "refresh_token"]`, `response_types` `["code"]`,
   `token_endpoint_auth_method` `"none"`.
+- Authorization servers may validate `client_name` more narrowly than the
+  human-readable RFC field suggests. Paperclip replaces punctuation in the
+  callback host with hyphens (for example, `localhost:3105` becomes
+  `localhost-3105`), preserving a recognizable instance label while meeting
+  Calendly's documented rule that names contain only alphanumeric characters,
+  hyphens, and spaces ([Calendly MCP DCR requirements](https://developer.calendly.com/docs/mcp/calendly-mcp-server)).
 - The issued `client_id` is persisted in the connection's OAuth config and any
   issued `client_secret` becomes a `company_secrets` ref. The registered
   client is **reused** for every later authorize/refresh on that connection —

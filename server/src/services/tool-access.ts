@@ -7149,7 +7149,20 @@ export function toolAccessService(
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
         body: JSON.stringify({ jsonrpc: "2.0", id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }) });
     };
-    let usedInitializedSession = connection.config.mcpSessionRequired === true;
+    const connectionConfig = asRecord(connection.config);
+    const sourceTemplateKey = typeof connectionConfig?.sourceTemplateKey === "string"
+      ? connectionConfig.sourceTemplateKey
+      : null;
+    const connectionMethodKey = typeof connectionConfig?.connectionMethodKey === "string"
+      ? connectionConfig.connectionMethodKey
+      : null;
+    const curatedMethodRequiresMcpSession = Boolean(
+      sourceTemplateKey && connectionMethodKey &&
+      getConnectableAppDefinition(sourceTemplateKey)?.methods.some((method) =>
+        method.key === connectionMethodKey && method.defaults?.mcpSessionRequired === true
+      ),
+    );
+    let usedInitializedSession = connectionConfig?.mcpSessionRequired === true || curatedMethodRequiresMcpSession;
     let response: Response;
     if (usedInitializedSession) {
       try {
@@ -7194,7 +7207,7 @@ export function toolAccessService(
     }
     if (
       usedInitializedSession &&
-      connection.config.mcpSessionRequired !== true
+      connectionConfig?.mcpSessionRequired !== true
     ) {
       const nextConfig = { ...connection.config, mcpSessionRequired: true };
       await db
@@ -9954,8 +9967,15 @@ export function toolAccessService(
     );
 
     const host = new URL(input.redirectUri).host;
+    const clientNameHost = host
+      .replace(/[^A-Za-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
     const requestedMetadata = {
-      client_name: `Paperclip (${host})`,
+      // Some DCR servers restrict client_name to alphanumeric characters,
+      // hyphens and spaces. Keep the deployment host recognizable without
+      // sending punctuation such as dots, colons or parentheses.
+      client_name: `Paperclip ${clientNameHost}`,
       redirect_uris: [input.redirectUri],
       grant_types: [
         "authorization_code",
@@ -10427,7 +10447,14 @@ export function toolAccessService(
         source: "preconfigured" as const,
       };
     }
-    const metadataDocumentUrl = input.endpoints
+    const method = input.galleryEntry
+      ? connectionMethodForConnection(input.galleryEntry, input.connection)
+      : null;
+    const dcrRequired = method?.oauthClientRegistration === "dcr";
+    // A reviewed provider compatibility choice may require DCR even when the
+    // server also advertises CIMD. Do not resolve/adopt a metadata URL for that
+    // method; the default for every other method remains CIMD-first.
+    const metadataDocumentUrl = !dcrRequired && input.endpoints
       .clientIdMetadataDocumentSupported
       ? await resolveOAuthClientIdMetadataDocumentUrl(
           input.redirectUri,
@@ -10486,6 +10513,12 @@ export function toolAccessService(
         },
       );
     }
+    if (dcrRequired && !input.endpoints.registrationUrl) {
+      throw unprocessable(
+        "This provider requires dynamic client registration, but its authorization server did not advertise a registration endpoint.",
+        { code: "oauth_dcr_not_supported" },
+      );
+    }
 
     const key = `${input.connection.id}:${input.redirectUri}`;
     return singleFlight(oauthRegistrationFlights, key, async () => {
@@ -10527,8 +10560,9 @@ export function toolAccessService(
           source: storedOAuthClientRegistrationSource(bound),
         };
       }
-      // 3. Client ID Metadata Documents: no registration call at all, so prefer
-      //    them over DCR when the authorization server advertises support.
+      // 3. By default, Client ID Metadata Documents need no registration call,
+      //    so prefer them over DCR when the authorization server advertises
+      //    support. Curated DCR opt-ins leave metadataDocumentUrl null above.
       if (metadataDocumentUrl) {
         const adopted = await adoptClientIdMetadataDocument({
           connection: latest,
@@ -12771,6 +12805,9 @@ export function toolAccessService(
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
+          ...(method?.defaults?.mcpSessionRequired === true
+            ? { mcpSessionRequired: true }
+            : {}),
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.

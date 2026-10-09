@@ -58,6 +58,33 @@ checks installed dependency pins and agreement with Cursor's distribution manife
 and immutable release attestation (`cursor-contract.json`). Cursor's per-platform
 closure pins are generated from `cursor-distributions.json`.
 
+Codex startup and browser login prefer the CLI from the installed dependency
+graph. If that dependency is absent, they use an executable `codex` from the
+selected execution host's `PATH`. An explicit execution command takes precedence,
+and resumed sessions retain their recorded command. Older or newer CLI versions
+are allowed. Relative PATH entries use the selected process working directory.
+Compatibility is established by the actual protocol or login attempt.
+Missing executables and real protocol failures still return actionable errors.
+Package identity and executable containment remain checked. Browser login keeps
+its existing provider-specific credential home. Linux ARM64 retains its existing
+legacy login path because native execution is not qualified there.
+
+Exact dependency pins remain release and ACPX artifact-qualification checks.
+They make published builds reproducible and verify sandbox artifacts; they do not
+add a version-number gate to ordinary native Codex startup or browser login.
+
+Release packages retain the pinned Codex JavaScript dependency graph, but do not
+bundle Codex native binaries. The published manifest declares the official,
+exact-version platform packages as optional dependencies. npm installs the
+package for the consumer's operating system and architecture. Those declarations
+belong to the published server manifest; the bundled JavaScript wrapper delegates
+platform installation there so npm can keep native and legacy versions separate.
+The wrapper code and patched ACP bridge stay unchanged.
+Codex sandbox read roots include the separately installed native vendor resources
+without granting access to enclosing npm directories or credential homes.
+This packaging does not change agent defaults or
+the selected runner of an existing agent.
+
 Every ACPX harness accepts an explicit caller-selected model without a Paperclip
 model allowlist. The adapter sends that ID unchanged and verifies the provider's
 effective model before prompting. An incomplete discovery catalog does not block

@@ -44,6 +44,7 @@
     "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.6.2",
     "ai": "7.0.130",
     "@ai-sdk/openai": "4.0.86",
     "@openrouter/ai-sdk-provider": "3.1.0",
@@ -107,6 +108,7 @@
     "zod": "^4.4.3"
   },
   "bundleDependencies": [
+    "@agentclientprotocol/codex-acp",
     "@chat-adapter/discord",
     "@chat-adapter/github",
     "@chat-adapter/slack",

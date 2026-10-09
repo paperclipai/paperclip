@@ -884,6 +884,9 @@ importers:
 
   server:
     dependencies:
+      '@agentclientprotocol/codex-acp':
+        specifier: 1.6.2
+        version: 1.6.2(patch_hash=ilkykmzaax6atpgtip6bxikv6i)
       '@ai-sdk/openai':
         specifier: 4.0.86
         version: 4.0.86(zod@4.4.3)

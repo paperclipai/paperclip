@@ -1275,11 +1275,19 @@ describeEmbeddedPostgres("tool gateway service", () => {
     }
   });
 
-  it("initializes a fresh Streamable HTTP session before a stateful tools/call", async () => {
+  it.each([
+    ["persisted session preference", true],
+    ["retained connection curated default", false],
+  ] as const)("initializes Tavily's session before its first tools/call from the %s", async (_caseName, persistPreference) => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     await db.update(toolConnections).set({
-      config: { url: "https://example.invalid/mcp", mcpSessionRequired: true },
+      config: {
+        url: "https://mcp.tavily.com/mcp",
+        sourceTemplateKey: "tavily",
+        connectionMethodKey: "mcp-oauth",
+        ...(persistPreference ? { mcpSessionRequired: true } : {}),
+      },
     }).where(eq(toolConnections.id, connection.id));
     await db.insert(toolPolicies).values({
       companyId: company.id,
@@ -1339,6 +1347,36 @@ describeEmbeddedPostgres("tool gateway service", () => {
       { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
       { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
     ]);
+  });
+
+  it("keeps direct tools/call for generic connections without the curated session preference", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read tools",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const requests: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const payload = JSON.parse(String(init.body)) as { method?: string; id?: string };
+        requests.push(payload.method ?? "");
+        return Response.json({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { content: [{ type: "text", text: "generic ok" }] },
+        });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters: {} }))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(requests).toEqual(["tools/call"]);
   });
 
   it("hides cached Chat unread filters and blocks agent and board requests before provider dispatch", async () => {
@@ -1449,7 +1487,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
   });
 
-  it("injects Vercel tokens at dispatch and refreshes exactly once after an upstream 401", async () => {
+  it("refreshes Vercel tokens after an upstream 401 without replaying the tool call", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     await db.update(toolConnections).set({
@@ -1511,17 +1549,16 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const tool = (await gateway.listToolsForSession(session.token))
       .find((candidate) => candidate.providerType === "mcp_remote_http");
 
-    const result = await gateway.executeTool({
+    await expect(gateway.executeTool({
       sessionToken: session.token,
       tool: tool!.name,
       parameters: {},
+    })).rejects.toMatchObject({
+      status: 409,
+      reasonCode: "oauth_refreshed_retry_required",
     });
 
-    expect(result.status).toBe("completed");
-    expect(authorizationHeaders).toEqual([
-      "Bearer stale-provider-bearer",
-      "Bearer fresh-provider-bearer",
-    ]);
+    expect(authorizationHeaders).toEqual(["Bearer stale-provider-bearer"]);
     expect(getToken).toHaveBeenCalledTimes(2);
     expect(getToken.mock.calls[1]?.[1]).toEqual({ forceRefresh: true });
     expect(evict).toHaveBeenCalledTimes(1);
@@ -1639,7 +1676,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(refreshed).toEqual(upstreamFailure ? [grants[1]!.id] : [grants[1]!.id, grants[0]!.id]);
   });
 
-  it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
+  it("refreshes customer OAuth after a session 401 without replaying the call, then uses a fresh session on explicit retry", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     const accessSecret = await secretService(db).create(company.id, {
@@ -1661,6 +1698,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       credentialRefs: [{ name: "oauth.access_token", placement: "header", key: "Authorization", prefix: "Bearer ", secretId: accessSecret.id, versionSelector: "latest" }],
       config: {
         url: "https://example.invalid/mcp",
+        mcpSessionRequired: true,
         oauth: {
           provider: "fixture",
           tokenUrl: "https://example.invalid/oauth/token",
@@ -1701,13 +1739,37 @@ describeEmbeddedPostgres("tool gateway service", () => {
       return db.select().from(connectionGrants).where(eq(connectionGrants.id, input.grantId))
         .then((rows) => rows[0]!);
     });
-    const authorizationHeaders: string[] = [];
+    const requests: Array<{ method: string; authorization: string | null; sessionId: string | null; protocolVersion: string | null }> = [];
+    let callDispatches = 0;
     const gateway = createTestToolGatewayService(db, {
       oauthGrantRefresher,
       remoteHttpRequest: async (_url, init) => {
-        authorizationHeaders.push(new Headers(init.headers).get("authorization") ?? "");
-        if (authorizationHeaders.length === 1) return new Response(null, { status: 401 });
-        const requestBody = JSON.parse(String(init.body)) as { id: string };
+        const requestBody = JSON.parse(String(init.body)) as { method: string; id?: string };
+        const requestHeaders = new Headers(init.headers);
+        requests.push({
+          method: requestBody.method,
+          authorization: requestHeaders.get("authorization"),
+          sessionId: requestHeaders.get("mcp-session-id"),
+          protocolVersion: requestHeaders.get("mcp-protocol-version"),
+        });
+        if (requestBody.method === "initialize") {
+          const fresh = requestHeaders.get("authorization") === "Bearer fresh-customer-token";
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: requestBody.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "oauth-session", version: "1" },
+            },
+          }), { status: 200, headers: {
+            "content-type": "application/json",
+            "mcp-session-id": fresh ? "fresh-session" : "stale-session",
+          } });
+        }
+        if (requestBody.method === "notifications/initialized") return new Response(null, { status: 202 });
+        callDispatches += 1;
+        if (callDispatches === 1) return new Response(null, { status: 401 });
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
           id: requestBody.id,
@@ -1719,22 +1781,37 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const tool = (await gateway.listToolsForSession(session.token))
       .find((candidate) => candidate.providerType === "mcp_remote_http");
 
-    const result = await gateway.executeTool({
+    const execute = () => gateway.executeTool({
       sessionToken: session.token,
       tool: tool!.name,
       parameters: {},
     });
 
-    expect(result.status).toBe("completed");
-    expect(authorizationHeaders).toEqual([
-      "Bearer stale-customer-token",
-      "Bearer fresh-customer-token",
+    await expect(execute()).rejects.toMatchObject({
+      status: 409,
+      reasonCode: "oauth_refreshed_retry_required",
+    });
+    expect(callDispatches).toBe(1);
+    expect(requests.map(({ method }) => method)).toEqual([
+      "initialize", "notifications/initialized", "tools/call",
     ]);
-    expect(oauthGrantRefresher).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
+    expect(requests.every((request) => request.authorization === "Bearer stale-customer-token")).toBe(true);
+    expect(requests[2]).toMatchObject({ sessionId: "stale-session", protocolVersion: "2025-06-18" });
+
+    const result = await execute();
+    expect(result.status).toBe("completed");
+    expect(callDispatches).toBe(2);
+    expect(requests.map(({ method }) => method)).toEqual([
+      "initialize", "notifications/initialized", "tools/call",
+      "initialize", "notifications/initialized", "tools/call",
+    ]);
+    expect(requests.slice(3).every((request) => request.authorization === "Bearer fresh-customer-token")).toBe(true);
+    expect(requests[5]).toMatchObject({ sessionId: "fresh-session", protocolVersion: "2025-06-18" });
+    expect(oauthGrantRefresher).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(oauthGrantRefresher).mock.calls.some(([input]) => input.forceRefresh === true)).toBe(true);
   });
 
-  it("marks a managed OAuth grant reconnect-required after one rejected refresh retry", async () => {
+  it("refreshes a managed OAuth grant after 401 without replaying the call", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     const accessSecret = await secretService(db).create(company.id, {
@@ -1811,16 +1888,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
       sessionToken: session.token,
       tool: tool!.name,
       parameters: {},
-    })).rejects.toMatchObject({ reasonCode: "mcp_remote_status" });
+    })).rejects.toMatchObject({ reasonCode: "oauth_refreshed_retry_required" });
 
-    expect(authorizationHeaders).toEqual([
-      "Bearer stale-managed-token",
-      "Bearer fresh-managed-token",
-    ]);
+    expect(authorizationHeaders).toEqual(["Bearer stale-managed-token"]);
     expect(oauthGrantRefresher).toHaveBeenCalledTimes(2);
     expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
     const [storedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
-    expect(storedGrant?.status).toBe("needs_reauthorization");
+    expect(storedGrant?.status).toBe("active");
   });
 
   it("fails clearly when remote MCP elicitation has no issue interaction path", async () => {
