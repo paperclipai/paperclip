@@ -1437,6 +1437,14 @@ the updated sandbox image with the matching runner qualification changes.
 
 ### Native runner restart recovery
 
+Custom source-mode HTTP launchers should create their listener with
+`createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
+API origin as `apiUrl`. This registers the native Runner WebSocket transport
+before execution is admitted. Plain Express `app.listen()` or Node
+`createServer(app)` alone does not initialize that transport and native runs
+fail with `runner_prp_websocket_server_not_configured`. Browser live events still
+use their separate authenticated setup.
+
 Project discovery through `list_projects` returns up to 50 compact summaries.
 It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
 the cursor is optional. The database reads bounded summary projections. Agent
