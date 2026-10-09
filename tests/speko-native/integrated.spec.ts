@@ -176,7 +176,7 @@ test("E01/E03–E11/E13/E15/E16: setup, delayed work, duplicate input, navigatio
   await expect(page.getByRole("button", { name: "Start voice", exact: true })).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: "Conversation", exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", {name: "Open Speko"})).toHaveAttribute("href", "https://platform.speko.ai/agents");
-  await expect(page.locator('header img[src="/brands/apps/speko.svg"]')).toBeVisible();
+  await expect(page.locator('header img[src="/brands/apps/speko.svg"]').first()).toBeVisible();
   await page.getByRole("textbox", { name: "Your callback number", exact: true }).fill("+12015551234");
   await page.getByRole("checkbox", { name: "Allow this agent to call me about my tasks", exact: true }).check();
   await page.getByRole("button", { name: "Save phone setting", exact: true }).click();
