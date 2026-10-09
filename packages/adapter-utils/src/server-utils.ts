@@ -104,6 +104,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stopRemote?: (graceSec: number) => Promise<void>;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -3659,6 +3660,7 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stopRemote: spawnTarget.stopRemote,
     };
   }
 
@@ -4965,12 +4967,21 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", (_code: number | null, signal: NodeJS.Signals | null) => {
+        child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
           childExited = true;
+          // A remote run must also stop on the host: killing the local ssh
+          // client leaves the command running there, and ssh exits 255 when it
+          // is signalled.
+          const remoteStopped = target.stopRemote != null && code === 255;
           // A child that a signal ended was stopped from outside.
-          if (signal !== null) stopRequested = true;
+          if (signal !== null || remoteStopped) stopRequested = true;
           armCloseBound();
+          if (target.stopRemote && (stopRequested || remoteStopped)) {
+            void target.stopRemote(Math.max(1, opts.graceSec)).catch((err) => {
+              onLogError(err, runId, "failed to stop remote process");
+            });
+          }
         });
 
         child.on(

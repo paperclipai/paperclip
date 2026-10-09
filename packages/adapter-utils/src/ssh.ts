@@ -1351,6 +1351,7 @@ export async function buildSshSpawnTarget(input: {
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote: (graceSec: number) => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
@@ -1363,6 +1364,12 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  // Killing the local ssh client does not stop the remote command: without a
+  // pty, sshd closes the channel and leaves it running. Record the remote
+  // pid and process group under a per-spawn token so stopRemote() can end
+  // them over a fresh connection. Recording never blocks the run.
+  const runToken = randomUUID();
+  const recordRunStep = `{ d="$HOME/.paperclip/ssh-runs"; mkdir -p "$d" && find "$d" -type f -mtime +2 -exec rm -f {} + ; printf '%s %s\\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" > "$d/${runToken}"; } >/dev/null 2>&1 || true`;
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
@@ -1379,6 +1386,7 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    recordRunStep,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -1396,7 +1404,30 @@ export async function buildSshSpawnTarget(input: {
     command: "ssh",
     args: sshArgs,
     cleanup: auth.cleanup,
+    stopRemote: (graceSec: number) => stopSshRun(input.spec, runToken, graceSec),
   };
+}
+
+// Ends the remote command recorded under `runToken`: SIGTERM to its process
+// group, then SIGKILL after the grace period. Signals only the recorded group
+// (or the pid when no group was recorded), never the stop call's own group.
+async function stopSshRun(spec: SshConnectionConfig, runToken: string, graceSec: number): Promise<void> {
+  const grace = Math.max(1, Math.min(60, Math.floor(Number(graceSec) || 1)));
+  const script = [
+    `f="$HOME/.paperclip/ssh-runs/${runToken}"`,
+    '[ -f "$f" ] || exit 0',
+    'read p g < "$f"; rm -f "$f"',
+    'case "$p" in ""|*[!0-9]*) exit 0;; esac',
+    'case "$g" in ""|*[!0-9]*|0|1) g="";; esac',
+    '[ -n "$g" ] && [ "$g" = "$(ps -o pgid= -p $$ | tr -d \' \')" ] && exit 0',
+    't() { if [ -n "$g" ]; then kill -"$1" "-$g" 2>/dev/null; else kill -"$1" "$p" 2>/dev/null; fi; }',
+    't 0 || exit 0',
+    't TERM',
+    `i=0; while [ "$i" -lt ${grace} ] && t 0; do sleep 1; i=$((i+1)); done`,
+    't 0 && t KILL',
+    'exit 0',
+  ].join("\n");
+  await runSshCommand(spec, script, { timeoutMs: (grace + 30) * 1000 });
 }
 
 export async function syncDirectoryToSsh(input: {

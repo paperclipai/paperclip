@@ -19,6 +19,7 @@ import {
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { runChildProcess } from "./server-utils.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 const UNREACHABLE_SSH_SPEC = {
@@ -280,6 +281,48 @@ describe("ssh env-lab fixture", () => {
     );
 
     expect(result.stdout).toBe("hello over ssh stdin\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("stops the remote command when a run over SSH is stopped", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH remote stop test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    // Without a pty, killing the local ssh client leaves the remote command
+    // running. The fixture's sshd is on this machine, so the remote pids can
+    // be checked directly.
+    const result = await runChildProcess(
+      `ssh-remote-stop-${process.pid}`,
+      "sh",
+      ["-c", 'sleep 300 & echo "$$ $!"; wait'],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 2,
+        graceSec: 1,
+        onLog: async () => {},
+        remoteExecution: { ...config, remoteCwd: started.workspaceDir },
+      },
+    );
+    expect(result.timedOut).toBe(true);
+    const pids = result.stdout.trim().split(/\s+/).map((value) => Number.parseInt(value, 10));
+    expect(pids).toHaveLength(2);
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + 10_000;
+    while (pids.some(alive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(pids.filter(alive)).toEqual([]);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("does not treat an unrelated reused pid as the running fixture", async () => {
