@@ -57,11 +57,10 @@ describe("ConnectionStatusBanner", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    // No QueryClientProvider: <App> renders the banner outside one in tests.
     flushSync(() => root.render(
       <ConnectivityProvider store={store}>
-        <QueryClientProvider client={new QueryClient()}>
-          <ConnectionStatusBanner />
-        </QueryClientProvider>
+        <ConnectionStatusBanner />
       </ConnectivityProvider>,
     ));
   });

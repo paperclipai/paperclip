@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useIsMutating } from "@tanstack/react-query";
 import { useConnectivity, type ConnectivityStatus } from "@/lib/connectivity";
 
 /** Trouble must last this long before the banner appears, so one blip never flickers. */
@@ -69,7 +68,6 @@ export function useSuppressConnectionBanner(active = true) {
  */
 export function ConnectionStatusBanner() {
   const { status, troubleSince, recoveredAt, pendingWrites } = useConnectivity();
-  const pausedMutations = useIsMutating({ predicate: (mutation) => mutation.state.isPaused });
   const [now, setNow] = useState(() => Date.now());
   const shownForOutage = useRef(false);
   const suppressed = useSyncExternalStore(subscribeSuppression, () => suppressors > 0, () => false);
@@ -101,7 +99,7 @@ export function ConnectionStatusBanner() {
   }, [view, status]);
 
   if (view === "hidden" || suppressed) return null;
-  return <ConnectionStatusMessage view={view} pendingWrites={pendingWrites + pausedMutations} />;
+  return <ConnectionStatusMessage view={view} pendingWrites={pendingWrites} />;
 }
 
 /** The banner's presentation, for a view that is not hidden. */

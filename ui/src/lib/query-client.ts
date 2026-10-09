@@ -10,9 +10,9 @@
  *   unreachable, retries transient errors, and resumes on reconnect.
  * - `QueryCache`/`MutationCache` events feed the connectivity store; final
  *   query errors go to Sentry unless they are transient or client errors.
- * - A mutation with no `onError` of its own gets a readable toast for a
- *   non-transient failure. Transient failures never toast: the connection
- *   banner covers them.
+ * - A mutation with `meta: { errorToast: true }` and no `onError` of its own
+ *   gets a readable toast for a non-transient failure. Transient failures
+ *   never toast: the connection banner covers them.
  */
 
 import {
@@ -35,8 +35,12 @@ export interface AppMutationMeta extends Record<string, unknown> {
    * across an outage and resend on reconnect.
    */
   replay?: "idempotent";
-  /** `false` suppresses the global error toast for a mutation without `onError`. */
-  errorToast?: false;
+  /**
+   * `true` shows the global readable error toast when this mutation has no
+   * `onError` of its own. Opt-in because many surfaces already render
+   * `mutation.error` inline, and a default toast would say it twice.
+   */
+  errorToast?: true;
 }
 
 declare module "@tanstack/react-query" {
@@ -95,7 +99,7 @@ export interface MutationErrorToast {
 export interface AppQueryClientDeps {
   connectivity: Pick<ConnectivityStore, "reportError" | "reportSuccess">;
   reportError?: (error: unknown) => void;
-  /** Show a toast for a failed mutation that has no handler of its own. */
+  /** Show a toast for a failed opted-in mutation that has no handler of its own. */
   notifyMutationError?: (toast: MutationErrorToast) => void;
 }
 
@@ -105,7 +109,7 @@ export function shouldToastMutationError(
   mutation: Pick<Mutation<unknown, DefaultError, unknown, unknown>, "options" | "meta">,
 ): boolean {
   if (mutation.options.onError) return false;
-  if (mutation.meta?.errorToast === false) return false;
+  if (mutation.meta?.errorToast !== true) return false;
   const kind = classifyError(error);
   return kind !== "transient" && kind !== "aborted";
 }
@@ -182,9 +186,13 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
   });
 }
 
+/** `setPendingWrites` source for replayable mutations paused by an outage. */
+export const PAUSED_MUTATIONS_SOURCE = "paused-mutations";
+
 /**
- * Drive React Query's `onlineManager` from the connectivity store and refresh
- * live queries once when the server comes back. Returns a cleanup.
+ * Drive React Query's `onlineManager` from the connectivity store, refresh
+ * live queries once when the server comes back, and count paused replayable
+ * mutations as pending writes. Returns a cleanup.
  */
 export function bindConnectivity(queryClient: QueryClient, store: ConnectivityStore): () => void {
   const isOnline = () => store.getSnapshot().status === "online";
@@ -195,9 +203,18 @@ export function bindConnectivity(queryClient: QueryClient, store: ConnectivitySt
   const stopRecover = store.onRecover(() => {
     void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
   });
+  const mutationCache = queryClient.getMutationCache();
+  const reportPausedMutations = () => {
+    const paused = mutationCache.findAll({ predicate: (mutation) => mutation.state.isPaused }).length;
+    store.setPendingWrites(PAUSED_MUTATIONS_SOURCE, paused);
+  };
+  reportPausedMutations();
+  const stopMutationCount = mutationCache.subscribe(reportPausedMutations);
   const stopBrowserEvents = store.start();
   return () => {
     stopRecover();
+    stopMutationCount();
+    store.setPendingWrites(PAUSED_MUTATIONS_SOURCE, 0);
     stopBrowserEvents();
   };
 }

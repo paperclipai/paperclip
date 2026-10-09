@@ -173,36 +173,43 @@ describe("createAppQueryClient", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(observer.getCurrentResult()).toMatchObject({ status: "pending", isPaused: true });
     expect(mutationFn).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().pendingWrites).toBe(1);
 
     down = false;
     probe.mockResolvedValue({ reachable: true });
     await vi.advanceTimersByTimeAsync(15_000);
     await expect(result).resolves.toBe("title");
     expect(mutationFn).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
   });
 
-  it("toasts readable copy for a failed mutation without its own handler", async () => {
+  it("toasts readable copy for a failed opted-in mutation without its own handler", async () => {
     const observer = new MutationObserver(client, {
       mutationFn: async () => {
         throw new ApiError("Title is required", 422, { error: "Title is required" });
       },
+      meta: { errorToast: true },
     });
     await observer.mutate().catch(() => undefined);
     expect(notifyMutationError).toHaveBeenCalledWith({ title: "Check your input", body: "Title is required" });
   });
 
-  it("does not toast transient failures, handled mutations, or opted-out mutations", async () => {
+  it("does not toast transient failures, handled mutations, or mutations that did not opt in", async () => {
     const fail = (error: unknown) => async () => {
       throw error;
     };
-    await new MutationObserver(client, { mutationFn: fail(gatewayDown()) }).mutate().catch(() => undefined);
     await new MutationObserver(client, {
-      mutationFn: fail(new ApiError("No", 403, null)),
-      onError: () => undefined,
+      mutationFn: fail(gatewayDown()),
+      meta: { errorToast: true },
     }).mutate().catch(() => undefined);
     await new MutationObserver(client, {
       mutationFn: fail(new ApiError("No", 403, null)),
-      meta: { errorToast: false },
+      onError: () => undefined,
+      meta: { errorToast: true },
+    }).mutate().catch(() => undefined);
+    // Surfaces that render `mutation.error` inline must not get a second copy.
+    await new MutationObserver(client, {
+      mutationFn: fail(new ApiError("No", 403, null)),
     }).mutate().catch(() => undefined);
     expect(notifyMutationError).not.toHaveBeenCalled();
   });

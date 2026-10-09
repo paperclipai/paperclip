@@ -335,7 +335,7 @@ export function useConnectivity(): ConnectivitySnapshot {
 /**
  * Report writes that are waiting for the connection (drafts queued to resend,
  * autosaves held back). The banner shows the total. Durable write queues
- * feed this; paused replayable mutations are counted by the banner directly.
+ * feed this; `bindConnectivity` counts paused replayable mutations.
  */
 export function usePendingWritesReporter(sourceId: string, count: number): void {
   const store = useConnectivityStore();
