@@ -1478,6 +1478,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       text, attachmentIds: [], idempotencyKey: request.id };
     const actor = { userId: endpoint.sponsorUserId!, localImplicit: endpoint.sponsorUserId === "local-board" };
     await policy(endpoint, input, actor, true);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
     await tx.insert(chatPublications).values({ id: request.id, companyId: request.companyId, endpointId: endpoint.id, conversationId: request.conversationId!, issueId: request.issueId!, commentId,
       idempotencyKey: `fast-response:${request.id}`, payload: { text } });
     await tx.insert(emailSends).values({ companyId: request.companyId, endpointId: endpoint.id, publicationId: request.id, request: input, actor, digest: hash({ input, actor }) });

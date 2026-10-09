@@ -2473,6 +2473,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.responseWrites).toEqual([]);
       expect(f.responseComments.size).toBe(0);
     });
+    it.each(["published", "failed", "delivery_unknown"] as const)("coordinates GitHub working feedback with a %s fast response", async outcome => {
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse,
+        provider: async () => ({ ...(outcome === "failed" ? { errorCode: "invalid_output", noProviderWork: true } : { text: "I’ll check the border styling." }), receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 8 } }) }) });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()); onTestFinished(() => now.mockRestore());
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix the border styling", userId: "42", userName: "octocat", mentioned: true }) });
+      const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+      expect(job).toBeDefined();
+      expect(f.responseWrites).toEqual([]);
+      await fast.process(job);
+      if (outcome === "delivery_unknown") {
+        await db.update(chatPublications).set({ state: "delivery_unknown" }).where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+      } else await f.service.processPendingPublications();
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      if (outcome === "failed") expect(f.responseWrites).toEqual([expect.objectContaining({ body: expect.stringContaining("Working on this") })]);
+      else expect(f.responseWrites).toEqual([]);
+      if (outcome === "published") {
+        expect(f.runtime.endpoints.get(f.endpoint.id)!.posts).toContainEqual({ threadId: thread.id, text: "I’ll check the border styling." });
+        const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+          status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+            endpointId: f.endpoint.id, issueId: job.issueId, provider: "github", providerMessageId: "41801",
+          }) }).returning();
+        await githubChatReviewService(db, f.providerFetch).execute({ companyId: f.companyId, agentId: f.assignedAgentId,
+          issueId: job.issueId!, runId: run.id }, "comment", { body: "The border styling is fixed.", idempotencyKey: "fast-response-final" });
+        expect(f.responseWrites).toEqual([expect.objectContaining({ body: expect.stringContaining("The border styling is fixed.") })]);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("running");
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, job.issueId!)))[0].status).not.toBe("done");
+    });
     it("acknowledges a GitHub request after a durable scheduler retry succeeds", async () => {
       const f = await reviewBotFixture();
       f.wakeup.mockRejectedValueOnce(new Error("Temporary scheduler outage"));
@@ -6927,7 +6960,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       message: makeMessage({ id: "9000.1", text: `@${current.botUsername ?? "maya"} fix the border styling`, mentioned: true, ...(channelProvider === "github" ? { userId: "42", userName: "octocat" } : {}) }), trigger: "mention" });
     const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, fixture.companyId));
     expect(job).toBeDefined(); expect(wakeup).toHaveBeenCalled();
+    const [queuedRun] = await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "queued", contextSnapshot: { issueId: job.issueId, wakeCommentId: job.sourceCommentId } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: queuedRun.id }).where(and(eq(agentWakeupRequests.companyId, fixture.companyId), eq(agentWakeupRequests.agentId, fixture.assignedAgentId)));
     await fast.process(job);
+    expect(provider).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.stringContaining('"state":"queued"') }));
     await service.processPendingPublications();
     const posts = runtime.endpoints.get(endpoint.id)!.posts;
     expect(posts).toContainEqual({ threadId: channel.thread.id, text: "I’ll check the border styling." });

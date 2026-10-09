@@ -1254,7 +1254,7 @@ export async function createApp(
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   emailChannels.start();
   const reconcileChatPublicationMaintenance = async () => {
-    await Promise.all([chatChannels.processPublicationMaintenance(), emailChannels.flushPublications()]);
+    await chatChannels.processPublicationMaintenance();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
     reconcileProviderRuntimes: async () => {

@@ -98,7 +98,6 @@ describe("createChatReconciliationCoordinator", () => {
       source.indexOf("const chatReconciliation ="),
     );
     expect(maintenance).toContain("chatChannels.processPublicationMaintenance()");
-    expect(maintenance).toContain("emailChannels.flushPublications()");
     expect(maintenance).not.toContain("chatChannels.schedulePendingPublications()");
     expect(maintenance).not.toContain("chatChannels.processPendingPublications()");
     const workers = readFileSync(new URL("../services/chat-delivery-work.ts", import.meta.url), "utf8");

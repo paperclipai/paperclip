@@ -467,8 +467,9 @@ describe("AgentMail durable email pipeline", () => {
     const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
     expect(job).toMatchObject({ sponsored: true, responsibleUserId: null });
     expect(f.wakeup).toHaveBeenCalled();
+    await f.service.start();
     await fast.process(job);
-    await f.service.flushPublications();
+    await vi.waitFor(() => expect(f.sends).toHaveLength(1), { timeout: 5000 });
     await f.service.flushPublications();
     expect(f.sends).toHaveLength(1);
     expect(f.sends[0].body.text).toBe("I’ll check the settings panel border.");

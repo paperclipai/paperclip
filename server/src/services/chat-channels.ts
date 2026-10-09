@@ -13,7 +13,7 @@ import {
   stageReceiptReactionRemovals,
   type ReceiptReactionPayload,
 } from "./chat-receipt-reactions.js";
-import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent } from "./fast-responses.js";
+import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent, fastResponseTurnQueued } from "./fast-responses.js";
 import { fastResponseRequests } from "@paperclipai/db";
 import { chatCredentialMutationLease, CREDENTIAL_MUTATION_LEASE_TTL_MS, type CredentialMutationLeaseGuard } from "./chat-credential-mutation-lease.js";
 import type { AgentAvatarRequest } from "./agent-avatars.js";
@@ -14285,7 +14285,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.id, request.agentId!), eq(agents.companyId, request.companyId)));
     const [receipt] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, action.id));
     if (receipt && ["skipped", "cancelled", "failed"].includes(receipt.status)) throw forbidden();
-    return { agentName: agent?.name ?? "Assistant", message: normalized.message?.text ?? "Shared an attachment.", queued: !receipt?.runId,
+    return { agentName: agent?.name ?? "Assistant", message: normalized.message?.text ?? "Shared an attachment.", queued: !receipt?.runId || await fastResponseTurnQueued(tx, request),
       attachments: normalized.message?.attachments?.map(a => `${a.name ?? "Attachment"} (${a.mimeType ?? "unknown type"})`) };
   }
 

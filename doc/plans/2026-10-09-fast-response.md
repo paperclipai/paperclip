@@ -27,6 +27,9 @@ Isolated checkout `codex/fast-response`, app at `http://127.0.0.1:3109`, cloned 
 - The post-rebase focused provider/service/UI run passed all 62 tests. Review regressions now cover receipt labeling in native session handoff, model catalogs isolated from host CLI configuration, route transaction boundaries, Costs navigation, and email migration probe rollback.
 - A final OpenRouter sample exposed copied JSON output. The prompt now explicitly requests plain text and structured output is rejected while retaining charges. The corrected live sample returned a contextual acknowledgement in 1.374 seconds, 246 input / 22 output tokens, reported cost 0.0035600 cents.
 
+- Rebased onto the email commit/deadline scheduler: receipt publication signals its existing worker in the same transaction. Three email scheduling/receipt checks passed.
+- Review follow-ups share queued-state detection across Slack/GitHub/task/email and defer GitHub generic working comments while a contextual receipt can arrive. Eight focused channel checks passed, plus a substantive GitHub reply after receipt; server typecheck passed. Failed generation preserves generic feedback and uncertain external delivery does not trigger a duplicate acknowledgement.
+
 ## Verification still required
 
 - Live Slack bot creation and conversation; browser login completed. A narrow callback relay is prepared. Cloudflare tunneling was rejected by automatic approval review; explicit user authorization is pending.
