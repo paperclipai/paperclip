@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
+  chooseRuntimeDialOrigin,
   collectReachableInterfaceHosts,
 } from "../runtime-api.js";
 
@@ -71,6 +72,7 @@ describe("runtime API discovery", () => {
       "http://198.51.100.10:3102",
       "http://runtime-host.example.test:3102",
       "http://203.0.113.42:3102",
+      "http://127.0.0.1:3102",
     ]);
   });
 
@@ -87,7 +89,8 @@ describe("runtime API discovery", () => {
     ).toEqual([
       "https://agent-entry.example.test",
       "https://paperclip.example.test",
-      "https://198.51.100.10:3102",
+      "http://198.51.100.10:3102",
+      "http://127.0.0.1:3102",
     ]);
   });
 
@@ -105,6 +108,123 @@ describe("runtime API discovery", () => {
       "http://host.docker.internal:3102",
     ]);
   });
+
+  it("synthesizes listener-host candidates as plaintext http even under an https public origin", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: "https://paperclip.example.test",
+        allowedHostnames: ["198.51.100.10"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual([
+      "https://paperclip.example.test",
+      "http://198.51.100.10:3100",
+      "http://127.0.0.1:3100",
+    ]);
+  });
+
+describe("chooseRuntimeDialOrigin", () => {
+  it("substitutes loopback for local execution against a non-loopback configured origin", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("preserves the configured origin for remote execution", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: "3100",
+        localExecution: false,
+      }),
+    ).toBe("https://paperclip.example.test");
+  });
+
+  it("returns null when no origin is configured instead of conjuring one", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: null,
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBeNull();
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "   ",
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps an explicit loopback origin on its own port", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "http://localhost:4100",
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBe("http://localhost:4100");
+  });
+
+  it("keeps an explicit IPv6 loopback origin on its own port", () => {
+    // `new URL("http://[::1]:4100").hostname` is "[::1]", brackets included.
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "http://[::1]:4100",
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBe("http://[::1]:4100");
+  });
+
+  it("does not substitute loopback when the listener is bound to one specific address", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: "3100",
+        localExecution: true,
+        bindHost: "100.64.0.5",
+      }),
+    ).toBe("https://paperclip.example.test");
+  });
+
+  it("still substitutes loopback for wildcard and loopback binds", () => {
+    for (const bindHost of ["0.0.0.0", "::", "127.0.0.1", "::1", "[::1]", ""]) {
+      expect(
+        chooseRuntimeDialOrigin({
+          configuredApiUrl: "https://paperclip.example.test",
+          listenPort: "3100",
+          localExecution: true,
+          bindHost,
+        }),
+      ).toBe("http://127.0.0.1:3100");
+    }
+  });
+
+  it("falls back to the configured origin when the listen port is not numeric", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: "not-a-port",
+        localExecution: true,
+      }),
+    ).toBe("https://paperclip.example.test");
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: null,
+        localExecution: true,
+      }),
+    ).toBe("https://paperclip.example.test");
+  });
+});
 
   it("prefers usable interface hosts and skips link-local addresses", () => {
     expect(

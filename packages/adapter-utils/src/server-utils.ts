@@ -3236,6 +3236,15 @@ export function buildPaperclipEnv(agent: {
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  // Forward the startup-computed runtime origin and candidate list (REL-223):
+  // both were already computed at boot but had no consumer, so runs could only
+  // ever see the public edge origin. Purely additive.
+  const runtimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ?? "";
+  if (runtimeApiUrl) vars.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  const runtimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim() ?? "";
+  if (runtimeApiCandidates) vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = runtimeApiCandidates;
+  // Always-on loopback fallback for runs executing on the listener's own machine.
+  vars.PAPERCLIP_LOCAL_API_URL = `http://127.0.0.1:${runtimePort}`;
   return vars;
 }
 

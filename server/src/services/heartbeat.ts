@@ -120,6 +120,9 @@ import {
   buildPaperclipRuntimeMcpServers,
   createAdapterRuntimeToolAccess,
   paperclipApiBaseUrl,
+  runtimeDialBaseUrl,
+  requiredRuntimeDialBaseUrl,
+  isLocalExecutionTarget,
   createAdapterRuntimeMcpAccess,
   createManagedMcpRunConfig,
   revokeHeartbeatRunGatewayTokens,
@@ -6159,7 +6162,7 @@ export function heartbeatService(
           target: executionTarget,
           cwd: executionWorkspace.cwd,
           env: gitExecutionEnv,
-          brokerUrl: configuredPaperclipApiBaseUrl() ?? "",
+          brokerUrl: runtimeDialBaseUrl(isLocalExecutionTarget(executionTarget)) ?? "",
           createBrokerToken: () => createRuntimeToolsToken({
             agentId: agent.id,
             companyId: agent.companyId,
@@ -7974,6 +7977,7 @@ export function heartbeatService(
               agent,
               runId: run.id,
               expectedAssignmentDigest: expectedNativeMcpDigest,
+              localExecution: isLocalExecutionTarget(executionTarget),
             });
             if ("runtimeContext" in nativeExecution) {
               if (nativeMcpServers.length > 1)
@@ -8211,6 +8215,7 @@ export function heartbeatService(
               companyId: agent.companyId,
               runId: run.id,
               responsibleUserId: run.responsibleUserId,
+              localExecution: isLocalExecutionTarget(executionTarget),
             });
             if (!runtimeTools) {
               logger.warn(
@@ -8222,10 +8227,12 @@ export function heartbeatService(
                 "runtime connection tools could not be delivered",
               );
             }
+            const localExecution = isLocalExecutionTarget(executionTarget);
             const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
               db,
               agent,
               runId: run.id,
+              localExecution,
             });
             const runtimeToolDelivery =
               adapter.runtimeToolDelivery ?? "invocation_context";
@@ -8237,8 +8244,8 @@ export function heartbeatService(
                 connectionId: "paperclip-runtime-tools",
               });
             }
-            if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+            if (authToken && runtimeDialBaseUrl(localExecution) && issueRef) {
+              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${requiredRuntimeDialBaseUrl(localExecution)}/api/mcp/project-tools`,
                 token: authToken, connectionId: "paperclip-project-tools" });
             }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
