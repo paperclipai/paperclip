@@ -43,6 +43,7 @@ export const boardStatuses = [
   "todo",
   "in_progress",
   "in_review",
+  "ready_for_qa",
   "blocked",
   "done",
   "cancelled",
@@ -105,6 +106,15 @@ export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanban
     count: "text-violet-700/65 dark:text-violet-300/65",
     body: "bg-violet-50/45 ring-1 ring-inset ring-violet-500/15 dark:bg-violet-950/15",
     bodyOver: "bg-violet-100/70 ring-1 ring-inset ring-violet-500/25 dark:bg-violet-950/30",
+    card: "",
+  },
+  ready_for_qa: {
+    rail: "border-fuchsia-500/25 bg-fuchsia-50/60 dark:bg-fuchsia-950/20",
+    railOver: "bg-fuchsia-100/70 ring-1 ring-fuchsia-500/25 dark:bg-fuchsia-950/35",
+    header: "text-fuchsia-700 dark:text-fuchsia-300",
+    count: "text-fuchsia-700/65 dark:text-fuchsia-300/65",
+    body: "bg-fuchsia-50/45 ring-1 ring-inset ring-fuchsia-500/15 dark:bg-fuchsia-950/15",
+    bodyOver: "bg-fuchsia-100/70 ring-1 ring-inset ring-fuchsia-500/25 dark:bg-fuchsia-950/30",
     card: "",
   },
   done: {
