@@ -1,8 +1,9 @@
-import { useMemo } from "react";
-import { Clock } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Clock, X } from "lucide-react";
 import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
 
 import { Button } from "@/components/ui/button";
+import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "@/components/ui/alert-dialog";
 import { InlineBanner } from "@/components/InlineBanner";
 import { IssuePullRequestLinks } from "@/components/IssuePullRequestLinks";
 import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-requests";
@@ -180,12 +181,51 @@ function CheckNowButton({
   );
 }
 
+function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancel = async () => {
+    setPending(true);
+    setError(null);
+    try {
+      await onCancel();
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel the monitor. Try again.");
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => { if (!pending) { setOpen(next); setError(null); } }}>
+      <AlertDialogTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label="Cancel monitor" title="Cancel monitor">
+          <X className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Cancel monitor?</AlertDialogTitle>
+          <AlertDialogDescription>This removes the scheduled monitor check. The agent will no longer resume from this monitor. You can send a message to continue the task.</AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Keep monitor</AlertDialogCancel>
+          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? "Cancelling…" : "Cancel monitor"}</Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export interface IssueMonitorSurfaceProps {
   issue: Issue;
   onCheckNow?: (() => void) | null;
   checkingNow?: boolean;
   workProducts?: IssueWorkProduct[] | null;
   checkError?: string | null;
+  onCancelMonitor?: (() => Promise<unknown>) | null;
 }
 
 /**
@@ -199,19 +239,23 @@ export function IssueMonitorBanner({
   checkingNow = false,
   workProducts,
   checkError,
+  onCancelMonitor,
 }: IssueMonitorSurfaceProps) {
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
+
+  const canCancel = onCancelMonitor && deriveMonitorState(issue).source === "monitor";
 
   return (
     <InlineBanner
       tone={copy.tone}
       icon={Clock}
       title={copy.bannerTitle}
-      className="my-3"
+      className={cn("relative my-3", canCancel && "pr-12")}
       actions={onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
     >
+      {canCancel ? <CancelMonitorButton key={issue.id} onCancel={onCancelMonitor} /> : null}
       <div className="flex flex-col gap-2">
         {copy.pullRequestReview ? <IssuePullRequestLinks products={reviews} /> : null}
         <span>{copy.bannerMeta.join("  ·  ")}</span>
