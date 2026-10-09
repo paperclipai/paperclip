@@ -46,8 +46,8 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
-  async post<T>(path: string, data?: unknown): Promise<T> {
-    const response = await this.request.post(path, { data, ...this.sessionOptions() });
+  async post<T>(path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
+    const response = await this.request.post(path, { data, ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new Error(await failureMessage(response, "POST"));
     return response.json() as Promise<T>;
   }

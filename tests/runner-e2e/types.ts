@@ -7,6 +7,7 @@ export const CREDENTIAL_NAMES = [
   "GROK_AUTH_JSON",
   "GEMINI_API_KEY",
   "DAYTONA_API_KEY",
+  "GITHUB_TOKEN",
   "CURSOR_AUTH_TOKEN",
   "COPILOT_GITHUB_TOKEN",
 ] as const;
@@ -16,6 +17,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "repository_skills"
   | "provider_connection"
   | "plan_task_guidance"
   | "blocker_guidance"
@@ -141,6 +143,7 @@ export type Matcher =
   | { kind: "json_schema"; schema: Record<string, unknown> };
 
 export interface RunnerTaskFixture {
+  requiredCredentials?: readonly CredentialName[];
   id: string;
   label: string;
   groups: readonly string[];

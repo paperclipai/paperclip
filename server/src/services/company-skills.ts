@@ -4482,6 +4482,8 @@ export function companySkillService(db: Db) {
     if (input.forkedFromSkillId && !forkSource) {
       throw notFound("Fork source skill not found");
     }
+    const forkVersion = forkSource ? await getCurrentVersion(forkSource) : null;
+    const repositoryFiles = forkVersion?.repositorySnapshotId ? await runtimeVersionInventory(companyId, forkVersion) : null;
     const sharingScope = normalizeMutableSharingScope(input.sharingScope) ?? "company";
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const skillDir = path.resolve(managedRoot, slug);
@@ -4499,7 +4501,7 @@ export function companySkillService(db: Db) {
       ].join("\n");
     const markdown = input.markdown?.trim().length
       ? input.markdown
-      : forkSource?.markdown ?? fallbackMarkdown;
+      : repositoryFiles?.find(file => file.path === "SKILL.md")?.content ?? forkSource?.markdown ?? fallbackMarkdown;
 
     return db.transaction(async (tx) => {
       await tx.execute(sql`
@@ -4516,8 +4518,8 @@ export function companySkillService(db: Db) {
       let published = false;
       try {
         if (forkSource) {
-          for (const entry of forkSource.fileInventory) {
-            const detail = await readFile(companyId, forkSource.id, entry.path);
+          for (const entry of repositoryFiles ?? forkSource.fileInventory) {
+            const detail = repositoryFiles?.find(file => file.path === entry.path) ?? await readFile(companyId, forkSource.id, entry.path);
             if (!detail) continue;
             const targetPath = path.resolve(stagingDir, detail.path);
             await fs.mkdir(path.dirname(targetPath), { recursive: true });

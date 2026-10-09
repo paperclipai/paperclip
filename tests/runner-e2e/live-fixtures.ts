@@ -123,7 +123,7 @@ export async function setupLiveFixtures(input: {
             "../../packages/plugins/sandbox-providers/daytona",
           ),
           isLocalPath: true,
-        });
+        }, { timeout: 120_000 });
       },
       async teardown() {
         // The plugin is installed only in the isolated instance/database. The

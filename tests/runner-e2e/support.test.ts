@@ -922,6 +922,8 @@ describe("runner E2E server isolation", () => {
         XAI_API_KEY: "xai",
         GROK_AUTH_JSON: "grok-auth-json",
         DAYTONA_API_KEY: "daytona",
+        GITHUB_TOKEN: "github-private-repository",
+        GH_TOKEN: "github-cli",
         XAI_ORG_ID: "xai-sensitive",
         GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
@@ -946,6 +948,8 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GH_TOKEN).toBeUndefined();
     expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
     expect(env.XAI_API_KEY).toBeUndefined();
     expect(env.GROK_AUTH_JSON).toBeUndefined();

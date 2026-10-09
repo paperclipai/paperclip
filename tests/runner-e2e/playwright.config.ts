@@ -75,7 +75,8 @@ export default defineConfig({
     gracefulShutdown: runnerE2EWebServerGracefulShutdown,
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    // Fresh databases apply the complete migration history before health is ready.
+    timeout: 300_000,
     stdout: "pipe",
     stderr: "pipe",
   },

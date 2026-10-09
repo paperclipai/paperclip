@@ -2177,3 +2177,36 @@ Private traces and database files must not be published. Unconfirmed cleanup
 always preserves recovery state regardless of this optional diagnostic flag.
 
 The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.
+
+## Repository skill packages
+
+The explicit `repository-skills` suite imports the private
+`paperclipai/poteto-stack` repository through the production GitHub Sources UI,
+selects `architect` and `bro` in repository mode, and assigns those imported
+skills to a production-default Codex agent. It disables the source connection
+before creating the task through the browser. No fixture copies the repository
+into an agent workspace.
+
+Set `GITHUB_TOKEN` with read access to that repository, `OPENAI_API_KEY`, and,
+for Daytona, `DAYTONA_API_KEY` and the immutable `PAPERCLIP_E2E_DAYTONA_IMAGE`.
+On macOS, also set `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to the verified Linux
+runner from that pinned image, as described above.
+Credentials follow the existing encrypted company-secret and redaction paths.
+These tests send the selected private skill instructions to OpenAI and deliver
+the package to the selected runtime.
+
+```sh
+pnpm test:e2e:runner -- --id repository-skills.runner-codex.local.poteto-package
+pnpm test:e2e:runner -- --id repository-skills.runner-codex.daytona.poteto-package
+```
+
+Each case has one provider run and no automatic retries. While the agent pauses
+after reading its two installed skills and publishing their runtime locations
+in a run-attributed progress comment,
+the test independently reads both delivered directories. On Daytona it uses the
+SDK only to inspect the exact active sandbox lease owned by this test's company,
+agent, issue and run. Paths must belong to that native session's provider home
+or its remote immutable context directories. Git blob hashes, sizes and executable bits must match every
+tracked file in the imported commit, including sibling skills, shared agents,
+binary assets and upstream credits. Both distinct discovery wrappers must point
+to their canonical entrypoints. The task must finish successfully in the UI.
