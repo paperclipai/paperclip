@@ -533,7 +533,7 @@ import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
-import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
+import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "./ai-connection-configuration-failure.js";
 import { reportRunFailure } from "./run-failure-report.js";
 
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
@@ -3805,6 +3805,8 @@ export function heartbeatService(
             configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
               ...(!persistedNativeExecutionInput && readAiConnectionConfigurationFailure(error)
                 ? { selectionFailure: readAiConnectionConfigurationFailure(error) } : {}),
+              ...(readAiCredentialAccessFailure(error)
+                ? { credentialAccess: readAiCredentialAccessFailure(error) } : {}),
               provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
               fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
           });

@@ -89,8 +89,18 @@ export function activityService(db: Db) {
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
-        'configurationIncomplete', case when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
-          then jsonb_build_object('reason', 'workspace_base_ref_unresolved') end,
+        'configurationIncomplete', case
+          when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
+          when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
+          and ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+          then jsonb_build_object(
+            'selectionFailure', 'ai_connection_credential_not_shared',
+            'credentialAccess', jsonb_build_object(
+              'connectionName', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{configurationIncomplete,credentialAccess,connectionName}') = 'string'
+                then left(${heartbeatRuns.resultJson} #>> '{configurationIncomplete,credentialAccess,connectionName}', 240) end
+            )
+          ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -408,7 +418,10 @@ export function activityService(db: Db) {
           errorCode: heartbeatRuns.errorCode,
           error: sql<string | null>`case when ${heartbeatRuns.status} = 'failed'
             and ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
-            then left(${heartbeatRuns.error}, 2000) else null end`,
+            then left(${heartbeatRuns.error}, 2000)
+            when ${heartbeatRuns.status} = 'failed'
+              and ${heartbeatRuns.error} = 'This credential is not shared with the responsible user'
+            then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,

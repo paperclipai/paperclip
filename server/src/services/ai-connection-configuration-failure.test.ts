@@ -5,9 +5,16 @@ import {
   aiConnectionCredentialNotSharedFailure,
   isAiConnectionConfigurationReason,
   readAiConnectionConfigurationFailure,
+  readAiCredentialAccessFailure,
 } from "./ai-connection-configuration-failure.js";
 
 describe("AI selection failure provenance", () => {
+  it("keeps the credential display name out of the public 403 while retaining run diagnostics", () => {
+    const error = aiConnectionCredentialNotSharedFailure({ connectionName: "Dotta’s API Key" });
+    expect(error.details).toBeUndefined();
+    expect(readAiCredentialAccessFailure(error)).toEqual({ connectionName: "Dotta’s API Key" });
+    expect(readAiCredentialAccessFailure(forbidden(error.message))).toBeNull();
+  });
   it("preserves HTTP behavior while retaining only an owned bounded reason", () => {
     const error = aiConnectionConfigurationFailure("ai_connection_default_missing", "Choose an account", { connectionId: "synthetic-connection" });
     expect(error).toMatchObject({ status: 422, message: "Choose an account", details: {

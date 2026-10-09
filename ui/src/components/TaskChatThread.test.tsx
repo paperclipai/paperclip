@@ -1023,6 +1023,26 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
+  it.each(["legacy", "native"] as const)("keeps a %s credential denial expanded and replaces it after a successful attempt", (runtimeMode) => {
+    const denied = {
+      runId: "credential-run", runtimeMode, status: "failed", errorCode: "configuration_incomplete",
+      agentId: "agent-1", agentName: "Codie", adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local",
+      responsibleUserId: "nicky", createdAt: "2026-08-25T18:00:00Z", startedAt: null, finishedAt: "2026-08-25T18:00:02Z",
+      resultJson: { configurationIncomplete: { selectionFailure: "ai_connection_credential_not_shared", credentialAccess: { connectionName: "Dotta’s API Key" } } },
+    };
+    const props = { comments: [], onAdd: async () => {}, issueStatus: "blocked", currentUserId: "nicky", onRetryFailedRun: vi.fn() };
+    render(<TaskChatThread {...props} linkedRuns={[denied]} />);
+    const alert = container.querySelector('[data-testid="task-chat-credential-access-notice"]');
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toContain("Codie is configured to use Dotta’s API Key, but you don’t have access");
+    expect(alert?.querySelector('a[href="/agents/agent-1/runtime"]')).not.toBeNull();
+    expect(alert?.querySelector('a[href*="/runs/credential-run"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+    render(<TaskChatThread {...props} linkedRuns={[denied, { ...denied, runId: "new-run", status: "succeeded",
+      resultJson: null, errorCode: null, createdAt: "2026-08-25T18:01:00Z", startedAt: "2026-08-25T18:01:00Z", finishedAt: "2026-08-25T18:01:02Z" }]} />);
+    expect(container.querySelector('[data-testid="task-chat-credential-access-notice"]')).toBeNull();
+  });
+
   it("directs a missing personal AI credential to its card without offering a premature retry", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
       onRetryFailedRun={vi.fn()} interactions={[{

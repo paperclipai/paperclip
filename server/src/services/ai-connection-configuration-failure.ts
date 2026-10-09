@@ -10,6 +10,7 @@ const reasons = [
 ] as const;
 type AiConnectionConfigurationReason = typeof reasons[number];
 const failures = new WeakMap<Error, AiConnectionConfigurationReason>();
+const credentialAccessFailures = new WeakMap<Error, { connectionName: string }>();
 
 /** Preserve the existing HTTP error while recording an explicit selection rejection. */
 export function aiConnectionConfigurationFailure(
@@ -23,10 +24,16 @@ export function aiConnectionConfigurationFailure(
 }
 
 /** A verified active user lacks this credential's human sharing permission. */
-export function aiConnectionCredentialNotSharedFailure() {
+export function aiConnectionCredentialNotSharedFailure(context?: { connectionName: string }) {
   const error = forbidden("This credential is not shared with the responsible user");
   failures.set(error, "ai_connection_credential_not_shared");
+  if (context) credentialAccessFailures.set(error, { connectionName: context.connectionName });
   return error;
+}
+
+/** Display metadata only, kept off the public 403 response and free of secret material. */
+export function readAiCredentialAccessFailure(error: unknown): { connectionName: string } | null {
+  return error instanceof Error ? credentialAccessFailures.get(error) ?? null : null;
 }
 
 /** Only owned producers supply this evidence; matching names or HTTP codes do not. */

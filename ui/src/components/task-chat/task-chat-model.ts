@@ -257,6 +257,13 @@ export interface TaskChatMarkerItem {
   createdAtIso?: string;
   runHref?: string;
   planHref?: string;
+  /** An actionable credential denial is always expanded in the task conversation. */
+  credentialAccess?: {
+    agentName: string;
+    credentialName?: string;
+    deniedUser: string;
+    settingsHref: string;
+  };
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */

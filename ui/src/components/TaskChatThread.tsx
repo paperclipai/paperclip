@@ -5,6 +5,7 @@ import {
 } from "@/lib/issue-detail-performance";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
+import { credentialAccessNotice } from "@/lib/credential-access-notice";
 import type { ActivityEvent, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
@@ -1508,6 +1509,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      const credentialAccess = credentialAccessNotice(meta ? {
+        ...meta,
+        agentName: meta.agentName || agentMap?.get(meta.agentId)?.name,
+      } : undefined, currentUserId, userLabelMap);
       const historical = statusRelevance.isHistoricalRun(source.id);
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
@@ -1690,6 +1695,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             label,
             detail,
             retryable: code !== "native_session_cleanup_quarantined",
+            ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,
             createdAtIso: finishedAt
@@ -1697,7 +1703,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : undefined,
             runHref: runAgent
               ? `/agents/${encodeURIComponent(runAgent.urlKey)}/runs/${encodeURIComponent(source.id)}`
-              : undefined,
+              : credentialAccess && meta?.agentId
+                ? `/agents/${encodeURIComponent(meta.agentId)}/runs/${encodeURIComponent(source.id)}`
+                : undefined,
           },
         });
       }
@@ -1755,6 +1763,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,
+            } : {}),
+            ...(credentialAccess ? {
+              credentialAccess,
+              retryable: false,
+              runHref: `/agents/${encodeURIComponent(meta?.agentId ?? "")}/runs/${encodeURIComponent(source.id)}`,
             } : {}),
             tone: source.status === "cancelled" || aiRequest?.status === "pending" ? "neutral" : "error",
             detail,
@@ -2155,6 +2168,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     planDocumentSourceRunId,
     planTurnItem,
     agentMap,
+    currentUserId,
+    userLabelMap,
   ]);
 
   // Hand off once the settled turn or its reply comment is in the thread; a

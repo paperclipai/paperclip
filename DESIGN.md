@@ -79,6 +79,12 @@ in the conversation. Time passing or a new human comment alone does not resolve
 an error. Stored notices need run or recovery provenance before they can be hidden;
 child-task relays and other unrelated system updates stay visible.
 
+Credential-sharing denials stay expanded as an error card in the task conversation.
+Name the agent and selected AI connection when known, and say which person lacks
+access. Use “you” only for that person’s own run. Link to the agent’s AI connection
+settings; retrying before changing the connection cannot repair a sharing denial.
+The same run-relevance rules hide the card after a newer attempt or terminal task.
+
 Do not show a toast for task or run state already visible on the current screen.
 This includes descendant runs represented by the open subtree. Show local action
 results in place; keep failures actionable inline. Notifications for other work
