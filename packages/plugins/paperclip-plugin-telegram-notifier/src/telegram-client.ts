@@ -20,6 +20,8 @@ import type {
 } from "./types.js";
 
 export interface TelegramClient {
+  /** Numeric bot id — the non-secret prefix of the token before `:`. */
+  botId: string;
   getMe(): Promise<TelegramUser>;
   setMyCommands(): Promise<void>;
   getUpdates(offset: number | undefined): Promise<TelegramUpdate[]>;
@@ -61,8 +63,9 @@ export interface TelegramClient {
 export async function createTelegramClient(
   ctx: PluginContext,
   tokenOrRef: string,
+  companyId?: string,
 ): Promise<TelegramClient> {
-  const token = await resolveToken(ctx, tokenOrRef);
+  const token = await resolveToken(ctx, tokenOrRef, companyId);
   const base = `${TELEGRAM_API_BASE}/bot${token}`;
 
   async function call<T>(method: string, body?: unknown): Promise<T> {
@@ -81,6 +84,7 @@ export async function createTelegramClient(
   }
 
   return {
+    botId: botIdFromToken(token),
     async getMe() {
       return call<TelegramUser>("getMe");
     },
@@ -250,17 +254,39 @@ function escapeMdV2Lite(input: string): string {
   return input.replace(/[_*\[\]()~`>#+=|{}.!\\-]/g, (m) => `\\${m}`);
 }
 
-async function resolveToken(
+/**
+ * The numeric bot id from a resolved token (`<bot id>:<secret>`). The id is
+ * public (it is part of the bot's identity), so it is safe to use as a state
+ * key. Values that do not look like a token map to a stable placeholder.
+ */
+export function botIdFromToken(token: string): string {
+  const match = token.trim().match(/^(\d+):/);
+  return match ? match[1]! : "unknown";
+}
+
+export function looksLikeBotToken(value: string): boolean {
+  return /^\d+:[A-Za-z0-9_-]{20,}$/.test(value.trim());
+}
+
+/**
+ * Resolve the configured token. Plugin config is company-scoped, so a secret
+ * reference must be resolved for the company that owns the config row.
+ */
+export async function resolveToken(
   ctx: PluginContext,
   ref: string,
+  companyId?: string,
 ): Promise<string> {
   const trimmed = ref.trim();
   // Heuristic: real Telegram bot tokens look like "<digits>:<base64ish>".
   // If it already looks like a token, use it verbatim — saves a doomed
   // secret-resolve call and avoids a noisy log line in local-trusted setups.
-  if (/^\d+:[A-Za-z0-9_-]{20,}$/.test(trimmed)) return trimmed;
+  if (looksLikeBotToken(trimmed)) return trimmed;
   try {
-    return await ctx.secrets.resolve(trimmed);
+    return await ctx.secrets.resolve(
+      trimmed,
+      companyId ? { companyId, configPath: "botToken" } : undefined,
+    );
   } catch {
     return trimmed;
   }

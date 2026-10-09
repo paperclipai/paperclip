@@ -1,10 +1,11 @@
 /**
  * Telegram Notifier — settings page.
  *
- * Layout mirrors paperclip-plugin-jira-sync: one `card` per company plus a
- * shared "Plugin configuration" card for instance-level settings (token,
- * notifications, digest, silent push). Each company card carries its own
- * pairing status, operate-as agent, and plan-approval workflow config.
+ * The page works on the company selected in the dashboard. Plugin config is
+ * stored per company by the host, and every bridge call (data, actions,
+ * config) is scoped to that company, so the page shows a "Bot credentials"
+ * card plus one card for the selected company: pairing status, operate-as
+ * agent, plan-approval workflow, and notification settings.
  */
 
 import {
@@ -15,7 +16,9 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
+import { applyConfigPatch, type ConfigPatch } from "./config-patch.js";
 import {
+  useHostContext,
   usePluginAction,
   usePluginData,
   type PluginSettingsPageProps,
@@ -56,6 +59,8 @@ interface StatusData {
     expiresAt: string;
     candidateChatLabel?: string;
   };
+  /** A live handshake for another company blocks starting one here. */
+  otherHandshakeInFlight?: boolean;
 }
 
 interface CompanyRow {
@@ -263,7 +268,7 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
           )}
 
           {(companiesData?.items ?? []).length === 0 && (
-            <div style={warnBox}>No companies in this Paperclip instance yet.</div>
+            <div style={warnBox}>Select a company to configure Telegram for it.</div>
           )}
 
           <div style={{ display: "grid", gap: 14 }}>
@@ -273,6 +278,7 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
                 company={company}
                 tokenConfigured={status.tokenConfigured}
                 handshake={status.handshake}
+                otherHandshakeInFlight={status.otherHandshakeInFlight === true}
                 busy={busy}
                 onStart={(companyId) =>
                   wrap(`startPairing-${companyId}`, () =>
@@ -310,6 +316,7 @@ function CompanyCard(props: {
   company: CompanyRow;
   tokenConfigured: boolean;
   handshake?: StatusData["handshake"];
+  otherHandshakeInFlight: boolean;
   busy: string | null;
   onStart: (companyId: string) => void;
   onUnpair: (companyId: string) => void;
@@ -320,7 +327,8 @@ function CompanyCard(props: {
     agentLabel: string | undefined,
   ) => void;
 }) {
-  const { company, handshake, busy, tokenConfigured } = props;
+  const { company, handshake, busy, tokenConfigured, otherHandshakeInFlight } =
+    props;
   const isHandshakingThis = handshake?.targetCompanyId === company.id;
   const startKey = `startPairing-${company.id}`;
   const unpairKey = `unpair-${company.id}`;
@@ -391,14 +399,23 @@ function CompanyCard(props: {
       {!company.paired && !isHandshakingThis && (
         <div style={btnRow}>
           <button
-            style={{ ...primaryBtn, ...(!tokenConfigured && disabledStyle) }}
-            disabled={!tokenConfigured || busy !== null}
+            style={{
+              ...primaryBtn,
+              ...((!tokenConfigured || otherHandshakeInFlight) && disabledStyle),
+            }}
+            disabled={!tokenConfigured || otherHandshakeInFlight || busy !== null}
             onClick={() => props.onStart(company.id)}
           >
             {busy === startKey ? "Starting…" : "Start pairing"}
           </button>
           {!tokenConfigured && (
             <span style={hint}>Save the bot token first.</span>
+          )}
+          {tokenConfigured && otherHandshakeInFlight && (
+            <span style={hint}>
+              Another company is pairing right now. Try again when its
+              10-minute window ends.
+            </span>
           )}
         </div>
       )}
@@ -488,15 +505,8 @@ function CompanyEditPanel({
       <ApprovalSection saveSlot={approvalSlot} companyId={company.id} />
       <NotificationConfigSection saveSlot={notifSlot} />
 
-      <div style={btnRow}>
-        <button
-          type="button"
-          style={{ ...primaryBtn, ...(saving && disabledStyle) }}
-          disabled={saving}
-          onClick={handleSaveAll}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
+      {error && <div style={errBox}>{error}</div>}
+      <div style={{ ...btnRow, justifyContent: "flex-end" }}>
         <button
           type="button"
           style={{ ...secondaryBtn, ...(saving && disabledStyle) }}
@@ -505,7 +515,14 @@ function CompanyEditPanel({
         >
           Cancel
         </button>
-        {error && <span style={errBox}>{error}</span>}
+        <button
+          type="button"
+          style={{ ...primaryBtn, ...(saving && disabledStyle) }}
+          disabled={saving}
+          onClick={handleSaveAll}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
       </div>
     </>
   );
@@ -885,70 +902,77 @@ function ApprovalSection({
 }
 
 // ---------------------------------------------------------------------------
-// useGlobalConfig — small hook around /api/plugins/{pluginId}/config
+// useCompanyConfig — small hook around /api/plugins/{pluginId}/config
 //
-// Both the bot-credentials card (always visible at top) and the per-company
-// notification/digest section (inside Edit mode) read from and write to the
-// same global config endpoint. Sharing the endpoint via a hook keeps the
-// load/save semantics consistent without hoisting state to the page.
+// The host stores plugin config per company and requires `companyId` on both
+// the GET (query) and the POST (body). The bot-credentials card and the
+// notification section each own a subset of the fields. `savePatch` re-reads
+// the stored config and writes back only the caller's fields, so one card's
+// save never restores the other card's stale copy.
 // ---------------------------------------------------------------------------
 
-function useGlobalConfig() {
+function useCompanyConfig() {
   const pluginId = useMemo(() => getPluginIdFromPath(), []);
+  const { companyId } = useHostContext();
   const [config, setConfig] = useState<InstanceConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  const fetchStored = useCallback(async (): Promise<InstanceConfig> => {
     if (!pluginId) {
-      setLoadError(
+      throw new Error(
         "Could not determine plugin ID from URL — open the settings page from the Plugins list.",
       );
-      return;
     }
-    try {
-      const res = await fetch(`/api/plugins/${pluginId}/config`, {
+    if (!companyId) throw new Error("Select a company first.");
+    const res = await fetch(
+      `/api/plugins/${pluginId}/config?companyId=${encodeURIComponent(companyId)}`,
+      {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
-      });
-      if (!res.ok) {
-        setLoadError(`Failed to load config: HTTP ${res.status}`);
-        return;
-      }
-      const body = (await res.json()) as
-        | { configJson?: InstanceConfig }
-        | InstanceConfig
-        | null;
-      const next =
-        body && typeof body === "object" && "configJson" in body
-          ? (body.configJson ?? {})
-          : ((body ?? {}) as InstanceConfig);
-      setConfig(next);
+      },
+    );
+    if (!res.ok) throw new Error(`Failed to load config: HTTP ${res.status}`);
+    const body = (await res.json()) as
+      | { configJson?: InstanceConfig }
+      | InstanceConfig
+      | null;
+    return body && typeof body === "object" && "configJson" in body
+      ? (body.configJson ?? {})
+      : ((body ?? {}) as InstanceConfig);
+  }, [pluginId, companyId]);
+
+  const reload = useCallback(async () => {
+    try {
+      setConfig(await fetchStored());
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
-  }, [pluginId]);
+  }, [fetchStored]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
-  const save = useCallback(
-    async (next: InstanceConfig): Promise<void> => {
+  const savePatch = useCallback(
+    async (patch: ConfigPatch): Promise<InstanceConfig> => {
       if (!pluginId) throw new Error("plugin id unresolved");
+      if (!companyId) throw new Error("Select a company first.");
+      const next = applyConfigPatch(await fetchStored(), patch);
       const res = await fetch(`/api/plugins/${pluginId}/config`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ configJson: next }),
+        body: JSON.stringify({ companyId, configJson: next }),
       });
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
         throw new Error(`Save failed: HTTP ${res.status} ${errBody}`);
       }
-      setConfig(next);
+      setConfig((prev) => applyConfigPatch(prev ?? {}, patch));
+      return next;
     },
-    [pluginId],
+    [pluginId, companyId, fetchStored],
   );
 
   const update = useCallback(
@@ -958,11 +982,11 @@ function useGlobalConfig() {
     [],
   );
 
-  return { config, loadError, reload, save, update };
+  return { config, loadError, reload, savePatch, update };
 }
 
 // ---------------------------------------------------------------------------
-// BotCredentialsCard — global card, always visible at the top of the page
+// BotCredentialsCard — the selected company's bot token and base URL
 // ---------------------------------------------------------------------------
 
 function BotCredentialsCard({
@@ -974,7 +998,7 @@ function BotCredentialsCard({
   tokenMasked: string | null;
   onSaved: () => void;
 }) {
-  const { config, loadError, save, update } = useGlobalConfig();
+  const { config, loadError, savePatch, update } = useCompanyConfig();
   const testConn = usePluginAction("testBotConnection");
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -988,7 +1012,12 @@ function BotCredentialsCard({
     setSaveOk(null);
     setSaveError(null);
     try {
-      await save(config);
+      // Only the fields this card owns. An empty token field keeps the
+      // stored token (the placeholder says so); Disconnect clears it.
+      await savePatch({
+        ...(config.botToken ? { botToken: config.botToken } : {}),
+        paperclipBaseUrl: config.paperclipBaseUrl,
+      });
       setSaveOk("Saved.");
       setTokenRevealed(false);
       onSaved();
@@ -997,7 +1026,7 @@ function BotCredentialsCard({
     } finally {
       setSaving(false);
     }
-  }, [config, save, onSaved]);
+  }, [config, savePatch, onSaved]);
 
   const handleTest = useCallback(async () => {
     setBusy("test");
@@ -1026,9 +1055,7 @@ function BotCredentialsCard({
     setSaveOk(null);
     setSaveError(null);
     try {
-      const next = { ...config };
-      delete next.botToken;
-      await save(next);
+      await savePatch({ botToken: undefined });
       setSaveOk("Token cleared.");
       onSaved();
     } catch (err) {
@@ -1036,7 +1063,7 @@ function BotCredentialsCard({
     } finally {
       setBusy(null);
     }
-  }, [config, save, onSaved]);
+  }, [config, savePatch, onSaved]);
 
   if (loadError) {
     return <div style={errBox}>{loadError}</div>;
@@ -1066,8 +1093,8 @@ function BotCredentialsCard({
             <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
               @BotFather
             </a>
-            . Either the literal token or the name of a Paperclip secret. One
-            token applies to every paired company.
+            . Either the literal token or the name of a Paperclip secret. The
+            token applies to the selected company; companies can share a bot.
           </>
         }
       >
@@ -1158,13 +1185,12 @@ function BotCredentialsCard({
 }
 
 // ---------------------------------------------------------------------------
-// NotificationConfigSection — global notification/digest/display config,
-// rendered inside each company's Edit mode (since these knobs decide what
-// the paired chat actually receives, even though they're stored globally).
+// NotificationConfigSection — the selected company's notification, digest
+// and display config, rendered inside the company card's Edit mode.
 // ---------------------------------------------------------------------------
 
 function NotificationConfigSection({ saveSlot }: { saveSlot: SaveSlot }) {
-  const { config, loadError, save, update } = useGlobalConfig();
+  const { config, loadError, savePatch, update } = useCompanyConfig();
   const [baseline, setBaseline] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1180,7 +1206,7 @@ function NotificationConfigSection({ saveSlot }: { saveSlot: SaveSlot }) {
 
   saveSlot.current = async () => {
     if (!dirty || !config) return;
-    await save(config);
+    await savePatch(globalConfigForDirty(config));
     setBaseline(JSON.stringify(globalConfigForDirty(config)));
   };
   useEffect(() => {
@@ -1203,7 +1229,7 @@ function NotificationConfigSection({ saveSlot }: { saveSlot: SaveSlot }) {
       <>
         <Section
           title="Notification triggers"
-          description="Each event class pushes a Telegram message to the paired chat. Settings here apply to every paired company."
+          description="Each event class pushes a Telegram message to the paired chat."
         >
           <div
             style={{

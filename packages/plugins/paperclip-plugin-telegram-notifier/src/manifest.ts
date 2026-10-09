@@ -21,6 +21,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.create",
     "issues.update",
     "issue.comments.create",
+    "issue.comments.create_human_attributed",
     "agents.read",
     "companies.read",
     "agent.tools.register",
@@ -40,9 +41,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     ],
   },
+  // Stored per company by the host. `botToken` is optional so that
+  // Disconnect can clear it; the worker skips a company without a token.
   instanceConfigSchema: {
     type: "object",
-    required: ["botToken"],
     properties: {
       botToken: {
         type: "string",
@@ -113,7 +115,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.getStatus,
       displayName: "Telegram pairing status",
       description:
-        "Returns whether a chat is paired, or the current handshake stage if pairing is in progress.",
+        "Returns whether the calling agent's company has a paired chat, or the current handshake stage if pairing is in progress.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -123,7 +125,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.startPairing,
       displayName: "Start Telegram pairing",
       description:
-        "Begins a fresh pairing handshake. After running this, send any message to the bot in Telegram — the bot will reply with a verification code that you paste into the Confirm pairing form.",
+        "Begins a fresh pairing handshake for the calling agent's company. After running this, send any message to the bot in Telegram — the bot will reply with a verification code that you paste into the Confirm pairing form.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -151,7 +153,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.unpair,
       displayName: "Unpair Telegram chat",
       description:
-        "Disconnects the currently paired chat. Notifications stop until pairing is run again.",
+        "Disconnects the chat paired with the calling agent's company. Notifications stop until pairing is run again.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -161,7 +163,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.sendTest,
       displayName: "Send Telegram test notification",
       description:
-        "Sends a sample notification to the paired chat to verify the integration end-to-end.",
+        "Sends a sample notification to the calling agent's company chat to verify the integration end-to-end.",
       parametersSchema: {
         type: "object",
         properties: {},
@@ -171,12 +173,10 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.getApprovalConfig,
       displayName: "Get plan-approval config",
       description:
-        "Returns the configured approver and whether the calling agent must gate plans before acting. Pass `agentId` for caller-specific resolution.",
+        "Returns the configured approver for the calling agent's company and whether the agent must gate plans before acting. Pass `agentId` for caller-specific resolution.",
       parametersSchema: {
         type: "object",
-        required: ["companyId"],
         properties: {
-          companyId: { type: "string" },
           agentId: { type: "string" },
         },
       },

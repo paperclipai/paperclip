@@ -15,10 +15,14 @@
  * Paperclip alone or messaging the bot alone is not enough. Each step has a
  * 10-minute window.
  *
- * Notifications are sent only to the paired chat. Action buttons in
- * notifications are URL deep-links to the dashboard, so any decision-grade
- * action stays with the logged-in user — the plugin never carries an API key
- * for the Paperclip backend.
+ * Plugin config (bot token, base URL, notification toggles, digest) is
+ * stored per company by the host. Companies that use the same bot token are
+ * polled together; each update is handled with the config of the company its
+ * chat is paired to.
+ *
+ * Notifications are sent only to the paired chat. Most buttons are URL
+ * deep-links to the dashboard. Plan confirmations can be approved or declined
+ * from Telegram by the authorized approver (see `isAuthorizedApprover`).
  *
  * Failure mode: any exception inside an event or polling handler is caught
  * and logged; we never let a Telegram outage block the rest of Paperclip.
@@ -29,6 +33,7 @@ import type {
   PluginContext,
   PluginEvent,
   PluginJobContext,
+  ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 
 import {
@@ -72,6 +77,7 @@ import {
   findCompanyForChat,
   generateVerificationCode,
   getApprovalConfig,
+  getBotState,
   getMessageContext,
   getPaired,
   isAuthorizedApprover,
@@ -79,21 +85,27 @@ import {
   isPairingOperator,
   isHandshakeExpired,
   isPairedFor,
-  listPairedCompanies,
+  mutatePairing,
   newHandshakeExpiry,
+  patchBotState,
   patchPairedChat,
   patchPairing,
   readPairing,
   removePairedChat,
   saveMessageContext,
   setApprovalConfig,
-  setPairedChat,
 } from "./pairing.js";
 import { agentAssigneeChange, asRecord, asString } from "./events.js";
-import { createTelegramClient } from "./telegram-client.js";
+import {
+  botIdFromToken,
+  createTelegramClient,
+  resolveToken,
+} from "./telegram-client.js";
 import type {
   ApprovalConfig,
   InlineKeyboard,
+  PairedChat,
+  PairingState,
   PluginConfig,
   TelegramMessage,
   TelegramUpdate,
@@ -125,9 +137,34 @@ function maskTokenForDisplay(token: string): string {
   return `${"•".repeat(Math.max(4, trimmed.length - 4))}${trimmed.slice(-4)}`;
 }
 
-async function loadConfig(ctx: PluginContext): Promise<PluginConfig> {
-  const raw = await ctx.config.get();
+/**
+ * Plugin config is company-scoped: the host stores one config row per
+ * company and `ctx.config.get()` needs a company outside a company-scoped
+ * invocation (scheduled jobs, for example). Every caller names the company.
+ */
+async function loadRawConfig(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<PluginConfig> {
+  const raw = await ctx.config.get(companyId);
   return (raw ?? {}) as PluginConfig;
+}
+
+/**
+ * Load a company's config with `botToken` resolved for that company. The
+ * resolved token lives only in memory for the current call; it is never
+ * written to state or logs.
+ */
+async function loadConfig(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<PluginConfig> {
+  const config = await loadRawConfig(ctx, companyId);
+  if (!config.botToken) return config;
+  return {
+    ...config,
+    botToken: await resolveToken(ctx, config.botToken, companyId),
+  };
 }
 
 function notifyEnabled(
@@ -660,14 +697,24 @@ async function onAgentRunFailed(
 ): Promise<void> {
   if (!notifyEnabled(config, "runFailures")) return;
   const payload = asRecord(event.payload) ?? {};
+  // `agent.run.failed` is a heartbeat-run event: `entityId` is the run id,
+  // the agent is in `payload.agentId`.
+  const agentId = asString(payload.agentId);
+  let agentName = asString(payload.agentName);
+  if (!agentName && agentId) {
+    agentName = await ctx.agents
+      .get(agentId, event.companyId)
+      .then((agent) => agent?.name)
+      .catch(() => undefined);
+  }
   await sendToCompanyChat(
     ctx,
     config,
     event.companyId,
     buildRunFailedMessage({
       baseUrl: config.paperclipBaseUrl ?? "http://localhost:3100",
-      agentId: asString(event.entityId) ?? asString(payload.agentId),
-      agentName: asString(payload.agentName) ?? "Agent",
+      agentId,
+      agentName: agentName ?? "Agent",
       identifier: asString(payload.issueIdentifier),
       issueId: asString(payload.issueId),
       reason:
@@ -725,10 +772,12 @@ async function ensureBotBootstrap(
   config: PluginConfig,
 ): Promise<string | undefined> {
   if (!config.botToken) return undefined;
-  const state = await readPairing(ctx);
-  if (state.botUsername) return state.botUsername;
-
   const client = await createTelegramClient(ctx, config.botToken);
+  // Cached per bot id, so a token for a different bot never reuses the
+  // previous bot's username and still gets its command menu registered.
+  const cached = getBotState(await readPairing(ctx), client.botId).username;
+  if (cached) return cached;
+
   try {
     const me = await client.getMe();
     if (!me.username) {
@@ -740,7 +789,7 @@ async function ensureBotBootstrap(
         err: err instanceof Error ? err.message : String(err),
       });
     });
-    await patchPairing(ctx, { botUsername: me.username });
+    await patchBotState(ctx, client.botId, { username: me.username });
     return me.username;
   } catch (err) {
     ctx.logger.warn("telegram-notifier: getMe failed", {
@@ -1168,6 +1217,48 @@ async function handleConfirmationDeclineReply(
   return true;
 }
 
+/**
+ * Post a Telegram reply as an issue comment.
+ *
+ * A reply from the operator who paired the chat is posted as the Paperclip
+ * user who confirmed that pairing (`actorUserId`). The host treats that as a
+ * human comment and wakes the issue assignee, the same as a dashboard
+ * comment. Agent-attributed plugin comments never wake anyone, so other
+ * senders (or chats paired before the user id was captured) fall back to the
+ * operate-as agent, then to plugin attribution.
+ */
+export async function postTelegramReplyComment(
+  ctx: PluginContext,
+  chat: PairedChat,
+  message: TelegramMessage,
+  context: { companyId: string; issueId: string },
+  body: string,
+): Promise<"user" | "agent" | "plugin"> {
+  if (chat.pairedByUserId && isPairingOperator(chat, message.from?.id)) {
+    try {
+      await ctx.issues.createComment(context.issueId, body, context.companyId, {
+        actorUserId: chat.pairedByUserId,
+      });
+      return "user";
+    } catch (err) {
+      // The user may have left the company or lost write access; keep the
+      // reply instead of dropping it.
+      ctx.logger.warn("telegram-notifier: human-attributed comment failed", {
+        companyId: context.companyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  const operateAsAgentId = chat.operateAsAgentId;
+  await ctx.issues.createComment(
+    context.issueId,
+    body,
+    context.companyId,
+    operateAsAgentId ? { authorAgentId: operateAsAgentId } : undefined,
+  );
+  return operateAsAgentId ? "agent" : "plugin";
+}
+
 async function handleCommentReply(
   ctx: PluginContext,
   config: PluginConfig,
@@ -1183,16 +1274,7 @@ async function handleCommentReply(
   const body = (message.text ?? "").trim();
   if (!body) return false;
   try {
-    // Posting on behalf of the company's operate-as agent (if configured) so
-    // the comment is attributed correctly. Falls back to plugin attribution
-    // when no operate-as agent is set.
-    const operateAsAgentId = found.chat.operateAsAgentId;
-    await ctx.issues.createComment(
-      context.issueId,
-      body,
-      context.companyId,
-      operateAsAgentId ? { authorAgentId: operateAsAgentId } : undefined,
-    );
+    await postTelegramReplyComment(ctx, found.chat, message, context, body);
     await replyTo(ctx, config, incomingChatId, {
       text: `*✅ Comment posted on ${escapeMdText(context.identifier)}*`,
       keyboard: [],
@@ -1517,23 +1599,97 @@ async function handleCallbackQuery(
 // Polling job
 // ---------------------------------------------------------------------------
 
+/**
+ * Companies sharing one bot token are polled together. `configs` holds each
+ * company's own config (with the token resolved in memory); `config` is the
+ * first one and is used only for replies to chats that are not tied to a
+ * company yet.
+ */
+interface BotGroup {
+  botId: string;
+  config: PluginConfig;
+  configs: Map<string, PluginConfig>;
+}
+
+/**
+ * Build the poll groups from the companies the plugin is working for: every
+ * paired company plus the target of an in-flight handshake. Config is
+ * company-scoped, and a scheduled job has no company context, so each read
+ * names its company. The host allows such proactive reads only for companies
+ * that have saved plugin config; a company without config is skipped.
+ */
+export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> {
+  const state = await readPairing(ctx);
+  const companyIds = new Set(Object.keys(state.pairedByCompany ?? {}));
+  if (state.pairing && !isHandshakeExpired(state.pairing)) {
+    companyIds.add(state.pairing.targetCompanyId);
+  }
+  const groups = new Map<string, BotGroup>();
+  for (const companyId of companyIds) {
+    let config: PluginConfig;
+    try {
+      config = await loadConfig(ctx, companyId);
+    } catch (err) {
+      ctx.logger.debug("telegram-notifier: no readable config for company", {
+        companyId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+    if (!config.botToken) continue;
+    const botId = botIdFromToken(config.botToken);
+    let group = groups.get(botId);
+    if (!group) {
+      group = { botId, config, configs: new Map() };
+      groups.set(botId, group);
+    }
+    group.configs.set(companyId, config);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Pick the config an update is handled with. A chat paired to a company
+ * that uses a different bot is ignored, so one company's bot never reads or
+ * acts on another company's data.
+ */
+export function configForUpdate(
+  state: PairingState,
+  update: TelegramUpdate,
+  group: BotGroup,
+): PluginConfig | undefined {
+  const chat = update.message?.chat ?? update.callback_query?.message?.chat;
+  if (!chat) return undefined;
+  const paired = findCompanyForChat(state, String(chat.id));
+  if (paired) return group.configs.get(paired.companyId);
+  if (state.pairing && !isHandshakeExpired(state.pairing)) {
+    return group.configs.get(state.pairing.targetCompanyId);
+  }
+  return group.config;
+}
+
 async function runPollUpdates(
   ctx: PluginContext,
   _job: PluginJobContext,
 ): Promise<void> {
-  const config = await loadConfig(ctx);
-  if (!config.botToken) {
-    ctx.logger.debug("telegram-notifier: no botToken yet, skipping poll");
+  const groups = await collectBotGroups(ctx);
+  if (groups.length === 0) {
+    ctx.logger.debug("telegram-notifier: no configured bot to poll");
     return;
   }
+  await Promise.all(groups.map((group) => pollBot(ctx, group)));
+}
 
-  await ensureBotBootstrap(ctx, config);
+async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
+  await ensureBotBootstrap(ctx, group.config);
 
   // Morning digest is independent of inbound polling; run it once per
   // cron tick before we settle into the long-poll loop.
-  await runMorningDigestIfDue(ctx, config);
+  for (const [companyId, config] of group.configs) {
+    await runMorningDigestIfDue(ctx, config, companyId);
+  }
 
-  const client = await createTelegramClient(ctx, config.botToken);
+  const client = await createTelegramClient(ctx, group.config.botToken!);
   const deadline = Date.now() + POLL_LOOP_DEADLINE_MS;
 
   // Long-poll loop: keep getUpdates open for ~25s at a time and process
@@ -1545,14 +1701,15 @@ async function runPollUpdates(
     if (state.pairing && isHandshakeExpired(state.pairing)) {
       await clearHandshake(ctx);
     }
-    const offset =
-      state.lastUpdateId !== undefined ? state.lastUpdateId + 1 : undefined;
+    const lastUpdateId = getBotState(state, group.botId).lastUpdateId;
+    const offset = lastUpdateId !== undefined ? lastUpdateId + 1 : undefined;
 
     let updates: TelegramUpdate[];
     try {
       updates = await client.getUpdates(offset);
     } catch (err) {
       ctx.logger.warn("telegram-notifier: getUpdates failed", {
+        botId: group.botId,
         err: err instanceof Error ? err.message : String(err),
       });
       // Back off briefly on transport errors so we don't busy-loop.
@@ -1560,10 +1717,12 @@ async function runPollUpdates(
       continue;
     }
 
-    let newest = state.lastUpdateId ?? -1;
+    let newest = lastUpdateId ?? -1;
     for (const update of updates) {
       if (update.update_id > newest) newest = update.update_id;
       try {
+        const config = configForUpdate(await readPairing(ctx), update, group);
+        if (!config) continue;
         if (update.message) {
           await handleMessage(ctx, config, update.message);
         } else if (update.callback_query) {
@@ -1576,8 +1735,8 @@ async function runPollUpdates(
         });
       }
     }
-    if (newest >= 0 && newest !== state.lastUpdateId) {
-      await patchPairing(ctx, { lastUpdateId: newest });
+    if (newest >= 0 && newest !== lastUpdateId) {
+      await patchBotState(ctx, group.botId, { lastUpdateId: newest });
     }
   }
 }
@@ -1698,6 +1857,7 @@ async function sendDigestForCompany(
 async function runMorningDigestIfDue(
   ctx: PluginContext,
   config: PluginConfig,
+  companyId: string,
 ): Promise<void> {
   const digest = config.morningDigest;
   if (!digest?.enabled) return;
@@ -1710,14 +1870,9 @@ async function runMorningDigestIfDue(
     if (day === 0 || day === 6) return;
   }
 
-  const state = await readPairing(ctx);
-  const paired = listPairedCompanies(state);
-  if (paired.length === 0) return;
-
-  for (const { companyId, chat } of paired) {
-    if (!chat.operateAsAgentId) continue;
-    await sendDigestForCompany(ctx, config, companyId);
-  }
+  const chat = getPaired(await readPairing(ctx), companyId);
+  if (!chat?.operateAsAgentId) return;
+  await sendDigestForCompany(ctx, config, companyId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1738,7 +1893,7 @@ const plugin = definePlugin({
       ) =>
       async (event: T) => {
         try {
-          const config = await loadConfig(ctx);
+          const config = await loadConfig(ctx, event.companyId);
           if (!config.botToken) return;
           await fn(ctx, config, event);
         } catch (err) {
@@ -1763,11 +1918,36 @@ const plugin = definePlugin({
       await runPollUpdates(ctx, job);
     });
 
-    const companyParamSchema = {
-      type: "object",
-      required: ["companyId"],
-      properties: { companyId: { type: "string" } },
-    } as const;
+    // Agent tools act on the calling agent's company only. The host supplies
+    // it in `runCtx.companyId`; a `companyId` argument is accepted for
+    // backward compatibility but must match, so an agent cannot reach into
+    // another company's pairing (pairing state is instance-scoped, so the
+    // host's company check does not cover it).
+    const noParamsSchema = { type: "object", properties: {} } as const;
+    const COMPANY_MISMATCH_ERROR =
+      "companyId must be the calling agent's own company.";
+
+    function toolCompanyId(
+      params: unknown,
+      runCtx: ToolRunContext,
+    ): string | null {
+      const requested = (params as { companyId?: unknown } | null)?.companyId;
+      if (
+        typeof requested === "string" &&
+        requested.length > 0 &&
+        requested !== runCtx.companyId
+      ) {
+        return null;
+      }
+      return runCtx.companyId;
+    }
+
+    async function botUsernameFor(companyId: string): Promise<string | undefined> {
+      const config = await loadConfig(ctx, companyId);
+      if (!config.botToken) return undefined;
+      return getBotState(await readPairing(ctx), botIdFromToken(config.botToken))
+        .username;
+    }
     const confirmSchema = {
       type: "object",
       required: ["code"],
@@ -1776,43 +1956,30 @@ const plugin = definePlugin({
       },
     } as const;
 
-    function getCompanyParam(params: unknown): string {
-      const id = (params as { companyId?: unknown })?.companyId;
-      if (typeof id !== "string" || id.length === 0) {
-        throw new Error("companyId is required");
-      }
-      return id;
-    }
-
     // ─── getStatus ──────────────────────────────────────────────────────
     ctx.tools.register(
       TOOL_NAMES.getStatus,
       {
         displayName: "Telegram pairing status",
         description:
-          "Returns the bot username, list of paired companies, and any in-flight handshake.",
-        parametersSchema: { type: "object", properties: {} },
+          "Returns the bot username, this company's paired chat, and any in-flight handshake for it.",
+        parametersSchema: noParamsSchema,
       },
-      async () => {
+      async (params, runCtx) => {
+        const companyId = toolCompanyId(params, runCtx);
+        if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
         const state = await readPairing(ctx);
-        const paired = listPairedCompanies(state).map(({ companyId, chat }) => ({
-          companyId,
-          chatId: chat.chatId,
-          chatLabel: chat.chatLabel,
-          companyName: chat.companyName,
-          pairedAt: chat.pairedAt,
-          operateAsAgentId: chat.operateAsAgentId,
-        }));
+        const chat = getPaired(state, companyId);
         // SECURITY: never include the live verification `code` in tool
         // output. The handshake is two-endpoint by design — anyone able to
         // read the code outside of Telegram could call confirmPairing and
         // skip the Telegram half.
         const handshake =
-          state.pairing && !isHandshakeExpired(state.pairing)
+          state.pairing &&
+          state.pairing.targetCompanyId === companyId &&
+          !isHandshakeExpired(state.pairing)
             ? {
                 stage: state.pairing.stage,
-                targetCompanyId: state.pairing.targetCompanyId,
-                targetCompanyName: state.pairing.targetCompanyName,
                 expiresAt: state.pairing.expiresAt,
                 ...(state.pairing.stage === "code_sent"
                   ? { candidateChatLabel: state.pairing.candidateLabel }
@@ -1820,12 +1987,19 @@ const plugin = definePlugin({
               }
             : undefined;
         return {
-          content: paired.length
-            ? `Paired with ${paired.length} ${paired.length === 1 ? "company" : "companies"}.`
-            : "No companies paired yet.",
+          content: chat
+            ? `Paired with ${chat.chatLabel}.`
+            : "This company has no paired Telegram chat.",
           data: {
-            botUsername: state.botUsername,
-            paired,
+            botUsername: await botUsernameFor(companyId),
+            paired: chat
+              ? {
+                  companyId,
+                  chatLabel: chat.chatLabel,
+                  pairedAt: chat.pairedAt,
+                  operateAsAgentId: chat.operateAsAgentId,
+                }
+              : null,
             handshake,
           },
         };
@@ -1838,52 +2012,30 @@ const plugin = definePlugin({
       {
         displayName: "Start Telegram pairing",
         description:
-          "Begins a handshake for the given company. Send any message to the bot afterward.",
-        parametersSchema: companyParamSchema,
+          "Begins a handshake for the calling agent's company. Send any message to the bot afterward.",
+        parametersSchema: noParamsSchema,
       },
-      async (params) => {
-        const companyId = getCompanyParam(params);
-        const config = await loadConfig(ctx);
-        if (!config.botToken) {
-          return {
-            error: "botToken missing in plugin config — set it before pairing.",
-          };
-        }
-        const username = await ensureBotBootstrap(ctx, config);
-        const state = await readPairing(ctx);
-        if (isPairedFor(state, companyId)) {
-          const existing = getPaired(state, companyId);
-          return {
-            error: `Company is already paired with ${existing?.chatLabel}. Unpair first.`,
-          };
-        }
-        // Resolve company name for nicer messaging.
-        let targetCompanyName: string | undefined;
+      async (params, runCtx) => {
+        const companyId = toolCompanyId(params, runCtx);
+        if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
         try {
-          const companies = await ctx.companies.list();
-          targetCompanyName = companies.find((c) => c.id === companyId)?.name;
-        } catch {
-          /* best-effort */
+          const started = await doStartPairing(companyId);
+          return {
+            content: started.botUsername
+              ? `Pairing started for ${started.companyName ?? companyId}. Open @${started.botUsername} in Telegram, send any message, then confirm with the code. Window: 10 minutes.`
+              : "Pairing started. Send any message to your bot, then confirm with the code.",
+            data: {
+              stage: "awaiting_chat",
+              companyId,
+              botUsername: started.botUsername,
+              telegramUrl: started.botUsername
+                ? `https://t.me/${started.botUsername}`
+                : undefined,
+            },
+          };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
         }
-        await patchPairing(ctx, {
-          pairing: {
-            stage: "awaiting_chat",
-            targetCompanyId: companyId,
-            targetCompanyName,
-            expiresAt: newHandshakeExpiry(),
-          },
-        });
-        return {
-          content: username
-            ? `Pairing started for ${targetCompanyName ?? companyId}. Open @${username} in Telegram, send any message, then confirm with the code. Window: 10 minutes.`
-            : "Pairing started. Send any message to your bot, then confirm with the code.",
-          data: {
-            stage: "awaiting_chat",
-            companyId,
-            botUsername: username,
-            telegramUrl: username ? `https://t.me/${username}` : undefined,
-          },
-        };
       },
     );
 
@@ -1895,65 +2047,21 @@ const plugin = definePlugin({
         description: "Validates the verification code from Telegram.",
         parametersSchema: confirmSchema,
       },
-      async (params) => {
+      async (params, runCtx) => {
         const code =
           typeof (params as { code?: unknown })?.code === "string"
             ? ((params as { code: string }).code as string)
             : "";
         if (!code) return { error: "code parameter is required." };
-
-        const state = await readPairing(ctx);
-        if (!state.pairing) {
+        try {
+          const { paired } = await doConfirmPairing(code, runCtx.companyId);
           return {
-            error: "No active pairing handshake. Run telegram.start_pairing first.",
+            content: `Paired ${paired.companyName ?? paired.companyId} with ${paired.chatLabel}.`,
+            data: { paired: true, ...paired },
           };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
         }
-        if (isHandshakeExpired(state.pairing)) {
-          await clearHandshake(ctx);
-          return { error: "Pairing window expired. Start over." };
-        }
-        if (state.pairing.stage !== "code_sent") {
-          return {
-            error:
-              "Bot has not sent a code yet. Send any message to the bot in Telegram first.",
-          };
-        }
-        if (!codesMatch(state.pairing.code, code)) {
-          return {
-            error: "Code mismatch. Re-check the code the bot sent and try again.",
-          };
-        }
-
-        const targetCompanyId = state.pairing.targetCompanyId;
-        const paired = {
-          chatId: state.pairing.candidateChatId,
-          chatLabel: state.pairing.candidateLabel,
-          pairedAt: new Date().toISOString(),
-          companyName: state.pairing.targetCompanyName,
-          // Capture the operator id here too — the agent-tool path must enforce
-          // the same approver/unpair gating as the UI confirm path.
-          pairedByTelegramUserId: state.pairing.candidateUserId,
-        };
-        await setPairedChat(ctx, targetCompanyId, paired);
-        await clearHandshake(ctx);
-        ctx.logger.info("telegram-notifier: paired", {
-          companyId: targetCompanyId,
-          chatId: paired.chatId,
-          label: paired.chatLabel,
-        });
-
-        const config = await loadConfig(ctx);
-        await sendToChat(
-          ctx,
-          config,
-          paired.chatId,
-          buildPairedConfirmation({ chatLabel: paired.chatLabel }),
-        ).catch(() => undefined);
-
-        return {
-          content: `Paired ${paired.companyName ?? targetCompanyId} with ${paired.chatLabel}.`,
-          data: { paired: true, companyId: targetCompanyId, ...paired },
-        };
       },
     );
 
@@ -1962,27 +2070,17 @@ const plugin = definePlugin({
       TOOL_NAMES.unpair,
       {
         displayName: "Unpair Telegram chat",
-        description: "Disconnects the chat paired with a specific company.",
-        parametersSchema: companyParamSchema,
+        description: "Disconnects the chat paired with the calling agent's company.",
+        parametersSchema: noParamsSchema,
       },
-      async (params) => {
-        const companyId = getCompanyParam(params);
-        const removed = await removePairedChat(ctx, companyId);
-        if (!removed) {
-          return {
-            content: "No chat was paired for that company.",
-            data: { paired: false, companyId },
-          };
-        }
-        const config = await loadConfig(ctx);
-        await sendToChat(
-          ctx,
-          config,
-          removed.chatId,
-          buildUnpairedMessage(),
-        ).catch(() => undefined);
+      async (params, runCtx) => {
+        const companyId = toolCompanyId(params, runCtx);
+        if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
+        const result = await doUnpairCompany(companyId);
         return {
-          content: `Unpaired ${removed.chatLabel}.`,
+          content: result.previousLabel
+            ? `Unpaired ${result.previousLabel}.`
+            : "No chat was paired for this company.",
           data: { paired: false, companyId },
         };
       },
@@ -1993,35 +2091,24 @@ const plugin = definePlugin({
       TOOL_NAMES.sendTest,
       {
         displayName: "Send Telegram test notification",
-        description: "Sends a sample notification to a company's paired chat.",
-        parametersSchema: companyParamSchema,
+        description: "Sends a sample notification to the calling agent's company chat.",
+        parametersSchema: noParamsSchema,
       },
-      async (params) => {
-        const companyId = getCompanyParam(params);
-        const config = await loadConfig(ctx);
-        const state = await readPairing(ctx);
-        const chat = getPaired(state, companyId);
-        if (!chat) {
+      async (params, runCtx) => {
+        const companyId = toolCompanyId(params, runCtx);
+        if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
+        try {
+          const result = await doSendTestForCompany(companyId);
           return {
-            content: "Not sent: that company has no paired chat.",
+            content: `Test message sent to ${result.chatLabel}.`,
+            data: { sent: true, companyId },
+          };
+        } catch (err) {
+          return {
+            content: `Not sent: ${err instanceof Error ? err.message : String(err)}`,
             data: { sent: false, companyId },
           };
         }
-        if (!config.botToken) {
-          return {
-            content: "Not sent: botToken missing in config.",
-            data: { sent: false, companyId },
-          };
-        }
-        const client = await createTelegramClient(ctx, config.botToken);
-        await client.sendMessage({
-          chatId: chat.chatId,
-          ...buildTestMessage(),
-        });
-        return {
-          content: `Test message sent to ${chat.chatLabel}.`,
-          data: { sent: true, companyId, chatId: chat.chatId },
-        };
       },
     );
 
@@ -2039,19 +2126,18 @@ const plugin = definePlugin({
           "Returns the configured approver and whether the calling agent must gate plans before acting. Pass `agentId` to get caller-specific resolution.",
         parametersSchema: {
           type: "object",
-          required: ["companyId"],
           properties: {
-            companyId: { type: "string" },
             agentId: { type: "string" },
           },
         },
       },
-      async (params) => {
-        const p = (params ?? {}) as { companyId?: string; agentId?: string };
-        if (!p.companyId) return { error: "companyId is required" };
+      async (params, runCtx) => {
+        const p = (params ?? {}) as { agentId?: string };
+        const companyId = toolCompanyId(params, runCtx);
+        if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
         const state = await readPairing(ctx);
-        const config = getApprovalConfig(state, p.companyId);
-        const approver = await resolveApprover(p.companyId, config);
+        const config = getApprovalConfig(state, companyId);
+        const approver = await resolveApprover(companyId, config);
         const enabled = config?.enabled === true;
         const requiresApproval = !!(
           enabled &&
@@ -2091,11 +2177,17 @@ const plugin = definePlugin({
     // notifications no one is acting on). If a previously paired company is
     // archived later, its pairing record is preserved in state but stops
     // being routable through the UI until the company is unarchived.
-    ctx.data.register("companies", async () => {
-      const companies = await ctx.companies.list();
+    //
+    // The host scopes every settings-page request to the company selected in
+    // the dashboard (and overrides `companyId` in action params with it), so
+    // the page shows and acts on that company only.
+    ctx.data.register("companies", async (params) => {
+      const companyId = (params as { companyId?: unknown })?.companyId;
+      if (typeof companyId !== "string" || !companyId) return { items: [] };
+      const company = await ctx.companies.get(companyId);
       const state = await readPairing(ctx);
       return {
-        items: companies
+        items: (company ? [company] : [])
           .filter((c) => (c as { status?: string }).status !== "archived")
           .map((c) => {
             const chat = getPaired(state, c.id);
@@ -2236,7 +2328,7 @@ const plugin = definePlugin({
       } catch {
         /* best-effort */
       }
-      const pluginConfig = await loadConfig(ctx);
+      const pluginConfig = await loadRawConfig(ctx, companyId);
       const dashboardBaseUrl =
         pluginConfig.paperclipBaseUrl ?? "http://localhost:3100";
       const resolvedApprover = await resolveApprover(companyId, config);
@@ -2314,15 +2406,27 @@ const plugin = definePlugin({
      * Status data — combines token state, bot username, in-flight handshake,
      * and per-company paired chats. Drives the entire settings UI.
      */
-    ctx.data.register("status", async () => {
-      const config = await loadConfig(ctx);
+    ctx.data.register("status", async (params) => {
+      const companyId = requireCompanyParam(params);
+      const config = await loadRawConfig(ctx, companyId);
       const state = await readPairing(ctx);
       const tokenConfigured = !!config.botToken && config.botToken.length > 0;
       const tokenMasked = tokenConfigured
         ? maskTokenForDisplay(config.botToken!)
         : null;
+      const botUsername = tokenConfigured
+        ? await botUsernameFor(companyId).catch(() => undefined)
+        : undefined;
+      // Another company's handshake is reported without its details, so the
+      // page can explain why pairing cannot start yet.
+      const otherHandshakeInFlight =
+        !!state.pairing &&
+        state.pairing.targetCompanyId !== companyId &&
+        !isHandshakeExpired(state.pairing);
       const handshake =
-        state.pairing && !isHandshakeExpired(state.pairing)
+        state.pairing &&
+        state.pairing.targetCompanyId === companyId &&
+        !isHandshakeExpired(state.pairing)
           ? {
               stage: state.pairing.stage,
               targetCompanyId: state.pairing.targetCompanyId,
@@ -2337,84 +2441,134 @@ const plugin = definePlugin({
       return {
         tokenConfigured,
         tokenMasked,
-        botUsername: state.botUsername,
-        telegramUrl: state.botUsername
-          ? `https://t.me/${state.botUsername}`
-          : undefined,
+        botUsername,
+        telegramUrl: botUsername ? `https://t.me/${botUsername}` : undefined,
         handshake,
+        otherHandshakeInFlight,
       };
     });
 
     async function doStartPairing(companyId: string) {
-      const config = await loadConfig(ctx);
+      const config = await loadConfig(ctx, companyId);
       if (!config.botToken) throw new Error("botToken missing in plugin config");
       const username = await ensureBotBootstrap(ctx, config);
-      const state = await readPairing(ctx);
-      if (isPairedFor(state, companyId)) {
-        const existing = getPaired(state, companyId);
-        throw new Error(
-          `Company is already paired with ${existing?.chatLabel}. Unpair first.`,
-        );
-      }
       let targetCompanyName: string | undefined;
       try {
-        const companies = await ctx.companies.list();
-        targetCompanyName = companies.find((c) => c.id === companyId)?.name;
+        targetCompanyName = (await ctx.companies.get(companyId))?.name;
       } catch {
         /* best-effort */
       }
-      await patchPairing(ctx, {
-        pairing: {
-          stage: "awaiting_chat",
-          targetCompanyId: companyId,
-          targetCompanyName,
-          expiresAt: newHandshakeExpiry(),
-        },
+      await mutatePairing(ctx, (state) => {
+        if (isPairedFor(state, companyId)) {
+          const existing = getPaired(state, companyId);
+          throw new Error(
+            `Company is already paired with ${existing?.chatLabel}. Unpair first.`,
+          );
+        }
+        // One handshake at a time per instance. A live handshake for another
+        // company is not cancelled from here: that would let one company
+        // interrupt another company's pairing.
+        if (
+          state.pairing &&
+          state.pairing.targetCompanyId !== companyId &&
+          !isHandshakeExpired(state.pairing)
+        ) {
+          throw new Error(
+            "Another company is pairing right now. Try again when its 10-minute window ends.",
+          );
+        }
+        return {
+          next: {
+            ...state,
+            pairing: {
+              stage: "awaiting_chat",
+              targetCompanyId: companyId,
+              targetCompanyName,
+              expiresAt: newHandshakeExpiry(),
+            },
+          },
+          result: undefined,
+        };
       });
-      return { stage: "awaiting_chat", botUsername: username };
+      return {
+        stage: "awaiting_chat",
+        botUsername: username,
+        companyName: targetCompanyName,
+      };
     }
 
-    async function doConfirmPairing(code: string) {
-      const state = await readPairing(ctx);
-      if (!state.pairing) {
-        throw new Error("No active pairing handshake. Start pairing first.");
-      }
-      if (isHandshakeExpired(state.pairing)) {
-        await clearHandshake(ctx);
-        throw new Error("Pairing window expired. Start over.");
-      }
-      if (state.pairing.stage !== "code_sent") {
-        throw new Error(
-          "Bot has not sent a code yet. Send any message to the bot in Telegram first.",
-        );
-      }
-      if (!codesMatch(state.pairing.code, code)) {
-        throw new Error("Code mismatch. Re-check the code and try again.");
-      }
-      const targetCompanyId = state.pairing.targetCompanyId;
-      const paired = {
-        chatId: state.pairing.candidateChatId,
-        chatLabel: state.pairing.candidateLabel,
-        pairedAt: new Date().toISOString(),
-        companyName: state.pairing.targetCompanyName,
-        pairedByTelegramUserId: state.pairing.candidateUserId,
-      };
-      await setPairedChat(ctx, targetCompanyId, paired);
-      await clearHandshake(ctx);
-      const config = await loadConfig(ctx);
+    /**
+     * Complete the handshake. `companyId` is the host-authorized company of
+     * the caller (settings page or agent tool); it must be the handshake's
+     * target. `pairedByUserId` is the Paperclip user who confirmed, when the
+     * caller is a board user.
+     */
+    async function doConfirmPairing(
+      code: string,
+      companyId: string,
+      pairedByUserId?: string | null,
+    ) {
+      const paired = await mutatePairing(ctx, (state) => {
+        if (!state.pairing || state.pairing.targetCompanyId !== companyId) {
+          throw new Error("No active pairing handshake. Start pairing first.");
+        }
+        if (isHandshakeExpired(state.pairing)) {
+          const next = { ...state };
+          delete next.pairing;
+          return { next, result: null };
+        }
+        if (state.pairing.stage !== "code_sent") {
+          throw new Error(
+            "Bot has not sent a code yet. Send any message to the bot in Telegram first.",
+          );
+        }
+        if (!codesMatch(state.pairing.code, code)) {
+          throw new Error("Code mismatch. Re-check the code and try again.");
+        }
+        const chat: PairedChat = {
+          chatId: state.pairing.candidateChatId,
+          chatLabel: state.pairing.candidateLabel,
+          pairedAt: new Date().toISOString(),
+          companyName: state.pairing.targetCompanyName,
+          // Capture the operator id here too — the agent-tool path must
+          // enforce the same approver/unpair gating as the UI confirm path.
+          pairedByTelegramUserId: state.pairing.candidateUserId,
+          ...(pairedByUserId ? { pairedByUserId } : {}),
+        };
+        const next: PairingState = {
+          ...state,
+          pairedByCompany: { ...(state.pairedByCompany ?? {}), [companyId]: chat },
+        };
+        delete next.pairing;
+        return { next, result: chat };
+      });
+      if (!paired) throw new Error("Pairing window expired. Start over.");
+      ctx.logger.info("telegram-notifier: paired", {
+        companyId,
+        chatId: paired.chatId,
+        label: paired.chatLabel,
+      });
+      const config = await loadConfig(ctx, companyId);
       await sendToChat(
         ctx,
         config,
         paired.chatId,
         buildPairedConfirmation({ chatLabel: paired.chatLabel }),
       ).catch(() => undefined);
-      return { paired: { ...paired, companyId: targetCompanyId } };
+      return {
+        paired: {
+          companyId,
+          chatLabel: paired.chatLabel,
+          pairedAt: paired.pairedAt,
+          companyName: paired.companyName,
+        },
+      };
     }
 
     async function doUnpairCompany(companyId: string) {
       const removed = await removePairedChat(ctx, companyId);
       if (!removed) return { paired: false, companyId };
-      const config = await loadConfig(ctx);
+      const config = await loadConfig(ctx, companyId);
       await sendToChat(ctx, config, removed.chatId, buildUnpairedMessage()).catch(
         () => undefined,
       );
@@ -2426,7 +2580,7 @@ const plugin = definePlugin({
     }
 
     async function doSendTestForCompany(companyId: string) {
-      const config = await loadConfig(ctx);
+      const config = await loadConfig(ctx, companyId);
       const state = await readPairing(ctx);
       const chat = getPaired(state, companyId);
       if (!chat) throw new Error("Company has no paired chat.");
@@ -2448,16 +2602,22 @@ const plugin = definePlugin({
       return id;
     }
 
+    // Settings-page actions. The host replaces `params.companyId` with the
+    // company selected in the dashboard and passes it in `context.companyId`.
     ctx.actions.register("startPairing", async (params) =>
       doStartPairing(requireCompanyParam(params)),
     );
-    ctx.actions.register("confirmPairing", async (params) => {
+    ctx.actions.register("confirmPairing", async (params, context) => {
       const code =
         typeof (params as { code?: unknown })?.code === "string"
           ? ((params as { code: string }).code as string)
           : "";
       if (!code) throw new Error("code parameter is required");
-      return doConfirmPairing(code);
+      return doConfirmPairing(
+        code,
+        requireCompanyParam(params),
+        context?.actor?.type === "user" ? context.actor.userId : null,
+      );
     });
     ctx.actions.register("unpair", async (params) =>
       doUnpairCompany(requireCompanyParam(params)),
@@ -2469,8 +2629,8 @@ const plugin = definePlugin({
      * Validate the configured bot token by calling Telegram's getMe.
      * Independent of any company pairing — exercises the credential alone.
      */
-    ctx.actions.register("testBotConnection", async () => {
-      const config = await loadConfig(ctx);
+    ctx.actions.register("testBotConnection", async (params) => {
+      const config = await loadConfig(ctx, requireCompanyParam(params));
       if (!config.botToken) {
         throw new Error("No bot token configured.");
       }

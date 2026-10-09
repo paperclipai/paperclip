@@ -10,16 +10,19 @@
  * Paperclip is not enough.
  *
  * Only one handshake is in flight at a time across the instance. Starting a
- * new pairing while another is in flight cancels the previous one.
+ * pairing while another company's handshake is still live is refused, so one
+ * company cannot cancel another company's pairing.
  *
- * State is namespaced under `instance` scope so the same paired-chats map
- * applies across all companies in this Paperclip instance.
+ * State is namespaced under `instance` scope so one paired-chats map covers
+ * every company. The host does not check company boundaries for instance
+ * state, so callers must bind every read and write to an authorized company.
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PAIRING_WINDOW_TTL_MS, STATE_KEY } from "./constants.js";
 import type {
   ApprovalConfig,
+  BotState,
   PairedChat,
   PairingHandshake,
   PairingState,
@@ -41,20 +44,78 @@ export async function writePairing(
   await ctx.state.set(SCOPE, next);
 }
 
+/**
+ * Every writer of the pairing state goes through this lock. The whole state
+ * lives in one instance-scoped object, so two unserialized read-modify-write
+ * cycles (e.g. the settings page saving operate-as and approval config at
+ * the same time, or the poll loop advancing its cursor while an event
+ * handler stores a message context) would let the last write discard the
+ * other change. The worker is a single process, so an in-process promise
+ * chain is enough to serialize them.
+ */
+const pairingLocks = new WeakMap<PluginContext, Promise<unknown>>();
+
+export async function mutatePairing<T>(
+  ctx: PluginContext,
+  fn: (current: PairingState) => { next: PairingState | null; result: T },
+): Promise<T> {
+  const previous = pairingLocks.get(ctx) ?? Promise.resolve();
+  const run = previous.then(async () => {
+    const current = await readPairing(ctx);
+    const { next, result } = fn(current);
+    if (next) await writePairing(ctx, next);
+    return result;
+  });
+  pairingLocks.set(
+    ctx,
+    run.catch(() => undefined),
+  );
+  return run;
+}
+
 export async function patchPairing(
   ctx: PluginContext,
   patch: Partial<PairingState>,
 ): Promise<PairingState> {
-  const current = await readPairing(ctx);
-  const next = { ...current, ...patch };
-  await writePairing(ctx, next);
-  return next;
+  return mutatePairing(ctx, (current) => {
+    const next = { ...current, ...patch };
+    return { next, result: next };
+  });
 }
 
 export async function clearHandshake(ctx: PluginContext): Promise<void> {
-  const current = await readPairing(ctx);
-  delete current.pairing;
-  await writePairing(ctx, current);
+  await mutatePairing(ctx, (current) => {
+    if (!current.pairing) return { next: null, result: undefined };
+    const next = { ...current };
+    delete next.pairing;
+    return { next, result: undefined };
+  });
+}
+
+/**
+ * Per-bot cache (username, poll cursor). Keyed by the numeric bot id — the
+ * non-secret prefix of the token — so saving a different bot's token starts
+ * with an empty cache instead of reusing the previous bot's username.
+ */
+export function getBotState(state: PairingState, botId: string): BotState {
+  return state.bots?.[botId] ?? {};
+}
+
+export async function patchBotState(
+  ctx: PluginContext,
+  botId: string,
+  patch: Partial<BotState>,
+): Promise<void> {
+  await mutatePairing(ctx, (current) => ({
+    next: {
+      ...current,
+      bots: {
+        ...(current.bots ?? {}),
+        [botId]: { ...(current.bots?.[botId] ?? {}), ...patch },
+      },
+    },
+    result: undefined,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -117,15 +178,16 @@ export async function setPairedChat(
   companyId: string,
   chat: PairedChat,
 ): Promise<void> {
-  const current = await readPairing(ctx);
-  const next: PairingState = {
-    ...current,
-    pairedByCompany: {
-      ...(current.pairedByCompany ?? {}),
-      [companyId]: chat,
+  await mutatePairing(ctx, (current) => ({
+    next: {
+      ...current,
+      pairedByCompany: {
+        ...(current.pairedByCompany ?? {}),
+        [companyId]: chat,
+      },
     },
-  };
-  await writePairing(ctx, next);
+    result: undefined,
+  }));
 }
 
 export async function patchPairedChat(
@@ -133,34 +195,37 @@ export async function patchPairedChat(
   companyId: string,
   patch: Partial<PairedChat>,
 ): Promise<PairedChat | undefined> {
-  const current = await readPairing(ctx);
-  const existing = current.pairedByCompany?.[companyId];
-  if (!existing) return undefined;
-  const next: PairedChat = { ...existing, ...patch };
-  await writePairing(ctx, {
-    ...current,
-    pairedByCompany: {
-      ...(current.pairedByCompany ?? {}),
-      [companyId]: next,
-    },
+  return mutatePairing(ctx, (current) => {
+    const existing = current.pairedByCompany?.[companyId];
+    if (!existing) return { next: null, result: undefined };
+    const next: PairedChat = { ...existing, ...patch };
+    return {
+      next: {
+        ...current,
+        pairedByCompany: {
+          ...(current.pairedByCompany ?? {}),
+          [companyId]: next,
+        },
+      },
+      result: next,
+    };
   });
-  return next;
 }
 
 export async function removePairedChat(
   ctx: PluginContext,
   companyId: string,
 ): Promise<PairedChat | undefined> {
-  const current = await readPairing(ctx);
-  const existing = current.pairedByCompany?.[companyId];
-  if (!existing) return undefined;
-  const nextMap = { ...(current.pairedByCompany ?? {}) };
-  delete nextMap[companyId];
-  await writePairing(ctx, {
-    ...current,
-    pairedByCompany: nextMap,
+  return mutatePairing(ctx, (current) => {
+    const existing = current.pairedByCompany?.[companyId];
+    if (!existing) return { next: null, result: undefined };
+    const nextMap = { ...(current.pairedByCompany ?? {}) };
+    delete nextMap[companyId];
+    return {
+      next: { ...current, pairedByCompany: nextMap },
+      result: existing,
+    };
   });
-  return existing;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,22 +308,22 @@ export async function saveMessageContext(
   messageId: number | string,
   value: import("./types.js").MessageContext,
 ): Promise<void> {
-  const current = await readPairing(ctx);
-  const map = { ...(current.messageContexts ?? {}) };
-  map[messageContextKey(chatId, messageId)] = value;
-  // Evict oldest entries by createdAt if over the cap.
-  const entries = Object.entries(map);
-  if (entries.length > MAX_MESSAGE_CONTEXTS) {
+  await mutatePairing(ctx, (current) => {
+    const map = { ...(current.messageContexts ?? {}) };
+    map[messageContextKey(chatId, messageId)] = value;
+    // Evict oldest entries by createdAt if over the cap.
+    const entries = Object.entries(map);
+    if (entries.length <= MAX_MESSAGE_CONTEXTS) {
+      return { next: { ...current, messageContexts: map }, result: undefined };
+    }
     entries.sort(
       (a, b) => Date.parse(a[1].createdAt) - Date.parse(b[1].createdAt),
     );
     const trimmed = entries.slice(entries.length - MAX_MESSAGE_CONTEXTS);
     const next: Record<string, import("./types.js").MessageContext> = {};
     for (const [k, v] of trimmed) next[k] = v;
-    await writePairing(ctx, { ...current, messageContexts: next });
-    return;
-  }
-  await writePairing(ctx, { ...current, messageContexts: map });
+    return { next: { ...current, messageContexts: next }, result: undefined };
+  });
 }
 
 export async function getMessageContext(
@@ -286,14 +351,16 @@ export async function setApprovalConfig(
   companyId: string,
   next: ApprovalConfig,
 ): Promise<void> {
-  const current = await readPairing(ctx);
-  await writePairing(ctx, {
-    ...current,
-    approvalByCompany: {
-      ...(current.approvalByCompany ?? {}),
-      [companyId]: next,
+  await mutatePairing(ctx, (current) => ({
+    next: {
+      ...current,
+      approvalByCompany: {
+        ...(current.approvalByCompany ?? {}),
+        [companyId]: next,
+      },
     },
-  });
+    result: undefined,
+  }));
 }
 
 /**

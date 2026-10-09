@@ -45,15 +45,24 @@ export interface NotifyToggles {
  *     ↓ confirmPairing(code) tool
  *   paired
  */
-export interface PairingState {
+export interface BotState {
   /** Telegram bot username (without @), captured from getMe(). */
-  botUsername?: string;
+  username?: string;
   /** Last `update_id` ingested from getUpdates — used to advance the offset. */
   lastUpdateId?: number;
+}
+
+export interface PairingState {
+  /**
+   * Per-bot cache keyed by the numeric bot id (the non-secret token prefix).
+   * Plugin config is company-scoped, so companies may use different bots;
+   * each bot keeps its own username and getUpdates cursor.
+   */
+  bots?: Record<string, BotState>;
   /**
    * The single in-flight pairing handshake. Only one pairing can be in
-   * progress at a time across the whole instance — starting a new pairing
-   * for company B while company A's handshake is still in flight cancels A.
+   * progress at a time across the whole instance — starting a pairing for
+   * company B while company A's handshake is still live is refused.
    */
   pairing?: PairingHandshake;
   /**
@@ -230,6 +239,12 @@ export interface PairedChat {
    * paired before this was captured (those fall back to chat membership).
    */
   pairedByTelegramUserId?: number;
+  /**
+   * Paperclip board user who confirmed the pairing in the settings page.
+   * Telegram replies from the pairing operator are posted as this user so the
+   * host wakes the issue assignee, the same as a dashboard comment.
+   */
+  pairedByUserId?: string;
 }
 
 export interface TelegramUser {
