@@ -1,3 +1,4 @@
+import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -10126,6 +10127,13 @@ export function heartbeatService(
               ${JSON.stringify({ startupPreparationSettledAt: new Date().toISOString() })}::jsonb`,
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
         }
+        await db.update(heartbeatRuns).set({
+          executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
+          controllerLeaseExpiresAt: null,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
+          eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
+
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
@@ -10181,7 +10189,28 @@ export function heartbeatService(
     }
   }
 
+  async function stopInvocationsForAgents(agentIds: string[], reason: string) {
+    await cancelInvocationsForAgentsInternal(agentIds, reason);
+    const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
+    const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
+      .where(and(inArray(heartbeatRuns.agentId, agentIds), eq(heartbeatRuns.status, "cancelled"),
+        inArray(environmentLeases.status, ["active", "pending_cleanup"])));
+    const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
+    for (const run of runs) {
+      if (!isHeartbeatRunTerminalStatus(run.status) || liveRunExecutions.has(run.id) ||
+          adapterExecutionControls.has(run.id) || processRunCancellationSettlements.has(run.id)) return false;
+      if (needsRelease.has(run.id)) {
+        // Retry cleanup even after cancellation made the run terminal.
+        await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId,
+          agentId: run.agentId, status: run.status, providerResourceDisposition: "destroy" });
+      }
+    }
+    return agentExecutionsHaveStopped(db, agentIds);
+  }
+
   return {
+    stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,
       options: { timeoutMs?: number; intervalMs?: number } = {},

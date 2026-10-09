@@ -1,3 +1,8 @@
+import { deleteCompany } from "../../../services/company-deletion.js";
+import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
+import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
+import { approvalService } from "../../../services/approvals.js";
+import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { readFileSync } from "node:fs";
 import express from "express";
 import request from "supertest";
@@ -6,10 +11,10 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../adapters/driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, projects, issues, heartbeatRuns, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createAgentLifecycle, configureAgentLifecycle, agentConfiguration, reconcileAgentPolicyHolds, approvalService } from "../index.js";
+import { createAgentLifecycle, configureAgentLifecycle, reconcileAgentPolicyHolds } from "../index.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
@@ -74,6 +79,71 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
   });
 
+  it("does not advance termination while a cancelled process still runs", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(), processPid: process.pid }).returning();
+    const driver = createLifecycleDriver(db, {} as never);
+    const work = worker(driver.run);
+    await createAgentLifecycle(db).terminateAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("terminating");
+    await db.update(heartbeatRuns).set({ processPid: null,
+      resultJson: { executionCancellation: { state: "acknowledged" } } }).where(eq(heartbeatRuns.id, run.id));
+    await createAgentLifecycle(db).retry(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("terminated");
+  });
+
+  it("does not cancel a reporting agent when its manager pauses", async () => {
+    const parent = await hire();
+    const [child] = await db.insert(agents).values({ companyId, name: "Report", reportsTo: parent.id,
+      status: "idle", lifecycleState: "ready" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: child.id,
+      status: "queued", invocationSource: "on_demand" }).returning();
+    const work = worker(createLifecycleDriver(db, {} as never).run);
+    await createAgentLifecycle(db).pauseAgent(parent.id);
+    await work.process(parent.id);
+    expect((await current(parent.id)).lifecycleState).toBe("paused");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.status).toBe("queued");
+  });
+
+  it("retains company data until every agent finishes termination", async () => {
+    const agent = await hire();
+    const [project] = await db.insert(projects).values({ companyId, name: "Keep until cleanup", leadAgentId: agent.id }).returning();
+    await db.insert(issues).values({ companyId, projectId: project.id, title: "Keep this task", assigneeAgentId: agent.id });
+    const pending = worker(async () => "pending");
+    await expect(deleteCompany(db, companyId)).rejects.toThrow("Complete agent termination");
+    expect(await db.select().from(projects).where(eq(projects.id, project.id))).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+    await pending.stop();
+    const complete = worker();
+    await createAgentLifecycle(db).retry(agent.id);
+    await complete.process(agent.id);
+    await deleteCompany(db, companyId);
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
+  });
+
+  it("requires cleanup proof after a remote run is already cancelled", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date() }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: run.id,
+      provider: "test", providerLeaseId: "test-lease", status: "pending_cleanup",
+      cleanupStatus: "failed", releasedAt: new Date() }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success" })
+      .where(eq(environmentLeases.id, lease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(environmentLeases).set({ metadata: {
+      remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }),
+    } }).where(eq(environmentLeases.id, lease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
   it("does not prepare a proposed hire until approval", async () => {
     const observed: string[] = [];
     const work = worker(async agent => { observed.push(agent.lifecycleState); return "complete"; });
@@ -84,6 +154,19 @@ const support = await getEmbeddedPostgresTestSupport();
     await approvalService(db).approve(approval.id, "board");
     await vi.waitFor(async () => expect((await current(agent.id)).lifecycleState).toBe("ready"));
     expect(observed).toEqual(["preparing", "verifying"]);
+  });
+
+  it("keeps the hire credential owner and recovers it for migrated approvals", async () => {
+    for (const savedOwner of [null, "original-owner"]) {
+      const [agent] = await db.insert(agents).values({ companyId, name: "Migrated hire", status: "pending_approval",
+        lifecycleState: "pending_approval", lifecycleOperation: savedOwner ? {
+          id: randomUUID(), participants: [], completed: [], attempts: 0, responsibleUserId: savedOwner,
+        } : null }).returning();
+      const approval = await approvalService(db).create(companyId, { type: "hire_agent",
+        requestedByUserId: "requesting-member", payload: { agentId: agent.id }, status: "pending" });
+      await approvalService(db).approve(approval.id, "approving-member");
+      expect((await current(agent.id)).lifecycleOperation?.responsibleUserId).toBe(savedOwner ?? "requesting-member");
+    }
   });
 
   it("rejects transaction injection and generic state writes", async () => {

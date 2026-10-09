@@ -1405,7 +1405,7 @@ export function builtInAgentService(db: Db) {
   }
 
   async function ensureBuiltInAgentAssignable(agent: Agent) {
-    if (agent.status !== "paused") return agent;
+    if (agent.status !== "paused" || ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return agent;
     const resumed = await agentSvcLifecycle.resumeAgent(agent.id);
     if (!resumed) throw notFound("Built-in agent not found");
     return resumed as Agent;

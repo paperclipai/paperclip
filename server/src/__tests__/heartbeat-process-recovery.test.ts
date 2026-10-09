@@ -9046,7 +9046,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 81_501, processGroupId: 81_502 }),
-      { forceAfterMs: 3000 },
+      { forceAfterMs: 3000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });

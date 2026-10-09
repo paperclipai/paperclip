@@ -1195,7 +1195,6 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     reason = "Cancelled due to agent pause",
     errorCode = "cancelled",
   ) {
-    const agent = await getAgent(agentId);
     const runs = await db
       .select()
       .from(heartbeatRuns)
@@ -1206,65 +1205,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         ),
       );
 
-    for (const run of runs) {
-      const stopOwnership =
-        run.runtimeMode !== "native"
-          ? captureAdapterStopOwnership(run.id)
-          : undefined;
-      try {
-        if (stopOwnership?.control) {
-          await cancelRunInternal(run.id, reason, { errorCode });
-          continue;
-        }
-        if (run.runtimeMode === "native") {
-          await db.update(heartbeatRuns).set({ resultJson:
-            sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ cancellation: requestedRunCancellation({}, reason) })}::jsonb`,
-          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, run.status)));
-          await cancelHeartbeatNativeRun({
-            db,
-            runId: run.id,
-            reason,
-            runtimeMode: run.runtimeMode,
-          });
-        }
-        const persistedCancellationResult =
-          run.runtimeMode === "native"
-            ? await getRun(run.id).then((current) =>
-                parseObject(current?.resultJson),
-              )
-            : parseObject(run.resultJson);
-        await setRunStatus(run.id, "cancelled", {
-          finishedAt: new Date(),
-          error: reason,
-          errorCode,
-          resultJson: {
-            ...persistedCancellationResult,
-            ...(agent ? mergeRunStopMetadataForAgent(agent, "cancelled", {
-              resultJson: persistedCancellationResult, errorCode, errorMessage: reason,
-            }) : {}),
-            cancellation: readRunCancellation(persistedCancellationResult) ?? requestedRunCancellation({}, reason),
-          },
-        });
-
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-          finishedAt: new Date(),
-          error: reason,
-        });
-
-        const running = runningProcesses.get(run.id);
-        if (running) {
-          await terminateHeartbeatRunProcess({
-            pid: running.child.pid,
-            processGroupId: running.processGroupId,
-            graceMs: Math.max(1, running.graceSec) * 1000,
-          });
-        }
-        runningProcesses.delete(run.id);
-        await releaseIssueExecutionAndPromote(run);
-      } finally {
-        stopOwnership?.release();
-      }
-    }
+    for (const run of runs) await cancelRunInternal(run.id, reason, { errorCode });
 
     return runs.length;
   }

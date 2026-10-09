@@ -1,8 +1,6 @@
-import { approvalService as approvalRecords } from "./adapters/approvals.js";
-import { dotInvitationService as invitationRecords } from "./adapters/dot-invitations.js";
-import { onboardingSeedService as seedRecords } from "./adapters/onboarding-seed.js";
+import { hireApprovalService as approvalRecords } from "./adapters/approvals.js";
 import { trackIdleWork } from "../../services/task-admission.js";
-import { deleteCompany } from "./adapters/delete-company.js";
+export { deleteTerminatedCompanyAgents } from "./adapters/delete-company.js";
 import { createLifecycleDriver } from "./adapters/driver.js";
 import type { PluginWorkerManager } from "../../services/plugin-worker-manager.js";
 import { agents } from "@paperclipai/db";
@@ -15,7 +13,7 @@ import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
 export { AgentLifecycleConflict, canConfigureAgentConnection } from "./domain/policy.js";
-export { hasAgentShortnameCollision, deduplicateAgentName } from "./adapters/records.js";
+
 export type { LifecycleDriver, LifecycleAgent } from "./application/ports.js";
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
@@ -28,14 +26,15 @@ export function configureAgentLifecycle(db: Db, driver: LifecycleDriver, canRun 
   workers.set(db, worker);
   return worker;
 }
-function kick(db: Db, id: string) {
+export function scheduleAgentLifecycle(db: Db, id: string) {
   // The periodic sweep retries work if the process stops before this call.
   void workers.get(db)?.process(id).catch(() => {});
 }
 
-export function agentConfiguration(db: Db, hooks: BudgetServiceHooks = {}) {
-  const { create, rejectPendingHire, remove, activatePendingApproval, updateAndTransition, ...configuration } = agentRecords(db, hooks);
-  return configuration;
+/** Configuration changes can share their credential transaction; transitions cannot. */
+export function updateAgentConfiguration(db: Db, hooks: BudgetServiceHooks,
+  ...args: Parameters<ReturnType<typeof agentRecords>["update"]>) {
+  return agentRecords(db, hooks).update(...args);
 }
 
 export function createAgentLifecycle(db: Db, hooks: BudgetServiceHooks = {}) {
@@ -44,7 +43,7 @@ export function createAgentLifecycle(db: Db, hooks: BudgetServiceHooks = {}) {
   const store = createLifecycleStore(db);
   async function change(id: string, command: "pause" | "resume" | "terminate" | "reject" | "retry", reason?: string) {
     const result = await store.change(id, command, { reason });
-    if (result) kick(db, id);
+    if (result) scheduleAgentLifecycle(db, id);
     return result ? records.getById(id) : null;
   }
   return {
@@ -57,59 +56,37 @@ export function createAgentLifecycle(db: Db, hooks: BudgetServiceHooks = {}) {
     },
     async requestHire(...args: Parameters<typeof records.create>) {
       const agent = await records.create(...args);
-      kick(db, agent.id);
+      scheduleAgentLifecycle(db, agent.id);
       return agent;
     },
     async approveHire(...args: Parameters<typeof records.activatePendingApproval>) {
       const result = await records.activatePendingApproval(...args);
-      if (result?.activated) kick(db, result.agent.id);
+      if (result?.activated) scheduleAgentLifecycle(db, result.agent.id);
       return result;
     },
     rejectHire: (id: string) => change(id, "reject"),
     async updateAndTransition(...args: Parameters<typeof records.updateAndTransition>) {
       const agent = await records.updateAndTransition(...args);
-      if (agent) kick(db, agent.id);
+      if (agent) scheduleAgentLifecycle(db, agent.id);
       return agent;
     },
     pauseAgent: (id: string, reason = "manual") => change(id, "pause", reason),
     resumeAgent: (id: string, reason = "user") => change(id, "resume", reason),
     terminateAgent: (id: string) => change(id, "terminate"),
     retry: (id: string) => change(id, "retry"),
+    clearError: records.clearError,
     purgeAgent: records.remove,
   };
 }
 
-export { parseSeedMission } from "./adapters/onboarding-seed.js";
-export type { OnboardingSeedApplication, OnboardingSeedAuditActor } from "./adapters/onboarding-seed.js";
-
-export function approvalService(db: Db) {
+export async function resolveAgentHireApproval(db: Db, id: string, status: "approved" | "rejected", userId: string, note?: string | null) {
   assertRootDatabase(db);
   const records = approvalRecords(db);
-  return { ...records, async approve(...args: Parameters<typeof records.approve>) {
-    const result = await records.approve(...args);
-    if (result.hireApprovedAgentId) kick(db, result.hireApprovedAgentId);
-    return { approval: result.approval, applied: result.applied };
-  } };
+  if (status === "rejected") return { ...await records.reject(id, userId, note), hireApprovedAgentId: null };
+  const result = await records.approve(id, userId, note);
+  if (result.hireApprovedAgentId) scheduleAgentLifecycle(db, result.hireApprovedAgentId);
+  return result;
 }
-export function dotInvitationService(db: Db) {
-  assertRootDatabase(db);
-  const records = invitationRecords(db);
-  return { ...records, async create(...args: Parameters<typeof records.create>) {
-    const result = await records.create(...args);
-    kick(db, result.agent.id);
-    return result;
-  } };
-}
-export function onboardingSeedService(db: Db) {
-  assertRootDatabase(db);
-  const records = seedRecords(db);
-  return { ...records, async apply(...args: Parameters<typeof records.apply>) {
-    const result = await records.apply(...args);
-    if (result.agentId) kick(db, result.agentId);
-    return result;
-  } };
-}
-
 export async function reconcileAgentPolicyHolds(db: Db, companyId?: string, agentId?: string | null) {
   assertRootDatabase(db);
   if (agentId === null) return;
@@ -119,7 +96,7 @@ export async function reconcileAgentPolicyHolds(db: Db, companyId?: string, agen
   ));
   for (const row of rows) {
     await store.change(row.id, "reconcile");
-    kick(db, row.id);
+    scheduleAgentLifecycle(db, row.id);
   }
 }
 
@@ -151,12 +128,12 @@ export function startAgentLifecycle(db: Db, manager: PluginWorkerManager, canRun
   };
 }
 
-export async function deleteCompanyWithAgents(db: Db, companyId: string) {
+export async function terminateCompanyAgents(db: Db, companyId: string) {
   const lifecycle = createAgentLifecycle(db);
   const rows = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
   for (const row of rows) {
     await lifecycle.terminateAgent(row.id);
     await workers.get(db)?.process(row.id);
   }
-  return deleteCompany(db, companyId);
+
 }

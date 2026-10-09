@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, budgetPolicies, type Db } from "@paperclipai/db";
 import type { AgentLifecycleOperation } from "@paperclipai/shared";
 import { withAccountingTransaction } from "../../../services/accounting-transaction.js";

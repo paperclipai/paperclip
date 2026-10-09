@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { agents, companies, heartbeatRuns, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
+import { agents, companies, plugins, pluginCompanySettings, type Db } from "@paperclipai/db";
 import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { requireServerAdapter } from "../../../adapters/index.js";
@@ -93,11 +93,9 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
       if (agent.lifecycleState === "verifying") return verify(agent);
       if (["pausing", "terminating", "cleaning_up"].includes(agent.lifecycleState)) {
         const companyAgents = await db.select().from(agents).where(eq(agents.companyId, agent.companyId));
-        const ids = [agent.id, ...listInvalidOrgChainDescendantIds(agent.id, companyAgents)];
-        await heartbeat.cancelInvocationsForAgents(ids, "Agent lifecycle stop requested");
-        const running = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-          inArray(heartbeatRuns.agentId, ids), inArray(heartbeatRuns.status, ["running", "queued"])));
-        if (running.length) return "pending";
+        const ids = agent.lifecycleState === "pausing" ? [agent.id]
+          : [agent.id, ...listInvalidOrgChainDescendantIds(agent.id, companyAgents)];
+        if (!await heartbeat.stopInvocationsForAgents(ids, "Agent lifecycle stop requested")) return "pending";
       }
       return "complete";
     },

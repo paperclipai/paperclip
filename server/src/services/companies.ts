@@ -1,4 +1,5 @@
-import { deleteCompanyWithAgents, reconcileAgentPolicyHolds } from "../modules/agent-lifecycle/index.js";
+import { deleteCompany } from "./company-deletion.js";
+import { reconcileAgentPolicyHolds } from "../modules/agent-lifecycle/index.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
@@ -504,7 +505,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return result.company;
     },
 
-    remove: (id: string) => deleteCompanyWithAgents(db, id),
+    remove: (id: string) => deleteCompany(db, id),
 
     stats: () =>
       Promise.all([

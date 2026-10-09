@@ -216,6 +216,24 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     return { companyId, agentId };
   }
 
+  it.each(["preparing", "verifying", "resuming"] as const)("keeps assigned work queued through %s, including recovery with timers disabled", async lifecycleState => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatConfig: { enabled: false } });
+    await db.update(agents).set({ status: "paused", lifecycleState }).where(eq(agents.id, agentId));
+    const [issue] = await db.insert(issues).values({ companyId, title: "Work accepted during setup", status: "todo", assigneeAgentId: agentId }).returning();
+    const run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      requestedByActorType: "system", payload: { issueId: issue.id } });
+    expect(run?.status).toBe("queued");
+    await heartbeat.resumeQueuedRuns();
+    expect((await heartbeat.getRun(run!.id))?.status).toBe("queued");
+    expect(countExecuteCallsForRun(run!.id)).toBe(0);
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
+    const recovered = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    await recovered.resumeQueuedRuns();
+    expect(await waitForCondition(async () => countExecuteCallsForRun(run!.id) === 1)).toBe(true);
+    await recovered.waitForRunExecutionDrain(run!.id);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
   async function seedQueuedRun(input: {
     companyId: string;
     agentId: string;

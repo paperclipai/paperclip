@@ -10,6 +10,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  heartbeatRuns,
+  agentWakeupRequests,
+  routineRuns,
   agentConfigRevisions,
   agents,
   approvals,
@@ -1426,6 +1429,32 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(resetFile.content).toContain("<<<SUMMARY-DRAFT>>>");
     expect(resetFile.content).toContain("<<<END-SUMMARY-DRAFT>>>");
     expect(resetFile.content).not.toContain("Operator edit.");
+  });
+
+  it("keeps a built-in routine task while the agent prepares", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const builtIns = createBuiltInAgentService(db);
+    const created = await builtIns.ensure(companyId, "reflection-coach");
+    await lifecycleWorker.stop();
+    lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "pending" });
+    try {
+      const result = await builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", { userId: "responsible-user" });
+      expect(result.status).toBe("issue_created");
+      const tasks = await db.select().from(issues).where(eq(issues.companyId, companyId));
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]!.assigneeAgentId).toBe(created.agentId);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+        .toEqual([expect.objectContaining({ status: "queued", agentId: created.agentId })]);
+      // A second request during setup must not try to resume an already preparing agent.
+      await expect(builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", { userId: "responsible-user" }))
+        .resolves.toHaveProperty("id");
+    } finally {
+      await lifecycleWorker.stop();
+      await db.delete(routineRuns).where(eq(routineRuns.companyId, companyId));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+    }
   });
 
   it("controls the Reflection Coach routine schedule without enabling it by default", async () => {

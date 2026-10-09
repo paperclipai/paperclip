@@ -928,6 +928,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  function isAgentAwaitingSetup(agent: typeof agents.$inferSelect) {
+    return ["preparing", "verifying", "resuming"].includes(agent.lifecycleState) && agent.lifecycleHolds.length === 0;
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -941,6 +945,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       );
       return null;
     }
+    // Keep accepted work in the durable queue until setup completes.
+    if (isAgentAwaitingSetup(agent)) return null;
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
@@ -2501,7 +2507,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     }
 
-    const invokability = await getAgentInvokability(agent);
+    // Setup delays execution, but must not discard work accepted by a caller.
+    const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
     if (!invokability.invokable) {
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {

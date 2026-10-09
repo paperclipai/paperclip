@@ -4,7 +4,7 @@ The agent lifecycle module controls hiring, pause, resume, and termination.
 Its public entry point is `server/src/modules/agent-lifecycle/index.ts`.
 Use its commands to create an agent or change its lifecycle state.
 Do not pass a database transaction to a command.
-Each command owns its transaction.
+Each hire or transition command owns its transaction.
 
 ## States
 
@@ -41,11 +41,30 @@ They do not wait for external resource operations.
 `updateAndTransition` applies a configuration change and a lifecycle command
 in one transaction. A failed command does not save the configuration change.
 
-Approval, invitation, onboarding, and company deletion use named module entry
-points. Their adapters own the related database work.
-Callers cannot add agent writes to an unrelated transaction.
-The ordinary agent service retains reads and configuration changes.
-It rejects lifecycle fields in a configuration update.
+The onboarding and invitation services own their feature workflows.
+They commit the hire through `requestHire` before they save the other records.
+A separate database transaction holds only the workflow lock.
+It prevents concurrent requests for the same workflow.
+The hire command commits through its own connection and transaction.
+A failure in the lock transaction cannot undo a committed hire.
+If a later step fails, a retry uses the existing agent.
+The onboarding revision is saved only after its content and audit record commit.
+
+The approval service owns comments, revisions, and general approval records.
+The lifecycle module resolves a hire approval and changes the agent in one
+transaction. It retains the original credential owner when it approves a hire.
+
+The company deletion service owns the company data cascade.
+It requests agent termination before it starts that cascade.
+Its final agent purge uses `deleteTerminatedCompanyAgents` in the deletion
+transaction. This specific integration checks all agent states and takes the
+company lock. A concurrent hire makes deletion fail or waits until deletion ends.
+It cannot remove an agent with incomplete termination.
+
+The ordinary agent service owns reads, permissions, keys, and revision history.
+Credential checks remain in the agent configuration service code.
+Configuration writes use the lifecycle module to invalidate an old verification
+result in the same transaction. They reject caller-supplied lifecycle fields.
 
 Manual, budget, and company pause holds are independent.
 A manual resume does not remove a budget or company hold.
@@ -104,6 +123,14 @@ It uses the saved responsible user for managed credentials.
 The host does not grant new credential access for this test.
 A connection pool selects an account for a separate lifecycle test operation.
 An external controller must complete its existing readiness test.
+
+Task requests can enter the durable run queue during preparation, verification,
+and resume. Execution waits for readiness. Queue recovery does not require
+periodic agent heartbeats to be enabled.
+
+A cancelled run record does not prove that execution stopped.
+The host also checks process ownership, controller leases, and environment cleanup.
+Required plugin cleanup cannot start while these checks are incomplete.
 
 The worker starts after a committed command.
 A periodic scan recovers work after a process stops.
