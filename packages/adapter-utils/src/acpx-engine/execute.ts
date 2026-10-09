@@ -4823,6 +4823,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ...(Array.isArray(prepared.skillsIdentity.commandNotes)
                 ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
                 : []),
+              // Always report the delivered MCP server count, including zero.
+              // The legacy claude-local CLI path logs this, but an ACPX run had
+              // no record of how many servers it was handed, so "do I have my
+              // tools?" was only answerable by calling one and seeing it fail.
+              // A note that is absent when the count is zero would keep that
+              // blind spot, so the zero case is stated explicitly.
+              prepared.mcpIdentity.length > 0
+                ? `Using ${prepared.mcpIdentity.length} Paperclip-managed MCP server(s): ${prepared.mcpIdentity
+                    .map((server) => server.name)
+                    .sort()
+                    .join(", ")}.`
+                : "Using 0 Paperclip-managed MCP servers.",
               ...commandNotes,
             ],
             env: prepared.loggedEnv,

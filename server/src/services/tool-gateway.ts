@@ -8492,8 +8492,23 @@ export function createToolGatewayService(
       agentId: string;
       runId: string;
       permittedNotInstalledConnections: Array<{ id: string; name: string }>;
+      filteredOutConnections?: Array<{
+        id: string;
+        name: string;
+        reasonCode: string;
+      }>;
     }) {
-      if (input.permittedNotInstalledConnections.length === 0) return;
+      const filteredOutConnections = input.filteredOutConnections ?? [];
+      // Zero delivered servers is only expected when the agent has no permitted
+      // MCP connection at all. If a permitted connection was dropped — never
+      // installed, or installed and then filtered out — the control plane and
+      // the run disagree, and that disagreement needs an artifact.
+      if (
+        input.permittedNotInstalledConnections.length === 0 &&
+        filteredOutConnections.length === 0
+      ) {
+        return;
+      }
       const [run] = await db
         .select({
           issueId: sql<
@@ -8509,22 +8524,40 @@ export function createToolGatewayService(
           ),
         )
         .limit(1);
-      await writeAudit({
-        companyId: input.companyId,
-        agentId: input.agentId,
-        runId: input.runId,
-        issueId: run?.issueId ?? null,
-        action: "tool_gateway.runtime_mcp_delivery",
-        details: {
-          decision: "diagnostic",
-          reasonCode: "permitted_connections_not_installed",
-          deliveredServerCount: 0,
-          permittedNotInstalledCount:
-            input.permittedNotInstalledConnections.length,
-          permittedNotInstalledConnections:
-            input.permittedNotInstalledConnections,
-        },
-      });
+      // The audit row carries a run id under a foreign key. The MCP builder
+      // tolerates a run row it cannot read, so this has to tolerate it too —
+      // otherwise the insert fails the constraint and takes the run with it.
+      if (!run) return;
+      try {
+        await writeAudit({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: run.issueId ?? null,
+          action: "tool_gateway.runtime_mcp_delivery",
+          details: {
+            decision: "diagnostic",
+            reasonCode:
+              input.permittedNotInstalledConnections.length > 0
+                ? "permitted_connections_not_installed"
+                : "permitted_connections_filtered_out",
+            deliveredServerCount: 0,
+            permittedNotInstalledCount:
+              input.permittedNotInstalledConnections.length,
+            permittedNotInstalledConnections:
+              input.permittedNotInstalledConnections,
+            filteredOutCount: filteredOutConnections.length,
+            filteredOutConnections,
+          },
+        });
+      } catch (error) {
+        // This row explains why a run has no tools. It must never be the reason
+        // a run fails, so a failed diagnostic degrades to a log line.
+        logger.warn(
+          { err: error, runId: input.runId, agentId: input.agentId },
+          "Could not record the runtime MCP delivery diagnostic",
+        );
+      }
     },
 
     async listNamedGateways(
