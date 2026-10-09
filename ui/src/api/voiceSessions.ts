@@ -13,6 +13,6 @@ export const voiceSessionsApi = {
     return api.post<VoiceSession>(`${base(companyId)}/${encodeURIComponent(sessionId)}/end`, {});
   },
   notification(companyId: string, sessionId: string) {
-    return api.get<VoiceSessionNotification | null>(`${base(companyId)}/${encodeURIComponent(sessionId)}/notification`, { cache: "no-store" });
+    return api.get<VoiceSessionNotification | null>(`${base(companyId)}/${encodeURIComponent(sessionId)}/notification`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
   },
 };
