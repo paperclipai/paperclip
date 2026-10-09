@@ -1445,6 +1445,7 @@ export interface ChatChannelServiceOptions {
         errorCode?: string;
         eventMessage?: string;
         eventPayload?: Record<string, unknown>;
+        resultJson?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
   };
@@ -26496,6 +26497,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         {
           errorCode: "slack_session_stopped",
           eventMessage: "run cancelled from Slack",
+          resultJson: {
+            cancelledByActorType: "user",
+            cancelledByUserId: claim.userId,
+          },
           eventPayload: {
             endpointId: action.endpointId,
             conversationId: action.conversationId,

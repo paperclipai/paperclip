@@ -1733,7 +1733,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                 eq(issueThreadInteractions.companyId, issue.companyId),
                 eq(issueThreadInteractions.issueId, issue.id),
                 eq(issueThreadInteractions.status, "pending"),
-                activeIssueInteractionCondition(),
+                activeIssueInteractionCondition({ runId: run.id }),
               ),
             )
             .limit(1)

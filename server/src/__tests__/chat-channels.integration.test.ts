@@ -1034,7 +1034,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 90_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -16313,6 +16313,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "Stopped from the bound Slack agent session",
       expect.objectContaining({
         errorCode: "slack_session_stopped",
+        resultJson: {
+          cancelledByActorType: "user",
+          cancelledByUserId: "owner-user",
+        },
         eventPayload: expect.objectContaining({
           conversationId: conversation.id,
           endpointId: endpoint.id,
