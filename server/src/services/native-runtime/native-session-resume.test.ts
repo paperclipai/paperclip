@@ -734,6 +734,7 @@ const recoveryFakeCodex = resolve(
     const previousStateBase = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     const server = createServer();
     let firstSession: NativeSession | undefined;
+    let restoreCodexCommand: (() => void) | undefined;
     const ownedSessions = new Set<NativeSession>();
     const ownedSpawns: Array<{ pid: number; processGroupId: number | null; startedAt: string }> = [];
     const onSpawn = async (meta: typeof ownedSpawns[number]) => { ownedSpawns.push(meta); };
@@ -759,6 +760,11 @@ const recoveryFakeCodex = resolve(
         `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(recoveryFakeCodex)} "$CODEX_HOME/fake-state.json" 16\n`,
       );
       await chmod(command, 0o700);
+      // Installed dependency selection intentionally precedes PATH on mainline.
+      // Bind this fixture's synthetic provider explicitly at that boundary.
+      const codexCommandModule = await import(new URL("../../../../packages/paperclip-runner/src/drivers/codex/codex-command.ts", import.meta.url).href);
+      const codexCommandSelection = vi.spyOn(codexCommandModule, "resolveCodexCommand").mockReturnValue(command);
+      restoreCodexCommand = () => codexCommandSelection.mockRestore();
       await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
       const address = server.address();
       if (!address || typeof address === "string")
@@ -1048,6 +1054,11 @@ const recoveryFakeCodex = resolve(
           async onContinuityBreak(value) {
             continuity = value;
           },
+        }).then((result) => {
+          if (result.terminal.runTerminalState !== "succeeded") {
+            throw new Error(`Disposable recovery fixture failed: ${JSON.stringify(result)}`);
+          }
+          return result;
         }).catch(async (error: unknown) => {
           const eventRows = await db
             .select({
@@ -1227,6 +1238,7 @@ const recoveryFakeCodex = resolve(
         Promise.resolve().then(() => session.close({ reason: "Recovery fixture cleanup" })),
       ));
       const closeFailures = closed.filter((result) => result.status === "rejected");
+      restoreCodexCommand?.();
       runnerPrpWebSocketInternals.resetForTests();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveQualifiedAcpxProfile } from "./drivers/acpx/qualified-profiles.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ControlPlanePort } from "./contracts/control-plane-port.js";
@@ -5004,7 +5005,19 @@ describe("executeNativeSession recovery", () => {
     expect(attachRun).not.toHaveBeenCalled();
   });
 
-  it("quarantines a retained session when attachment partially mutates then fails", async () => {
+  it.each(["codex", "copilot"] as const)("quarantines a retained %s session when attachment partially mutates then fails", async (provider) => {
+    const qualified = resolveQualifiedAcpxProfile("copilot", "selected-model");
+    const executionInput: NativeExecutionInputV1 = provider === "copilot" ? {
+      ...input,
+      session: { ...input.session, driverKind: "acpx_runtime" },
+      provider: { kind: "acpx", agent: "copilot", model: "selected-model", permissionPolicy: "interactive", profile: {
+        driverKind: qualified.driverKind, protocolVersion: qualified.protocolVersion, acpxVersion: qualified.acpxVersion,
+        agent: qualified.agent, agentProfileVersion: qualified.agentProfileVersion,
+        agentServerPackage: qualified.agentServerPackage, agentServerVersion: qualified.agentServerVersion,
+        agentRuntimePackage: qualified.agentRuntimePackage, agentRuntimeVersion: qualified.agentRuntimeVersion,
+        commandDigest: qualified.commandDigest,
+      } },
+    } : input;
     const attachmentFailure = new Error("provider attachment failed");
     const openRun = vi.fn(async () => undefined);
     let retainedIdentity = { ...identity, runId: "run-previous" };
@@ -5041,7 +5054,7 @@ describe("executeNativeSession recovery", () => {
       async descriptor() {
         return {
           kind: "mock",
-          name: "attachment-failure-backend",
+          name: `attachment-failure-backend-${provider}`,
           version: "1",
           capabilities: {
             resume: true,
@@ -5069,7 +5082,7 @@ describe("executeNativeSession recovery", () => {
 
     await expect(
       executeNativeSession({
-        input,
+        input: executionInput,
         backend,
         controlPlane: port,
         runnerInstanceId: "runner-recovery",
@@ -5078,7 +5091,9 @@ describe("executeNativeSession recovery", () => {
         onSession,
       }),
     ).rejects.toBe(attachmentFailure);
-    expect(attachRun).toHaveBeenCalledWith({ identity });
+    expect(attachRun).toHaveBeenCalledWith(provider === "copilot"
+      ? { identity, currentRunGrant: { runtimeContext: null, instructions: expect.any(String) } }
+      : { identity });
     expect(retainedIdentity).toEqual(identity);
     expect(onSession).toHaveBeenCalledOnce();
     expect(onSession).toHaveBeenCalledWith(null);
