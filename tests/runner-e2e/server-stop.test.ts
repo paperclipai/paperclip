@@ -146,6 +146,10 @@ it.skipIf(process.platform === "win32")("lets launcher cancellation join wrapper
   const owner = createProcessTreeOwner(wrapper);
   try {
     workerPid = (await once(wrapper, "message"))[0].pid;
+    // Establish ownership before starting either bounded shutdown. A slow
+    // host process-table read must not hold the worker's completion message
+    // until after the wrapper's graceful deadline has already elapsed.
+    await owner.observe();
     const stopping = once(wrapper, "message");
     wrapper.send("stop");
     expect((await stopping)[0].message).toBe("stopping");
@@ -154,7 +158,6 @@ it.skipIf(process.platform === "win32")("lets launcher cancellation join wrapper
     const messages: unknown[] = [];
     wrapper.on("message", message => messages.push(message));
     const exited = once(wrapper, "exit");
-    await owner.observe();
     const cancellation = stopOwnedProcessTree(wrapper, owner, 2_000, 2_000);
     await new Promise(resolve => setTimeout(resolve, 250));
     if (wrapper.connected) wrapper.send("finish");
