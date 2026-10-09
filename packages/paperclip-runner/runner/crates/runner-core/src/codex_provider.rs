@@ -386,6 +386,13 @@ pub struct CodexSkillInput {
     pub path: String,
 }
 
+/// Optional inputs for one turn; omitted fields preserve provider defaults.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodexTurnOptions<'a> {
+    pub skills: &'a [CodexSkillInput],
+    pub reasoning_mode: Option<&'a str>,
+}
+
 impl CodexSkillInput {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         if self.input_type != "skill"
@@ -1670,25 +1677,19 @@ impl CodexProvider {
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_skills(message, cwd, &[])
+        self.start_turn_with_options(message, cwd, CodexTurnOptions::default())
     }
 
-    pub fn start_turn_with_skills(
+    pub fn start_turn_with_options(
         &mut self,
         message: &str,
         cwd: &str,
-        skills: &[CodexSkillInput],
+        options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_reasoning(message, cwd, skills, None)
-    }
-
-    pub fn start_turn_with_reasoning(
-        &mut self,
-        message: &str,
-        cwd: &str,
-        skills: &[CodexSkillInput],
-        reasoning_mode: Option<&str>,
-    ) -> Result<Value, LocalRunnerError> {
+        let CodexTurnOptions {
+            skills,
+            reasoning_mode,
+        } = options;
         if reasoning_mode.is_some_and(|mode| {
             self.config.provider != "opencode" || !matches!(mode, "default" | "disabled")
         }) {
