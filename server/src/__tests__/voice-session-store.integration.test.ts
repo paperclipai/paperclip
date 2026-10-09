@@ -457,7 +457,7 @@ const support = await getEmbeddedPostgresTestSupport();
       configureVoiceDefaults: vi.fn(async () => {}),
       verifyAgent: vi.fn(async () => ({ id: "agent_test", organizationId: "org_test", name: "Test voice" })),
       createPhoneSession: vi.fn(async (_input: { to: string; bindingId: string }) => ({ sessionId: randomUUID(), status: "dialing" as const })),
-      createBrowserSession: vi.fn(async () => ({ sessionId: randomUUID(), transportToken: "short-lived-media-token", transportUrl: "wss://media.example.test" })),
+      createBrowserSession: vi.fn(async (_input: {toolToken: string}) => ({ sessionId: randomUUID(), transportToken: "short-lived-media-token", transportUrl: "wss://media.example.test" })),
       inspectSession: vi.fn(async () => ({ status: "active", endedAt: null as string | null })),
       callReport: vi.fn(async () => ({ complete: true, transcript: [{ id: "turn1", index: 0, speaker: "caller" as const, text: "A test request", startedAt: new Date().toISOString(), endedAt: null, interrupted: false }], costMicroUsd: "120000", durationSeconds: 60, providerUpdatedAt: new Date() })),
       callDeliveryDiagnostics: vi.fn(async (id: string, deliveries: readonly {messageId: string; acceptedAt: string}[]) => parseSpekoDeliveryDiagnostics(
@@ -492,7 +492,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.transport.sendCallMessage.mock.calls[0]?.[1]).toContain("Call get_updates");
     const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, f.publication.id));
     expect(reply.deliveredAt).toBeNull();
-    expect(await f.store.runTool(f.toolInput("get_updates", {cursor: 0}))).toMatchObject({updates: [{question: {interactionId}}]});
+    // The service starts a new call; the first fixture call's token is retired.
+    const token = f.transport.createBrowserSession.mock.calls[0]![0].toolToken;
+    const toolId = randomUUID();
+    const {sessionId: providerSessionId} = await f.transport.createBrowserSession.mock.results[0]!.value;
+    const envelope = {session_id: providerSessionId, tool_call_id: toolId, idempotency_key: `${providerSessionId}:${toolId}`, tool: "get_updates" as const, args: {cursor: 0}};
+    expect(await f.store.runTool({...f.toolInput("get_updates", {cursor: 0}), sessionId: f.session.id, token, envelope, webhookId: toolId, fingerprint: createHash("sha256").update(JSON.stringify(envelope)).digest("hex")})).toMatchObject({updates: [{question: {interactionId}}]});
     await f.push();
     expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
   });
