@@ -109,7 +109,7 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   expect(await reconnected.json()).toMatchObject({ assignedAgentId: seed.agentId, assignedAgentName: "Maya" });
   await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
   mock.setStatus("active");
-  await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
+  await page.getByRole("dialog").getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Maya", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await page.getByText("Connection health and controls", { exact: true }).click();
