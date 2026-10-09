@@ -246,13 +246,21 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
       const probeKey = JSON.stringify([run.companyId, responsibleUserId, laneKey]);
       const stored = probeByLane.get(probeKey) ?? null;
       if (stored?.runId === run.id) {
-        // The probe was granted but did not start. Claim it again without
-        // renewing the grant. Once the grant expires, another run may probe.
-        if (now.getTime() - stored.grantedAt.getTime() < config.probeTimeoutMs) {
-          return { hold: false, reason: "probe_cooldown_elapsed", probe: true } as const;
+        // The probe was granted but did not start. Once the grant expires,
+        // another run may probe.
+        if (now.getTime() - stored.grantedAt.getTime() >= config.probeTimeoutMs) {
+          probeByLane.delete(probeKey);
+          return { hold: true, reason: "probe_expired", failures: 0, errorCode: "", holdUntil: now } as const;
         }
-        probeByLane.delete(probeKey);
-        return { hold: true, reason: "probe_expired", failures: 0, errorCode: "", holdUntil: now } as const;
+        // Another run of the lane may have failed authentication meanwhile.
+        // That starts a new cooldown, and a later probe is granted afresh.
+        const recheck = decideProviderLoginHold(runs, now, config);
+        if (recheck.hold) {
+          probeByLane.delete(probeKey);
+          return recheck;
+        }
+        // Claim the probe again without renewing the grant.
+        return recheck;
       }
       let probeFinished = false;
       if (stored) {
