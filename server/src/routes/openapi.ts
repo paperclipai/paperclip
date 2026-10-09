@@ -5558,7 +5558,8 @@ registry.registerPath({ method: "post", path: "/api/companies/{companyId}/costs/
   summary: "Refresh connected subscription estimates in the background",
   description: "Board members only. Probes only credentials the caller can use. Successful observations are cached for six hours; provider failures retain prior estimates. No inference requests, invoices, or budget charges are created.",
   request: { params: z.object({ companyId: z.string() }) },
-  responses: { 202: { description: "Background refresh accepted" }, 401: r.unauthorized, 403: r.forbidden },
+  responses: { 202: { description: "Background refresh accepted" }, 401: r.unauthorized, 403: r.forbidden,
+    429: { description: "Discovery capacity is full; retry the request later" } },
 });
 registry.registerPath({ method: "patch", path: "/api/companies/{companyId}/costs/subscriptions/{subscriptionId}", tags: ["costs"],
   summary: "Set a subscription price or end tracking",

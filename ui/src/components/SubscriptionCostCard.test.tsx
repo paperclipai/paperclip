@@ -97,6 +97,21 @@ describe("subscription costs", () => {
     await render(report); await click("View details");
     expect([...document.querySelectorAll("button")].some(button => button.textContent === "Edit price")).toBe(false);
   });
+  it.each(["ended", "excluded"])("can change tracking to %s without rounding a saved fractional price", async (status) => {
+    const report = fixture(); report.accounts[0].price.amountCents = "1575.5000000";
+    await render(report); await click("View details"); await click("Edit price");
+    const amount = document.querySelector<HTMLInputElement>("#subscription-price")!;
+    expect(amount.value).toBe("15.755");
+    expect(amount.checkValidity()).toBe(true);
+    await act(async () => {
+      const tracking = document.querySelector<HTMLSelectElement>("#subscription-status")!;
+      tracking.value = status; tracking.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await click("Save price");
+    await vi.waitFor(() => expect(mocks.update).toHaveBeenCalledWith("company", "account-1", expect.objectContaining({
+      amountCents: "1575.5000000", status,
+    })));
+  });
   it("distinguishes personal seats with multiple owners from company-shared subscriptions", async () => {
     const report = fixture();
     report.accounts[0] = { ...report.accounts[0], ownerUserId: null, ownerName: null, shared: false, canEdit: false };

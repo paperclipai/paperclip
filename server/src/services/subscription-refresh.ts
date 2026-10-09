@@ -4,6 +4,7 @@ import { aiConnectionService } from "./ai-connections.js";
 import { subscriptionService, type SubscriptionConnection } from "./subscriptions.js";
 import { probeSubscriptionIdentity } from "./subscription-identity.js";
 import { logger } from "../middleware/logger.js";
+import { tooManyRequests } from "../errors.js";
 
 const jobs = new WeakMap<Db, Map<string, Promise<void>>>();
 const discovery = new WeakMap<Db, Map<string, Promise<void>>>();
@@ -15,8 +16,8 @@ export function refreshSubscriptionConnection(db: Db, input: SubscriptionConnect
   if (!active) jobs.set(db, active = new Map());
   const existing = active.get(id);
   if (existing) return existing;
-  // Bound provider concurrency across all companies on this instance. Skipped
-  // observations remain due for the next dashboard refresh or account use.
+  // Bound provider concurrency across all companies on this instance. Dashboard
+  // discovery waits below; opportunistic run observations remain due when busy.
   if (active.size >= 4) return Promise.resolve();
   const task = (async () => {
     const [claimed] = await db.update(aiSubscriptions).set({ lastCheckedAt: new Date() }).where(and(
@@ -48,7 +49,7 @@ export function refreshCompanySubscriptions(db: Db, companyId: string, userId: s
   const key = `${companyId}:${userId}`;
   const existing = active.get(key);
   if (existing) return existing;
-  if (active.size >= 20) return Promise.resolve();
+  if (active.size >= 20) throw tooManyRequests("Subscription account checks are busy. Try again shortly.");
   const task = (async () => {
     const service = aiConnectionService(db);
     // Uses the existing credential audience. Being a company admin does not
@@ -60,6 +61,14 @@ export function refreshCompanySubscriptions(db: Db, companyId: string, userId: s
         const input: SubscriptionConnection = { companyId, connectionId: row.connection.id, grantId: row.grant.id,
           provider: row.summary.provider, name: row.connection.name, ownerUserId: row.grant.subjectUserId, credential };
         const id = await subscriptionService(db).register(input);
+        // Accepted discovery must not silently skip an account. At most twenty
+        // discovery tasks can wait here; never create an unbounded provider queue.
+        // Recheck after each completion because another discovery may take a slot.
+        let providers = jobs.get(db);
+        while (providers && providers.size >= 4 && !providers.has(id)) {
+          await Promise.race(providers.values());
+          providers = jobs.get(db);
+        }
         await refreshSubscriptionConnection(db, input, id);
       } catch {
         logger.warn({ companyId, connectionId: row.connection.id }, "Subscription discovery unavailable for a connection");

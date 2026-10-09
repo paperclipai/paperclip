@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { costRoutes } from "../routes/costs.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { tooManyRequests } from "../errors.js";
 
 const mocks = vi.hoisted(() => ({ report: vi.fn(), refresh: vi.fn(), updatePrice: vi.fn(), merge: vi.fn(), decide: vi.fn() }));
 vi.mock("../services/subscription-report.js", () => ({ subscriptionCostReport: mocks.report }));
@@ -55,5 +56,11 @@ describe("subscription reporting authorization", () => {
     mocks.decide.mockResolvedValue({ allowed: false });
     expect((await request(app()).patch(path).send(data)).status).toBe(403);
     expect((await request(app()).post(`${path}/link`).send({ targetId: accountId, expectedRevision: 3, targetRevision: 3 })).status).toBe(403);
+  });
+  it("returns a retryable error instead of accepting discovery beyond capacity", async () => {
+    mocks.refresh.mockImplementationOnce(() => { throw tooManyRequests("Subscription account checks are busy. Try again shortly."); });
+    const response = await request(app()).post(`/api/companies/${companyId}/costs/subscriptions/refresh`);
+    expect(response.status).toBe(429);
+    expect(response.body.error).toContain("Try again shortly");
   });
 });

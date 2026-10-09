@@ -787,6 +787,9 @@ server replicas, at most four active provider lookups per process, a 15-second
 request deadline, and a 256 KiB response limit. Failed checks preserve the last
 observed plan and price. The report reads the database only and loads just the
 current price for each account; earlier revisions remain stored for auditing.
+Accepted discovery requests wait for provider capacity instead of skipping accounts.
+At most twenty discovery requests run per process; additional requests receive
+HTTP 429 and can be retried using **Retry account check**.
 Failed background UI reloads retain the last loaded values and show a short
 status message. Failed discovery offers **Retry account check**.
 
