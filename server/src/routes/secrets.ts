@@ -1115,6 +1115,32 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
+    // A delete cascades away this secret's binding rows but leaves every
+    // consumer's persisted secret_ref (for example an agent env entry)
+    // pointing at a deleted secret. The next run for that consumer then fails
+    // the pre-dispatch binding gate. Block the delete while a live binding
+    // still names this secret so the operator must unbind consumers first.
+    // Already soft-deleted secrets skip the guard so cleanup retries keep
+    // working.
+    if (existing.status !== "deleted") {
+      const references = await svc.listBindingReferences(existing.companyId, existing.id);
+      if (references.length > 0) {
+        const shown = references.slice(0, 5).map(
+          (reference) =>
+            `${reference.target.type} "${reference.target.label}" at ${reference.configPath}`,
+        );
+        const hidden = references.length - shown.length;
+        res.status(409).json({
+          error:
+            `Secret is still bound to ${references.length} consumer${references.length === 1 ? "" : "s"}. ` +
+            `Remove the bindings before you delete the secret: ${shown.join(", ")}` +
+            (hidden > 0 ? `, and ${hidden} more` : ""),
+          bindings: references,
+        });
+        return;
+      }
+    }
+
     const removed = await svc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
