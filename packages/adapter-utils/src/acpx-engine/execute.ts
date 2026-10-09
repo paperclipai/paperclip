@@ -5163,6 +5163,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            // COR-3756: authoritative count of assistant narrative emitted this turn.
+            // buildAcpxRunSummary falls back to the bare stop reason ("end_turn") when
+            // there are no output segments, so `summary` alone cannot tell an empty
+            // no-op turn apart from a real one. Zero here means the model produced no
+            // narrative text — the silent kimi-code/k3 empty-end_turn signature.
+            assistantOutputChars: outputSegments.reduce(
+              (total, segment) => total + (segment ?? "").trim().length,
+              0,
+            ),
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
