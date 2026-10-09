@@ -55,3 +55,28 @@ export const TaskListFailureAndRecovery: Story = {
     await waitFor(() => expect(canvas.getByRole("combobox", {name: "Conversation task"})).toHaveFocus());
   },
 };
+
+function ApprovalConfirmation() {
+  const [ready, setReady] = useState(false);
+  useLayoutEffect(() => {
+    const originalIncoming = voicePhoneApi.incoming, originalDecide = voicePhoneApi.decide, originalTasks = issuesApi.list;
+    let approved = false;
+    voicePhoneApi.incoming = async () => approved ? [] : [call];
+    voicePhoneApi.decide = async () => { approved = true; return {...call, state: "approved"}; };
+    issuesApi.list = async () => [];
+    setReady(true);
+    return () => { voicePhoneApi.incoming = originalIncoming; voicePhoneApi.decide = originalDecide; issuesApi.list = originalTasks; };
+  }, []);
+  return ready ? <SpekoIncomingCalls companyId={spekoCompanyId} endpointId={spekoEndpoint.id} agentId={spekoAgent.id} /> : null;
+}
+export const ApprovalConfirmationExpires: Story = {
+  render: () => <SpekoQueryFixture><ApprovalConfirmation /></SpekoQueryFixture>,
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByRole("textbox", {name: "Code spoken on your call"}), "123456");
+    await userEvent.click(canvas.getByRole("button", {name: "Approve live call"}));
+    await expect(await canvas.findByRole("heading", {name: "Call approved"})).toHaveFocus();
+    await expect(canvas.getByText(/Approval was sent/)).toBeVisible();
+    await waitFor(() => expect(canvas.queryByRole("heading", {name: "Call approved"})).not.toBeInTheDocument(), {timeout: 6500});
+  },
+};

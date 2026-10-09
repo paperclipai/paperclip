@@ -29,12 +29,19 @@ export function SpekoIncomingCallCard({call, tasks = [], busy, error, onDecide}:
       {invalid && <p role="alert" className="text-sm text-destructive">That code does not match this live call. Ask the phone agent to repeat it.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="flex items-center justify-between gap-3"><Button type="button" variant="ghost" disabled={busy} onClick={() => onDecide({approve: false, approvalCode: call.approvalCode})}>Deny call</Button><Button type="submit" disabled={busy}>{busy ? "Confirming…" : "Approve live call"}</Button></div>
-    </form> : <p className="text-sm text-muted-foreground">{call.state === "approved" ? "You can now give instructions on the phone. Earlier instructions were discarded." : "This call cannot access your private tasks."}</p>}
+    </form> : <p className="text-sm text-muted-foreground">{call.state === "approved" ? "Approval was sent for this call. Earlier instructions were discarded. Follow the call in Activity." : "This call cannot access your private tasks."}</p>}
   </section>;
 }
 export function SpekoIncomingCalls({companyId, endpointId, agentId}: {companyId: string; endpointId: string; agentId: string}) {
   const [decision, setDecision] = useState<VoiceInboundCall>();
   const host = useRef<HTMLDivElement>(null), restoreTaskFocus = useRef(false);
+  useEffect(() => {
+    if (!decision) return;
+    // The pending-call API omits approved calls; this is a brief confirmation,
+    // not a live status indicator after the caller hangs up.
+    const timeout = setTimeout(() => setDecision(undefined), 5000);
+    return () => clearTimeout(timeout);
+  }, [decision]);
   useEffect(() => { setDecision(undefined); restoreTaskFocus.current = false; }, [companyId, endpointId]);
   const query = useQuery({queryKey: ["speko-incoming", companyId, endpointId], queryFn: () => voicePhoneApi.incoming(companyId, endpointId), refetchInterval: 2000, retry: false});
   const needsTaskSelection = Boolean(query.data?.some(call => ["awaiting_approval", "approving"].includes(call.state)));
