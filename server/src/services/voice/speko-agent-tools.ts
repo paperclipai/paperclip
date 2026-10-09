@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { forbidden, HttpError } from "../../errors.js";
+import { authorizationService } from "../authorization.js";
 import { captureRunIdentity } from "../run-identity.js";
 import { chatVoiceCallbacks, instanceUserRoles, companyMemberships } from "@paperclipai/db";
 import type { VoiceCaller } from "./voice-session-store.js";
@@ -56,7 +57,15 @@ export async function syncSpekoVoiceTools(
   endpoint: typeof chatEndpoints.$inferSelect,
   userId: string,
   enabled = true,
+  allowLocalBoard = false,
 ) {
+  const [admin] = await tx.select({id: instanceUserRoles.id}).from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+  const decision = await authorizationService(tx).decide({
+    actor: {type: "board", userId, source: allowLocalBoard && userId === "local-board" ? "local_implicit" : "session", isInstanceAdmin: Boolean(admin)},
+    action: "agent_config:update", resource: {type: "agent", companyId: endpoint.companyId, agentId: endpoint.assignedAgentId},
+  });
+  if (!decision.allowed) throw forbidden("Editing this agent is required to install Speko phone tools");
   const [connection] = await tx
     .select()
     .from(toolConnections)

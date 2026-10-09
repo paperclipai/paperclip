@@ -26,6 +26,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  chatVoiceSessions,
   authUsers,
   companySecretProposals,
   companies,
@@ -3673,6 +3674,15 @@ export function issueThreadInteractionService(
               target: data.payload.target ?? null,
               lockForUpdate: true,
             });
+          }
+          // An unverified phone caller has no authenticated human identity.
+          // Their clarifications use the ordinary task-comment/follow-up queue;
+          // a protected native question would otherwise wait indefinitely.
+          if (data.kind === "ask_user_questions" && !actor.userId) {
+            const [guest] = await tx.select({id: chatVoiceSessions.id}).from(chatVoiceSessions)
+              .where(and(eq(chatVoiceSessions.companyId, issue.companyId), eq(chatVoiceSessions.issueId, issue.id),
+                eq(chatVoiceSessions.callerAuthority, "guest_intake"))).limit(1);
+            if (guest) throw unprocessable("Ask this unverified caller a clarification in a task comment; submit_request will deliver their spoken follow-up. Protected human-input questions require authenticated access.", {code: "voice_guest_use_task_comment"});
           }
           const [row] = await tx
             .insert(issueThreadInteractions)

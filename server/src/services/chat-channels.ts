@@ -1,3 +1,4 @@
+import { syncSpekoVoiceTools } from "./voice/speko-agent-tools.js";
 import { configureSpekoSessionTools } from "./voice/speko-tool-setup.js";
 import { voiceSessionService } from "./voice/voice-session-service.js";
 import { createSpekoProvider } from "./voice/speko-provider.js";
@@ -9642,6 +9643,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Chat endpoint not found");
+        if (endpoint.provider === "speko") {
+          if (!actorUserId) throw forbidden("An authenticated connection owner is required to install phone tools");
+          await syncSpekoVoiceTools(tx, endpoint, actorUserId, true, options.allowLocalVoiceBoard === true);
+        }
         const observedSlackUrl = (current.setup as InternalSetupState).slackCallbackSurfaces?.events?.url;
         const preserveSlackVerification = current.setup.slackSetupMethod === "automatic"
           && (current.setup as InternalSetupState).slackVerificationSigningFingerprint === createHash("sha256").update(credentials.signingSecret ?? "").digest("hex")
