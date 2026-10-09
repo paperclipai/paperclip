@@ -382,6 +382,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await policy()).toMatchObject({ amount: 0, isActive: false });
   });
 
+  it.each(["updateConfiguration", "updateAndTransition"] as const)("limits %s budget reconciliation to the edited agent", async command => {
+    const lifecycle = createAgentLifecycle(db);
+    const one = await hire();
+    const two = await lifecycle.requestHire(companyId, { name: "Other budget target" });
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    if (command === "updateConfiguration") await lifecycle.updateConfiguration(one.id, { budgetMonthlyCents: 1000 });
+    else await lifecycle.updateAndTransition(one.id, "pause", { budgetMonthlyCents: 1000 });
+    expect((await current(one.id)).lifecycleHolds).toContain("company_paused");
+    expect((await current(two.id)).lifecycleHolds).toEqual([]);
+  });
+
   it("limits invocation policy checks to the requested agent", async () => {
     const one = await hire();
     const two = await createAgentLifecycle(db).requestHire(companyId, { name: "Another agent" });

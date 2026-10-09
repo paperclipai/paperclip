@@ -66,7 +66,7 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       if (!existing) return null;
       const agent = await effects.transaction(db, existing.companyId, (tx, publications) =>
         updateAgentConfiguration(tx, effects, id, data, options, publications));
-      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId);
+      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId, id);
       scheduleAgentLifecycle(db, id);
       return agent;
     },
@@ -78,7 +78,7 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
         await createLifecycleStore(tx, effects).change(id, command, { reason: command === "resume" ? "user" : "manual" });
         return agentRecords(tx, effects).getById(id);
       });
-      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId);
+      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId, id);
       scheduleAgentLifecycle(db, id);
       return agent;
     },
