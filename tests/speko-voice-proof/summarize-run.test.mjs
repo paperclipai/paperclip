@@ -39,3 +39,16 @@ test("shared reports exclude private content and never promote transport to play
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("shared reports mark cleanup failures without leaking private diagnostics", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "speko-cleanup-redaction-"));
+  try {
+    const input = join(dir, "private.json"), output = join(dir, "public.json");
+    await writeFile(input, JSON.stringify({failure: null, audioFrames: 1, proof: {acceptedRequests: 1, resultReturned: true}, cleanupFailures: [{operation: "source.close", reason: "secret detail"}], events: [{kind: "cleanup_failed", elapsedMs: 25, operation: "private operation"}]}));
+    assert.equal(spawnSync(process.execPath, [new URL("./summarize-run.mjs", import.meta.url).pathname, input, output]).status, 0);
+    const text = await readFile(output, "utf8"), report = JSON.parse(text);
+    assert.equal(report.status, "failed"); assert.equal(report.cleanupFailureCount, 1);
+    assert.equal(report.events[0].kind, "cleanup_failed");
+    assert.equal(text.includes("secret detail"), false); assert.equal(text.includes("private operation"), false);
+  } finally {await rm(dir, {recursive: true, force: true});}
+});

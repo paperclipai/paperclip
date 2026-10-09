@@ -225,6 +225,7 @@ try {
   process.exitCode = 1;
 } finally {
   clearInterval(progress);
+  try {
   const text = await page.locator('body').innerText({ timeout: 2000 }).catch(() => 'unavailable');
   await writeFile(resolve(out, 'visible.txt'), text.replaceAll(key, '[redacted]'), { mode: 0o600 });
   const audio = await page.evaluate(async () => {
@@ -243,9 +244,9 @@ try {
   if (session) {
     const button = page.getByRole('button', { name: /^(End call|Retry ending call)$/ });
     if (await button.count()) await button.click().catch(() => {});
-    const response = await page.request.post(`${origin}/api/companies/${fixture.companyId}/voice-sessions/${session.id}/end`, { headers: { Origin: origin }, data: {} });
-    event('end_requested', { status: response.status() });
     try {
+      const response = await page.request.post(`${origin}/api/companies/${fixture.companyId}/voice-sessions/${session.id}/end`, { headers: { Origin: origin }, data: {} });
+      event('end_requested', { status: response.status() });
       await expect.poll(async () => {
         const inspected = await page.request.get(`${origin}/api/companies/${fixture.companyId}/voice-sessions/${session.id}`);
         return inspected.ok() ? (await inspected.json()).state : 'unavailable';
@@ -254,7 +255,10 @@ try {
       event('cleanup_verified');
     } catch { event('cleanup_unconfirmed'); process.exitCode = 1; }
   }
+  } catch { event('evidence_cleanup_failed'); process.exitCode = 1; } finally {
+  try {
   await writeFile(resolve(out, 'report.json'), JSON.stringify({ startedAt: new Date(started).toISOString(), events, session, browserNotificationDisabledForIdleProbe: idleProbe, syntheticMicrophone: true, audioReview: 'required independently; script success does not confirm complete spoken playback', resumedIssueId: resumeIssueId, diskScenario, delayedTemplate, expectedWord: templateScenario ? expectedWord : undefined, executionProvider: templateScenario ? 'claude_local' : 'fixture', server: 'real', speko: 'live' }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ evidence: out }));
-  await browser.close();
+  } finally { await browser.close(); }
+  }
 }

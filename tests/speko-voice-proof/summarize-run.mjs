@@ -9,7 +9,7 @@ const eventKinds = new Set([
   "request_accepted", "followup_accepted", "poll_returned", "result_ready",
   "result_returned_to_tool", "tool_rejected", "transcript_received",
   "script_completed", "script_failed", "media_disconnected", "session_end_requested",
-  "session_end_failed", "audio_stream_closed",
+  "session_end_failed", "audio_stream_closed", "cleanup_failed",
   "application_notification_sent",
   "application_notifier_joined", "audio_activity_started",
   "interruption_requested",
@@ -22,6 +22,7 @@ const events = run.events.filter((event) => eventKinds.has(event.kind)).map((eve
   if (["start", "followup"].includes(event.label)) item.label = event.label;
   return item;
 });
+const cleanupFailureCount = Math.max(run.cleanupFailures?.length ?? 0, run.events.filter(event => event.kind === "cleanup_failed").length);
 const report = {
   date: run.startedAt ?? "2026-09-11 (exact start available from provider session)",
   sourceDigests: run.sourceDigests ? Object.fromEntries(
@@ -35,8 +36,9 @@ const report = {
   applicationNotifierWebJoin: run.notifyViaJoin === true,
   interruptAcknowledgment: run.interruptAcknowledgment === true,
   llmConstraint: run.provider,
-  status: run.failure ? "failed" : "requires_audio_review",
-  failure: run.failure ? "Scenario did not complete; see qualification report for diagnosis" : null,
+  status: run.failure || cleanupFailureCount ? "failed" : "requires_audio_review",
+  cleanupFailureCount,
+  failure: run.failure ? "Scenario did not complete; see qualification report for diagnosis" : cleanupFailureCount ? "Run cleanup did not complete; see private evidence for diagnosis" : null,
   acceptedRequests: run.proof.acceptedRequests,
   resultReturned: run.proof.resultReturned,
   synthesizedAudioReceived: run.audioFrames > 0,
