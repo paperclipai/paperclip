@@ -1,3 +1,4 @@
+import { runTaskWorkspacesFlow } from "./task-workspaces-flow.js";
 import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
 import { runPiControlsFlow } from "./pi-controls-flow.js";
@@ -982,7 +983,17 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "public_mcp") {
+      if (execution.task.flow === "task_workspaces") {
+        const journey = await runTaskWorkspacesFlow({ page, api, fixtures, execution, nonce, temporaryRoot,
+          deadlineAt: startedAtMs + deadlineMs - 30_000,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `task-workspaces-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (currentIssue, currentRuns, checks) => {
+            issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[];
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `taskWorkspaces.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          }, capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = journey.issue as IssueRecord; selectedRuns = journey.runs as RunRecord[];
+      } else if (execution.task.flow === "public_mcp") {
         const journey = await runPublicMcpFlow({
           page, api, fixtures, execution, nonce, secrets, userId: publicMcpUserId,
           credential: credentials[execution.profile.credential]!, usage: publicMcpUsage!, deadlineAt: startedAtMs + deadlineMs,

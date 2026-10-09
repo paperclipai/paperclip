@@ -2177,3 +2177,38 @@ Private traces and database files must not be published. Unconfirmed cleanup
 always preserves recovery state regardless of this optional diagnostic flag.
 
 The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.
+
+## Projectless task workspaces (explicit-only)
+
+`task-workspaces` contains exactly three cells: legacy OpenCode locally and native
+OpenCode locally and on Daytona, using the existing qualified model. These are
+configured acceptance cells; registration and fixture calibration do not establish
+live qualification.
+
+```sh
+pnpm test:e2e:runner -- --list --suite task-workspaces
+pnpm test:e2e:runner -- --id task-workspaces.legacy-opencode.local.task-directory-repository-resume --max-automatic-retries 0
+pnpm test:e2e:runner -- --id task-workspaces.runner-opencode.local.task-directory-repository-resume --max-automatic-retries 0
+pnpm test:e2e:runner -- --id task-workspaces.runner-opencode.daytona.task-directory-repository-resume --max-automatic-retries 0
+```
+
+Each cell creates a task through the browser without a project or configured
+adapter cwd. The first turn writes task files and requests the same public
+repository preparation twice. Independent APIs must show one pending receipt
+and the same original root. After a controller restart, the second admission
+prepares the repository; the agent makes a local commit and leaves a dirty file.
+The third turn copies those prior bytes into a registered downloadable artifact.
+The oracle checks the task's exact root and stable binding, public file reads,
+repository pin, local Git ancestry and dirty bytes, artifact metadata/digest,
+three attributed successful runs, durable native terminal events and remote
+lease attribution. Daytona uses per-turn leases, so a warm process cannot stand
+in for persisted files. This suite does not qualify channel-default configuration
+or arbitrary repository credentials.
+
+Each cell allows three turns, one attempt, four minutes per turn and fifteen
+minutes total, with 1,000-cent company and agent budget hard stops. `--all` excludes
+it. `OPENROUTER_API_KEY` is required; Daytona also requires `DAYTONA_API_KEY`, a
+verified immutable image and its matching remote runner/provider artifacts.
+Use the normal isolated-instance cleanup and report pipeline. Private evidence
+includes `snapshots/task-workspaces.json` and `task-workspaces-runs.json`; only
+marked synthetic task screenshots can enter the public projection.

@@ -8,7 +8,7 @@ import { canActorReadExecutionWorkspace, issueReadSqlCondition } from "../servic
 import { projectToolContext } from "../services/project-tool-context.js";
 import { logActivity } from "../services/activity-log.js";
 import { forbidden, notFound } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 
 /** App and agent transports share task/workspace authorization and the aggregate owner. */
@@ -18,6 +18,7 @@ export function taskWorkspaceRoutes(db: Db) {
   async function task(req: Request, write = false) {
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, req.params.id as string), await issueReadSqlCondition(db, req.actor)));
     if (!issue) throw notFound("Task not found");
+    if (!hasCompanyAccess(req, issue.companyId)) throw notFound("Task not found");
     assertCompanyAccess(req, issue.companyId);
     const decision = await accessService(db).decide({ actor: req.actor, action: write ? "issue:mutate" : "issue:read", resource: { type: "issue", companyId: issue.companyId, issueId: issue.id } });
     if (!decision.allowed) throw forbidden("Task workspace is outside this actor's authorization boundary");

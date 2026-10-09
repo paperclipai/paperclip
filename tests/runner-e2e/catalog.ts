@@ -1,3 +1,4 @@
+import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
@@ -1103,6 +1104,16 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
 };
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: TASK_WORKSPACES_SUITE, label: "Task workspaces without projects", manualOnly: true,
+    description: "Three browser-driven admissions prove deferred repository preparation, stable projectless task files and nested Git persistence across a controller restart.",
+    groups: [], profiles: runnerProfiles.filter(profile => ["legacy-opencode", "runner-opencode"].includes(profile.id)).map(taskWorkspaceProfile),
+    environments: runnerEnvironments, tasks: [taskWorkspaceTask],
+    excludedExecutionIds: ["task-workspaces.legacy-opencode.daytona.task-directory-repository-resume"],
+    expectedMatrixSize: 3,
+    definitionMetadata: { version: 1, definitionDigest: taskWorkspaceDefinitionDigest(), scheduling: "explicit-only", providerTurns: 3,
+      attempts: 1, budgetMonthlyCents: 1000, project: "none", cwd: "unconfigured-task-default", oracle: "public-file-download-and-host-nested-git", remoteLifecycle: "per_turn" },
+  },
   {
     id: "pi-controls", label: "Pi active controls", manualOnly: true,
     description: "Pending native-write Stop and browser-originated same-turn steering, with exact control receipts and independent retirement/no-effect evidence.",

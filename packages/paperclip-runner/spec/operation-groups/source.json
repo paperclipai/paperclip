@@ -77,8 +77,8 @@
     },
     {
       "id": "workspace_runtime",
-      "description": "Inspect and control the active issue workspace runtime.",
-      "operationIds": ["get_workspace_runtime", "control_workspace_service"]
+      "description": "Inspect and select task workspaces, prepare repositories, and control workspace runtime services.",
+      "operationIds": ["get_workspace_runtime", "control_workspace_service", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]
     },
     {
       "id": "wake_scheduling",
@@ -257,12 +257,12 @@
       "legacyGroup": 12,
       "name": "Errors and critical rules",
       "owner": "runner/control plane + optional workspace/wake tools",
-      "operationIds": ["get_workspace_runtime", "control_workspace_service", "schedule_wake", "inspect_operation_result"],
+      "operationIds": ["get_workspace_runtime", "control_workspace_service", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "schedule_wake", "inspect_operation_result"],
       "controlPlaneOperationIds": ["release_task", "enforce_budget", "persist_run", "replay_run", "reconcile_run"],
       "realSurface": "workspace runtime, monitor/recovery, budget, run persistence/replay, release, and terminal services",
       "mockStateDomains": ["workspace", "budget", "run", "wake", "audit", "idempotency", "fault"],
       "prpEvidence": "runtime/workspace/attention/run lifecycle, typed denials, replay facts, and terminal causality",
-      "gap": "Budget stop reasons and semantic denial/conflict receipts require additive v1 envelopes; inspect_operation_result remains scenario-only."
+      "gap": "Budget stop reasons and semantic denial/conflict receipts require additive v1 envelopes; inspect_operation_result remains scenario-only. Task workspace inspection, discovery, selection and repository preparation use live authenticated service contracts; the legacy scenarios do not claim coverage for these operations."
     },
     {
       "id": "rf",
