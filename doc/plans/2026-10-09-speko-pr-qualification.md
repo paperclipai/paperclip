@@ -25,10 +25,11 @@ Fresh review-repair evidence:
 | Token gates | Passed | Combined feature review repairs; `/tmp/speko-pr-token-final.log` |
 | Storybook build / interaction / accessibility / responsive capture | Passed: 148 stories, 592 checks | Light/dark, 390/1200 width, reduced motion; `/tmp/speko-pr-storybook-checks.log` |
 | Added history-error stories and affected pages | Pending fresh build and checks | Two extra stories; existing snapshots are not blanket updated |
-| Integrated browser and authenticated server journeys | Retrying; pending | Real server/DB/permissions/queues/publications; only Speko and execution provider are stubbed |
+| Authenticated E03/E14 isolation and revocation | Passed: 1 journey | Feature f121270c8; `/tmp/speko-pr-authenticated-final.log` |
+| Integrated browser/phone journeys | Two passed; main journey retry pending | Delayed answers, follow-ups, structured questions and restart recovery succeeded; a later duplicate-logo locator failed. Locator corrected. |
 | Frozen SDK dependency installation | Prepared update passes; uncommitted | UI SDK needs a 95-line root-lockfile update; repository skill exception awaits user authorization |
 
-The combined source is preserved in feature commit f121270c8; fresh authenticated/Storybook runs use that source. Earlier integrated attempts ran the preceding feature commit with the review patches applied. Reports do not promote those runs to exact-head acceptance.
+The master-integrated combined source is preserved in feature commit 134d5b67c (origin/master 98e3cec78e); the successful authenticated run used the prior feature commit f121270c8. Speko migrations are now 0323–0329 after master added 0322. Earlier integrated attempts ran the preceding feature commit with the review patches applied. Reports do not promote those runs to exact-head acceptance.
 
 The integrated test exposed a Slack-only communication-guidance join introduced by the master refactor. The runtime repair now delivers connection guidance to Speko and retains Slack-only command hints. Browser work completed and persisted the answer during one failed attempt, but notification retrieval exceeded its test window under heavy load; the retry is tracked separately.
 
