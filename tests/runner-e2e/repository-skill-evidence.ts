@@ -5,13 +5,19 @@ import path from "node:path";
 export interface RepositoryFileReceipt { path: string; sha: string; size: number; executable: boolean }
 export interface RepositoryBundleReceipt { root: string; wrapper: string; files: RepositoryFileReceipt[] }
 
+export function repositoryRuntimeSessionRoot(instanceRoot: string, sessionId: string): string {
+  return path.join(instanceRoot, "runtime", "paperclip-runner", "durable-sessions", createHash("sha256").update(sessionId).digest("hex"));
+}
+
 /** Bind disk locations to the active native session, rather than library caches. */
 export function isOwnedRepositoryRuntimeRoot(root: string, sessionId: string, location:
-  { kind: "local"; instanceRoot: string } | { kind: "daytona"; remoteCwd: string }): boolean {
+  { kind: "local"; instanceRoot: string; contextSkills?: { sessionId: string; roots: string[] } } | { kind: "daytona"; remoteCwd: string }): boolean {
   if (!sessionId || path.posix.normalize(root) !== root) return false;
   const digest = createHash("sha256").update(sessionId).digest("hex");
   const parent = path.posix.dirname(root);
-  if (location.kind === "local") return parent === path.join(location.instanceRoot, "runtime", "paperclip-runner", "durable-sessions", digest, "codex-home", "skills");
+  if (location.kind === "local") return parent === path.join(repositoryRuntimeSessionRoot(location.instanceRoot, sessionId), "codex-home", "skills")
+    || (location.contextSkills?.sessionId === sessionId && location.contextSkills.roots.includes(root)
+      && parent === path.join(location.instanceRoot, "runtime-context-assets", "bundles"));
   const filesystem = path.posix.join(location.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions", digest, "filesystem");
   return parent === path.posix.join(filesystem, "codex-home", "skills")
     || parent === path.posix.join(filesystem, "context", "skills");

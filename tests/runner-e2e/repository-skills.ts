@@ -1,10 +1,11 @@
 import { expect, type Page } from "@playwright/test";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { parseNativeRuntimeContext } from "../../packages/paperclip-runner/src/contracts/runtime-context.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { nativeCompletionProfile } from "./native-completion-defaults.js";
 import { createRemoteFixtureClient } from "./remote-native-bootstrap.js";
-import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector, type RepositoryBundleReceipt, type RepositoryFileReceipt } from "./repository-skill-evidence.js";
+import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector, repositoryRuntimeSessionRoot, type RepositoryBundleReceipt, type RepositoryFileReceipt } from "./repository-skill-evidence.js";
 import { createTaskThroughUi } from "./user-actions.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { CredentialName, MatrixExecution, RunnerTaskFixture } from "./types.js";
@@ -88,7 +89,7 @@ export async function runRepositorySkillsFlow(input: {
   const names = imported.imported.map((skill: Row) => skill.slug);
   const prompt = [
     `Read both assigned skills ${names.map((name: string) => `/${name}`).join(" and ")} using the skill mechanism. Follow each wrapper to its canonical original SKILL.md. This task only verifies their installation; do not perform architecture changes.`,
-    "Use the filesystem paths in your available-skills list to read the two selected wrappers under codex-home/skills on this provider's filesystem. Read their canonical original instructions, then use Node.js fs to traverse each .paperclip-repository and verify that sibling skills, agents/poteto-agent.md and NOTICE.md can be read. Library paths returned by Paperclip API tools are not the provider installation being tested; CODEX_HOME may be absent from the shell environment.",
+    "Use the filesystem paths provided for your assigned skills to read the two selected wrappers on this provider's filesystem. Read their canonical original instructions, then use Node.js fs to traverse each .paperclip-repository and verify that sibling skills, agents/poteto-agent.md and NOTICE.md can be read. Use the delivered provider home or prepared runtime-context bundle, not an ordinary company skill-library directory; CODEX_HOME may be absent from the shell environment.",
     `Publish a progress comment on this task containing exactly POTETO-ROOTS-${nonce} followed by JSON {"roots":["<absolute provider wrapper parent for first skill>","<absolute provider wrapper parent for second skill>"]}.`,
     "After publishing that comment, execute the ordinary shell command sleep 120 and wait for it to finish. The operator will independently inspect these files during that pause. Do not alter any imported file, install dependencies, fetch repository contents, or finish before the pause completes.",
     `Then reply ${execution.task.buildVisibleMarker(nonce)} and complete this task.`,
@@ -120,13 +121,22 @@ export async function runRepositorySkillsFlow(input: {
   expect(issue.companyId).toBe(fixtures.company.id);
   expect(issue.assigneeAgentId).toBe(fixtures.agent.id);
   expect(runs[0]!.contextSnapshot?.paperclipEnvironment?.id).toBe(fixtures.environment.id);
+  expect(typeof runs[0]!.nativeSessionId).toBe("string");
   let bundles: RepositoryBundleReceipt[];
   let runtimeLocation: Parameters<typeof isOwnedRepositoryRuntimeRoot>[2];
   if (execution.environment.id === "local") {
     const temporaryRoot = await realpath(process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT!);
     for (const root of roots) expect((await realpath(root)).startsWith(`${temporaryRoot}${path.sep}`)).toBe(true);
     bundles = (await Promise.all(roots.map(root => realpath(root)))).map(inspectRepositoryBundle);
-    runtimeLocation = { kind: "local", instanceRoot: await realpath(path.dirname(process.env.PAPERCLIP_CONFIG!)) };
+    const instanceRoot = await realpath(path.dirname(process.env.PAPERCLIP_CONFIG!));
+    const sessionId = runs[0]!.nativeSessionId as string;
+    // Read the exact active session's persisted, digest-validated context. These
+    // immutable assets are normal provider inputs, not a fixture or library copy.
+    const context = parseNativeRuntimeContext(JSON.parse(await readFile(path.join(repositoryRuntimeSessionRoot(instanceRoot, sessionId), "runtime-context.json"), "utf8")));
+    expect(context.skills.map(skill => skill.key).sort()).toEqual(imported.imported.map((skill: Row) => skill.key).sort());
+    runtimeLocation = { kind: "local", instanceRoot, contextSkills: { sessionId, roots: context.skills.map(skill => skill.bundle.rootPath) } };
+    await input.evidence("repository-owned-context.json", { nativeSessionId: sessionId, aggregateDigest: context.aggregateDigest,
+      skills: context.skills.map(skill => ({ key: skill.key, versionId: skill.versionId, root: skill.bundle.rootPath, digest: skill.bundle.digest })) });
   } else {
     const leases = await api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`);
     const owned = leases.filter(lease => lease.companyId === fixtures.company.id && lease.environmentId === fixtures.environment.id && lease.heartbeatRunId === runs[0]!.id && lease.issueId === issue.id && lease.status === "active" && lease.provider === "daytona");

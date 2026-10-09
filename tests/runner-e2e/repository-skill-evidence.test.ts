@@ -15,6 +15,13 @@ describe("repository runtime delivery evidence", () => {
     expect(isOwnedRepositoryRuntimeRoot(localRoot, "another-session", local)).toBe(false);
     expect(isOwnedRepositoryRuntimeRoot(localRoot, session, { ...local, instanceRoot: "/foreign/instance" })).toBe(false);
     expect(isOwnedRepositoryRuntimeRoot("/owned/instance/runtime-context-assets/bundles/digest", session, local)).toBe(false);
+    const preparedRoot = "/owned/instance/runtime-context-assets/bundles/assigned-digest";
+    const prepared = { ...local, contextSkills: { sessionId: session, roots: [preparedRoot] } };
+    expect(isOwnedRepositoryRuntimeRoot(preparedRoot, session, prepared)).toBe(true);
+    expect(isOwnedRepositoryRuntimeRoot(preparedRoot, "another-session", prepared)).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot("/owned/instance/runtime-context-assets/bundles/unassigned", session, prepared)).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot(preparedRoot, session, { ...prepared, instanceRoot: "/foreign/instance" })).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot("/owned/instance/skills/library", session, { ...local, contextSkills: { sessionId: session, roots: ["/owned/instance/skills/library"] } })).toBe(false);
     const remote = { kind: "daytona" as const, remoteCwd: "/home/daytona/workspace" };
     const filesystem = `/home/daytona/workspace/.paperclip-runtime/paperclip-runner/sessions/${digest}/filesystem`;
     for (const root of [`${filesystem}/context/skills/0-digest`, `${filesystem}/codex-home/skills/architect`]) {
