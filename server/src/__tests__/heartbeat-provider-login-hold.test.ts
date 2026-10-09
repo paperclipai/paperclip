@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentConfigRevisions,
   agents,
   agentWakeupRequests,
   authUsers,
@@ -16,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { providerLoginHoldService } from "../services/provider-login-hold.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -217,6 +219,43 @@ describeEmbeddedPostgres("heartbeat provider login hold", () => {
     await heartbeat.drainActiveRunExecutions();
 
     expect((await runStatus(run))?.status).toBe("succeeded");
+  });
+
+  it("does not hold an agent with failures from before its login settings changed", async () => {
+    const companyId = await insertCompany();
+    const agentId = await insertAgent(companyId);
+    await insertFinishedRun(companyId, agentId, 1, "claude_auth_required");
+    await db.insert(agentConfigRevisions).values({
+      companyId,
+      agentId,
+      changedKeys: ["adapterConfig"],
+      beforeConfig: {},
+      afterConfig: {},
+    });
+    const run = await insertQueuedRun(companyId, agentId);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await runStatus(run))?.status).toBe("succeeded");
+  });
+
+  it("grants one probe across separate service instances", async () => {
+    const companyId = await insertCompany();
+    const failedAgent = await insertAgent(companyId);
+    const firstAgent = await insertAgent(companyId);
+    const secondAgent = await insertAgent(companyId);
+    await insertFinishedRun(companyId, failedAgent, 6, "claude_auth_required");
+    const first = await insertQueuedRun(companyId, firstAgent);
+    const second = await insertQueuedRun(companyId, secondAgent);
+    const load = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then((rows) => rows[0]!);
+
+    const scheduler = providerLoginHoldService(db);
+    const httpWake = providerLoginHoldService(db);
+    expect(await scheduler.evaluate(await load(first))).toMatchObject({ hold: false, probe: true });
+    expect(await httpWake.evaluate(await load(second))).toMatchObject({ hold: true, reason: "probe_in_flight" });
+    // A granted probe that did not start is claimed again as itself.
+    expect(await httpWake.evaluate(await load(first))).toMatchObject({ hold: false, probe: true });
   });
 
   describe("issue comment", () => {
