@@ -1,5 +1,3 @@
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { preserveEnvironmentSyncOutErrorDiagnostic } from "../services/environment-sync-out-error.js";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectRunFailureDiagnostics, sanitizeRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
@@ -395,23 +393,25 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     const { sentryReady, captureRunFailure, captureException } = await import("../sentry.js");
     await sentryReady;
     for (const known of [true, false]) {
-      const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
-        message: "private-transfer-message", data: { schema: "paperclip/environment-sync-error/v1", diagnostic: {
-          errorCode: "unknown", exitCode: 2,
-          transferStep: known ? "archive_create" : "private-transfer-path",
-          transferFailureKind: known ? "command_failed" : "private-transfer-command",
-          rpcCode: -12345, cause: { token: "private-transfer-token" }, output: "private-transfer-output",
-        } },
-      });
+      const error = Object.freeze(new Error("private-transfer-message"));
+      // Worker/typed-host propagation has its own real RPC round-trip test.
+      // This narrow contract exercises the host receipt through the real Sentry
+      // transport without requiring plugin builds or dependency lifecycle scripts.
+      const evidence = {
+        transferStep: known ? "archive_create" : "private-transfer-path",
+        transferFailureKind: known ? "command_failed" : "private-transfer-command",
+        rpcCode: known ? -32002 : -12345,
+        cause: { token: "private-transfer-token" }, output: "private-transfer-output",
+      };
       const logs: string[] = [];
       const restore = createWorkspaceRestoreTeardown({ stagedRuntime: {
         restoreWorkspace: progress => withWorkspaceRestoreDiagnostics("workspace", () =>
-          withWorkspaceRestoreStep("workspace_transfer", async () => { throw preserveEnvironmentSyncOutErrorDiagnostic(error); }), progress),
+          withWorkspaceRestoreStep("workspace_transfer", async () => { throw preserveWorkspaceRestoreErrorDiagnostic(error, { exitCode: 2 }, evidence); }), progress),
       }, onLog: async (_stream, line) => { logs.push(line); }, startMessage: "Restoring workspace\n", failurePrefix: "Workspace restore failed" });
       const outcome = await restore();
       expect(outcome.ok).toBe(false);
       if (outcome.ok) throw new Error("Expected transfer fixture failure");
-      expect(outcome.diagnostic?.rpcCode).toBe(PLUGIN_RPC_ERROR_CODES.WORKER_ERROR);
+      expect(outcome.diagnostic?.rpcCode).toBe(known ? -32002 : undefined);
       expect(JSON.stringify({ outcome, logs })).not.toContain("private-transfer-");
       const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({ resultJson: {
         workspaceRestoreFailure: outcome.code, workspaceRestoreDiagnostic: { ...outcome.diagnostic,
@@ -426,7 +426,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       const execution = (events.at(-1)?.contexts as Record<string, Record<string, unknown>>).run_execution;
       expect(execution.workspaceRestoreTransferStep).toBe(known ? "archive_create" : undefined);
       expect(execution.workspaceRestoreTransferFailureKind).toBe(known ? "command_failed" : undefined);
-      expect(execution.workspaceRestoreRpcCode).toBe(PLUGIN_RPC_ERROR_CODES.WORKER_ERROR);
+      expect(execution.workspaceRestoreRpcCode).toBe(known ? -32002 : undefined);
       expect(execution.workspaceRestoreExitCode).toBe(2);
     }
     captureException(new Error("Unrelated transfer fixture"));
