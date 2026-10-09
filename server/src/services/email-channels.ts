@@ -135,7 +135,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   let ticking = false;
   let activeTick: Promise<void> | null = null;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
-  let worker: { wake: () => void; ready: Promise<void> } | undefined;
+  let worker: ReturnType<ReturnType<typeof createDeliveryWorkCoordinator>["register"]> | undefined;
   let nextWorkAt: number | null = null;
   function needWorkAt(at: number) {
     nextWorkAt = Math.min(nextWorkAt ?? Infinity, Math.max(Date.now() + 1000, at));
