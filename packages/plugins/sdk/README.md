@@ -1281,7 +1281,12 @@ await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
   project: the run uses the project's workspace, execution-workspace policy
   and env, the project budget hard-stop applies, and the run's cost events
   carry the project. It needs only `agent.sessions.send`. A project from
-  another company is refused.
+  another company is refused. A private project must list the session's
+  agent as an access member, and also the `actorUserId` user when one is
+  passed; otherwise the send is refused as "Project not found".
+- A send that passes either field always gets its own run. It is never folded
+  into a queued or running run for the same session, so each run keeps its
+  own user and project.
 - When either field is passed, the host writes an
   `agent.session_wakeup_requested` activity entry naming the agent, session,
   run, the project when given, and the user as the initiating actor when

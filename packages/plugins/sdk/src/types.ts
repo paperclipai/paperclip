@@ -1781,7 +1781,10 @@ export interface PluginAgentSessionsClient {
      * run uses the project's workspace, execution-workspace policy and env,
      * the project budget hard-stop applies, and the run's cost events carry
      * the project. Must belong to `companyId`, otherwise the send is
-     * refused. Needs only `agent.sessions.send`. Older hosts silently drop
+     * refused. A private project must list the session's agent as an
+     * access member, and also `actorUserId` when one is passed; otherwise
+     * the send is refused as "Project not found". Needs only
+     * `agent.sessions.send`. Older hosts silently drop
      * this field and there is no runtime signal, so a plugin that relies on
      * it must state a minimum host version.
      */
