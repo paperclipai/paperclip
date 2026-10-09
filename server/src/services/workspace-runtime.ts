@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -1040,7 +1040,7 @@ async function refreshRemoteTrackingBaseRefWithDiagnostic(
       .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
       .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
     const authNote = auth
-      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
+      ? ` The fetch used ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}.`
       : "";
     return { warnings: [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`], diagnostic };
   }
@@ -2434,7 +2434,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 }
 
 // A configured base ref that does not resolve to a commit, even after an
-// authenticated fetch of its `origin/<branch>` counterpart. The caller must
+// attempted fetch of its remote-tracking counterpart. The caller must
 // stop before `git worktree add` and raise a pre-dispatch configuration
 // failure. `requestedRef` keeps the operator spelling for the human notice.
 // `recoveryIdentityRef` is the canonical remote ref the resolver probed, so two
@@ -2446,21 +2446,25 @@ export class UnresolvedWorkspaceBaseRefError extends Error {
   recoveryIdentityRef: string;
   attemptedRefs: string[];
   fetchError: string | null;
+  defaultBranch: string | null;
 
   constructor(input: {
     requestedRef: string;
     recoveryIdentityRef: string;
     attemptedRefs: string[];
     fetchError?: string | null;
+    defaultBranch?: string | null;
   }) {
     super(
-      `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+      `Configured workspace base ref "${input.requestedRef}" could not be resolved to a commit ` +
+      `(tried: ${input.attemptedRefs.join(", ")}). Check that the ref exists and the repository is accessible before retrying.`,
     );
     this.name = "UnresolvedWorkspaceBaseRefError";
     this.requestedRef = input.requestedRef;
     this.recoveryIdentityRef = input.recoveryIdentityRef;
     this.attemptedRefs = input.attemptedRefs;
     this.fetchError = input.fetchError ?? null;
+    this.defaultBranch = input.defaultBranch ?? null;
   }
 }
 
@@ -2747,6 +2751,24 @@ async function findRegisteredGitWorktreeByPath(repoRoot: string, worktreePath: s
 
 async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
+}
+
+// A repair suggestion must come from the remote's advertised HEAD, never the
+// runtime's main/master fallback heuristic. Failure to inspect is not a guess.
+async function readAdvertisedDefaultBranch(repoRoot: string, resolveGitAuth?: GitRemoteAuthProvider | null): Promise<string | null> {
+  try {
+    const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
+    const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl) : null;
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile("git", [...(auth?.configArgs ?? []), "ls-remote", "--symref", "origin", "HEAD"], {
+        cwd: repoRoot, timeout: 10_000, maxBuffer: 64 * 1024,
+        env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
+      }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    });
+    return /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(output)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function detectDefaultBranch(
@@ -3640,6 +3662,7 @@ export async function realizeExecutionWorkspace(input: {
       recoveryIdentityRef: baseRefResolution.recoveryIdentityRef,
       attemptedRefs: baseRefResolution.attemptedRefs,
       fetchError: baseRefResolution.fetchError,
+      defaultBranch: await readAdvertisedDefaultBranch(repoRoot, input.resolveGitAuth),
     });
     unresolvedBaseRefDiagnostics.set(error, readWorkspaceBaseRefDiagnostic(baseRefResolution.diagnostic)!);
     throw error;

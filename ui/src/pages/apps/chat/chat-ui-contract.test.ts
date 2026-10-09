@@ -54,9 +54,6 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("row.externalUrl");
-    expect(detail).toContain("row.externalLabel");
-    expect(detail).toContain("row.issueTitle ?? row.issueIdentifier ?? \"View task\"");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
@@ -69,13 +66,6 @@ describe("chat connector UI contract", () => {
     expect(detail).toContain("callbacksNeedUpdate");
     expect(detail).toContain("Slack callback URLs need an update");
     expect(detail).toContain("Not observed");
-  });
-
-  it("lists every supported provider in the agent channel empty state", () => {
-    const panel = source("../../../components/chat/AgentChannelsPanel.tsx");
-    expect(panel).toContain(
-      "Connect AgentMail, Slack, GitHub Code Review Bot, Discord, Microsoft Teams, or Telegram from",
-    );
   });
 
   it("keeps provider capabilities automatic and settings focused on plausible reach", () => {

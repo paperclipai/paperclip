@@ -207,6 +207,7 @@ function MonitorSurfaceStories() {
         </div>
         <IssueMonitorBanner
           issue={scheduledMonitorIssue}
+          onCancelMonitor={async () => undefined}
           onCheckNow={() => undefined}
           checkingNow={false}
         />

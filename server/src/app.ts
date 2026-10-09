@@ -619,6 +619,10 @@ export async function createApp(
     deferWebhookProcessing: true,
     heartbeat: connectionIntentHeartbeat,
     publicBaseUrl: opts.authPublicBaseUrl,
+    githubWizardOrigin: opts.deploymentMode === "local_trusted"
+      && ["127.0.0.1", "localhost", "::1"].includes(opts.bindHost ?? "")
+      && Number.isInteger(opts.serverPort) && opts.serverPort! > 0
+      ? `http://${opts.bindHost === "::1" ? "[::1]" : opts.bindHost}:${opts.serverPort}` : null,
     webhookPublicBaseUrl: opts.chatWebhookPublicBaseUrl,
     resolveNativeQuestion: (interaction) =>
       deliverNativeQuestionResponse(db, interaction),
@@ -656,12 +660,20 @@ export async function createApp(
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
   // The instance validates single-use registration state and its trusted
-  // current origin. This exact GET is the only public setup return.
+  // current origin. These exact callback routes are the public setup returns.
   app.get("/api/chat-github/manifest/callback", async (req, res) => {
     res.set("Cache-Control", "no-store");
     res.set("Referrer-Policy", "no-referrer");
-    const redirect = await chatChannels.completeGitHubRegistration(String(req.query.state ?? ""), String(req.query.code ?? ""));
+    const redirect = await chatChannels.githubWizard.directCallback(String(req.query.state ?? ""), String(req.query.code ?? ""));
     res.redirect(303, redirect);
+  });
+  app.get("/api/chat-github/cloud/callback", async (req, res) => {
+    res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
+    res.redirect(303, await chatChannels.githubWizard.cloudCallback(String(req.query.state ?? ""), String(req.query.registration ?? ""), typeof req.query.claim === "string" ? req.query.claim : undefined));
+  });
+  app.get("/api/chat-github/identity/callback", async (req, res) => {
+    res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
+    res.redirect(303, await chatChannels.githubWizard.identityCallback(String(req.query.state ?? ""), String(req.query.code ?? "")));
   });
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =

@@ -594,6 +594,7 @@ vi.mock("../components/Identity", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
+  buttonVariants: () => "",
   Button: ({
     children,
     disabled,
@@ -1420,6 +1421,26 @@ describe("IssueDetail", () => {
     mockLocation.state = null;
     mockRouteParams.issueId = "PAP-1";
     mockRouteParams.companyPrefix = "PAP";
+  });
+
+  it("clears only the monitor after confirmation and refreshes the task", async () => {
+    const nextCheckAt = new Date(Date.now() + 60_000).toISOString();
+    const preservedPolicy = { mode: "normal", commentRequired: false, stages: [{ type: "review", approvalsNeeded: 1, participants: [{ type: "user", userId: "reviewer-1" }] }], maxReviewRounds: 4, authorizationPolicy: { assignmentPolicy: { mode: "protected" } } };
+    const policy = { ...preservedPolicy, monitor: { nextCheckAt, scheduledBy: "board", notes: "Check deployment" } } as Issue["executionPolicy"];
+    const monitored = createIssue({ status: "in_progress", executionPolicy: policy, executionState: { monitor: { status: "scheduled", nextCheckAt, attemptCount: 1 } } as Issue["executionState"] });
+    const cleared = createIssue({ status: "in_progress", executionPolicy: preservedPolicy as Issue["executionPolicy"] });
+    mockIssuesApi.get.mockResolvedValue(monitored);
+    mockIssuesApi.update.mockImplementation(async () => {
+      mockIssuesApi.get.mockResolvedValue(cleared);
+      return cleared;
+    });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    await waitForAssertion(() => expect(container.querySelector('[aria-label="Cancel monitor"]')).not.toBeNull());
+    await act(async () => (container.querySelector('[aria-label="Cancel monitor"]') as HTMLButtonElement).click());
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    await act(async () => Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledWith(monitored.id, { expectedExecutionPolicy: policy, executionPolicy: preservedPolicy }));
+    await waitForAssertion(() => expect(container.querySelector('[aria-label="Cancel monitor"]')).toBeNull());
   });
 
   it.each([false, true])("keeps monitor errors on the checked task (late response: %s)", async (lateResponse) => {

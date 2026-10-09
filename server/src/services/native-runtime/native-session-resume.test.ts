@@ -1923,6 +1923,18 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:68a51d34e091c55ee5d0d2b563153454dd727d72db16e6a27c358d342ae489c9",
     },
     {
+      contract: "GitHub working-comment tools",
+      // Deployed v14 threads retain the catalog without update_comment.
+      retainedFingerprint:
+        "sha256:134a7dbd526179aff57f91c261bb653e83db51c20492efab5c26a5ce618792c8",
+    },
+    {
+      contract: "GitHub instruction skill selection",
+      // Deployed v15 remote threads omitted configured skills from native turns.
+      retainedFingerprint:
+        "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:

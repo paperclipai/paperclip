@@ -8546,7 +8546,7 @@ async function executePaperclipNativeSessionWithinScope(
               : []),
           ),
           eq(issueThreadInteractions.status, "pending"),
-          activeIssueInteractionCondition(),
+          activeIssueInteractionCondition({ runId: input.execution.binding.runId }),
           // Live provider questions resume their current turn; only durable
           // wake-based cards park it. A timeout creates a separate fallback.
           sql`not (${issueThreadInteractions.kind} = 'ask_user_questions' and ${issueThreadInteractions.continuationPolicy} = 'none' and coalesce(${issueThreadInteractions.idempotencyKey}, '') like 'paperclip-runner-question:%')`,

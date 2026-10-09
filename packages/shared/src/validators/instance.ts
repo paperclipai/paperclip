@@ -54,6 +54,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePublicMcp: z.boolean().default(false),
   enableOpenAiDot: z.boolean().default(false),
   enableChatConnectors: z.boolean().default(false),
+  enableGitHubReviewBots: z.boolean().default(false),
   // Compatibility only: old stored and managed values must still parse.
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),
