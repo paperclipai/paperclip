@@ -8,19 +8,19 @@ on:
         type: string
         required: false
       publish_eval_image:
-        description: "Publish an immutable Daytona qualification image on the EC2 fleet (no provider credentials)"
+        description: "Publish an immutable Daytona qualification image on hosted Linux (no provider credentials)"
         type: boolean
         default: false
       verify_source:
-        description: "Run broad source checks on EC2"
+        description: "Run broad source checks on hosted Linux"
         type: boolean
         default: false
       verify_public_install:
-        description: "Build and verify clean public npm installation on EC2 (no provider credentials)"
+        description: "Build and verify clean public npm installation on hosted Linux (no provider credentials)"
         type: boolean
         default: false
       build_eval_viewer:
-        description: "Build the canonical eval report viewer on EC2"
+        description: "Build the canonical eval report viewer on hosted Linux"
         type: boolean
         default: false
   pull_request:
@@ -98,9 +98,10 @@ jobs:
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
 
   manual_image:
-    name: Build and verify on EC2
+    name: Build and verify on Linux
     needs: authorize_manual
-    runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci
+    # Keep maintainer authorization below; use a native hosted Linux builder.
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
@@ -169,9 +170,9 @@ jobs:
           docker buildx imagetools inspect "$immutable" >/dev/null
           echo "$immutable" > remote-verification/image.txt
           echo "Image: $immutable" >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify repository on EC2
+      - name: Verify repository on hosted Linux
         if: inputs.verify_source
-        # Leave time for artifact retention before the fleet's one-hour lifetime.
+        # Leave time for artifact retention within the job deadline.
         timeout-minutes: 38
         run: |
           set -uo pipefail
@@ -193,9 +194,11 @@ jobs:
         run: |
           set -euo pipefail
           test -f scripts/verify-grok-npm-install.mjs || { echo "Selected source does not provide the public-install verifier"; exit 1; }
-          pnpm install --frozen-lockfile --ignore-scripts > remote-verification/npm-setup.log 2>&1
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile > remote-verification/npm-setup.log 2>&1
+          pnpm install --frozen-lockfile --ignore-scripts >> remote-verification/npm-setup.log 2>&1
           pnpm build > remote-verification/npm-build.log 2>&1
-          node scripts/verify-grok-npm-install.mjs > remote-verification/public-npm-install.log 2>&1
+          PAPERCLIP_RUNNER_QUALIFICATION_PACKAGES_DIR="$PWD/remote-verification/qualification-packages" \
+            node scripts/verify-grok-npm-install.mjs > remote-verification/public-npm-install.log 2>&1
       - name: Build canonical eval report viewer
         if: always() && (inputs.verify_source || inputs.build_eval_viewer)
         run: |

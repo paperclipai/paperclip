@@ -56,6 +56,8 @@ import {
   type ChatEndpoint,
   type ChatProvider,
 } from "@/api/chatEndpoints";
+import { agentsApi } from "@/api/agents";
+import { AgentAvatar, type AvatarAgent } from "@/components/AgentAvatar";
 import { accessApi } from "@/api/access";
 import {
   AlertDialog,
@@ -382,6 +384,12 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const chatAgentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && Boolean(chatEndpointsQuery.data?.length),
+  });
+  const chatAgentById = useMemo(() => new Map((chatAgentsQuery.data ?? []).map(agent => [agent.id, agent])), [chatAgentsQuery.data]);
   const userDirectoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(
       selectedCompanyId ?? "__none__",
@@ -925,6 +933,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               key={row.key}
               row={row}
               userProfileById={userProfileById}
+              chatAgentById={chatAgentById}
               connectionById={connectionById}
               onNavigate={navigate}
               onRequestRemove={target => void requestConnectionRemoval(target)}
@@ -1021,6 +1030,7 @@ export function ConnectorCard({
   renderAccountDetails,
   row,
   userProfileById,
+  chatAgentById,
   connectionById,
   onNavigate,
   onRequestRemove,
@@ -1039,6 +1049,7 @@ export function ConnectorCard({
   renderAccountDetails?: (connection: ToolConnection) => ReactNode;
   row: ConnectorRowModel;
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
+  chatAgentById?: ReadonlyMap<string, AvatarAgent>;
   connectionById?: ReadonlyMap<string, ToolConnection>;
   onNavigate: (href: string) => void;
   onRequestRemove: (target: ConnectionRemovalTarget) => void;
@@ -1192,26 +1203,33 @@ export function ConnectorCard({
               key={endpoint.id}
               className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3"
             >
-              <div className="min-w-0 flex-1">
-                <button
-                  type="button"
-                  className="block max-w-full truncate text-left text-sm font-medium hover:underline"
-                  onClick={() =>
-                    onNavigate(`/apps/chat/${endpoint.id}/settings`)
-                  }
-                >
-                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
-                </button>
-                <p className="truncate text-xs text-muted-foreground">
-                  {endpoint.providerAccountLabel ??
-                    endpoint.botLabel ??
-                    "Provider identity"}
-                </p>
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <AgentAvatar agent={chatAgentById?.get(endpoint.assignedAgentId) ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }}
+                  size={40} label={`${endpoint.assignedAgentName} avatar`} />
+                <div className="min-w-0">
+                  <button
+                    type="button"
+                    className="block max-w-full truncate text-left text-sm font-medium hover:underline"
+                    onClick={() =>
+                      onNavigate(`/apps/chat/${endpoint.id}/settings`)
+                    }
+                  >
+                    {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
+                  </button>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {endpoint.providerAccountLabel ??
+                      endpoint.botLabel ??
+                      "Provider identity"}
+                  </p>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {endpoint.status.replace(/_/g, " ")}
-                </span>
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <ConnectionOwnerIdentity owner={connectionOwnerProfile(
+                  { createdByUserId: (endpoint.connectionId ? connectionById?.get(endpoint.connectionId)?.createdByUserId : null) ?? endpoint.sponsorUserId ?? null }, userProfileById,
+                )} />
+                {["paused", "attention", "revoked"].includes(endpoint.status) && <span className="text-xs text-muted-foreground">
+                  {endpoint.status === "attention" ? "Needs attention" : endpoint.status === "revoked" ? "Access revoked" : "Paused"}
+                </span>}
                 {endpoint.status === "draft" ? (
                   <Button
                     size="sm"
@@ -1381,7 +1399,7 @@ function ConnectionAccountRowLayout({ state, accountName, owner, source, details
 
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {source ?? <><span>Connected by</span><ConnectionOwnerIdentity owner={owner ?? null} /></>}
+          {source ?? <ConnectionOwnerIdentity owner={owner ?? null} />}
         </div>
         {children}
       </div>

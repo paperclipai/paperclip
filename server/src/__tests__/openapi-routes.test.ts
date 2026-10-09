@@ -21,6 +21,7 @@ const apiPrefixes: Record<string, string> = {
   "agents.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-avatars.ts": "/api",
+  "agent-profile-avatar.ts": "/api",
   "announcements.ts": "/api",
   "ai-connections.ts": "/api",
   "decision-models.ts": "/api",
@@ -229,10 +230,13 @@ function loadActualRoutes() {
       }
     }
     if (file === "dot-runner.ts") {
-      const basePath = /const path = "([^"]+)"/.exec(source)?.[1];
-      if (!basePath) throw new Error("Dot binding route prefix is missing");
-      for (const match of source.matchAll(/router\.(get|post|delete)\(path(?: \+ "([^"]+)")?/g)) {
-        routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+      for (const name of ["path", "invitePath"]) {
+        const basePath = new RegExp(`const ${name} = "([^"]+)"`).exec(source)?.[1];
+        if (!basePath) throw new Error(`Dot ${name} route prefix is missing`);
+        const methods = new RegExp(`router\\.(get|post|delete)\\(${name}(?: \\+ "([^"]+)")?`, "g");
+        for (const match of source.matchAll(methods)) {
+          routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+        }
       }
     }
 
@@ -275,6 +279,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents only writable agent update fields and lifecycle status requests", () => {
+    const document = buildOpenApiSpec() as any;
+    const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;
+    expect(properties).not.toHaveProperty("spentMonthlyCents");
+    expect(properties.status.enum).toEqual(["paused", "idle", "terminated"]);
+    expect(properties).toHaveProperty("name");
+    expect(properties).toHaveProperty("budgetMonthlyCents");
+  });
+
   it("documents manager-only task privacy hints without protected scope identity", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/privacy-constraints"].get;
@@ -616,7 +629,7 @@ describe("openapi routes", () => {
         setup: { type: "object", additionalProperties: false },
       },
     });
-    expect(JSON.stringify(endpointResponse)).not.toContain("credentials");
+    expect(JSON.stringify(endpointResponse)).not.toContain('"credentials":');
     expect(JSON.stringify(endpointResponse)).not.toContain("privateKey");
     expect(JSON.stringify(endpointResponse)).not.toContain("signingSecret");
     expect(
@@ -856,6 +869,19 @@ describe("openapi routes", () => {
       properties: { primaryAgentId: { type: "string", format: "uuid" } },
     });
     expect(path.put.responses["422"]).toBeDefined();
+  });
+
+  it("documents operator Dot invitations and current pairing and event-test fields", () => {
+    const { spec } = loadSpecRoutes();
+    const invitations = spec.paths["/api/companies/{companyId}/dot-invitations"];
+    for (const operation of [invitations.get, invitations.post]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.responses["200"]).toBeDefined();
+    }
+    expect(invitations.post.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    const base = "/api/companies/{companyId}/agents/{agentId}/dot-binding";
+    expect(spec.paths[base].post.requestBody.content["application/json"].schema.properties.replaceBindingId).toMatchObject({ type: "string", format: "uuid" });
+    expect(spec.paths[base + "/event-test"].post.requestBody.content["application/json"].schema.properties.bindingId).toMatchObject({ type: "string", format: "uuid" });
   });
 
   it("documents board-only repository discovery and selection", () => {

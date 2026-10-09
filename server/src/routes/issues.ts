@@ -3384,14 +3384,6 @@ export function issueRoutes(
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
     >;
-    feedbackExportService?: {
-      flushPendingFeedbackTraces(input?: {
-        companyId?: string;
-        traceId?: string;
-        limit?: number;
-        now?: Date;
-      }): Promise<unknown>;
-    };
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
@@ -3647,7 +3639,6 @@ export function issueRoutes(
   const treeControlSvc = issueTreeControlFactory?.(db) ?? {
     getActivePauseHoldGate: async () => null,
   };
-  const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
 
   async function queueTaskWatchdogEvaluation(
@@ -19005,21 +18996,8 @@ export function issueRoutes(
         );
       }
 
-      if (result.sharingEnabled && result.traceId && feedbackExportService) {
-        try {
-          await feedbackExportService.flushPendingFeedbackTraces({
-            companyId: issue.companyId,
-            traceId: result.traceId,
-            limit: 1,
-          });
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, traceId: result.traceId },
-            "failed to flush shared feedback trace immediately",
-          );
-        }
-      }
-
+      // saveIssueVote has committed the export and notified its worker.
+      // Return the saved vote without waiting for an upload or backlog.
       res.status(201).json(result.vote);
     },
   );

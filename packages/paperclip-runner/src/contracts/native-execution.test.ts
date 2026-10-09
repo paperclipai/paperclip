@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInputV1 } from "./native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, type NativeExecutionInputV1 } from "./native-execution.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -56,6 +57,34 @@ const input: NativeExecutionInputV1 = {
 };
 
 describe("NativeExecutionInputV1", () => {
+  it.each(["paperclip.native-execution-input.v3", "paperclip.native-execution-input.v4", NATIVE_EXECUTION_INPUT_SCHEMA])(
+    "preserves a saved %s execution through recovery parsing",
+    (schema) => {
+      const digest = "0".repeat(64);
+      const text = "Saved system instructions absent from the current release.";
+      const context = {
+        prompt: { revision: "saved-prompt-before-upgrade", text, digest: createHash("sha256").update(text).digest("hex") },
+        instructions: {
+          entryPath: "AGENTS.md",
+          bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 42 },
+        },
+        skills: [],
+        mcp: { assignmentSetId: "none", digest, bindingId: null },
+      };
+      const persisted = JSON.parse(JSON.stringify({
+        ...input,
+        schema,
+        provider: schema === "paperclip.native-execution-input.v3" ? input.provider : { ...input.provider, approvalPolicy: "never" },
+        executionMode: "default",
+        planningContext: null,
+        runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+      }));
+      const recovered = parseNativeExecutionInput(persisted);
+      expect(recovered.runtimeContext).toEqual(persisted.runtimeContext);
+      expect(parseNativeExecutionInput(recovered)).toEqual(recovered);
+    },
+  );
+
   it("parses v3 immutable runtime context without changing the model task envelope", () => {
     const digest = "0".repeat(64);
     const context = {
@@ -88,6 +117,22 @@ describe("NativeExecutionInputV1", () => {
     expect(composeNativeSystemInstructions(parsed.runtimeContext, "Follow sibling.md")).toBe(
       `${PAPERCLIP_EXECUTION_PROMPT}\n\nFollow sibling.md\n\nRead-only instruction sibling root: /runtime/instructions`,
     );
+    const agentFilesContext = {
+      ...parsed.runtimeContext,
+      instructions: {
+        ...parsed.runtimeContext.instructions,
+        workingCopy: { kind: "agent_files" as const, rootPath: "/runtime/current-agent-copy", entryPath: "AGENTS.md" },
+      },
+    };
+    const agentFilesInstructions = composeNativeSystemInstructions(agentFilesContext, "Preserve my personal notes.");
+    expect(agentFilesInstructions).toContain("AGENT_HOME) is /runtime/current-agent-copy.");
+    expect(agentFilesInstructions).toContain("its absolute path may change between turns");
+    expect(agentFilesInstructions).toContain("use the current $AGENT_HOME environment variable instead of an absolute agent-directory path from an earlier turn");
+    expect(agentFilesInstructions).toContain("All supported files and subfolders there are restored across tasks and sessions");
+    expect(agentFilesInstructions).toContain("Write task deliverables in the task working directory");
+    expect(agentFilesInstructions).toContain("Preserve my personal notes.");
+    expect(agentFilesInstructions).toMatch(/Read-only instruction sibling root: \/runtime\/instructions$/);
+    expect(composeNativeSystemInstructions(parsed.runtimeContext, "Follow sibling.md")).not.toContain("$AGENT_HOME");
     expect(canonicalNativeRuntimeContextDigest({
       ...context,
       mcp: { ...context.mcp, bindingId: "native-mcp:run-2" },
@@ -104,7 +149,8 @@ describe("NativeExecutionInputV1", () => {
     expect(delta).toEqual({
       schema: "paperclip.native-continuation.v1",
       events: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}',
-      completion: { revision: "1", criterionIds: ["objective"] },
+      completion: { revision: "1", criterionIds: ["objective"],
+        instruction: "Before ending this turn, obtain one accepted paperclip_finish or paperclip_block result. Earlier reports belong to earlier turns; a final message alone does not complete this turn." },
     });
     expect(JSON.stringify(delta)).not.toContain(input.task.title);
     expect(JSON.stringify(delta)).not.toContain(input.completionContract.contract.objective);
@@ -295,7 +341,21 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it.each([1, 2, 3, 4, 5] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
+  it.each([
+    [17, "sha256:a1d976c437cb736c9cce8ebe8b8baf59e571761a8d00e8b1885e72dd906d8f21"],
+    [18, "sha256:9d3e7d8269f1a0af94616552dfc69671932688b81dbbd5bab9ef356b3a9cbccb"],
+  ] as const)("decodes a persisted Pi profile-%s run without rewriting its identity", (agentProfileVersion, commandDigest) => {
+    const { permissionPolicy: _permissionPolicy, ...nativeProfile } = QUALIFIED_ACPX_PROFILES.pi;
+    const profile = { ...nativeProfile, agentProfileVersion, commandDigest };
+    const persisted = { ...input, session: { ...input.session, driverKind: "acpx_runtime" },
+      provider: { kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        piThinkingLevel: "low", permissionPolicy: "interactive", profile } };
+    const parsed = parseNativeExecutionInput(persisted);
+    expect(parsed.provider).toEqual(persisted.provider);
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -310,7 +370,7 @@ describe("NativeExecutionInputV1", () => {
         agentServerPackage: "pi-acp",
         agentServerVersion: "0.0.33",
         agentRuntimePackage: "@earendil-works/pi-coding-agent",
-        agentRuntimeVersion: "0.84.2",
+        agentRuntimeVersion: "1.0.0",
         commandDigest: "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc",
       },
     } as const;
@@ -327,11 +387,11 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 6, 1.5, "5", null]) {
+    for (const unsupportedVersion of [0, Math.max(16, QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion) + 1, 1.5, "14", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
-        provider: { ...provider, profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
+        provider: { ...provider, piThinkingLevel: "low", profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
       })).toThrow("qualified ACPX v1 profile");
     }
     expect(buildNativeModelEnvelope(parsed).workspace).toEqual({ cwd: "/safe/workspace" });
@@ -346,6 +406,27 @@ describe("NativeExecutionInputV1", () => {
       provider,
     })).toThrow("does not match");
   });
+
+  it.each(Object.values(QUALIFIED_ACPX_PROFILES))(
+    "admits the current $agent profile through the native execution boundary",
+    (declaration) => {
+      const { qualificationModel, reportedModelId: _reported, permissionPolicy,
+        modelPolicy: _modelPolicy, qualificationStatus: _status, ...profile } = declaration;
+      const provider = {
+        kind: "acpx", agent: declaration.agent,
+        model: qualificationModel || "explicit-provider-model",
+        permissionPolicy, profile,
+        ...(declaration.agent === "pi" ? { piThinkingLevel: "low" } : {}),
+      };
+      const parsed = parseNativeExecutionInput({
+        ...input,
+        session: { ...input.session, driverKind: "acpx_runtime" },
+        provider,
+      });
+      expect(parsed.provider).toEqual(provider);
+      expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    },
+  );
 
   it("defaults legacy lifecycle state to per-turn and validates warm timeouts", () => {
     const legacy = structuredClone(input) as Record<string, unknown>;

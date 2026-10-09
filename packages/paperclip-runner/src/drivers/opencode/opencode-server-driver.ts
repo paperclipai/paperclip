@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   chmod,
   mkdir,
@@ -15,7 +17,7 @@ import { Agent as HttpAgent, createServer as createHttpServer, request as reques
 import { Agent as HttpsAgent, request as requestHttps } from "node:https";
 import { getCACertificates } from "node:tls";
 import { pipeline } from "node:stream/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -82,6 +84,69 @@ export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
+
+/** Resolve a declared, pinned native dependency without PATH or install fallback. */
+export function resolvePinnedOpenCodeCommand(
+  issuer: string | URL = import.meta.url,
+  target: { platform?: string; architecture?: string } = {},
+): string {
+  try {
+    const platform = target.platform ?? process.platform;
+    const architecture = target.architecture ?? process.arch;
+    const packageNames: Record<string, string[]> = {
+      "linux-x64": ["opencode-linux-x64-baseline"],
+      "darwin-arm64": ["opencode-darwin-arm64"],
+      "darwin-x64": ["opencode-darwin-x64-baseline"],
+    };
+    const candidates = packageNames[`${platform}-${architecture}`];
+    if (!candidates) {
+      throw new Error("OpenCode native target is not qualified");
+    }
+    const manifestPath = realpathSync(createRequire(issuer).resolve("opencode-ai/package.json"));
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.name !== "opencode-ai" || manifest.version !== QUALIFIED_OPENCODE_VERSION) {
+      throw new Error(`OpenCode package version mismatch: expected opencode-ai@${QUALIFIED_OPENCODE_VERSION}`);
+    }
+    const dependencyRequire = createRequire(manifestPath);
+    for (const name of candidates) {
+      if (manifest.optionalDependencies?.[name] !== QUALIFIED_OPENCODE_VERSION) {
+        throw new Error("OpenCode platform dependency does not match its qualified version");
+      }
+      let platformManifest: string;
+      try {
+        platformManifest = realpathSync(dependencyRequire.resolve(`${name}/package.json`));
+      } catch (error) {
+        if (["MODULE_NOT_FOUND", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          continue;
+        }
+        throw error;
+      }
+      const metadata = JSON.parse(readFileSync(platformManifest, "utf8"));
+      if (metadata.name !== name || metadata.version !== QUALIFIED_OPENCODE_VERSION
+        || !Array.isArray(metadata.os) || !metadata.os.includes(platform)
+        || !Array.isArray(metadata.cpu) || !metadata.cpu.includes(architecture)) {
+        throw new Error("OpenCode installed platform artifact identity mismatch");
+      }
+      const root = dirname(platformManifest);
+      const executable = realpathSync(resolve(root, "bin/opencode"));
+      const inside = relative(root, executable);
+      if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+        throw new Error("OpenCode executable escapes its qualified platform package");
+      }
+      if (!statSync(executable).isFile()) {
+        throw new Error("OpenCode executable is not a regular file");
+      }
+      accessSync(executable, constants.X_OK);
+      return executable;
+    }
+    throw new Error("OpenCode qualified platform dependency is missing");
+  } catch (error) {
+    throw new Error(
+      `Pinned OpenCode runtime unavailable: ${(error as Error).message}. Restore Paperclip's runtime dependencies.`,
+      { cause: error },
+    );
+  }
+}
 
 type DynamicToolHandler = (call: {
   tool: string;
@@ -2255,7 +2320,7 @@ async function startRuntime(input: {
     }
     input.options.commandLifecycle?.beforeSpawn();
     child = spawn(
-      input.options.command ?? "opencode",
+      input.options.command ?? resolvePinnedOpenCodeCommand(),
       ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
       {
         cwd: input.cwd,

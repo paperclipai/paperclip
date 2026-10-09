@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -125,7 +126,7 @@ it.each(["shutdown", "unexpected exit"] as const)("classifies a real Rust %s bef
   }
 }, 45000);
 
-it("reattaches the same Rust bridge without duplicating a settled operation and refuses a lost checkpoint", async () => {
+it.each(["local", "custom local directory", "external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root);
@@ -151,6 +152,26 @@ it("reattaches the same Rust bridge without duplicating a settled operation and 
     port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
   };
+  const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
+  if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
+  if (launch === "external launcher") {
+    await mkdir(runnerState, { recursive: true });
+    options.runnerStateDirectory = runnerState;
+    options.readProviderState = async () => {
+      try { return JSON.parse(await readFile(join(runnerState, "dot-provider-state.json"), "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    };
+    options.runnerProcessLauncher = spec => {
+      expect(spec.environment).not.toHaveProperty("OPENAI_API_KEY");
+      expect(spec.args).toContain(runnerState);
+      const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
+      const startedAt = new Date().toISOString();
+      spawned = { pid: child.pid!, processGroupId: null, startedAt };
+      return { child, startedAt, completion: new Promise((resolve, reject) => {
+        child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
+      }) };
+    };
+  }
   const driver = new RunnerdDotDriver(options);
   let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
   const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
@@ -176,7 +197,7 @@ it("reattaches the same Rust bridge without duplicating a settled operation and 
     expect(dispatches).toHaveLength(1);
     await session.interrupt!({ reason: "Synthetic test complete" });
     await session.close({ reason: "Synthetic test complete" });
-    await rm(join(root, "state/runner/dot-provider-state.json"));
+    await rm(join(runnerState, "dot-provider-state.json"));
     expect(await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal })).toMatchObject({ recovered: false });
   } finally {
     await session.close({ reason: "Test cleanup", force: true }).catch(() => {});

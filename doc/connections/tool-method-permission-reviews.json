@@ -23,8 +23,9 @@
         "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
         "https://mcp.airtable.com/.well-known/oauth-protected-resource"
       ],
-      "reviewedAt": "2026-09-30",
-      "liveProof": "not-run"
+      "reviewedAt": "2026-10-08",
+      "liveProof": "DCR/HTTPS OAuth completed for one selected base only with read/write records, comments and base structure. Bounded base-name search passed in 0.6s. 46 actions (24 Read/22 Write); all 22 Write Off persisted after reload. No record data read or writes.",
+      "evidenceLimit": "An initial consent-flow review issue was disclosed before the completed grant; qualification stayed limited to bounded reads. No provider writes or actual agents ran. Token-refresh and actual runtime behavior remain unqualified."
     },
     {
       "app": "api-key-generic",
@@ -39,7 +40,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Actions depend on the operator-supplied API and key; grant read/write on the required resources at the provider. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "keyPermissions": "Actions depend on the operator-supplied API and key; grant read/write on the required resources at the provider. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions.",
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
@@ -140,7 +141,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Create/manage links in authorized groups. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Create/manage links in authorized groups. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "box",
@@ -208,7 +209,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Create/stop browser sessions and run browser tasks under the API key. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Create/stop browser sessions and run browser tasks under the API key. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "candid",
@@ -282,7 +283,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "cloudinary",
@@ -338,7 +339,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Modify documents/tables permitted by the account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Modify documents/tables permitted by the account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "cognee",
@@ -353,7 +354,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Add/process knowledge and manage authorized datasets. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Add/process knowledge and manage authorized datasets. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "composio",
@@ -505,7 +506,41 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Use an API key for an account with write access to the meetings your agents need to share, rename, move or turn into soundbites. Paperclip cannot increase the key\u2019s permissions."
+      "keyPermissions": "Use an API key for an account with write access to the meetings your agents need to share, rename, move or turn into soundbites. Paperclip cannot increase the key’s permissions."
+    },
+    {
+      "app": "gauge",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "write",
+      "supportedActions": "Read AI visibility, mentions, citations, answers and competitor data; browse and curate tracked topics and prompts (create, generate, move, tag, and replace keyword lists); pull SEO keyword, GA4, Search Console, PostHog and Google Ads/OpenAI Ads reports; run the content pipeline from brief to article and publish to a connected CMS as a draft, to staging or live; read and edit organization memory files and skills; create, assign and update Action Center items; ask Ask Gauge questions. Access is limited to the organization chosen during consent.",
+      "evidence": [
+        "https://docs.withgauge.com/help/mcp",
+        "https://app.withgauge.com/.well-known/oauth-protected-resource",
+        "https://app.withgauge.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gauge",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Read AI visibility, mentions, citations, answers and competitor data; browse and curate tracked topics and prompts (create, generate, move, tag, and replace keyword lists); pull SEO keyword, GA4, Search Console, PostHog and Google Ads/OpenAI Ads reports; run the content pipeline from brief to article and publish to a connected CMS as a draft, to staging or live; read and edit organization memory files and skills; create, assign and update Action Center items; ask Ask Gauge questions.",
+      "evidence": [
+        "https://docs.withgauge.com/help/mcp",
+        "https://app.withgauge.com/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run",
+      "keyPermissions": "Gauge API keys are not scoped: a key reaches every MCP tool in the organization that created it, including publishing to a connected CMS, and requests are attributed to the organization rather than a user. Generate a separate key for Paperclip so it can be deleted independently, and set publish actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
     },
     {
       "app": "github",
@@ -536,7 +571,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "keyPermissions": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions.",
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
@@ -1232,7 +1267,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Launch/manage browsers, profiles, apps and browser automation. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Launch/manage browsers, profiles, apps and browser automation. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "linear",
@@ -1248,9 +1283,9 @@
       "evidence": [
         "https://mcp.linear.app/.well-known/oauth-protected-resource"
       ],
-      "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
-      "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+      "reviewedAt": "2026-10-08",
+      "liveProof": "User-approved read/write; selected workspace returned one team in 0.3s. IDs omitted. Catalog refresh and reload retained 68 actions; all 30 write actions Off. No provider writes or actual agent runs.",
+      "evidenceLimit": "Browser tester account read only; provider writes, refresh-token expiry, and actual agent-adapter execution remain unqualified. Any agent company installation; UI did not allow narrowing. No actual agent ran."
     },
     {
       "app": "local-falcon",
@@ -1284,7 +1319,7 @@
         "https://www.make.com/.well-known/oauth-authorization-server/mcp"
       ],
       "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
+      "liveProof": "2026-10-08: real Paperclip browser Test dialog environment_get returned authenticated organization/team context. Refresh/reload retained 133 actions; all 59 writes set Off and retained after reload. Company-wide installation in isolated test company, no provider write or actual adapter run. Account values excluded.",
       "providerDefaultReason": "Make documents selecting scopes and scenarios during its hosted connection flow. Management tools require a paid plan. Do not replace that resource selection with invented MCP client scopes."
     },
     {
@@ -1321,7 +1356,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Add/update/delete memories under the API key account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Add/update/delete memories under the API key account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "miro",
@@ -1436,7 +1471,7 @@
       ],
       "reviewedAt": "2026-10-02",
       "liveProof": "not-run",
-      "keyPermissions": "Project, branch, compute, snapshot, SQL and schema changes within the key\u2019s reach. A project-scoped key limits access to one project with Editor rights; personal and organization keys reach every project they can access. Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Project, branch, compute, snapshot, SQL and schema changes within the key’s reach. A project-scoped key limits access to one project with Editor rights; personal and organization keys reach every project they can access. Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "notion",
@@ -1518,7 +1553,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "pagerduty",
@@ -1533,7 +1568,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Incident and on-call changes require a full-access API key and role access. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "planetscale",
@@ -1585,9 +1620,10 @@
         "https://posthog.com/docs/model-context-protocol",
         "https://mcp.posthog.com/.well-known/oauth-protected-resource"
       ],
-      "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
-      "providerDefaultReason": "PostHog documents the no-scope MCP setup as read/write, with optional readonly and feature filters. The authorization server advertises account administration unrelated to many tools; retain its MCP consent defaults and the existing explicit filters."
+      "reviewedAt": "2026-10-08",
+      "liveProof": "Provider read-only preset; active Paperclip project only. Authenticated profile returned in 0.7s; identity values omitted. Catalog refresh and reload retained 380 actions; all 7 write actions Off. No provider writes or actual agent runs.",
+      "providerDefaultReason": "PostHog documents the no-scope MCP setup as read/write, with optional readonly and feature filters. The authorization server advertises account administration unrelated to many tools; retain its MCP consent defaults and the existing explicit filters.",
+      "evidenceLimit": "Browser tester account read only; provider writes, refresh-token expiry, and actual agent-adapter execution remain unqualified. Any agent company installation; UI did not allow narrowing. No actual agent ran."
     },
     {
       "app": "posthog",
@@ -1603,7 +1639,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "postman",
@@ -1671,7 +1707,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "postman",
@@ -1688,7 +1724,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "postman",
@@ -1705,7 +1741,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "railway",
@@ -1759,7 +1795,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Provider-authorized payment/account tools; financial policy gates remain. Live verification outstanding. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions.",
+      "keyPermissions": "Provider-authorized payment/account tools; financial policy gates remain. Live verification outstanding. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions.",
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
@@ -1811,7 +1847,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "sentry",
@@ -1958,7 +1994,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "supabase",
@@ -2003,7 +2039,7 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
-      "keyPermissions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "keyPermissions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
     },
     {
       "app": "superagent",
@@ -2262,6 +2298,251 @@
         "https://api.getzep.com/.well-known/oauth-protected-resource/mcp"
       ],
       "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "tavily",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "offline_access"
+      ],
+      "capability": "read",
+      "supportedActions": "Run public web search and extract content from public pages using the account’s Tavily API key and credit allowance. These are read/search operations; no provider business-record write action is exposed.",
+      "evidence": [
+        "https://docs.tavily.com/documentation/mcp",
+        "https://mcp.tavily.com/.well-known/oauth-protected-resource/mcp",
+        "https://mcp.tavily.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "2026-10-08: HTTPS OAuth connected. After the initialized-session fix, query-only public search returned five results in 1.7s. Refresh/reload retained five Read/zero Write actions. No grant expansion or writes.",
+      "evidenceLimit": "Two earlier searches returned HTTP 400; successful call after proactive initialization supports but does not prove cause. Provider writes, refresh-token expiry and actual agent runs unqualified. Any agent company installation in isolated test company; no actual agents ran."
+    },
+    {
+      "app": "calendly",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:scheduling:read",
+        "mcp:scheduling:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Read event types and scheduling availability and call supported scheduling write tools under the authorized account; the official MCP documents the same scheduling read/write scope family as the public API.",
+      "evidence": [
+        "https://developer.calendly.com/docs/mcp/calendly-mcp-server",
+        "https://mcp.calendly.com/.well-known/oauth-protected-resource",
+        "https://calendly.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "HTTPS DCR/S256 scheduling read/write grant succeeded on retry; provider profile verified the connected account. lookup_current_user passed in 2.5s. 36 actions (25 Read/11 Write); all 11 writes Off persisted after reload.",
+      "evidenceLimit": "Account read only; scheduling/provider writes, expiry refresh, and actual agent runtime unqualified. Any agent installation in isolated test company; no agents ran."
+    },
+    {
+      "app": "exa",
+      "method": "public-search",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Public web search and webpage retrieval. Public MCP initialize and tools/list observed only web_search_exa and web_fetch_exa, both marked readOnly/idempotent; account-gated agent/advanced tools are excluded.",
+      "evidence": [
+        "https://exa.ai/docs/get-started/exa-mcp",
+        "https://exa.ai/mcp",
+        "https://mcp.exa.ai/mcp"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "2026-10-08: Paperclip browser Test dialog web_search_exa returned a public repository matching the query in 2.0s; connection persisted after reload and action refresh passed. Public read only; no writes or agent-adapter run."
+    },
+    {
+      "app": "firecrawl",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "firecrawl:global",
+        "offline_access"
+      ],
+      "capability": "write",
+      "supportedActions": "Full account-authorized Firecrawl MCP surface; web reads plus provider jobs such as crawl/research, which may consume team credits.",
+      "evidence": [
+        "https://docs.firecrawl.dev/mcp-server",
+        "https://www.firecrawl.dev/.well-known/oauth-authorization-server",
+        "https://mcp.firecrawl.dev/.well-known/oauth-protected-resource/v2/mcp-oauth"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "firecrawl",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Bearer API key may expose full Firecrawl tool surface, including crawl/research jobs billed to the selected team.",
+      "evidence": [
+        "https://docs.firecrawl.dev/mcp-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run",
+      "keyPermissions": "Create an API key for the intended Firecrawl team with access to the search, scrape, parse, and any job tools you intend to use. Jobs can consume credits; Paperclip cannot increase an existing key’s permissions."
+    },
+    {
+      "app": "firecrawl",
+      "method": "keyless",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Keyless Firecrawl exposes firecrawl_search, firecrawl_scrape, and firecrawl_parse; public catalog initialization confirmed those three. These retrieve/search content and process supplied files; keyless usage is limited.",
+      "evidence": [
+        "https://docs.firecrawl.dev/mcp-server",
+        "https://mcp.firecrawl.dev/v2/mcp"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "2026-10-08: Paperclip browser Test dialog firecrawl_scrape returned public page metadata and HTTP 200 (0.6s); connection persisted after reload; action refresh passed. Public read only, no writes or agent-adapter run."
+    },
+    {
+      "app": "parallel-search",
+      "method": "public-search",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Public Parallel Search MCP initialize and tools/list observed only web_search and web_fetch; both tool annotations marked read-only/idempotent. Task MCP is a separate endpoint/product.",
+      "evidence": [
+        "https://docs.parallel.ai/integrations/mcp/search-mcp",
+        "https://parallel.ai/articles/add-free-web-search-to-coding-agent",
+        "https://search.parallel.ai/mcp"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "2026-10-08: Paperclip browser Test dialog web_search returned 10 public results in 0.8s; connection persisted after reload and action refresh passed. Public read only; no writes or agent-adapter run."
+    },
+    {
+      "app": "windsor-ai",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "create",
+        "delete",
+        "offline_access"
+      ],
+      "capability": "write",
+      "supportedActions": "The MCP resource explicitly challenges for create and delete even to initialize/list tools. Read tools query selected connected sources; provider-level delete can expose destructive actions on supported sources. Keep write/destructive actions Off for read qualification. Search Console source authorization is separately read-only.",
+      "evidence": [
+        "https://mcp.windsor.ai/",
+        "https://mcp.windsor.ai/.well-known/oauth-protected-resource",
+        "https://mcp.windsor.ai/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "User-approved create/delete/offline_access MCP scopes; separately approved read-only Search Console source, the selected Search Console property only. 54 field definitions; bounded last_7d request returned 5 daily rows dated 2026-10-01 through 2026-10-05 in 1.5s; metric values omitted. Catalog refresh and reload retained 19 actions; all 5 write actions Off. No provider writes or actual agent runs.",
+      "evidenceLimit": "Browser tester account read only; provider writes, refresh-token expiry, and actual agent-adapter execution remain unqualified. Just agents I pick; no agents selected."
+    },
+    {
+      "app": "windsor-ai",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Bearer key accesses Windsor MCP; actions depend on source connector/account and may include advertising or commerce changes.",
+      "evidence": [
+        "https://mcp.windsor.ai/"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run",
+      "keyPermissions": "Use an account key for the intended Windsor.ai organization and connect only source accounts needed for the task. Review write tools and source-specific effects; Paperclip cannot increase key permissions."
+    },
+    {
+      "app": "gsc-wizard",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:read",
+        "mcp:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Read GSC/Bing Webmaster/GA4 and related property data, plus provider-advertised tools for URL submission and other write actions; exact property/action needs catalog review.",
+      "evidence": [
+        "https://www.gscwizard.com/claude-search-console-mcp.html",
+        "https://mcp.gscwizard.com/.well-known/oauth-protected-resource",
+        "https://tool.gscwizard.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "HTTPS MCP connection with 112 actions. Account metadata, property list and seven-day performance read for the selected Search Console property passed; all 32 writes Off persisted after reload.",
+      "evidenceLimit": "Google identity screen showed name/profile/email only. Worker resumed to already Connected; Google completion and underlying GSC API scopes not independently verified. Paid/trial metadata provenance unknown; no payment action. No writes or agents ran."
+    },
+    {
+      "app": "gsc-wizard",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Bearer key may be read-only or read/write depending on key creation; docs cite read analytics, URL inspection, and URL submission tools.",
+      "evidence": [
+        "https://www.gscwizard.com/claude-search-console-mcp.html",
+        "https://mcp.gscwizard.com/"
+      ],
+      "reviewedAt": "2026-10-08",
+      "liveProof": "not-run",
+      "keyPermissions": "At key creation, choose read-only or read/write according to the approved task. Read/write keys can reach URL-submission and related provider actions; Paperclip cannot increase an existing key’s permissions."
+    },
+    {
+      "app": "airtable",
+      "method": "mcp-pat",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read/update records; creation and editing in allowed bases; token scopes, base resources, roles, and organization allowlisting apply.",
+      "evidence": [
+        "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+        "https://support.airtable.com/articles/9934989703-creating-personal-access-tokens"
+      ],
+      "keyPermissions": "Choose provider scopes and resource bases for intended actions; token and user/base role permissions both restrict access.",
+      "providerDefaultReason": "The exact required scope set depends on tools and selected base resources; do not infer a broader fixed scope list.",
+      "reviewedAt": "2026-10-08",
+      "evidenceLevel": "provider-documentation-reviewed",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "linear",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Create/update issues, projects, comments and other authorized workspace objects; key can be restricted to Read, Write, Admin, Create issues, Create comments and teams.",
+      "evidence": [
+        "https://linear.app/docs/mcp",
+        "https://linear.app/docs/api-and-webhooks"
+      ],
+      "keyPermissions": "Choose intended permissions and teams when creating the personal API key. Read-only is supported with Read permission only.",
+      "reviewedAt": "2026-10-08",
+      "evidenceLevel": "provider-documentation-reviewed",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "make",
+      "method": "mcp-api-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Run selected scenarios as MCP tools; token scope and scenario access control determine availability.",
+      "evidence": [
+        "https://developers.make.com/mcp-server/connect-using-mcp-token",
+        "https://developers.make.com/mcp-server/connect-using-mcp-token/usage-with-cursor"
+      ],
+      "keyPermissions": "Provider-issued Make token. Include documented mcp:use and only additional scopes required by selected scenarios; exact scopes are user selected.",
+      "reviewedAt": "2026-10-08",
+      "evidenceLevel": "provider-documentation-reviewed",
       "liveProof": "not-run"
     }
   ]

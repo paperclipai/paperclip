@@ -34,6 +34,9 @@ export function classifyFailure(error: unknown): FailureClass {
       : "cleanup_failure";
   }
   if (PERMANENT.test(message)) return "permanent_infrastructure";
+  // A deliberately killed Pi child is the fixture stimulus. Missing lifecycle
+  // proof must not become a retryable transport failure because of its wording.
+  if (/pi_provider_death_proof:/.test(message)) return "candidate_failure";
   if (
     /chat_idle_state_invariant/.test(message) ||
     NON_RETRYABLE_SESSION_CLOSE.test(message) ||

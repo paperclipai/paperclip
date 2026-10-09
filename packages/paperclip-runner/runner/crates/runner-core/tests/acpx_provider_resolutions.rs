@@ -50,6 +50,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
+        pi_thinking_level: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -104,6 +105,32 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
         .deliver_tool_result(&tool_result("issues.read"))
         .expect("an identical result replay must be idempotent");
     session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn live_callback_snapshot_checks_the_surviving_sidecar_and_upstream_input_id() {
+    for mode in ["resolutions", "resolutions-projected-id"] {
+        let mut session = started(mode);
+        let live = session.verify_live_request_snapshot().unwrap();
+        let provider_id = if mode == "resolutions-projected-id" {
+            "input / réquest"
+        } else {
+            "input-1"
+        };
+        assert_eq!(live.get(provider_id).map(String::as_str), Some("input"));
+        assert_eq!(live.len(), 1);
+        session.shutdown("test complete").unwrap();
+        assert!(session.verify_live_request_snapshot().is_err());
+    }
+    for mode in [
+        "resolutions-snapshot-wrong-session",
+        "resolutions-snapshot-wrong-turn",
+        "resolutions-snapshot-missing-callbacks",
+    ] {
+        let mut session = started(mode);
+        assert!(session.verify_live_request_snapshot().is_err(), "{mode}");
+        session.shutdown("test complete").unwrap();
+    }
 }
 
 #[test]
@@ -308,6 +335,18 @@ fn permission_origin_is_bound_to_the_admitted_connection_and_survives_projection
     for agent in ["claude", "copilot", "cursor", "pi"] {
         let mut cfg = config("permissions-interactive");
         cfg.agent = agent.to_owned();
+        cfg.model = if agent == "claude" {
+            "claude-sonnet-5"
+        } else if agent == "pi" {
+            "openrouter/deepseek/deepseek-v4-flash-0731"
+        } else {
+            "explicit-test-model"
+        }
+        .to_owned();
+        if agent == "pi" {
+            cfg.pi_thinking_level =
+                Some(paperclip_runner_core::acpx_provider_session::PiThinkingLevel::Low);
+        }
         if agent == "cursor" {
             cfg.mode = Some("agent".to_owned());
         }
@@ -344,6 +383,7 @@ fn permission_origin_is_bound_to_the_admitted_connection_and_survives_projection
 fn rejects_a_permission_origin_claim_from_another_provider() {
     let mut cfg = config("permissions-forged-origin");
     cfg.agent = "claude".to_owned();
+    cfg.model = "claude-sonnet-5".to_owned();
     let mut session = AcpxProviderSession::start(&cfg).unwrap();
     session
         .start_turn("turn-1", "Request permission", &std::env::temp_dir())

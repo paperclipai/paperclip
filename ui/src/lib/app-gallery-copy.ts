@@ -74,6 +74,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Explore product usage, errors, flags, and experiments.",
     short: "Sign in with PostHog. Project pinning and access controls are optional.",
   },
+  gauge: {
+    tagline: "Track your brand in AI answers and run content workflows.",
+    short: "Sign in with Gauge and pick an organization. API keys are optional.",
+  },
   neon: {
     tagline: "Manage Postgres projects, branches, and queries.",
     short: "Sign in with Neon. Project pinning and read-only mode are optional.",

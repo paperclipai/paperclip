@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -42,7 +43,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
@@ -974,7 +975,37 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(response.decision.chosenSource).toBe("final_agent_message");
     expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
       .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
-    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
+    // A workspace recovery owner can commit before the live heartbeat reaches
+    // presentation. The file-preparation comment must not hide the real reply.
+    const [prepared] = await db.insert(issueComments).values({
+      companyId: identity.companyId, issueId: taskIssueId,
+      authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
+      body: "Prepared Continuity file for this response.",
+    }).returning();
+    const receipt = { semanticToolReceipts: { file: {
+      operationId: "register_deliverable", result: {
+        commandId: "deliverable-prepared:attachment-1", disposition: "applied",
+        attachmentId: "attachment-1", entityRefs: ["attachment-1", prepared!.id],
+      },
+    } } };
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { skipIssueComment: true },
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(receipt)}::jsonb`,
+    }).where(eq(heartbeatRuns.id, taskRunId));
+    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const repair = () => repairCommittedNativeChatResponse(db, {
+      companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
+    });
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
+      .where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(true);
+    expect(await repair()).toBe(false);
+    expect(await db.select({ body: issueComments.body }).from(issueComments)
+      .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
+      .toEqual([{ body: prepared!.body }, { body: finalText }]);
     await expect(port.completeRun({
       result: taskResult,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,

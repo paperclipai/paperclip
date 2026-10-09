@@ -141,6 +141,12 @@
       "localAsset": "/brands/apps/executor.png"
     },
     {
+      "slug": "gauge",
+      "provider": "Gauge",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gauge.png"
+    },
+    {
       "slug": "github",
       "provider": "GitHub",
       "catalogVisible": true,
@@ -260,7 +266,7 @@
     {
       "slug": "make",
       "provider": "Make",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/make.svg",
       "darkAsset": "/brands/apps/make-dark.svg"
     },
@@ -591,6 +597,49 @@
       "provider": "Responses API",
       "catalogVisible": true,
       "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "calendly",
+      "provider": "Calendly",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/calendly.png"
+    },
+    {
+      "slug": "exa",
+      "provider": "Exa",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/exa.svg"
+    },
+    {
+      "slug": "firecrawl",
+      "provider": "Firecrawl",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/firecrawl.svg"
+    },
+    {
+      "slug": "gsc-wizard",
+      "provider": "GSC Wizard",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gsc-wizard.png"
+    },
+    {
+      "slug": "parallel-search",
+      "provider": "Parallel Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/parallel.svg",
+      "darkAsset": "/brands/apps/parallel-dark.svg"
+    },
+    {
+      "slug": "tavily",
+      "provider": "Tavily",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/tavily.png"
+    },
+    {
+      "slug": "windsor-ai",
+      "provider": "Windsor.ai",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/windsor-ai.png"
     }
   ]
 }

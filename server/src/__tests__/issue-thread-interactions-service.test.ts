@@ -1,3 +1,5 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -231,11 +233,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(created.payload.questions.map((question) => question.id)).toEqual(["repo", "scope", "hosting"]);
     expect(await interactionsSvc.create(issue, input, { userId: "local-board" })).toEqual(created);
     await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "repo", optionIds: [], otherText: "https://example.com/repo" }] }, { userId: "local-board" })).rejects.toThrow("requires an answer");
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.question, notified);
     const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [
       { questionId: "repo", optionIds: [], otherText: "https://example.com/repo" },
       { questionId: "scope", optionIds: ["all"] },
       { questionId: "hosting", optionIds: ["existing", "new"] },
     ] }, { userId: "local-board" });
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
     expect(answered.status).toBe("answered");
   });
 
@@ -1025,6 +1031,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { agentId: creatorAgentId },
     );
 
+    await db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, addresseeAgentId));
     await agentService(db).remove(addresseeAgentId);
 
     const cancelled = await interactionsSvc.getById(created.id);

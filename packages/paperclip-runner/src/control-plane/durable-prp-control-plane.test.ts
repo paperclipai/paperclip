@@ -19,6 +19,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment } from "../live/runnerd-codex-transport.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
@@ -550,6 +551,8 @@ it("preserves the controller-selected ACPX provider package root", () => {
 
 it.each([
   ["pi", "OPENROUTER_API_KEY"],
+  ["pi", "AWS_BEARER_TOKEN_BEDROCK"],
+  ["pi", "CUSTOM_PI_API_KEY"],
   ["cursor", "CURSOR_API_KEY"],
   ["cursor", "CURSOR_AUTH_TOKEN"],
   ["copilot", "COPILOT_GITHUB_TOKEN"],
@@ -557,13 +560,15 @@ it.each([
   const launches: RunnerProcessLaunchSpec[] = [];
   vi.stubEnv(key, "ambient-must-not-cross");
   vi.stubEnv(ACPX_CREDENTIAL_BINDING_ENV, "ambient-forged-marker");
+  const iam = agent === "pi" ? configuredEnvironmentProjection({ AWS_ACCESS_KEY_ID: "general-key", AWS_SECRET_ACCESS_KEY: "general-secret", AWS_SESSION_TOKEN: "general-session", CUSTOM_SETTING: "allowed" }) : {};
+  const custom = key === "CUSTOM_PI_API_KEY" ? { PAPERCLIP_PI_PROVIDERS: JSON.stringify({ private: { baseUrl: "https://provider.invalid", apiKey: key } }) } : {};
   try {
     for (const explicit of [true, false]) {
       const environment = createCapabilityRunnerdProviderEnvironment({
         provider: "acpx", identity, codexHome: "/fixture/home",
         runtimeContextPath: "/fixture/context.json", hasRuntimeContext: false,
         options: { acpxAgent: agent,
-          environment: explicit ? { [key]: "explicit-fixture-credential", [ACPX_CREDENTIAL_BINDING_ENV]: "caller-forged-marker", DATABASE_URL: "must-not-cross" } : undefined },
+          environment: explicit ? { ...custom, ...iam, [key]: "explicit-fixture-credential", [ACPX_CREDENTIAL_BINDING_ENV]: "caller-forged-marker", DATABASE_URL: "must-not-cross" } : undefined },
       });
       const handle = spawnRunner({
         connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
@@ -582,9 +587,13 @@ it.each([
         const receipt = launch.environment[ACPX_CREDENTIAL_BINDING_ENV];
         expect(receipt).toBeDefined();
         expect(JSON.parse(receipt!)).toEqual({ schema: "paperclip.acpx_credential_binding.v1", agent,
-          sessionId: identity.normalizedSessionId, names: explicit ? [key] : [] });
+          sessionId: identity.normalizedSessionId, names: explicit ? [...(key === "CUSTOM_PI_API_KEY" ? ["PAPERCLIP_PI_PROVIDERS"] : []), key] : [] });
         expect(receipt).not.toContain("fixture-credential");
         expect(launch.environment.DATABASE_URL).toBeUndefined();
+        if (agent === "pi") {
+          for (const name of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(launch.environment).not.toHaveProperty(name);
+          if (explicit) expect(launch.environment.CUSTOM_SETTING).toBe("allowed");
+        }
         const provider = createAcpxSidecarHostEnvironment(launch.environment, agent, identity.normalizedSessionId);
         expect(provider[key]).toBe(explicit ? "explicit-fixture-credential" : undefined);
         expect(provider[ACPX_CREDENTIAL_BINDING_ENV]).toBeUndefined();

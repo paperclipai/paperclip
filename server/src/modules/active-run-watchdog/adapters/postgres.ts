@@ -456,6 +456,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           eq(agents.id, input.run.agentId),
           eq(agents.companyId, companyId),
           notInArray(agents.status, ["paused", "terminated"]),
+          eq(agents.lifecycleState, "ready"),
         ));
 
       return updatedRun;

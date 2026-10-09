@@ -33,6 +33,12 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("requires authority for required agent lifecycle participants", () => {
+    const manifest = { id: "example.lifecycle", apiVersion: 1, version: "0.1.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentLifecycle: true };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["agents.lifecycle.manage"] }).agentLifecycle).toBe(true);
+  });
+
   it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
     const manifest = { id: "example.pool", apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Pool", author: "Tests", categories: ["connector"], entrypoints: { worker: "worker.js" }, aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" } };
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["ui.page.register"] }).success).toBe(false);

@@ -103,6 +103,16 @@ describe("server package build script", () => {
     );
   });
 
+  it("ships the pinned OpenCode dependency resolved by the vendored Runner", () => {
+    const server = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    const runner = JSON.parse(readFileSync(new URL(
+      "../../../packages/paperclip-runner/package.json", import.meta.url,
+    ), "utf8"));
+    // createRequire resolution is dynamic and is not covered by the import scan.
+    expect(server.dependencies["opencode-ai"]).toBe("1.18.34");
+    expect(server.dependencies["opencode-ai"]).toBe(runner.dependencies["opencode-ai"]);
+  });
+
   it("loads runner source when the source server starts before workspace builds", () => {
     const shim = readFileSync(runnerShimPath, "utf8");
 

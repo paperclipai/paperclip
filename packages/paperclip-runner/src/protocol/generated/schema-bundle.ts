@@ -1170,9 +1170,37 @@ export const providerDescriptorSchema = {
     },
     "turnControls": {
       "$ref": "#/$defs/turnControls"
+    },
+    "piThinkingLevel": {
+      "enum": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ]
     }
   },
   "allOf": [
+    {
+      "if": {
+        "required": [
+          "piThinkingLevel"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
     {
       "oneOf": [
         {
@@ -3362,6 +3390,11 @@ export const questionSetSchema = {
             "text"
           ]
         },
+        "initialText": {
+          "type": "string",
+          "maxLength": 100000,
+          "description": "Editable draft of at most 100000 Unicode code points. Never an implicit answer; submitted text still uses the existing response bounds."
+        },
         "options": {
           "type": "array",
           "maxItems": 128,
@@ -3420,6 +3453,11 @@ export const questionSetSchema = {
             "required": [
               "options"
             ],
+            "not": {
+              "required": [
+                "initialText"
+              ]
+            },
             "properties": {
               "options": {
                 "type": "array",

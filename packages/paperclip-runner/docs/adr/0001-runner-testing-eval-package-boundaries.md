@@ -113,6 +113,21 @@ separately staged runnerd artifact digest. The consumer uses no workspace
 protocol, source-relative import, or deep package path. This is the packaging
 gate; workspace tests alone are not proof.
 
+For installed dependencies without bundled dependencies, the gate packs a private
+copy outside pnpm's dependency tree, excluding only the package-root
+`node_modules` directory. Manifest bytes, file modes, symlinks, and npm file
+selection rules remain unchanged. Packages declaring bundled dependencies keep
+the original pack path so their dependency payload is preserved. Temporary pack
+inputs are removed after success or failure; installed sources are not modified.
+
+Run the focused staging regression from the repository root:
+
+```sh
+node --test packages/paperclip-runner/scripts/installed-package-pack.test.mjs
+```
+
+This regression also runs in the Runner's `test:typescript:prep` gate.
+
 ## Consequences
 
 - Existing tests importing mock/conformance values from the package root must

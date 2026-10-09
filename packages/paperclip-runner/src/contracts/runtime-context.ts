@@ -14,7 +14,7 @@ export interface NativeRuntimeAssetReference {
 }
 
 export interface NativeRuntimeContextSnapshot {
-  prompt: { revision: typeof PAPERCLIP_EXECUTION_PROMPT_REVISION; text: typeof PAPERCLIP_EXECUTION_PROMPT; digest: string };
+  prompt: { revision: string; text: string; digest: string };
   instructions: {
     entryPath: string;
     bundle: NativeRuntimeAssetReference;
@@ -103,10 +103,12 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
   exact(context, ["prompt", "instructions", "skills", "mcp", "connectionInstructions", "aggregateDigest"], "input.runtimeContext");
   const prompt = object(context.prompt, "input.runtimeContext.prompt");
   exact(prompt, ["revision", "text", "digest"], "input.runtimeContext.prompt");
-  if (prompt.revision !== PAPERCLIP_EXECUTION_PROMPT_REVISION || prompt.text !== PAPERCLIP_EXECUTION_PROMPT) {
-    throw new NativeRuntimeContextError("input.runtimeContext.prompt must match the fixed Paperclip prompt revision");
-  }
-  if (digest(prompt.digest, "input.runtimeContext.prompt.digest") !== nativeRuntimePromptDigest()) {
+  // New runs use the current constants. Recovery uses the immutable saved
+  // snapshot; its revision is metadata, not a lookup in this release's source.
+  const promptRevision = text(prompt.revision, "input.runtimeContext.prompt.revision");
+  const promptText = text(prompt.text, "input.runtimeContext.prompt.text");
+  const promptDigest = digest(prompt.digest, "input.runtimeContext.prompt.digest");
+  if (sha256(promptText) !== promptDigest) {
     throw new NativeRuntimeContextError("input.runtimeContext.prompt.digest does not match prompt text");
   }
   const instructions = object(context.instructions, "input.runtimeContext.instructions");
@@ -140,7 +142,7 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
     connectionInstructions = { text: content, digest: contentDigest };
   }
   const parsed = {
-    prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    prompt: { revision: promptRevision, text: promptText, digest: promptDigest },
     instructions: {
       entryPath: safeRelativePath(instructions.entryPath, "input.runtimeContext.instructions.entryPath"),
       bundle: parseAsset(instructions.bundle, "input.runtimeContext.instructions.bundle"),
@@ -171,7 +173,7 @@ export function composeNativeSystemInstructions(context: NativeRuntimeContextSna
     entryContent.trim(),
     context.connectionInstructions?.text,
     context.instructions.workingCopy?.kind === "agent_files"
-      ? `Your persistent agent directory (AGENT_HOME) is ${context.instructions.workingCopy.rootPath}. Your instruction entry is ${context.instructions.workingCopy.entryPath}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.`
+      ? `Your persistent agent directory (AGENT_HOME) is ${context.instructions.workingCopy.rootPath}. This is the current turn's copy; its absolute path may change between turns. In shell commands, use the current $AGENT_HOME environment variable instead of an absolute agent-directory path from an earlier turn. Your instruction entry is ${context.instructions.workingCopy.entryPath}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.`
       : context.instructions.workingCopy
       ? `Your editable agent instruction file is ${context.instructions.workingCopy.rootPath}/${context.instructions.workingCopy.entryPath}. Edit this registered private copy normally. After this run stops, Paperclip saves changed content as a persistent revision if your responsible user still has permission and the baseline has not changed. Check the run's instruction-save receipt before claiming persistence. Conflicts are preserved for explicit resolution. Repository instruction files, skills, and this run's loaded prompt are separate and are not collected.`
       : null,

@@ -1,3 +1,4 @@
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -256,11 +257,15 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
   it("keeps an explicit resume durable across managed-agent reconcile", async () => {
     const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
     const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
-    await agentService(db).resume(created.agentId!);
+    await createAgentLifecycle(db).resumeAgent(created.agentId!);
 
     const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
 
-    expect(reconciled.agent).toMatchObject({
+    expect(reconciled.agent).toMatchObject({ lifecycleState: "resuming", pauseReason: null });
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    await worker.process(created.agentId!);
+    await worker.stop();
+    expect((await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" })).agent).toMatchObject({
       status: "idle",
       pauseReason: null,
       pausedAt: null,

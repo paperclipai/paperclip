@@ -79,12 +79,6 @@ export function AgentBasicsDialog({
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   );
-  const runner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
-  if (runner && isNewAgentAdapterAllowed("openai_dot", {
-    cloud,
-    nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
-    openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
-  })) choices.push({ ...runner, type: "openai_dot" });
   const validAdapter = choices.some((adapter) => adapter.type === adapterType);
   return (
     <Dialog

@@ -48,6 +48,16 @@ controller deployments are not qualified. The feature is off by default.
 Only the operator's one-use pairing code is displayed. OAuth tokens and callback
 signing secrets stay on the server and never enter the Runner descriptor,
 task prompt or saved adapter config. Pairing codes expire after 15 minutes.
+Once paired, the connection has no Paperclip inactivity expiry, including existing
+valid connections upgraded by migration `0319_heavy_captain_midlands.sql`. Access tokens
+still last 15 minutes and are renewed with rotating, non-expiring refresh tokens;
+revocation, replay detection, and current company/agent permissions still apply.
+This does not control any independent OpenAI-side connection policy.
+
+In **Invite an external agent → Dot**, the prompt preview closes automatically
+as soon as Paperclip observes the connection. The footer shows **Connecting…**
+while Dot subscribes, then **Confirming connection…** during the event check.
+After the round trip succeeds, **Done** closes the invitation dialog.
 
 The dedicated connection uses the merged MCP gateway's PKCE browser and device
 flows, including verified client metadata documents and organization hints.
@@ -333,12 +343,13 @@ Mailbox `follow_up` entries reference new comments on an accepted assignment. Re
 
 ## Tool inventory
 
-The top-level MCP catalog contains these 15 transport and lifecycle tools:
+The top-level MCP catalog contains these 16 transport, lifecycle, and profile tools:
 `paperclip_dot_capabilities`, `paperclip_dot_request_turn`, `paperclip_dot_tasks`,
 `paperclip_dot_request_work`, `paperclip_dot_pair`, `paperclip_dot_inbox`,
 `paperclip_dot_read`, `paperclip_dot_accept`, `paperclip_dot_tool`,
 `paperclip_dot_progress`, `paperclip_dot_finish`, `paperclip_dot_operation_status`,
-`paperclip_dot_confirm_event`, `paperclip_dot_renew`, `paperclip_dot_control_ack`.
+`paperclip_dot_confirm_event`, `paperclip_dot_renew`, `paperclip_dot_control_ack`,
+`paperclip_dot_set_avatar`.
 
 After accepting work, use `paperclip_dot_tool` with a name from the assignment's
 actual catalog. Availability depends on work mode, permissions, assigned apps,
@@ -387,3 +398,28 @@ A plugin upgraded during a running Dot conversation can retain an old top-level
 tool catalog. Refresh its tools in ChatGPT plugin settings and reattach it.
 Inspect the real exposed actions before claiming new idle or lease actions
 are available. The assignment catalog is read on each new assignment.
+
+## Cloud direction and external-agent invitation UX
+
+The [2026-10-08 cloud Runner and invitation decision](plans/2026-10-08-cloud-dot-runner-and-external-invitations.md) keeps remote agents on the new Runner infrastructure. In addition to shared assignment lifecycle handling, this preserves a sandbox boundary for future tools that may access Paperclip workspaces. The first cloud version gives Dot no Paperclip workspace file or command tools; Dot works on its own computer.
+
+The self-hosted entry is **New Agent → Invite an external agent → Dot / Hermes / Other**. Dot receives a copyable setup prompt and live connection checks, with readiness requiring a confirmed event round trip. The same components have Storybook journeys with fixture data. Cloud execution remains disabled pending qualification. Hermes continues to use the existing external-agent invitation prompt.
+
+## Agent avatar
+
+After pairing, Dot can call `paperclip_dot_set_avatar` without an active assignment or completed event test. It changes only the Paperclip agent bound to that live connection. It requires the Dot and Assistant connections experimental flags, an active operator membership, and a non-revoked grant and binding.
+
+Input is `{ "imageBase64": "<raw base64 image bytes>" }`. PNG, JPEG and WebP are supported, up to 512 KiB and 16 megapixels; animations and SVG are rejected. Paperclip re-encodes the image as a metadata-free PNG at most 512 pixels on either side. Sending the same image again is safe and does not create another asset. Send `{ "imageBase64": null }` to restore the existing Paperclip character and palette.
+
+The same capability is available to agents via `PUT /api/companies/:companyId/agents/:agentId/avatar` with the same body and normal agent bearer authentication. An agent can update only itself; board users need the same `agent_config:update` permission as other agent configuration changes. Task bridge and skill test credentials cannot change avatars. Returned `appearance.customAvatarAssetId` and `avatarUrl` propagate through existing agent views. The image is a company-scoped private asset served through authenticated `/api/assets/:assetId/content`, not a public image URL for third-party embeds. Previous assets remain available for configuration history. Company exports retain the preset character and palette and warn that uploaded avatar assets must be uploaded again after import; private asset IDs are never portable. Activity records contain asset metadata, never image bytes.
+
+The setup prompt asks Dot to upload its own current image only if it can obtain it. We have not verified a supported OpenAI avatar-export API. Avatar availability must never block pairing; Dot may call the tool later. This capability does not add workspace access or change Runner assignment execution.
+
+
+### Invite from the agent picker
+
+In a self-hosted instance, enable **OpenAI Dot** and **Assistant connections (MCP)**, then choose **New Agent → Invite an external agent → Dot**. Copy the setup prompt into your Dot. Paperclip creates a scoped Runner agent and watches connection, event subscription, and a harmless event round trip. If your company requires hire approval, approve the agent before copying its pairing prompt. The test event is sent automatically after the callback is verified; Retry test event remains available if confirmation times out.
+
+Reopening setup resumes the operator's unfinished invitation. Pairing codes are not stored in browser persistence. After refreshing or when an open prompt expires, setup automatically prepares a fresh prompt to copy. It first checks current connection state and replaces only the pending capability, without revoking an established connection. A failed renewal offers a retry rather than looping. If another browser window replaces the prompt, the current window asks before replacing it again. Hermes and Other continue to use the ordinary external-agent invitation flow.
+
+Cloud Dot execution is still gated. The external launcher hooks do not yet enable managed cloud execution or qualify tenant MCP routing. See [the cloud Runner plan](plans/2026-10-08-cloud-dot-runner-and-external-invitations.md).

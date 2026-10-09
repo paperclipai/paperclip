@@ -57,10 +57,10 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     extensionNotifications: ["github.com/copilot/sessionEvent"],
   },
   pi: {
-    displayName: "Pi", qualification: "pending", models: "explicit-provider-verified",
+    displayName: "Pi", qualification: "qualified", models: "explicit-provider-verified",
     permissions: "interactive", questions: "form", plans: "semantic-only", tools: "owned-extension",
     recovery: "session-load", usage: "reported", steering: "owned-extension-pending", followUp: "owned-extension-pending",
-    artifacts: "references-pending", extensionRequests: [], extensionNotifications: [],
+    artifacts: "references-pending", extensionRequests: [], extensionNotifications: ["paperclip/pi_notice"],
   },
 };
 for (const profile of Object.values(ACPX_CAPABILITY_PROFILES)) {

@@ -22,15 +22,17 @@ export interface AgentSetupPromptProps {
   /** Carry over the clipboard result when generating a prompt already copied it. */
   initialCopyStatus?: "idle" | "copied" | "failed";
   onCopied?: () => void;
+  /** Brand a handoff for one recipient; omit for the general agent logo stack. */
+  agent?: { name: string; src: string; className?: string };
 }
 
-const agents = [
+const defaultAgents = [
   { name: "Codex", src: "/brands/codex-color.svg", className: "" },
   { name: "ChatGPT", src: "/brands/apps/openai.svg", className: "dark:invert" },
   { name: "Claude", src: "/brands/claude-color.svg", className: "" },
 ];
 
-function AgentLogos({ ref, hidden }: { ref: Ref<HTMLSpanElement>; hidden: boolean }) {
+function AgentLogos({ ref, hidden, agents }: { ref: Ref<HTMLSpanElement>; hidden: boolean; agents: NonNullable<AgentSetupPromptProps["agent"]>[] }) {
   return (
     <span ref={ref} className="agent-setup-logos" data-hidden={hidden} aria-hidden="true">
       {agents.map((agent) => (
@@ -73,7 +75,10 @@ export function AgentSetupPrompt({
   className,
   initialCopyStatus = "idle",
   onCopied,
+  agent,
 }: AgentSetupPromptProps) {
+  const agents = agent ? [agent] : defaultAgents;
+  const recipient = agent ? `your ${agent.name}` : "your agent";
   const id = useId();
   const reducedMotion = usePrefersReducedMotion();
   const [open, setOpen] = useState(false);
@@ -198,7 +203,7 @@ export function AgentSetupPrompt({
               <span className={status === "copied" ? "invisible" : undefined}>{label}</span>
               {status === "copied" && <span className="agent-setup-confirmation absolute inset-0 flex items-center">Copied!</span>}
             </span>
-            <span className="agent-setup-trigger-logos"><AgentLogos ref={triggerLogos} hidden={open || Boolean(flight)} /></span>
+            <span className="agent-setup-trigger-logos" data-single={Boolean(agent)}><AgentLogos agents={agents} ref={triggerLogos} hidden={open || Boolean(flight)} /></span>
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -229,7 +234,7 @@ export function AgentSetupPrompt({
           </div>
 
           <div className="agent-setup-preview-wrap relative pt-2">
-            <div className="agent-setup-preview-logos absolute right-3 top-0 z-10"><AgentLogos ref={previewLogos} hidden={Boolean(flight)} /></div>
+            <div className="agent-setup-preview-logos absolute right-3 top-0 z-10"><AgentLogos agents={agents} ref={previewLogos} hidden={Boolean(flight)} /></div>
             {status === "failed" ? (
               <Textarea
                 aria-label="Setup prompt"
@@ -260,12 +265,12 @@ export function AgentSetupPrompt({
               {status === "copied" ? "Copied to clipboard" : status === "copying" ? "Copying…" : status === "failed" ? "Try copying again" : "Copy prompt"}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              {status === "copied" ? "Ready to paste into your agent." : "Works with Codex, ChatGPT, Claude, and more."}
+              {status === "copied" ? `Ready to paste into ${recipient}.` : agent ? `Give this prompt to ${recipient}.` : "Works with Codex, ChatGPT, Claude, and more."}
             </p>
           </div>
         </PopoverContent>
       </Popover>
-      <span role="status" className="sr-only">{status === "copied" ? "Setup prompt copied. Ready to paste into your agent." : ""}</span>
+      <span role="status" className="sr-only">{status === "copied" ? `Setup prompt copied. Ready to paste into ${recipient}.` : ""}</span>
       {flight && createPortal(
         <span ref={flyingLogos} className="agent-setup-flight-layer" aria-hidden="true">
           {agents.map((agent, index) => (

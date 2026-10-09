@@ -50,6 +50,11 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
+        pi_thinking_level: if mode.starts_with("controls") {
+            Some(paperclip_runner_core::acpx_provider_session::PiThinkingLevel::Low)
+        } else {
+            None
+        },
         permission_mode_pinned: true,
         provider_policy: if mode.starts_with("controls") {
             Some(

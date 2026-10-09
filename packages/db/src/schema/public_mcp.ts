@@ -65,7 +65,8 @@ export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
   tokenHash: text("token_hash").notNull(),
   kind: text("kind").$type<"access" | "refresh">().notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  // Null only for renewable agent connection refresh tokens; access tokens expire.
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_oauth_tokens_hash_uq").on(t.tokenHash),

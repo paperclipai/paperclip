@@ -1,4 +1,4 @@
-import { probeAcpxClaudeInstallation, probeAcpxCursorInstallation } from "@paperclipai/paperclip-runner/live";
+import { probeAcpxClaudeInstallation, probeAcpxPiInstallation } from "../vendor/paperclip-runner/live/index.js";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -17,9 +17,10 @@ import {
   setOverridePaused,
 } from "../adapters/registry.js";
 
-vi.mock("@paperclipai/paperclip-runner/live", () => ({
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxClaudeInstallation: vi.fn(async () => undefined),
   probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxPiInstallation: vi.fn(async () => undefined),
   probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 
@@ -327,23 +328,10 @@ describe("server adapter registry", () => {
     });
   });
 
-  it.each([true, false])("checks ordinary Cursor runtime readiness (%s)", async (ready) => {
-    const probe = vi.mocked(probeAcpxCursorInstallation);
+  it.each([true, false])("probes the exact Pi installation without qualification opt-in (ready=%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxPiInstallation);
     if (ready) probe.mockResolvedValueOnce(undefined);
-    else probe.mockRejectedValueOnce(new Error("Run paperclipai runtime setup cursor"));
-    const model = "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]";
-    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
-      companyId: "company-1", adapterType: "paperclip_runner",
-      config: { provider: "acpx", acpxAgent: "cursor", model },
-    });
-    expect(probe).toHaveBeenLastCalledWith(model);
-    expect(result).toMatchObject({
-      status: ready ? "pass" : "fail",
-      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
-    });
-  });
-
-  it("keeps the ACPX Pi profile unavailable", async () => {
+    else probe.mockRejectedValueOnce(new Error("Pi closure unavailable"));
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
@@ -355,9 +343,10 @@ describe("server adapter registry", () => {
     });
 
     expect(result).toMatchObject({
-      status: "fail",
-      checks: [{ code: "paperclip_runner_acpx_agent_unavailable" }],
+      status: ready ? "pass" : "fail",
+      checks: [{ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" }],
     });
+    expect(probe).toHaveBeenLastCalledWith("openrouter/deepseek/deepseek-v4-flash-0731");
   });
   it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
     const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";

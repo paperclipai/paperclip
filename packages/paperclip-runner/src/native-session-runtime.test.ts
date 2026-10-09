@@ -508,7 +508,8 @@ describe("executeNativeSession recovery", () => {
     const submitted = startTurn.mock.calls[0]![0]!;
     if (snapshotBeforeUpdate) {
       expect(submitted.continuation).toBe(true);
-      expect(JSON.parse(submitted.message.text)).toMatchObject({ schema: "paperclip.native-continuation.v1", events: "Say bye" });
+      expect(JSON.parse(submitted.message.text)).toMatchObject({ schema: "paperclip.native-continuation.v1", events: "Say bye",
+        completion: { instruction: expect.stringContaining("Earlier reports belong to earlier turns") } });
     } else {
       expect(submitted).not.toHaveProperty("continuation");
       expect(JSON.parse(submitted.message.text).task.prompt).toBe("Say bye");
@@ -7496,6 +7497,37 @@ describe("executeNativeSession recovery", () => {
       semanticResult: result,
       terminal,
     });
+  });
+
+  it("rejects visible provider final text without an accepted current-turn completion report", async () => {
+    const capabilities = { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const events: PrpEvent[] = [];
+    const completeRun = vi.fn(async () => undefined);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        yield runnerEvent(1, "item.completed", { kind: "agentMessage", channel: "final", text: "Contacts retrieved: Ada Fixture. Verification code: CONTACTS_fixture." });
+        yield runnerEvent(2, "turn.completed");
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return null; },
+      async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
+        providerSessionId: "provider-recovery", cursor: "2", activeTurnId: "turn-recovery", pendingRuntimeRequests: [], lineage: [] }; },
+      async close() {},
+    };
+    await expect(executeNativeSession({ input,
+      backend: { async descriptor() { return { kind: "mock", name: "missing-current-completion", version: "1", capabilities }; }, async openSession() { return session; } },
+      controlPlane: {
+        async openRun() {}, async checkpointSession() {},
+        async appendEvent(event) { events.push(structuredClone(event as PrpEvent)); return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
+      }, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", timeoutMs: 1000,
+      resolveMissingResult: async () => null,
+    })).rejects.toThrow("native_finalization_missing");
+    expect(completeRun).not.toHaveBeenCalled();
+    expect(events.some(event => event.eventType === "item.completed")).toBe(true);
+    expect(events.some(event => event.eventType === "run.result.accepted")).toBe(false);
   });
 
   it("accepts a control-plane governed wait when a completed turn omitted its semantic result", async () => {

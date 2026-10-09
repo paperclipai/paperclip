@@ -1637,6 +1637,14 @@ describe("worktree helpers", () => {
       });
 
       const { default: EmbeddedPostgres } = await import("embedded-postgres");
+      let targetPgLogs = Buffer.alloc(0);
+      let targetPgStartupResolved = false;
+      const captureTargetPgLog = (message: unknown) => {
+        const text = message instanceof Error ? message.message : String(message);
+        const tail = Buffer.concat([targetPgLogs, Buffer.from(`${text}\n`)]).subarray(-8192);
+        targetPgLogs = Buffer.alloc(tail.length);
+        tail.copy(targetPgLogs);
+      };
       const targetPg = new EmbeddedPostgres({
         databaseDir: targetConfig.database.embeddedPostgresDataDir,
         user: "paperclip",
@@ -1644,23 +1652,35 @@ describe("worktree helpers", () => {
         port: targetConfig.database.embeddedPostgresPort,
         persistent: true,
         initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-        onLog: () => {},
-        onError: () => {},
+        onLog: captureTargetPgLog,
+        onError: captureTargetPgLog,
       });
 
-      await targetPg.start();
-      onTestFinished(() => targetPg.stop());
-      const targetDb = createDb(
-        `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
-      );
-      const [seededLocalBoard] = await targetDb
-        .select({ id: authUsers.id })
-        .from(authUsers)
-        .where(eq(authUsers.id, "local-board"));
-      const seededAccounts = await targetDb.select().from(authAccounts);
-      expect(seededLocalBoard?.id).toBe("local-board");
-      expect(seededAccounts).toHaveLength(0);
-      await targetDb.$client.end({ timeout: 5 });
+      try {
+        await targetPg.start();
+        targetPgStartupResolved = true;
+        onTestFinished(() => targetPg.stop());
+        const targetDb = createDb(
+          `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+        );
+        const [seededLocalBoard] = await targetDb
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.id, "local-board"));
+        const seededAccounts = await targetDb.select().from(authAccounts);
+        expect(seededLocalBoard?.id).toBe("local-board");
+        expect(seededAccounts).toHaveLength(0);
+        await targetDb.$client.end({ timeout: 5 });
+      } catch (error) {
+        // Preserve the actual failure while retaining the public startup logs
+        // that would otherwise be discarded before fixture cleanup.
+        console.error("Target PostgreSQL fixture failure", {
+          port: targetConfig.database.embeddedPostgresPort,
+          startupResolved: targetPgStartupResolved,
+          recentLogs: targetPgLogs.toString("utf8"),
+        });
+        throw error;
+      }
     },
   );
 
