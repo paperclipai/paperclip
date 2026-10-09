@@ -137,6 +137,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       issueId: req.query.issueId as string | undefined,
       status: req.query.status as string | undefined,
       reuseEligible: req.query.reuseEligible === "true",
+      selectableForTask: req.query.selectableForTask === "true",
     };
     const workspaces = req.query.summary === "true"
       ? await svc.listSummaries(companyId, filters)

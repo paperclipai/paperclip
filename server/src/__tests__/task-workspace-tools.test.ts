@@ -4,6 +4,12 @@ import { callTaskWorkspaceTool } from "../services/task-workspace-tools.js";
 afterEach(() => vi.unstubAllGlobals());
 const base = { apiUrl: "https://paperclip.example/api", token: "run-token", companyId: "company", issueId: "task" };
 describe("task workspace semantic transport", () => {
+  it("discovers task-selectable workspaces instead of legacy isolated reuse candidates", async () => {
+    const fetcher = vi.fn(async () => Response.json([{ id: "shared", mode: "shared_workspace" }]));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(callTaskWorkspaceTool({ ...base, name: "list_workspaces", arguments: {} })).resolves.toEqual([{ id: "shared", mode: "shared_workspace" }]);
+    expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/companies/company/execution-workspaces?summary=true&selectableForTask=true", expect.objectContaining({ method: "GET" })]);
+  });
   it("uses the normal bound task routes without passing caller identities or interrupt requests", async () => {
     const fetcher = vi.fn(async () => Response.json({ kind: "scheduled", applies: "next_normal_admission" }));
     vi.stubGlobal("fetch", fetcher);

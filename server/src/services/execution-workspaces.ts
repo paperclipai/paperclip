@@ -1,3 +1,4 @@
+import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 import { executionWorkspaceRepositoryService } from "./execution-workspace-repositories.js";
 import { accessService } from "./access.js";
 import { forbidden } from "../errors.js";
@@ -1292,9 +1293,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (selection.kind === "existing") {
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, selection.workspaceId), eq(executionWorkspaces.companyId, input.companyId),
+        taskWorkspaceSelectableCondition(),
         await executionWorkspaceReadSqlCondition(reader, input.actor),
       ));
-      if (!workspace || !["active", "idle"].includes(workspace.status)) throw notFound("Workspace is unavailable or inaccessible");
+      if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
@@ -1952,6 +1954,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
     },
   ) {
@@ -1967,6 +1970,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
     }
+    if (filters?.selectableForTask) conditions.push(taskWorkspaceSelectableCondition());
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
       conditions.push(isNull(executionWorkspaces.closedAt));
@@ -2209,6 +2213,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);
@@ -2236,6 +2241,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);

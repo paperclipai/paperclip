@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, issues, projects } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { issueService } from "../services/issues.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -110,6 +111,36 @@ const support = await getEmbeddedPostgresTestSupport();
     await Promise.all([svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId), svc.bindTaskWorkspace(f.companyId, secondIssueId, f.workspaceId)]);
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
     expect(workspace?.metadata).toMatchObject({ _issuePrivacySources: { [f.issueId]: true, [secondIssueId]: true } });
+  });
+
+  it.each(["creation", "selection"] as const)("retains private writers after an existing workspace is installed by %s and then detached", async (installation) => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    try {
+      const f = await fixture(), svc = executionWorkspaceService(db);
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Organization" }).returning();
+      const [reader] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated reader", adapterType: "process" }).returning();
+      const writer = await issueService(db).create(f.companyId, {
+        title: "Private writer", projectId: project.id, visibility: "private", responsibleUserId: "private-owner",
+        workspaceSelectionActor: f.actor,
+        ...(installation === "creation" ? { workspaceSelection: { kind: "existing" as const, workspaceId: f.workspaceId } } : {}),
+      });
+      if (installation === "selection") {
+        await svc.selectTaskWorkspace({ ...f, issueId: writer.id, selection: { kind: "existing", workspaceId: f.workspaceId },
+          expectedBindingRevision: 0, requestKey: "install-existing" });
+        await svc.applyPendingTaskWorkspaceSelection({ ...f, issueId: writer.id, runId: randomUUID() });
+      }
+      const installed = await svc.inspectTaskWorkspace(f.companyId, writer.id, f.actor);
+      expect(installed.workspace?.id).toBe(f.workspaceId);
+      // No bindTaskWorkspace call or heartbeat is needed: the migration's issue
+      // binding trigger retains provenance in the same installation transaction.
+      expect(installed.workspace?.metadata?._issuePrivacySources).toMatchObject({ [writer.id]: true });
+      await svc.selectTaskWorkspace({ ...f, issueId: writer.id, selection: { kind: "task_directory" },
+        expectedBindingRevision: installed.bindingRevision, requestKey: "detach-private-writer" });
+      await svc.applyPendingTaskWorkspaceSelection({ ...f, issueId: writer.id, runId: randomUUID() });
+      const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(retained.metadata?._issuePrivacySources).toMatchObject({ [writer.id]: true });
+      expect(await canActorReadExecutionWorkspace(db, { type: "agent", agentId: reader.id, companyId: f.companyId }, retained.id)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("deletes a whole company in source-workspace dependency order", async () => {

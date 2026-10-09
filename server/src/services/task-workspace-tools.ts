@@ -13,7 +13,7 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   let body: unknown;
   switch (input.name) {
     case "get_workspace": break;
-    case "list_workspaces": route = `/companies/${input.companyId}/execution-workspaces?summary=true&reuseEligible=true`; break;
+    case "list_workspaces": route = `/companies/${input.companyId}/execution-workspaces?summary=true&selectableForTask=true`; break;
     case "select_workspace": method = "PUT"; body = selectTaskWorkspaceSchema.parse(input.arguments); break;
     case "prepare_repository": method = "POST"; route += "/repositories"; body = prepareWorkspaceRepositorySchema.parse(input.arguments); break;
     default: throw badRequest("Unknown workspace tool");

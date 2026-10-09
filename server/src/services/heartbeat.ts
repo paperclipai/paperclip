@@ -4314,10 +4314,9 @@ export function heartbeatService(
         },
       );
       const resolvedProjectId =
-        reusableExistingExecutionWorkspace ? reusableExistingExecutionWorkspace.projectId : executionWorkspace.projectId ??
-        issueRef?.projectId ??
-        executionProjectId ??
-        null;
+        reusableExistingExecutionWorkspace
+          ? reusableExistingExecutionWorkspace.projectId
+          : executionWorkspace.projectId;
       const resolvedProjectWorkspaceId =
         resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
           ? reusableExistingExecutionWorkspace.projectWorkspaceId

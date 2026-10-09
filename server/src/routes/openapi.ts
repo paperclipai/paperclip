@@ -74,6 +74,8 @@ import {
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
   runnerGoalActionRequestSchema,
+  selectTaskWorkspaceSchema,
+  prepareWorkspaceRepositorySchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -4245,6 +4247,35 @@ registry.registerPath({
     409: r.conflict,
     422: r.unprocessable,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/workspace",
+  tags: ["issues"],
+  summary: "Inspect the task workspace and repository preparation state",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/workspace",
+  tags: ["issues"],
+  summary: "Select a task workspace for the next normal admission",
+  description: "Records workspace intent without restarting active work or changing the task's organizational project. Agents may select only for their bound task.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(selectTaskWorkspaceSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/workspace/repositories",
+  tags: ["issues"],
+  summary: "Request repository preparation in the task workspace",
+  description: "Queues an authorized repository for the next normal admission. The response does not claim the repository is available in an already-running provider session.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(prepareWorkspaceRepositorySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

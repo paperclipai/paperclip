@@ -15,6 +15,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
@@ -111,7 +112,7 @@ suite("task project repository provisioning", () => {
       }, { timeout: 15_000 });
       await drainHeartbeatRunsToQuiescence(db, sandboxHeartbeat);
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId));
-      expect(workspace).toMatchObject({ companyId, projectId, mode: "isolated_workspace", strategyType: "project_primary" });
+      expect(workspace).toMatchObject({ companyId, projectId: null, mode: "isolated_workspace", strategyType: "project_primary" });
       expect(workspace.cwd).toContain(`/isolated-workspaces/${companyId}/${issueId}`);
       expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
       const call = execute.mock.calls.find(([input]) => input.runId === run!.id)![0];
@@ -193,6 +194,32 @@ suite("task project repository provisioning", () => {
       }
     }
   }, 25_000);
+
+  it("keeps a task directory source projectless across chat admissions with an organizational project", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Chat files", issuePrefix: `C${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Organization only" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Chat agent", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Keep chat files", originKind: "chat_channel", status: "todo", assigneeAgentId: agentId,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "task_directory" } } });
+    let bindingId: string | undefined;
+    for (let admission = 0; admission < 2; admission++) {
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+      await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(workspace.projectId).toBeNull();
+      expect(task.projectId).toBe(projectId);
+      if (bindingId) expect(workspace.id).toBe(bindingId);
+      bindingId = workspace.id;
+      const scope = await findNativeChatWorkspaceScope(db, { companyId, agentId, issueId, instanceRoot: root,
+        adapterType: "paperclip_runner", environmentDriver: "local" });
+      expect(scope?.projectId).toBeNull();
+    }
+  }, 40_000);
 
   it.each([
     { code: "workspace_git_scan_timeout", scenario: "temporary", retryable: true },

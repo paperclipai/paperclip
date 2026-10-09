@@ -37,7 +37,7 @@ export const listWorkspacesAction = {
     "success": {
       "ok": true,
       "operationId": "list_workspaces",
-      "result": {}
+      "result": []
     }
   },
   "live": {

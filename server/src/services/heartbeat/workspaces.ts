@@ -2769,6 +2769,13 @@ function buildSessionConfigCategoryValues(input: {
   // boundary; the reusable row and its evolving generation are state.
   delete workspaceConfig.existingExecutionWorkspace;
   delete workspaceConfig.reusableExecutionWorkspaceConfig;
+  // Binding the first realized workspace persists its already-effective mode
+  // on the issue. That receipt must not rotate the session on the next turn.
+  // requestedMode/effectiveMode still fingerprint mode changes, and all other
+  // issue settings remain part of the compatibility boundary.
+  const issueSettings = { ...parseObject(workspaceConfig.issueSettings) };
+  if (issueSettings.mode === workspaceConfig.requestedMode) delete issueSettings.mode;
+  workspaceConfig.issueSettings = Object.keys(issueSettings).length ? issueSettings : null;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -3455,7 +3462,26 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
-      throw new Error(`Configured project workspace is unavailable: ${preferredWorkspaceWarning ?? materializationFailures[0]?.error ?? missingProjectCwds[0] ?? "source could not be prepared"}`);
+      const connections = materializationFailures.map((failure) => readConnectionFailure(failure.connectionFailure));
+      const connectionFailure = connections.length > 0 && connections.every((failure) => failure?.provider === "git")
+        ? connections[0] as GitConnectionFailure : undefined;
+      throw new WorkspaceValidationFailure(
+        `Configured project workspace is unavailable: ${preferredWorkspaceWarning ?? materializationFailures[0]?.error ?? missingProjectCwds[0] ?? "source could not be prepared"}. Repair the configured path or repository access, then retry.`,
+        {
+          ...(connectionFailure ? { connectionFailure } : {}),
+          workspaceValidation: {
+            reason: materializationFailures.length > 0 ? "git_worktree_base_materialization_failed" : "configured_workspace_unavailable",
+            issueId,
+            issueProjectId,
+            issueProjectWorkspaceId: preferredProjectWorkspaceId,
+            resolvedWorkspaceSource: "project_primary",
+            resolvedProjectId,
+            resolvedProjectWorkspaceId: preferredWorkspace?.id ?? null,
+            baseCwdFallback: false,
+            materializationFailures,
+          },
+        },
+      );
     }
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
