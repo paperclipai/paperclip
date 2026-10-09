@@ -10,6 +10,10 @@ export function canConfigureAgentConnection(agent: { lifecycleState: string; sta
     || (agent.lifecycleState === "ready" && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
 
+export function isAgentAwaitingSetup(agent: { lifecycleState: string; lifecycleHolds: readonly string[] }): boolean {
+  return ["preparing", "verifying", "resuming"].includes(agent.lifecycleState) && agent.lifecycleHolds.length === 0;
+}
+
 export function transition(state: AgentLifecycleState, command: LifecycleCommand,
   resumeState: "preparing" | "verifying" | "ready" = "ready"): AgentLifecycleState {
   if (command === "retry") {

@@ -226,6 +226,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await heartbeat.resumeQueuedRuns();
     expect((await heartbeat.getRun(run!.id))?.status).toBe("queued");
     expect(countExecuteCallsForRun(run!.id)).toBe(0);
+    expect((await heartbeat.reconcileStrandedAssignedIssues()).escalated).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toMatchObject({ status: "todo", assigneeAgentId: agentId });
     await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
     const recovered = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
     await recovered.resumeQueuedRuns();
