@@ -76,6 +76,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(agent).not.toHaveProperty("lifecycleOperation");
   });
 
+  it("rolls back a hire and its grants when hire initialization fails", async () => {
+    const effects = createAgentLifecycleEffects();
+    const lifecycle = createLifecycleCommands(db, { ...effects,
+      initializeHire: async (tx, agent, options) => {
+        await effects.initializeHire(tx, agent, options);
+        throw new Error("Hire initialization failed");
+      },
+    });
+    await expect(lifecycle.requestHire(companyId, { name: "Rollback hire", adapterType: "process" }))
+      .rejects.toThrow("Hire initialization failed");
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
+  });
+
   it("runs the saved harness test and keeps a failed configuration out of ready", async () => {
     const driver = createLifecycleDriver(db, {} as never);
     const work = worker(driver.runHost);

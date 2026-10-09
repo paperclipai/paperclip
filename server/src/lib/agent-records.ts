@@ -80,6 +80,10 @@ export interface UpdateAgentOptions {
   claudeLogin?: ClaudeLoginContext;
 }
 
+export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">;
+export type AgentConfigurationPatch = Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleRequiredPluginIds" | "lifecycleHolds">>;
+export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
+
 export interface CreateAgentOptions {
   responsibleUserId?: string | null;
   createdByUserId?: string | null;

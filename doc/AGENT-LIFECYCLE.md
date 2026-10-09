@@ -76,6 +76,12 @@ An error rolls back both operations. Neither path permits incomplete termination
 The ordinary agent service owns reads, permissions, and keys.
 The configuration service owns configuration validation, writes, and revisions.
 Credential checks remain in the agent credential service.
+The hire service owns names, appearance, permissions, credential binding,
+connection installs, identity setup, and primary-agent selection.
+The module calls the hire service before and after the agent record write.
+These operations use the lifecycle transaction. A failed operation rolls back
+the hire and its dependent records.
+The module owns the initial state, approval transition, and lifecycle events.
 The service in `services/agent-lifecycle.ts` supplies these integrations to the
 module. The module does not import services or routes. Shared record queries
 and validation functions are in `lib/`. They do not call lifecycle commands.

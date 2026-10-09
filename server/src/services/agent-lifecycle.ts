@@ -3,12 +3,10 @@ import * as lifecycle from "../modules/agent-lifecycle/index.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, deliverBudgetEnforcement, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
-import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
-import { agentIdentityService } from "./agent-identity.js";
+import { clearPrimaryAgent } from "./primary-agent.js";
 import { deleteAgentDependencies } from "./agent-deletion.js";
 import { agentConfigurationService } from "./agent-configuration.js";
-import { assertClaudeOAuthBindingInvariant, secretService } from "./secrets.js";
-import { agentCredentialService } from "./agent-credentials.js";
+import { prepareAgentHire, initializeAgentHire, prepareAgentHireApproval, completeAgentHireApproval } from "./agent-hiring.js";
 import { trackIdleWork } from "./task-admission.js";
 
 export { scheduleAgentLifecycle } from "../modules/agent-lifecycle/index.js";
@@ -27,19 +25,11 @@ export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lif
     recordCreation: (db, companyId, agentId) => recordResourceCreationEvent(db, companyId, "agent", agentId),
     recordStatus: recordAgentStatusEvent,
     clearPrimary: clearPrimaryAgent,
-    initializePrimary: initializePrimaryAgent,
-    ensureIdentity: (db, companyId, agentId) => agentIdentityService(db).ensureAgentIdentity(companyId, agentId),
     updateConfiguration: (db, id, data, options, publications) => agentConfigurationService(db, hooks).update(id, data, options, publications),
-    normalizeAdapterConfig: (db, companyId, config, adapterType) =>
-      secretService(db).normalizeAdapterConfigForPersistence(companyId, config, { adapterType }),
-    bindCredentials: (db, input) => agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
-      companyId: input.companyId, consume: input.consume, environmentId: input.environmentId ?? null,
-      claudeLogin: input.claudeLogin, childAdapterConfig: input.adapterConfig,
-      decision: assertClaudeOAuthBindingInvariant({ adapterType: input.adapterType,
-        nextConfig: input.adapterConfig, priorConfig: input.previousAdapterConfig }),
-    }),
-    syncSecrets: (db, agent, previousConfig, actor) =>
-      agentCredentialService(db).syncAgentSecretBindings(agent, db, previousConfig, actor),
+    prepareHire: prepareAgentHire,
+    initializeHire: initializeAgentHire,
+    prepareHireApproval: prepareAgentHireApproval,
+    completeHireApproval: completeAgentHireApproval,
   };
 }
 
