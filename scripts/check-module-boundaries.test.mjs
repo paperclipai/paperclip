@@ -90,6 +90,25 @@ test("the repository's feature modules satisfy their import boundaries", () => {
   assert.deepEqual(scanModuleBoundaries(), []);
 });
 
+test("only the company deletion coordinator can import module deletion entry points", () => {
+  const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-company-deletion-boundaries-"));
+  const modulesRoot = join(serverSrc, "modules");
+  try {
+    mkdirSync(join(serverSrc, "services"));
+    mkdirSync(join(serverSrc, "routes"));
+    const integration = 'import { deletion } from "../modules/example/company-deletion.js";';
+    writeFileSync(join(serverSrc, "services", "company-deletion.ts"), integration);
+    writeFileSync(join(serverSrc, "services", "other.ts"), integration);
+    writeFileSync(join(serverSrc, "routes", "companies.ts"), integration);
+    const violations = scanModuleBoundaries({ serverSrc, modulesRoot });
+    assert.equal(violations.length, 2);
+    assert(violations.some(({ file }) => file.endsWith("services/other.ts")));
+    assert(violations.some(({ file }) => file.endsWith("routes/companies.ts")));
+  } finally {
+    rmSync(serverSrc, { recursive: true, force: true });
+  }
+});
+
 test("agent lifecycle adapters and entry point cannot depend on services", () => {
   const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-lifecycle-boundaries-"));
   const modulesRoot = join(serverSrc, "modules");

@@ -59,10 +59,15 @@ transaction. It retains the original credential owner when it approves a hire.
 
 The company deletion service owns the company data cascade.
 It requests agent termination before it starts that cascade.
-It locks the company and its agent rows in the deletion transaction.
-It calls `assertAgentPurgeAllowed` for each agent before the data cascade.
+It locks the company in the deletion transaction and removes dependent records.
+It then calls `agentLifecycleCompanyDeletion.deleteCompanyData(tx, companyId)`
+through the module's separate `company-deletion.ts` entry point.
+This operation implements the shared `CompanyDeletionParticipant` interface.
+It locks the agent rows, checks their states, and deletes them.
+All agents must be terminated or rejected. Otherwise, it throws an error.
+The error rolls back all database changes in the deletion transaction.
 A concurrent hire makes deletion fail or waits until deletion ends.
-The delete statement also restricts removal to terminated or rejected agents.
+The module's delete statement also restricts removal to terminated or rejected agents.
 The agent deletion service uses the same state check for a single agent.
 These services cannot remove an agent with incomplete termination.
 

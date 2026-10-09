@@ -142,7 +142,9 @@ export function scanModuleBoundaries({
 
       if (targetLocation && sourceLocation?.moduleName !== targetLocation.moduleName) {
         const targetRelative = normalizedRelative(resolve(modulesRoot, targetLocation.moduleName), target);
-        if (targetRelative !== "index.js" && targetRelative !== "index.ts") {
+        const companyDeletionIntegration = /^company-deletion\.(?:js|ts)$/.test(targetRelative) &&
+          normalizedRelative(serverSrc, sourceFile) === "services/company-deletion.ts";
+        if (targetRelative !== "index.js" && targetRelative !== "index.ts" && !companyDeletionIntegration) {
           addViolation(
             violations,
             sourceLabel,

@@ -22,13 +22,32 @@ adapters  →  application  →  domain
   Postgres queries, transactions, and process control. An adapter file may
   import `drizzle-orm`, `@paperclipai/db`, and Node.js I/O modules.
 
-A module exposes one entry point, `index.ts`, which composes the adapters
+A module exposes its commands through `index.ts`, which composes the adapters
 and the use cases behind a factory function. Code outside the module imports
-only that entry point, never a file inside `domain/`, `application/`, or
+that entry point, never a file inside `domain/`, `application/`, or
 `adapters/` directly.
 
 `pnpm check:module-boundaries` enforces these rules for production source
-files. It also rejects imports that bypass another module's `index.ts`.
+files. It also checks access to the company deletion entry point below.
+
+## Company deletion
+
+The existing company deletion service owns the database transaction and deletion
+order. A module can expose a separate `company-deletion.ts` entry point.
+Only `services/company-deletion.ts` can import this entry point.
+The entry point exports an implementation of `CompanyDeletionParticipant` from
+`lib/company-deletion.ts`. Do not export it through the normal module index.
+
+The service must complete external cleanup before it starts the transaction.
+It must lock the company before it deletes dependent records or calls a module.
+Creation commands must use the same company lock.
+The service removes dependent records before it calls the module.
+The module checks its deletion conditions and deletes the records it owns.
+Use the supplied transaction. Do not start another transaction or call external
+systems. Throw an error if deletion cannot proceed.
+An error must roll back all database changes in the deletion transaction.
+
+Call each module explicitly in dependency order. No module registry is required.
 
 The [agent lifecycle module](../../../doc/AGENT-LIFECYCLE.md) owns agent creation,
 pause, resume, and termination. Use its commands for these changes.

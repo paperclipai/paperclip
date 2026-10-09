@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
-import { assertAgentPurgeAllowed } from "../modules/agent-lifecycle/index.js";
+import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import {
   companies,
   agents,
@@ -54,9 +54,6 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
-        const terminalAgents = await tx.select({ lifecycleState: agents.lifecycleState }).from(agents)
-          .where(eq(agents.companyId, id)).for("update");
-        for (const agent of terminalAgents) assertAgentPurgeAllowed(agent);
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
@@ -103,7 +100,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
-        await tx.delete(agents).where(and(eq(agents.companyId, id), inArray(agents.lifecycleState, ["terminated", "rejected"])));
+        await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))

@@ -1,6 +1,7 @@
 import { createAgentLifecycle as createLifecycleCommands, invalidateAgentVerification } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
+import { agentLifecycleCompanyDeletion } from "../company-deletion.js";
 import { requireServerAdapter } from "../../../adapters/index.js";
 import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
 import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
@@ -163,6 +164,78 @@ const support = await getEmbeddedPostgresTestSupport();
     await deleteCompany(db, companyId);
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
     expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
+  });
+
+  it("requires a transaction for the company deletion integration", async () => {
+    await expect(agentLifecycleCompanyDeletion.deleteCompanyData(db as never, companyId))
+      .rejects.toThrow("Company deletion requires a database transaction");
+  });
+
+  it("deletes terminated and rejected agents only in the requested company", async () => {
+    await db.insert(agents).values((["terminated", "rejected"] as const).map(lifecycleState => ({
+      companyId, name: lifecycleState, status: "terminated", lifecycleState,
+    })));
+    const [otherCompany] = await db.insert(companies).values({ name: "Keep this company", issuePrefix: `K${companyId.slice(0, 7)}` }).returning();
+    const [otherAgent] = await db.insert(agents).values({ companyId: otherCompany.id, name: "Keep this agent",
+      status: "terminated", lifecycleState: "terminated" }).returning();
+
+    await deleteCompany(db, companyId);
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await current(otherAgent.id)).toMatchObject({ companyId: otherCompany.id });
+    expect(await db.select().from(companies).where(eq(companies.id, otherCompany.id))).toHaveLength(1);
+  });
+
+  it("rolls back agent and company data deletion when a later operation fails", async () => {
+    const agent = await hire("terminated");
+    const [project] = await db.insert(projects).values({ companyId, name: "Keep on rollback" }).returning();
+    const removeAgents = agentLifecycleCompanyDeletion.deleteCompanyData;
+    const failure = vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementation(async (tx, id) => {
+      await removeAgents(tx, id);
+      expect(await tx.select().from(agents).where(eq(agents.companyId, id))).toHaveLength(0);
+      throw new Error("Later deletion failed");
+    });
+    try {
+      await expect(deleteCompany(db, companyId)).rejects.toThrow("Later deletion failed");
+      expect(await current(agent.id)).toMatchObject({ lifecycleState: "terminated" });
+      expect(await db.select().from(projects).where(eq(projects.id, project.id))).toHaveLength(1);
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(1);
+    } finally { failure.mockRestore(); }
+  });
+
+  it("blocks a concurrent hire until company deletion commits", async () => {
+    let reportLock!: (pid: number) => void;
+    let rejectLock!: (error: unknown) => void;
+    const locked = new Promise<number>((resolve, reject) => { reportLock = resolve; rejectLock = reject; });
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const removeAgents = agentLifecycleCompanyDeletion.deleteCompanyData;
+    const pause = vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementation(async (tx, id) => {
+      const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      reportLock(backend!.pid);
+      await released;
+      await removeAgents(tx, id);
+    });
+    const deletion = deleteCompany(db, companyId);
+    void deletion.catch(rejectLock);
+    let hiring: Promise<unknown> | undefined;
+    try {
+      const pid = await locked;
+      hiring = hire().then(() => "created", error => error.message);
+      await vi.waitFor(async () => {
+        const blocked = await db.execute(sql`select 1 from pg_stat_activity
+          where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))`);
+        expect(blocked).toHaveLength(1);
+      });
+      release();
+      await deletion;
+      expect(await hiring).toBe("Company not found");
+      expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    } finally {
+      release();
+      await Promise.allSettled([deletion, hiring]);
+      pause.mockRestore();
+    }
   });
 
   it("requires cleanup proof after a remote run is already cancelled", async () => {
