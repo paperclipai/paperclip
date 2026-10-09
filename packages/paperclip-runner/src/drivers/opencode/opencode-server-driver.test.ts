@@ -922,7 +922,7 @@ describe("OpenCodeServerDriver", () => {
     expect(diagnostics.join("\n")).toContain("[REDACTED]");
   });
 
-  it.each(["role-first", "role-last"])("streams repeated deltas before the final snapshot with identity checks (%s)", async (roleOrder) => {
+  it.each(["role-first", "role-last", "role-last-long"])("preserves incremental text and completion with identity checks (%s)", async (roleOrder) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-stream-"));
     const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-stream-workspace-"));
@@ -944,16 +944,19 @@ describe("OpenCodeServerDriver", () => {
         if (event.eventType === "item.delta" && event.payload.kind === "reasoning") reasoning.push(String(event.payload.text));
         if (event.eventType === "item.delta" && event.payload.kind === "agentMessage") {
           deltas.push(String(event.payload.text));
-          // No final snapshot is sent until the consumer sees the first chunk.
-          expect(event.payload.text).not.toBe("Hi 👋👋");
+          // The fixture cannot finish its turn until a chunk reaches us.
+          if (deltas.length === 1) {
+            expect(await readFile(join(root, "stream", "data", "stream-released"), "utf8").catch(() => null)).toBeNull();
+          }
           await writeFile(join(root, "stream", "data", "release-stream"), "ready");
         }
         if (TURN_TERMINAL_EVENT_TYPES.has(event.eventType)) break;
       }
-      expect(deltas).toEqual(["Hi ", "👋", "👋"]);
+      const expectedText = `Hi ${"👋".repeat(roleOrder === "role-last-long" ? 120 : 2)}`;
+      expect(deltas).toEqual(roleOrder === "role-first" ? ["Hi ", "👋", "👋"] : [expectedText]);
       expect(reasoning).toEqual(["Thinking"]);
       expect(events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage")
-        .map(event => event.payload.text)).toEqual(["Hi 👋👋"]);
+        .map(event => event.payload.text)).toEqual([expectedText]);
     } finally {
       await session.close({ reason: "stream test complete" });
     }

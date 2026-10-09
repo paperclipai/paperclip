@@ -1593,7 +1593,13 @@ class OpenCodeHarnessSession implements HarnessSession {
       if (role === "assistant") this.#emitAssistantPart(part, owningTurnId);
       else if (role === undefined) {
         const pending = this.#pendingMessageParts.get(messageId) ?? [];
-        if (pending.length < 100) pending.push(part);
+        // Text deltas are cumulative by this point. Keep the newest snapshot
+        // (including completion metadata), not the first 100 token chunks.
+        const previousIndex = ["text", "reasoning"].includes(text(part.type)) && text(part.id)
+          ? pending.findIndex(candidate => candidate.id === part.id && candidate.type === part.type)
+          : -1;
+        if (previousIndex >= 0) pending[previousIndex] = part;
+        else if (pending.length < 100) pending.push(part);
         this.#pendingMessageParts.set(messageId, pending);
       }
       return;

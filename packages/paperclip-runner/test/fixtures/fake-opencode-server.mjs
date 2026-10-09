@@ -452,18 +452,21 @@ const server = createServer(async (request, response) => {
           const delta = (value, text, extra = {}) => emit({ type: "message.part.delta", properties: { sessionID: session.id, messageID, partID: value.id, field: "text", delta: text, ...extra } });
           const announceRole = () => emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
           const roleFirst = String(parsedPrompt.message).includes("role-first");
+          const longResponse = String(parsedPrompt.message).includes("role-last-long");
           if (roleFirst) announceRole();
           // Parts and deltas can precede the message's role announcement.
           update(part);
           update(reasoning);
           delta(reasoning, "Thinking");
           delta(part, "Hi ");
-          delta(part, "👋");
-          delta(part, "👋");
+          const emojiCount = longResponse ? 120 : 2;
+          for (let i = 0; i < emojiCount; i++) delta(part, "👋");
           delta(part, "wrong message", { messageID: "unrelated-message" });
           delta(part, "wrong session", { sessionID: "unrelated-session" });
           delta(part, "wrong field", { field: "output" });
           delta(part, "unknown part", { partID: "unknown-part" });
+          const finalPart = { ...part, text: `Hi ${"👋".repeat(emojiCount)}`, time: { start: 1, end: 2 } };
+          if (longResponse) update(finalPart);
           if (!roleFirst) announceRole();
           // The consumer must observe a delta before the completed snapshot
           // exists. This handshake makes the streaming regression deterministic.
@@ -471,7 +474,8 @@ const server = createServer(async (request, response) => {
             if (await readFile(join(process.env.XDG_DATA_HOME, "release-stream"), "utf8").catch(() => "") === "ready") break;
             await new Promise(resolve => setTimeout(resolve, 10));
           }
-          update({ ...part, text: "Hi 👋👋", time: { start: 1, end: 2 } });
+          await writeFile(join(process.env.XDG_DATA_HOME, "stream-released"), "ready");
+          update(finalPart);
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }
