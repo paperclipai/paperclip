@@ -103,6 +103,18 @@ It:
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
 
+After publication, the onboarding smoke checks out the same source SHA and
+installs its test dependencies from the publisher's resolved lockfile with
+`--frozen-lockfile`. The same-run artifact is captured before tracked files are
+restored or release versions are rewritten. This lets a source commit use its
+current patches and manifests while the separate lockfile-refresh PR is still
+pending, without resolving new dependencies in the smoke job. The smoke still installs and tests
+the exact published canary version, not a workspace build.
+
+The lockfile artifact is retained for 14 days. A publisher-job rerun replaces its
+source-named artifact; a smoke-only rerun uses the existing artifact. A missing
+artifact fails the job rather than falling back to a different dependency set.
+
 Users install canaries with:
 
 ```bash

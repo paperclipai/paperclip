@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -169,6 +170,99 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
   assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
 });
+
+test("canary smoke consumes its publisher's source-bound lockfile before frozen installation", () => {
+  const workflow = readWorkflow("release.yml");
+  const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+  const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
+  for (const job of [publish, smoke]) {
+    assert.match(job, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/);
+    assert.match(job, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+    assert.match(job, /version: 9\.15\.4/);
+  }
+  assert.match(publish, /name: Save canary smoke lockfile\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}\n\s+path: pnpm-lock\.yaml\n\s+if-no-files-found: error\n\s+overwrite: true\n\s+retention-days: 14/);
+  assert.ok(publish.indexOf("name: Install dependencies") < publish.indexOf("name: Save canary smoke lockfile"));
+  assert.ok(publish.indexOf("name: Save canary smoke lockfile") < publish.indexOf("name: Restore tracked install-time changes"));
+  assert.ok(publish.indexOf("name: Restore tracked install-time changes") < publish.indexOf("name: Publish canary"));
+  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  assert.ok(smoke.indexOf("name: Restore canary smoke lockfile") < smoke.indexOf("name: Install test dependencies"));
+  assert.doesNotMatch(smoke, /run-id:|github-token:|repository:|continue-on-error|--no-frozen-lockfile/);
+});
+
+for (const drift of ["patch", "manifest"]) {
+  test(`a publisher lockfile lets a fresh smoke install retain validation after ${drift} drift`, (t) => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "canary-smoke-lockfile-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const source = path.join(root, "package");
+    mkdirSync(source);
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "smoke-fixture-dependency", version: "1.0.0" }));
+    writeFileSync(path.join(source, "index.js"), 'module.exports = "original";\n');
+    const pack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", root], { cwd: source, encoding: "utf8" });
+    assert.equal(pack.status, 0, pack.stderr);
+    const manifest = {
+      name: "canary-smoke-fixture", private: true,
+      packageManager: "pnpm@9.15.4",
+      dependencies: { "smoke-fixture-dependency": "file:smoke-fixture-dependency-1.0.0.tgz" },
+      pnpm: { patchedDependencies: { "smoke-fixture-dependency@1.0.0": "fixture.patch" } },
+    };
+    writeFileSync(path.join(root, "package.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(root, "pnpm-workspace.yaml"), "packages: []\n");
+    const patch = (value) => writeFileSync(path.join(root, "fixture.patch"), [
+      "diff --git a/index.js b/index.js", "index 1111111..2222222 100644",
+      "--- a/index.js", "+++ b/index.js", "@@ -1 +1 @@",
+      '-module.exports = "original";', `+module.exports = "${value}";`, "",
+    ].join("\n"));
+    const workflow = readWorkflow("release.yml");
+    const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+    const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
+    const installArgs = (name) => {
+      const job = name === "Install dependencies" ? publish : smoke;
+      const command = job.match(new RegExp(`name: ${name}\\n\\s+run: (pnpm install[^\\n]+)`))?.[1];
+      assert.ok(command, `missing ${name}`);
+      return [...command.split(" ").slice(1), "--offline", "--ignore-scripts"];
+    };
+    const install = (args) => spawnSync("pnpm", args, {
+      cwd: root, encoding: "utf8", env: { ...process.env, CI: "true" },
+    });
+    const success = (result) => assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    patch(drift === "patch" ? "old-patch" : "published-patch");
+    success(install(installArgs("Install dependencies")));
+    const staleLock = readFileSync(path.join(root, "pnpm-lock.yaml"));
+    if (drift === "patch") {
+      patch("published-patch");
+    } else {
+      copyFileSync(path.join(root, "smoke-fixture-dependency-1.0.0.tgz"), path.join(root, "updated-dependency.tgz"));
+      manifest.dependencies["smoke-fixture-dependency"] = "file:updated-dependency.tgz";
+      writeFileSync(path.join(root, "package.json"), JSON.stringify(manifest));
+    }
+    const before = install(installArgs("Install test dependencies"));
+    assert.notEqual(before.status, 0);
+    assert.match(before.stdout + before.stderr, drift === "patch" ? /ERR_PNPM_LOCKFILE_CONFIG_MISMATCH/ : /ERR_PNPM_OUTDATED_LOCKFILE/);
+
+    // Capture the publisher's resolution, then reproduce its tracked-file restore
+    // and a fresh smoke runner with no installed workspace dependencies.
+    success(install(installArgs("Install dependencies")));
+    const artifact = path.join(root, "publisher-lock.yaml");
+    if (publish.includes("name: Save canary smoke lockfile")) {
+      copyFileSync(path.join(root, "pnpm-lock.yaml"), artifact);
+    }
+    writeFileSync(path.join(root, "pnpm-lock.yaml"), staleLock);
+    rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+    if (smoke.includes("name: Restore canary smoke lockfile")) {
+      copyFileSync(artifact, path.join(root, "pnpm-lock.yaml"));
+    }
+    success(install(installArgs("Install test dependencies")));
+    assert.equal(readFileSync(path.join(root, "node_modules/smoke-fixture-dependency/index.js"), "utf8"), 'module.exports = "published-patch";\n');
+    assert.deepEqual(readFileSync(path.join(root, "pnpm-lock.yaml")), readFileSync(artifact));
+
+    // A lockfile from the wrong source still fails closed; restoring an artifact
+    // must not disable hash validation or resolve another version in the smoke job.
+    patch("different-source");
+    const wrongSource = install(installArgs("Install test dependencies"));
+    assert.notEqual(wrongSource.status, 0);
+    assert.match(wrongSource.stdout + wrongSource.stderr, /ERR_PNPM_LOCKFILE_CONFIG_MISMATCH/);
+  });
+}
 
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
