@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { getTableName } from "drizzle-orm";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { activityToastIdentity } from "../realtime/activity-toast-identity.js";
 import { WebSocket } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
@@ -10,12 +12,13 @@ vi.mock("../services/authorization.js", () => ({
   authorizationService: () => ({ decide: async ({ resource }: { resource: { issueId: string } }) => ({ allowed: resource.issueId !== "hidden" }) }),
 }));
 vi.mock("../services/heartbeat-run-privacy.js", () => ({ canActorReadHeartbeatRun: async () => false }));
-function database() {
+function database(onPredicate: (kind: "where" | "join", condition: SQL) => void = () => {}) {
   return { select: (fields: Record<string, unknown>) => {
     let table = "";
     const query = {
       from: (value: Parameters<typeof getTableName>[0]) => { table = getTableName(value); return query; },
-      innerJoin: () => query, where: () => query,
+      innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
+      where: (condition: SQL) => { onPredicate("where", condition); return query; },
       limit: async () => {
         if (table === "issues") return [{ id: "task" }];
         if (table === "company_memberships") return fields.name ? [{ name: "Alex Example", image: "/alex.png" }] : [{ id: "membership" }];
@@ -57,5 +60,39 @@ describe("authenticated activity notifications", () => {
       socket.terminate();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+
+describe("activity profile query boundaries", () => {
+  it("requires the exact company, human actor, and active membership before reading a person profile", async () => {
+    const predicates: { kind: string; sql: string; params: unknown[] }[] = [];
+    const db = database((kind, condition) => {
+      const { sql, params } = new PgDialect().sqlToQuery(condition);
+      predicates.push({ kind, sql, params });
+    });
+    await activityToastIdentity(db as never, "company-A", {
+      action: "issue.created", actorType: "user", actorId: "person-A",
+    });
+    expect(predicates).toEqual([
+      { kind: "join", sql: '"user"."id" = "company_memberships"."principal_id"', params: [] },
+      { kind: "where", sql: '("company_memberships"."company_id" = $1 and "company_memberships"."principal_type" = $2 and "company_memberships"."principal_id" = $3 and "company_memberships"."status" = $4)',
+        params: ["company-A", "user", "person-A", "active"] },
+    ]);
+  });
+
+  it("requires both the exact company and agent ID before reading an agent profile", async () => {
+    const predicates: { kind: string; sql: string; params: unknown[] }[] = [];
+    const db = database((kind, condition) => {
+      const { sql, params } = new PgDialect().sqlToQuery(condition);
+      predicates.push({ kind, sql, params });
+    });
+    await activityToastIdentity(db as never, "company-A", {
+      action: "issue.created", actorType: "agent", actorId: "agent-A",
+    });
+    expect(predicates).toEqual([
+      { kind: "where", sql: '("agents"."company_id" = $1 and "agents"."id" = $2)',
+        params: ["company-A", "agent-A"] },
+    ]);
   });
 });
