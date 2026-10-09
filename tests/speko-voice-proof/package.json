@@ -10,7 +10,7 @@
     "live": "node live-client.mjs"
   },
   "engines": {
-    "node": ">=24.11"
+    "node": ">=24.11.0"
   },
   "dependencies": {
     "standardwebhooks": "1.0.0"
