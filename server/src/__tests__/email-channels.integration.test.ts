@@ -417,13 +417,18 @@ describe("AgentMail durable email pipeline", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it("restores a persisted send retry at startup and sleeps until its due time", async () => {
+  it("restores a retry deadline without polling replies blocked behind that send", async () => {
     const f = await fixture();
-    const parent = await issueService(db).create(f.companyId, { title: "Scheduled retry", status: "todo", assigneeAgentId: f.agentId });
-    const input = emailSendSchema.parse({ endpointId: f.endpointId, parentIssueId: parent.id,
-      to: ["recipient@example.test"], subject: "Retry", text: "Hello", idempotencyKey: randomUUID() });
+    const message = f.message("received", "outbound-thread");
+    await f.receive(message);
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, conversationId: conversation.id,
+      replyToMessageId: message.message_id, text: "First reply", idempotencyKey: randomUUID() });
     await f.service.queueSend(f.companyId, input, { userId: "email-board" });
-    // Simulate a previous process persisting a provider retry deadline.
+    const second = { ...input, text: "Second reply", idempotencyKey: randomUUID() };
+    await f.service.queueSend(f.companyId, second, { userId: "email-board" });
+    // Simulate a previous process persisting a provider retry deadline. The
+    // second reply has no deadline but cannot overtake this first reply.
     await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 5000) })
       .where(eq(chatPublications.id, input.idempotencyKey));
     await f.service.start();
@@ -432,9 +437,11 @@ describe("AgentMail durable email pipeline", () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
     expect(select).not.toHaveBeenCalled();
     expect(f.sends).toHaveLength(0);
-    await vi.waitFor(() => expect(f.sends).toHaveLength(1), { timeout: 8000 });
+    await vi.waitFor(() => expect(f.sends).toHaveLength(2), { timeout: 8000 });
     await f.service.tick();
-    expect((await f.service.publication(input.idempotencyKey, f.companyId)).outcome).toBe("sent");
+    expect(f.sends.map(send => send.key)).toEqual([input.idempotencyKey, second.idempotencyKey]);
+    for (const id of [input.idempotencyKey, second.idempotencyKey])
+      expect((await f.service.publication(id, f.companyId)).outcome).toBe("sent");
   });
 
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {

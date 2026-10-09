@@ -2110,7 +2110,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
                   ne(chatPublications.state, "delivery_unknown"),
                 ),
               )
-              .orderBy(asc(chatPublications.createdAt))
+              .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
               .limit(25);
             // Each conversation is serial, while independent inbox threads can make progress.
             const firstSends = [
@@ -2234,15 +2234,24 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
                 eq(chatDeliveries.endpointId, endpoint.id),
                 inArray(chatDeliveries.state, ["received", "processing", "retry"]),
               ));
-            const [outbound] = await db
-              .select({ at: sql<Date | null>`min(coalesce(${chatPublications.nextAttemptAt}, now()))` })
+            // A later reply cannot run ahead of its conversation's first send.
+            // Its null deadline must not turn a delayed retry into 1s polling.
+            const sendHeads = db
+              .selectDistinctOn([chatPublications.conversationId], {
+                nextAttemptAt: chatPublications.nextAttemptAt,
+              })
               .from(emailSends)
               .innerJoin(chatPublications, eq(chatPublications.id, emailSends.publicationId))
               .where(and(
                 eq(emailSends.endpointId, endpoint.id),
                 inArray(emailSends.outcome, ["queued", "uncertain"]),
                 ne(chatPublications.state, "delivery_unknown"),
-              ));
+              ))
+              .orderBy(asc(chatPublications.conversationId), asc(chatPublications.createdAt), asc(chatPublications.id))
+              .as("email_send_heads");
+            const [outbound] = await db
+              .select({ at: sql<Date | null>`min(coalesce(${sendHeads.nextAttemptAt}, now()))` })
+              .from(sendHeads);
             for (const pending of [inbound, outbound])
               if (pending?.at) needWorkAt(new Date(pending.at).getTime());
           } catch (e) {
