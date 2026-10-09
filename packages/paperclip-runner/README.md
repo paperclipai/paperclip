@@ -254,7 +254,9 @@ accepts the same option in its second argument. The choice travels in the durabl
 Omitting it (or passing `"default"`) on the next turn restores provider defaults,
 including on a warm or recovered session. It is not an environment variable or
 agent-wide setting. No automatic decision policy selects it. The model must
-support disabling reasoning; other runner providers reject an explicit selection.
+support disabling reasoning; other runner providers reject an explicit selection
+before starting work. Native sessions expose support through the
+`perTurnReasoning` capability.
 
 OpenCode's proxy sends agent instructions once per turn through the system prompt. The
 task envelope retains task-specific constraints and the completion contract,

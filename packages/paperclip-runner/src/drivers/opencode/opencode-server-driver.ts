@@ -643,6 +643,10 @@ class OpenCodeHarnessSession implements HarnessSession {
       .finally(() => this.#pumpEvents());
   }
 
+  supportsTurnReasoning(): boolean {
+    return this.#model.startsWith("openrouter/");
+  }
+
   async startTurn(input: {
     message: NativeUserMessage;
     reasoningMode?: OpenCodeReasoningMode;

@@ -3538,6 +3538,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #providerIdentity: Record<string, unknown> | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
+  supportsTurnReasoning(): boolean {
+    return this.options.provider === "opencode";
+  }
+
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
     if (this.options.provider !== "acpx") return null;
     if (this.#closed || this.#failure) return { steering: false, queuedFollowUp: false };

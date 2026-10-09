@@ -498,6 +498,7 @@ export interface HarnessSessionRecoveryResult {
 }
 
 export interface HarnessSession {
+  supportsTurnReasoning?(): boolean;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;

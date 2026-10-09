@@ -454,6 +454,7 @@ class HarnessNativeSession implements NativeSession {
     return {
       resume: true,
       typedEvents: true,
+      perTurnReasoning: this.#session.supportsTurnReasoning?.() === true,
       steering: (negotiated?.steering ?? this.#steeringSupported) && this.#session.steer !== undefined,
       queuedFollowUp: negotiated?.queuedFollowUp === true && this.#session.steer !== undefined,
       interruption: this.#session.interrupt !== undefined,
@@ -710,6 +711,9 @@ class HarnessNativeSession implements NativeSession {
     // The provider has no active turn to interrupt yet. Do not launch work
     // whose events cancellation would suppress and leave the owner waiting.
     if (this.#explicitlyCancelled) throw new Error("native_session_cancelled");
+    if (input.reasoningMode !== undefined && this.#session.supportsTurnReasoning?.() !== true) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     this.#terminal = null;
     try {
       const started = await this.#session.startTurn(input);

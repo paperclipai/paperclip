@@ -82,6 +82,10 @@ export class CodexHarnessSession
     }
   }
 
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
+  }
+
   turnControlCapabilities() {
     if (this.driverKind === "acpx_runtime") {
       return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
@@ -164,6 +168,9 @@ export class CodexHarnessSession
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }

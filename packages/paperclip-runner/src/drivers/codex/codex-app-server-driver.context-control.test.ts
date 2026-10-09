@@ -45,6 +45,19 @@ import {
 import { rehydrateRunnerdItemNotification } from "../../live/runnerd-codex-transport.js";
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["default", "disabled"] as const)("rejects unsupported reasoning %s without sending a turn RPC", async reasoningMode => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-reasoning", normalizedSessionId: "normalized-reasoning", workingDirectory: WORKSPACE,
+    });
+    const message = { role: "user" as const, text: "Hi" };
+    await expect(session.startTurn({ message, reasoningMode })).rejects.toThrow("Per-turn reasoning is not supported");
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(0);
+    await session.startTurn({ message });
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(1);
+    await session.close({ reason: "fixture complete" });
+  });
+
   it("retains one correlation-bound steering acknowledgement after the rehydrated runnerd echo", async () => {
     const transport = new FakeCodexTransport("thread-root");
     const session = await makeDriver([transport]).openSession({
