@@ -50,7 +50,7 @@ async function price(companyId: string, id: string, amountCents: string | null =
   const [account] = await db.select().from(aiSubscriptions).where(eq(aiSubscriptions.id, id));
   return subscriptionService(db).updatePrice(companyId, id, { expectedRevision: account.revision, plan: "My plan", amountCents, currency: "USD", cadence: "month", status: "active", ...extra }, actor);
 }
-async function event(companyId: string, subscriptionId: string | null, billingType: "metered_api" | "subscription_included" | "subscription_overage" | "unknown", amount = "0", occurredAt = new Date("2026-10-08T00:00:00Z")) {
+async function event(companyId: string, subscriptionId: string | null, billingType: "metered_api" | "subscription_included" | "subscription_overage" | "credits" | "fixed" | "unknown", amount = "0", occurredAt = new Date("2026-10-08T00:00:00Z")) {
   const agentId = randomUUID();
   await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer", adapterType: "codex_local" });
   await db.insert(costEvents).values({ companyId, agentId, subscriptionId, provider: "openai", biller: "openai", billingType, model: "fixture",
@@ -417,16 +417,19 @@ describe("durable subscription reporting", () => {
     const different = await service.register(await connection(c));
     await expect(service.merge(c, b, different, 1, 0, owner)).rejects.toMatchObject({ status: 409 });
   });
-  it("separates API, subscriptions, overages and unknown usage with exclusive cache counters", async () => {
+  it("separates API, subscriptions, overages and other billing with exclusive cache counters", async () => {
     const c = await company(), id = await verifiedConnection(await connection(c));
     await event(c, null, "metered_api", "123"); await event(c, id, "subscription_included");
     await event(c, id, "subscription_overage", "456"); await event(c, null, "unknown", "789");
+    await event(c, null, "credits", "100"); await event(c, null, "fixed", "200");
     await event(c, null, "subscription_included"); await event(c, id, "subscription_included", "0", new Date("2026-09-01"));
     const report = await subscriptionCostReport(db, c, owner, { from: new Date("2026-10-01"), to: new Date("2026-11-01") });
     expect(report.api.costCents).toBe("123.0000000");
     expect(report.subscription.costCents).toBe("456.0000000");
     expect(report.subscription.inputTokens + report.subscription.cachedInputTokens + report.subscription.outputTokens).toBe(450);
-    expect(report.unknown.costCents).toBe("789.0000000");
+    expect(report.unknown.costCents).toBe("1089.0000000");
+    expect(report.unknown.eventCount).toBe(3);
+    expect(report.unknown.inputTokens + report.unknown.cachedInputTokens + report.unknown.outputTokens).toBe(450);
     expect(report.unattributedSubscription.eventCount).toBe(1);
     expect(report.accounts[0].usage.eventCount).toBe(2);
     expect(report.monthlyTotals[0].amountCents).toBe("2000.0000000");

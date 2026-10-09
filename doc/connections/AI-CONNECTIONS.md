@@ -781,6 +781,9 @@ another member's personal plan, price, owner, or account-linked activity. Billin
 editors retain visibility after disconnection so they can end tracking. Aggregate
 API and subscription run-token totals remain company-wide, as in existing cost
 reports; hidden private accounts are not mislabeled as missing attribution.
+Fixed-price, credit-billed, and unknown usage remain in the inference ledger.
+They are reported separately from API and subscription tokens as other or unknown
+billing types; the API retains the `unknown` field name for this combined total.
 
 Provider lookups run in the background, with a six-hour attempt cache shared by
 server replicas, at most four active provider lookups per process, a 15-second

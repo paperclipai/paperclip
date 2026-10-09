@@ -96,6 +96,24 @@ describe("Shared Costs surfaces", () => {
     expect(container.textContent).toContain("1 unpriced charge");
   });
 
+  it.each(surfaces)("labels other and unknown billing accurately on the %s surface", async (_name, props) => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 600, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, unknown: { ...report.unknown,
+      inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, costCents: "600", eventCount: 3,
+    } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain(
+      "150 tokens have other or unknown billing types, with $6.00 in recorded charges. They remain in the inference ledger.",
+    )));
+    expect(container.textContent).not.toContain("tokens have an unknown billing type");
+  });
+
   it("renders a focused Budgets section without duplicate Costs chrome or spend queries", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);

@@ -106,6 +106,7 @@ export interface SubscriptionCostReport {
   unidentifiedAccountCount: number;
   api: SubscriptionUsage;
   subscription: SubscriptionUsage;
+  /** Other billing types (credits, fixed, or unknown), outside API/subscription totals. */
   unknown: SubscriptionUsage;
   unattributedSubscription: SubscriptionUsage;
 }
