@@ -24,9 +24,11 @@ describe("task voice connection failures", () => {
     mocks.list.mockRejectedValueOnce(new Error("Offline")).mockResolvedValue([spekoEndpoint]); await render(bound);
     await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Voice connections could not be loaded"));
     expect(container.textContent).not.toContain("Voice is unavailable");
+    container.querySelector('button')!.focus();
     await act(async () => container.querySelector('button')!.click());
     await vi.waitFor(() => expect(container.textContent).toContain(`Talk to ${spekoEndpoint.assignedAgentName}`));
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('button'));
   });
   it("keeps active controls mounted when a background connection refresh fails", async () => {
     mocks.list.mockResolvedValue([spekoEndpoint]); await render();

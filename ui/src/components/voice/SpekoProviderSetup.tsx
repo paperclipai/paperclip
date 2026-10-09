@@ -1,8 +1,10 @@
 import { Button } from "@/components/ui/button";
+import { SetupWizardFooter } from "@/components/SetupWizard";
 import { Input } from "@/components/ui/input";
 
 export interface SpekoProviderSetupProps {
   agentName: string;
+  onSaveExit?(): void;
   credentials: Record<string, string>;
   onChange(values: Record<string, string>): void;
   onConnect(values: Record<string, string>): void;
@@ -10,7 +12,7 @@ export interface SpekoProviderSetupProps {
   pending?: boolean;
   repairing?: boolean;
 }
-export function SpekoProviderSetup({ agentName, credentials, onChange, onConnect, callbackUrl, pending = false, repairing = false }: SpekoProviderSetupProps) {
+export function SpekoProviderSetup({ agentName, onSaveExit, credentials, onChange, onConnect, callbackUrl, pending = false, repairing = false }: SpekoProviderSetupProps) {
   const ready = repairing || Boolean(credentials.apiKey?.trim() && credentials.agentId?.trim());
   const reachable = callbackUrl?.startsWith("https://") === true;
   function connect() {
@@ -39,6 +41,6 @@ export function SpekoProviderSetup({ agentName, credentials, onChange, onConnect
     {!reachable && <p role="alert" className="text-sm text-destructive">Configure a public HTTPS callback origin for Paperclip first. Local instances need an explicitly configured tunnel or reverse proxy.</p>}
     {reachable && <p className="break-all text-xs text-muted-foreground">Callback: {callbackUrl}</p>}
     <p className="text-sm text-muted-foreground">Credentials and a generated callback signing secret are saved in the company vault. Speko charges for voice usage separately from agent work. Outgoing calls are experimental. After connecting, save your callback number to let this agent call you about your tasks.</p>
-    <Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? "Verifying Speko…" : repairing ? "Reconnect Speko" : "Connect Speko"}</Button>
+    {onSaveExit ? <SetupWizardFooter onSaveExit={onSaveExit} disabled={pending}><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? "Verifying Speko…" : repairing ? "Reconnect Speko" : "Connect Speko"}</Button></SetupWizardFooter> : <div className="flex justify-end"><Button disabled={!ready || !reachable || pending} onClick={connect}>{pending ? "Verifying Speko…" : repairing ? "Reconnect Speko" : "Connect Speko"}</Button></div>}
   </div>;
 }

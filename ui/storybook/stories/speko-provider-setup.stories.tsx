@@ -6,7 +6,7 @@ import { voiceStoryLifecycle } from "../fixtures/voiceStoryLifecycle";
 function Fixture(props: Partial<SpekoProviderSetupProps>) {
   const [credentials, setCredentials] = useState(props.credentials ?? {});
   const [connected, setConnected] = useState(false);
-  return connected ? <p role="status">Credentials saved. Continue to the test conversation.</p> : <SpekoProviderSetup agentName="Company Phone Agent" callbackUrl="https://paperclip.example/api/voice-webhooks/endpoint/tools" {...props} credentials={credentials} onChange={setCredentials} onConnect={(values) => { if (!props.repairing && !values.signingSecret?.startsWith("whsec_")) throw new Error("Missing signing secret"); setConnected(true); }} />;
+  return connected ? <p role="status">Credentials saved. Continue to the test conversation.</p> : <SpekoProviderSetup onSaveExit={() => {}} agentName="Company Phone Agent" callbackUrl="https://paperclip.example/api/voice-webhooks/endpoint/tools" {...props} credentials={credentials} onChange={setCredentials} onConnect={(values) => { if (!props.repairing && !values.signingSecret?.startsWith("whsec_")) throw new Error("Missing signing secret"); setConnected(true); }} />;
 }
 const meta: Meta<typeof SpekoProviderSetup> = { ...voiceStoryLifecycle, title: "Connections/Speko/Provider setup", component: SpekoProviderSetup, parameters: { layout: "padded" } };
 export default meta;
@@ -29,6 +29,8 @@ export const KeyboardValidationAndConnect: Story = {
     await expect(key).toHaveFocus();
     await expect(key).toHaveAttribute("type", "password");
     await userEvent.type(key, "synthetic-not-a-key");
+    await userEvent.tab();
+    await expect(canvas.getByRole("button", { name: "Save & exit" })).toHaveFocus();
     await userEvent.tab();
     await expect(canvas.getByRole("button", { name: "Connect Speko" })).toHaveFocus();
     await userEvent.keyboard("{Enter}");

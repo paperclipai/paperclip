@@ -670,7 +670,7 @@ function ChatSdkEndpointSetup() {
             onSaveExit={() => navigate("/apps")}
           />
         )}
-        {step !== 0 && !isSlack && !(provider === "speko" && step === tryStep) && <div className="flex justify-start">
+        {step !== 0 && !isSlack && provider !== "speko" && <div className="flex justify-start">
           <Button className="text-muted-foreground" variant="ghost" onClick={() => navigate("/apps")}>
             Save &amp; exit
           </Button>
@@ -898,7 +898,7 @@ function ProviderConnectStep({
     null,
     2,
   );
-  if (provider === "speko") return <SpekoProviderSetup agentName={agentName} credentials={credentials} onChange={setCredentials} onConnect={(values) => onAction(repairing ? "reconnect" : "configure", values)} callbackUrl={endpoint.setup?.webhookUrl} pending={pending} repairing={repairing} />;
+  if (provider === "speko") return <SpekoProviderSetup onSaveExit={() => navigate("/apps")} agentName={agentName} credentials={credentials} onChange={setCredentials} onConnect={(values) => onAction(repairing ? "reconnect" : "configure", values)} callbackUrl={endpoint.setup?.webhookUrl} pending={pending} repairing={repairing} />;
   if (provider === "imessage-photon") return <PhotonConnectStep endpoint={endpoint} agentName={agentName} repairing={repairing} pending={pending} onAction={onAction} />;
   if (provider === "discord") {
     const applicationId = credentials.applicationId?.trim() ?? "";
