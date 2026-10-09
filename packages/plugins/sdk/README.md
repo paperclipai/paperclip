@@ -1294,8 +1294,10 @@ await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
 Every `sendMessage` call gets its own run, with or without these fields. A
 send is never folded into a queued or running run for the same session, so
 each prompt reaches the agent and each run keeps its own user and project.
-Sends to one session still run one after another under the agent's
-concurrency limit.
+Runs of one session run one after another, even when the agent may run
+several runs at once: a send made while a run of that session is running
+waits in the queue until that run finishes, because both runs resume and
+save the same session conversation.
 
 Older hosts silently drop `projectId` (and `actorUserId`), and there is no
 runtime signal that tells a plugin whether the host applied them. A plugin

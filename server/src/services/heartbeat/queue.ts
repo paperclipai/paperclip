@@ -224,6 +224,9 @@ export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
 
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 
+/** Task key of a plugin agent session: `plugin:<pluginKey>:session:<id>`. */
+const PLUGIN_SESSION_TASK_KEY_RE = /^plugin:.+:session:.+$/;
+
 export class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
     super(
@@ -986,6 +989,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     const context = parseObject(run.contextSnapshot);
+    // Plugin session sends each get their own run (no coalescing), but every
+    // run of one session resumes and saves the same conversation. With no
+    // issue execution lock to serialize them, hold a session's queued run
+    // while another run of that session is running, so two runs never read
+    // and overwrite the same saved session at once. The finishing run's
+    // cleanup promotes the agent's queue again. Limited to plugin sessions.
+    const pluginSessionTaskKey = readNonEmptyString(context.taskKey);
+    if (pluginSessionTaskKey && PLUGIN_SESSION_TASK_KEY_RE.test(pluginSessionTaskKey)) {
+      const [sessionOwner] = await db.select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          eq(heartbeatRuns.status, "running"),
+          ne(heartbeatRuns.id, run.id),
+          sql`${heartbeatRuns.contextSnapshot}->>'taskKey' = ${pluginSessionTaskKey}`,
+        ))
+        .limit(1);
+      if (sessionOwner) return null;
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
       run.agentId,

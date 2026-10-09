@@ -1765,7 +1765,9 @@ export interface PluginAgentSessionsClient {
    * plugin itself.
    *
    * Every call gets its own run: a send is never folded into a queued or
-   * running run for the same session, so no prompt is lost.
+   * running run for the same session, so no prompt is lost. Runs of one
+   * session run one after another; a send made while a run of the session
+   * is running waits until that run finishes.
    */
   sendMessage(sessionId: string, companyId: string, opts: {
     prompt: string;

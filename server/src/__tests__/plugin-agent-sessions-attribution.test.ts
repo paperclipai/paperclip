@@ -8,9 +8,7 @@ import {
   agents,
   companies,
   companyMemberships,
-  costEvents,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   projectAccessMembers,
   projects,
@@ -25,6 +23,7 @@ import { buildHostServices } from "../services/plugin-host-services.js";
 import { heartbeatService, resolveLedgerScopeForRun } from "../services/heartbeat.js";
 import { publishLiveEvent, subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { truncateTablesWithDeadlockRetry } from "./helpers/truncate-with-deadlock-retry.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -63,40 +62,12 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
-  function isHeartbeatRunDependentFkError(error: unknown) {
-    const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
-    return (
-      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk")
-      || message.includes("activity_log_run_id_heartbeat_runs_id_fk")
-    );
-  }
-
-  async function deleteHeartbeatRunsWithDependents() {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(heartbeatRunEvents);
-      await db.delete(activityLog);
-      try {
-        await db.delete(heartbeatRuns);
-        return;
-      } catch (error) {
-        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-    }
-  }
-
   afterEach(async () => {
     for (const dispose of disposers.splice(0)) dispose();
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
-    await db.delete(costEvents);
-    await deleteHeartbeatRunsWithDependents();
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentTaskSessions);
-    await db.delete(projectAccessMembers);
-    await db.delete(projects);
-    await db.delete(companyMemberships);
-    await db.delete(agents);
-    await db.delete(companies);
+    // Executed runs leave rows in many company-scoped tables (runtime state,
+    // skills, events), so clear every company-scoped row in one statement.
+    await truncateTablesWithDeadlockRetry(db, 'TRUNCATE TABLE "companies" CASCADE');
   });
 
   afterAll(async () => {
@@ -560,6 +531,57 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
     });
     expect(secondRun.contextSnapshot).toMatchObject({
       paperclipAgentMessage: expect.objectContaining({ text: "second" }),
+    });
+  });
+
+  // Sends to one session get separate runs, but those runs share the
+  // session's saved conversation, so they must run one after another even
+  // when the agent may run several runs at once.
+  describe("same-session runs", () => {
+    it("holds a queued send while a run of the same session is running", async () => {
+      const { companyId, agentId } = await seedCompany();
+      await db.update(agents)
+        .set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 3 } } })
+        .where(eq(agents.id, agentId));
+      const host = pluginHost();
+      const session = await host.createSession(companyId, agentId);
+      const [sessionRow] = await db.select().from(agentTaskSessions)
+        .where(eq(agentTaskSessions.id, session.sessionId));
+      // A run of this session is already running and never finishes here.
+      await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "automation",
+        contextSnapshot: { taskKey: sessionRow!.taskKey },
+      });
+
+      const { runId } = await host.send({ sessionId: session.sessionId, companyId, prompt: "second" });
+
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run!.status).toBe("queued");
+    });
+
+    it("starts the held send once the session's running run finishes", async () => {
+      const { companyId, agentId } = await seedCompany();
+      await db.update(agents)
+        .set({
+          adapterConfig: { command: process.execPath, args: ["-e", "setTimeout(() => {}, 400)"] },
+          runtimeConfig: { heartbeat: { maxConcurrentRuns: 3 } },
+        })
+        .where(eq(agents.id, agentId));
+      const host = pluginHost();
+      const session = await host.createSession(companyId, agentId);
+
+      const first = await host.send({ sessionId: session.sessionId, companyId, prompt: "first" });
+      const second = await host.send({ sessionId: session.sessionId, companyId, prompt: "second" });
+      await heartbeatService(db).drainActiveRunExecutions();
+
+      const { run: firstRun } = await runAndWakeup(first.runId);
+      const { run: secondRun } = await runAndWakeup(second.runId);
+      expect(["queued", "running"]).not.toContain(firstRun.status);
+      expect(["queued", "running"]).not.toContain(secondRun.status);
+      expect(secondRun.startedAt!.getTime()).toBeGreaterThanOrEqual(firstRun.finishedAt!.getTime());
     });
   });
 
