@@ -1592,7 +1592,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForRunToSettle(heartbeat, runId, 5_000);
       await heartbeat.waitForRunExecutionDrain(runId);
       const [firstAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
-      const next = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", manualUserWake: true,
+      const next = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
         reason: "retry_failed_run", failedRunId: runId, payload: { issueId }, contextSnapshot: { issueId },
         requestedByActorType: "user", requestedByActorId: "responsible-user" });
       expect(next).toHaveProperty("id");

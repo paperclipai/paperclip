@@ -14,10 +14,10 @@ function TaskConversation() {
   const [retried, setRetried] = useState(false);
   const [messages, setMessages] = useState<string[]>([]);
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => { setBreadcrumbs([{ label: "Tasks", href: "/DEMO/issues" }, { label: "Rewrite agent policy", identifier: "DEMO-24" }]); }, [setBreadcrumbs]);
+  useEffect(() => { setBreadcrumbs([{ label: "Tasks", href: "/PAP/issues" }, { label: "Rewrite agent policy", identifier: "PAP-24" }]); }, [setBreadcrumbs]);
   return <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-8">
     <header className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2"><StatusBadge status={retried ? "todo" : "blocked"} /><span className="font-mono text-xs text-muted-foreground">DEMO-24</span><span className="text-xs text-muted-foreground">Documentation</span></div>
+      <div className="flex flex-wrap items-center gap-2"><StatusBadge status={retried ? "todo" : "blocked"} /><span className="font-mono text-xs text-muted-foreground">PAP-24</span><span className="text-xs text-muted-foreground">Documentation</span></div>
       <h1 className="text-xl font-semibold">Let agents install missing dev tools</h1>
       <p className="text-sm text-muted-foreground">Assigned to Jordan Lee</p>
     </header>
@@ -34,7 +34,7 @@ function Journey() {
 }
 const meta = {
   title: "Workspace branch recovery/02 Task journey", component: Journey,
-  parameters: { layout: "fullscreen", initialEntries: ["/DEMO/issues/DEMO-24"], docs: { description: { component: "Interactive proposal in the production app shell, using the shared task bubbles, composer and repair component. Save/retry and branch lookup are simulated. Use master or choose release/next; a missing branch shows an inline error. No live task is modified." }, story: { inline: false } } },
+  parameters: { layout: "fullscreen", initialEntries: ["/PAP/issues/PAP-24"], docs: { description: { component: "Interactive proposal in the production app shell, using the shared task bubbles, composer and repair component. Save/retry and branch lookup are simulated. Use master or choose release/next; a missing branch shows an inline error. No live task is modified." }, story: { inline: false } } },
 } satisfies Meta<typeof Journey>;
 export default meta;
 type Story = StoryObj<typeof meta>;
