@@ -1229,6 +1229,7 @@ export class PaperclipRunnerToolAuthority {
       const createInput = {
         id: issueId,
         projectId,
+        workspaceSelectionActor: this.#privacyActor(context.run),
         ...(trust.kind === "low_trust_review" ? {
           executionPolicy: { ...normalizeIssueExecutionPolicy({ authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } }) },
           sourceTrust: buildLowTrustSourceTrust({ issueId, runId: this.binding.runId, agentId: this.binding.agentId }),

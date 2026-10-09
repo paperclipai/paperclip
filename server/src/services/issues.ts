@@ -1,4 +1,5 @@
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
@@ -10251,15 +10252,17 @@ export function issueService(db: Db) {
           }
         }
         if (projectWorkspaceId && workspaceSelectionActor) {
-          const [readableSource] = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          const [readableSource] = await tx.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
             .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
+          await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId);
         }
         if (executionWorkspaceId && workspaceSelectionActor) {
-          const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+          const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
           if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
+          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id);
         }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(

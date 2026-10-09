@@ -12590,6 +12590,7 @@ export function issueRoutes(
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
+        workspaceSelectionActor: req.actor,
         projectId: childAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,

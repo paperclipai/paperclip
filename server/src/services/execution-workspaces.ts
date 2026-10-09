@@ -1,3 +1,4 @@
+import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 import { executionWorkspaceRepositoryService } from "./execution-workspace-repositories.js";
 import { accessService } from "./access.js";
@@ -1297,16 +1298,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         await executionWorkspaceReadSqlCondition(reader, input.actor),
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
+      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id);
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
     if (selection.kind === "configured_source") {
-      const [source] = await reader.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
         .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(
           eq(projectWorkspaces.id, selection.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId),
           await projectReadSqlCondition(reader, input.actor),
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
+      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId);
       return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
         executionWorkspaceSettings: { mode: selection.mode === "shared" ? "shared_workspace" : "isolated_workspace" } };
     }
@@ -1320,6 +1323,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const [workspace] = task.executionWorkspaceId ? await db.select().from(executionWorkspaces)
       .where(and(eq(executionWorkspaces.id, task.executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(db, actor))) : [];
     if (task.executionWorkspaceId && !workspace) throw notFound("Workspace is unavailable or inaccessible");
+    if (workspace) await assertTaskWorkspaceAccess(db, actor, companyId, workspace.id);
     return { issueId, bindingRevision: task.workspaceBindingRevision, selection: task.workspaceSelection,
       pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null };
   }
@@ -3076,6 +3080,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // disclose no workspace detail.
           return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         }
+        await assertTaskWorkspaceAccess(tx, input.authorizationActor, issue.companyId, row.id);
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
           // A concurrent reopen already restored the row. Report success without a
           // second rebuild so the caller continues normally. The other request

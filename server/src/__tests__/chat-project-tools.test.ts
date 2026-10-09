@@ -254,7 +254,7 @@ const support = await getEmbeddedPostgresTestSupport();
     try {
       await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, f.issueId));
       const [executionWorkspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId,
-        projectId: f.projectId, projectWorkspaceId: f.projectWorkspaceId, mode: "shared", strategyType: "project_primary", name: "Outside root" }).returning();
+        projectId: f.projectId, projectWorkspaceId: f.projectWorkspaceId, mode: "shared_workspace", strategyType: "project_primary", name: "Outside root" }).returning();
       const boundary = { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId };
       await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: boundary } } }).where(eq(agents.id, f.agentId));
       const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
@@ -279,6 +279,8 @@ const support = await getEmbeddedPostgresTestSupport();
       }
       expect(await server.db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toEqual(before);
 
+      await server.db.update(issues).set({ executionWorkspaceId: executionWorkspace.id }).where(eq(issues.id, f.issueId));
+      await expect(call(f, "create_task", { title: "Inherited source cannot escape", idempotencyKey: "inherited-source-denied", status: "backlog" })).rejects.toThrow(/outside.*boundary/i);
       await server.db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
         trustBoundary: { ...boundary, projectIds: [f.projectId] },
       } } }).where(eq(agents.id, f.agentId));

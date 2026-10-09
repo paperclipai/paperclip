@@ -19,7 +19,7 @@ const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable task repository receipts", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
-  let companyId: string, issueId: string, workspaceId: string, cwd: string;
+  let companyId: string, issueId: string, workspaceId: string, agentId: string, cwd: string;
   const actor = { type: "board" as const, source: "local_implicit" as const, userId: "local-board" };
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
@@ -27,6 +27,7 @@ const support = await getEmbeddedPostgresTestSupport();
     db = createDb(temporary.connectionString);
     cwd = await mkdtemp(path.join(tmpdir(), "paperclip-task-repositories-files-"));
     [companyId] = (await db.insert(companies).values({ name: "Task repositories", issuePrefix: "TREPO" }).returning()).map(row => row.id);
+    [agentId] = (await db.insert(agents).values({ companyId, name: "Repository worker", adapterType: "process", status: "idle" }).returning()).map(row => row.id);
     [workspaceId] = (await db.insert(executionWorkspaces).values({ companyId, projectId: null, name: "Task files", cwd, mode: "shared_workspace", strategyType: "task_directory" }).returning()).map(row => row.id);
     [issueId] = (await db.insert(issues).values({ companyId, title: "Projectless task", executionWorkspaceId: workspaceId }).returning()).map(row => row.id);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -52,9 +53,10 @@ const support = await getEmbeddedPostgresTestSupport();
     const [other] = await db.insert(companies).values({ name: "Foreign", issuePrefix: "FOREIGN" }).returning();
     await expect(executionWorkspaceRepositoryService(db).request({ companyId: other.id, issueId, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey: "foreign" } })).rejects.toThrow(/not found/);
     catalog.available = false;
-    await expect(request("one")).rejects.toThrow(/no longer available/);
-    await expect(executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId: randomUUID(), runId: randomUUID(), responsibleUserId: "local-board" })).rejects.toThrow(/no longer available/);
-    catalog.available = true;
+    try {
+      await expect(request("one")).rejects.toThrow(/no longer available/);
+      await expect(executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId, runId: randomUUID(), responsibleUserId: "local-board" })).rejects.toThrow(/no longer available/);
+    } finally { catalog.available = true; }
   });
   it("retains durable ownership when Git bundle restoration omits the temporary receipt", async () => {
     const [inventory] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId));
@@ -69,7 +71,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const commit = await git("rev-parse", "HEAD");
     await db.update(executionWorkspaceRepositories).set({ pinnedCommit: commit, state: "ready" }).where(eq(executionWorkspaceRepositories.id, inventory.id));
     await writeFile(path.join(checkout, "source.txt"), "uncommitted work\n");
-    const prepared = await executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId: randomUUID(), runId: randomUUID(), responsibleUserId: "local-board" });
+    const prepared = await executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId, runId: randomUUID(), responsibleUserId: "local-board" });
     expect(prepared).toHaveLength(1);
     expect(prepared[0].pinnedCommit).toBe(commit);
     expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("uncommitted work\n");
@@ -81,7 +83,7 @@ const support = await getEmbeddedPostgresTestSupport();
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId: randomUUID(), runId: randomUUID(), responsibleUserId: "local-board" }),
+          executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId, workspaceId, cwd, agentId, runId: randomUUID(), responsibleUserId: "local-board" }),
           new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("FIFO receipt blocked admission")), 3000); }),
         ]);
       } finally {

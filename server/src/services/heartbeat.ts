@@ -11,7 +11,7 @@ import {
   parseNativeSessionGoalControl,
 } from "./heartbeat/scheduling.js";
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
-import { canActorReadExecutionWorkspace } from "./authorization.js";
+import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
@@ -3320,10 +3320,16 @@ export function heartbeatService(
         workspaceReuseRequest.existingExecutionWorkspaceAvailable
           ? existingExecutionWorkspace
           : null;
-      if (reusableExistingExecutionWorkspace && !nativeRecoveryExecutionWorkspaceId && !(await canActorReadExecutionWorkspace(db,
-        { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_jwt", runId: run.id,
-          onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId }, reusableExistingExecutionWorkspace.id))) {
-        throw new Error("Task workspace access is no longer available");
+      const workspaceAuthorizationActor = { type: "agent" as const, agentId: agent.id, companyId: agent.companyId,
+        source: "agent_jwt" as const, runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
+      if (!persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
+        const workspaceRequiringAccess = reusableExistingExecutionWorkspace ?? boundSourceWorkspace;
+        if (workspaceRequiringAccess) {
+          await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id);
+        } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || projectContext?.hasWorkspace)) {
+          // Check source authority before resolution can clone or expose files.
+          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId);
+        }
       }
       const requestedReusableExecutionWorkspaceConfig =
         reusableExistingExecutionWorkspace?.config ?? null;
