@@ -6,6 +6,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { aiSubscriptions } from "./ai_subscriptions.js";
 
 export const costEvents = pgTable(
   "cost_events",
@@ -19,6 +20,7 @@ export const costEvents = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id),
+    subscriptionId: uuid("subscription_id").references(() => aiSubscriptions.id),
     billingCode: text("billing_code"),
     idempotencyKey: text("idempotency_key"),
     receiptHash: text("receipt_hash"),
@@ -45,6 +47,7 @@ export const costEvents = pgTable(
     companyProjectOccurredIdx: index("cost_events_company_project_occurred_idx").on(table.companyId, table.projectId, table.occurredAt),
     unpricedIdx: index("cost_events_unpriced_idx").on(table.companyId, table.occurredAt, table.id).where(sql`${table.costStatus} = 'unpriced' and ${table.billingType} <> 'subscription_included'`),
     companyOccurredIdx: index("cost_events_company_occurred_idx").on(table.companyId, table.occurredAt),
+    companySubscriptionOccurredIdx: index("cost_events_company_subscription_occurred_idx").on(table.companyId, table.subscriptionId, table.occurredAt),
     companyAgentOccurredIdx: index("cost_events_company_agent_occurred_idx").on(
       table.companyId,
       table.agentId,

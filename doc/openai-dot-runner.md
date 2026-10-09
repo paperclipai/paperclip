@@ -6,9 +6,10 @@ owns the assignment lifecycle and durable tool receipts. Dot uses Paperclip's
 existing agent permissions and task tools, including document writes and
 completion feedback.
 
-This first version supports a self-hosted instance with a local Runner
-controller and a stable public HTTPS origin. Hosted agent-broker and remote
-controller deployments are not qualified. The feature is off by default.
+Dot supports a self-hosted instance with a local Runner controller and a stable
+public HTTPS origin, or a Cloud instance with a managed sandbox Runner and the
+tenant Dot ingress. The feature is off by default. Cloud requires the native
+Runner setting in addition to Dot and Assistant connections (MCP).
 
 ## Enable and pair
 
@@ -418,6 +419,12 @@ The setup prompt asks Dot to upload its own current image only if it can obtain 
 
 ### Invite from the agent picker
 
+A new Dot remains in hire preparation until pairing and the event check finish.
+Setup can issue its prompt during preparation and verification; the compatibility
+status `paused` does not require an operator resume in these states. The live
+checks continue until the binding and agent lifecycle are both ready. A manual
+pause or pending hire approval still blocks setup.
+
 Enable **OpenAI Dot** and **Assistant connections (MCP)**, then choose **New Agent → Invite an external agent → Dot**. Copy the setup prompt into your Dot. Paperclip creates a scoped Runner agent and watches connection, event subscription, and a harmless event round trip. If your company requires hire approval, approve the agent before copying its pairing prompt. The test event is sent automatically after the callback is verified; Retry test event remains available if confirmation times out.
 
 Reopening setup resumes the operator's unfinished invitation. Pairing codes are not stored in browser persistence. After refreshing or when an open prompt expires, setup automatically prepares a fresh prompt to copy. It first checks current connection state and replaces only the pending capability, without revoking an established connection. A failed renewal offers a retry rather than looping. If another browser window replaces the prompt, the current window asks before replacing it again. Hermes and Other continue to use the ordinary external-agent invitation flow.
@@ -447,3 +454,12 @@ pnpm exec vitest run server/src/__tests__/dot-runner.test.ts -t 'private Daytona
 ```
 
 The fixture creates a private, bounded sandbox and deletes it in `finally`. Default tests do not contact Daytona. This test uses a scripted MCP client; a separate real OpenAI Dot walkthrough is required to qualify provider behavior.
+
+### Public Cloud consent
+
+The Dot consent page is intentionally accessible without a Paperclip board
+session. Background UI probes may receive `tenant_session_required` or
+`tenant_session_invalid` there; they must not reload the public consent document.
+The public request and pairing endpoints still enforce the OAuth request and
+one-use pairing code. Normal board routes retain Cloud session recovery, and
+archived stacks still redirect through a document reload.

@@ -2,6 +2,9 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+// Background plan observations have their own provider-fixture coverage. Runtime
+// auth tests must not send the selected fixture credentials to a real provider.
+vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -1407,6 +1410,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     try {
       expect(child.identity).toBe(parent.identity);
       expect(child.attribution.grantId).toBe(account.grantId);
+      expect(parent.attribution.subscriptionId).toEqual(expect.any(String));
+      expect(child.attribution.subscriptionId).toBe(parent.attribution.subscriptionId);
+      expect(child.config.managedAiConnection).toMatchObject({ subscriptionId: parent.attribution.subscriptionId });
     } finally {
       await Promise.all([parent.cleanup(), child.cleanup()]);
     }

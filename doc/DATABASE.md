@@ -19,6 +19,17 @@ That's it. On first start the server:
 
 Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
 
+Subscription reporting adds `ai_subscriptions` (company-scoped account identity),
+`ai_subscription_prices` (immutable price revisions), and
+`ai_subscription_connections` (selected grant-to-account bindings). New managed
+subscription receipts also have a nullable `cost_events.subscription_id`.
+Migration `0322_reflective_kree.sql` is replay-safe and leaves existing cost
+amounts and receipts untouched. No historical account attribution is inferred.
+Deleting a connection removes its binding but retains subscription price history;
+disconnecting is not proof that provider billing ended. See
+[subscription cost reporting](connections/AI-CONNECTIONS.md#subscription-cost-reporting)
+for the reporting and ownership rules.
+
 If you need to apply pending migrations manually, run:
 
 ```sh

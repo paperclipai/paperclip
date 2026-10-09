@@ -30,7 +30,7 @@ const support = await getEmbeddedPostgresTestSupport();
         await sql.unsafe(`ALTER TABLE ${table} DROP CONSTRAINT ${name}`);
         await sql.unsafe(`ALTER TABLE ${table} ADD CONSTRAINT ${name} CHECK (${definition})`);
       }
-      for (const name of ["0322_long_franklin_storm.sql", "0323_aberrant_machine_man.sql", "0324_blushing_screwball.sql", "0325_sad_proteus.sql", "0326_chunky_mentallo.sql", "0327_free_wolf_cub.sql", "0328_spooky_white_tiger.sql"]) {
+      for (const name of ["0323_long_franklin_storm.sql", "0324_aberrant_machine_man.sql", "0325_blushing_screwball.sql", "0326_sad_proteus.sql", "0327_chunky_mentallo.sql", "0328_free_wolf_cub.sql", "0329_spooky_white_tiger.sql"]) {
         const migration = await readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8");
         const hash = createHash("sha256").update(migration).digest("hex");
         await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
@@ -71,7 +71,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await applyPendingMigrations(database.connectionString);
       // Existing installations have older migration hashes after renumbering.
       // Force each stage to execute again while preserving the actual saved rows.
-      for (const name of ["0322_long_franklin_storm.sql", "0323_aberrant_machine_man.sql", "0324_blushing_screwball.sql", "0325_sad_proteus.sql", "0326_chunky_mentallo.sql", "0327_free_wolf_cub.sql", "0328_spooky_white_tiger.sql"]) {
+      for (const name of ["0323_long_franklin_storm.sql", "0324_aberrant_machine_man.sql", "0325_blushing_screwball.sql", "0326_sad_proteus.sql", "0327_chunky_mentallo.sql", "0328_free_wolf_cub.sql", "0329_spooky_white_tiger.sql"]) {
         const migration = await readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8");
         const hash = createHash("sha256").update(migration).digest("hex");
         await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
