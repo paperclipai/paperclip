@@ -116,7 +116,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const configuredModel = typeof config.model === "string"
     ? config.model.trim()
     : "";
-  if (provider === "acpx" && ["cursor", "pi", "copilot"].includes(acpxAgent) && !configuredModel && !schemaModel) {
+  if (provider === "acpx" && acpxAgent === "copilot" && (!configuredModel && !schemaModel || ["auto", "default"].includes((configuredModel || schemaModel).toLowerCase()))) {
+    throw new Error("Select an available Copilot model before saving.");
+  }
+  if (provider === "acpx" && ["cursor", "pi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
     throw new Error(`${acpxAgent} requires an explicit provider model`);
   }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"

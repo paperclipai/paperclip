@@ -60,10 +60,9 @@ export function trackIdleRequestHandlers(app: Application): void {
     for (const layer of stack) {
       if (seen.has(layer)) continue;
       seen.add(layer);
-      // Connect/Vite layers use a mount-path string for route; only Express
-      // Route objects contain a nested handler stack.
-      if (layer.route && typeof layer.route !== "string") { visit(layer.route.stack, true); continue; }
-      if (layer.handle.stack) { visit(layer.handle.stack); continue; }
+      // Connect/Vite mount paths are strings; Express Route stacks are arrays.
+      if (layer.route && typeof layer.route !== "string" && Array.isArray(layer.route.stack)) { visit(layer.route.stack, true); continue; }
+      if (Array.isArray(layer.handle.stack)) { visit(layer.handle.stack); continue; }
       const original = layer.handle;
       if (original === idleAdmissionMiddleware) continue;
       const invoke = (req: Request, args: unknown[]) => {

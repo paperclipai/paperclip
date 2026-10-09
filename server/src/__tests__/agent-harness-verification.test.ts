@@ -14,6 +14,7 @@ describe("saved harness verification", () => {
     ["warn", ["claude_acp_anthropic_api_key_detected", "claude_acp_login_probe_unavailable"]],
     ["warn", ["cli_version_probe_mismatch"]], ["pass", [ADAPTER_AUTH_MISSING_CHECK_CODE]],
     ["warn", ["claude_hello_probe_passed", "claude_hello_probe_auth_required"]],
+    ["pass", ["COPILOT_AUTH_REQUIRED"]], ["fail", ["COPILOT_MODEL_UNAVAILABLE"]],
   ] as const)("rejects %s with %j", (status, codes) => {
     expect(() => assertHarnessTestPassed(result(status, [...codes]))).toThrow("The harness test failed");
   });
@@ -21,6 +22,7 @@ describe("saved harness verification", () => {
     ["pass", ["process_command_available"]], ["warn", ["claude_hello_probe_passed", "optional_environment_warning"]],
     ["warn", ["claude_acp_anthropic_api_key_detected", "claude_hello_probe_passed"]],
     ["pass", ["codex_hello_probe_succeeded"]], ["warn", ["ai_connection_api_key_reverified"]],
+    ["pass", ["copilot_metadata_verified"]], ["warn", ["copilot_metadata_verified"]],
   ] as const)("accepts %s with %j", (status, codes) => {
     expect(() => assertHarnessTestPassed(result(status, [...codes]))).not.toThrow();
   });

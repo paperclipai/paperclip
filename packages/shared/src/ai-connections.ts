@@ -32,6 +32,7 @@ export const AI_PROVIDERS = [
   "openai",
   "openrouter",
   "xai",
+  "github",
   "google",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
@@ -79,6 +80,10 @@ export const AI_CONNECTION_CAPABILITIES: Record<
     >;
   }
 > = {
+  github: {
+    name: "GitHub Copilot",
+    methods: { api_key: { adapters: ["copilot_runtime"], envKey: "COPILOT_GITHUB_TOKEN" } },
+  },
   google: { name: "Google", methods: { api_key: { adapters: ["gemini_local"], envKey: "GEMINI_API_KEY" } } },
   anthropic: {
     name: "Claude",
@@ -123,7 +128,7 @@ export function isAiConnectionCompatible(
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local"].includes(adapterType);
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
@@ -185,6 +190,7 @@ export const createAiConnectionSchema = z
     ownership: z.enum(["personal", "shared"]),
     routing: aiProviderRoutingSchema.optional(),
     apiKey: z.string().trim().min(1).max(32768).optional(),
+    environmentId: z.string().uuid().nullable().optional(),
     loginSessionId: z.string().max(128).optional(),
     connectionId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),

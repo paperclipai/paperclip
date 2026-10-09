@@ -4,21 +4,11 @@ import { ACPX_QUALIFICATION_ENV, resolveAcpxQualification } from "./acpx-qualifi
 import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./provider-profile.js";
 
-const provider = { kind: "acpx", agent: "copilot", model: "exact-model", permissionMode: "approve-all" } as NativeExecutionInput["provider"];
+const provider = { kind: "acpx", agent: "copilot", model: "exact-model", permissionMode: "approve-all" } as Extract<NativeExecutionInput["provider"], { kind: "acpx" }>;
 const authorize = (value: unknown) => ({ [ACPX_QUALIFICATION_ENV]: JSON.stringify(value) });
 describe("host ACPX qualification admission", () => {
   afterEach(() => vi.unstubAllEnvs());
-  it.each(["copilot"])("admits %s through agent validation and native input only for the exact host pair", (agent) => {
-    const config = { provider: "acpx", acpxAgent: agent, model: "exact-model" };
-    vi.stubEnv(ACPX_QUALIFICATION_ENV, undefined);
-    expect(() => resolvePaperclipRunnerProviderProfile(config)).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
-    expect(() => resolvePaperclipRunnerProviderProfile({ ...config, env: authorize([{ agent, model: config.model }]), [ACPX_QUALIFICATION_ENV]: JSON.stringify([{ agent, model: config.model }]) })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
-    vi.stubEnv(ACPX_QUALIFICATION_ENV, JSON.stringify([{ agent, model: config.model }]));
-    expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject({ acpxAgent: agent, model: config.model });
-    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })).toMatchObject({ acpxAgent: agent, model: config.model });
-    expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "other-model" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_qualification_invalid" }));
-    expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
-  });
+
   it("admits only the exact Pi model without host authorization and preserves permission modes", () => {
     const config = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
     for (const authorization of [undefined, "malformed unrelated candidate authorization"]) {
@@ -34,18 +24,12 @@ describe("host ACPX qualification admission", () => {
       }
     }
   });
-  it("keeps normal candidate execution closed and admits only the exact operator pair", () => {
-    expect(resolveAcpxQualification(provider, {})).toBeUndefined();
-    expect(resolveAcpxQualification(provider, authorize([{ agent: "copilot", model: "exact-model" }]))).toBe("copilot");
-    for (const entries of [[{ agent: "pi", model: "exact-model" }], [{ agent: "copilot", model: "other-model" }]]) {
-      expect(() => resolveAcpxQualification(provider, authorize(entries))).toThrow("exact model");
-    }
-  });
+
   it.each([[], {}, [{ agent: "cursor", model: "" }], [{ agent: "cursor", model: " exact-model" }],
     [{ agent: "cursor", model: "exact-model", allowAll: true }], [{ agent: "claude", model: "exact-model" }],
     [{ agent: "cursor", model: "exact-model" }, { agent: "cursor", model: "exact-model" }],
   ])("rejects malformed or broad authorization %j", entries => {
-    expect(() => resolveAcpxQualification(provider, authorize(entries))).toThrow("Invalid ACPX");
+    expect(() => resolveAcpxQualification({ ...provider, agent: "pi" }, authorize(entries))).toThrow("Invalid ACPX");
   });
   it("admits Cursor through ordinary configuration and ignores unrelated qualification authority", () => {
     const config = { provider: "acpx", acpxAgent: "cursor", model: "exact-cursor-model" };
@@ -54,6 +38,17 @@ describe("host ACPX qualification admission", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })).toMatchObject({ acpxAgent: "cursor", model: config.model });
     expect(resolveAcpxQualification({ ...provider, agent: "cursor" } as typeof provider, authorize([]))).toBeUndefined();
     expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
+  });
+  it.each([undefined, "malformed", JSON.stringify([{agent:"pi",model:"pi-model"}])])("admits ordinary Copilot without host overrides (%s)", host => {
+    vi.stubEnv(ACPX_QUALIFICATION_ENV,host);
+    const config={provider:"acpx",acpxAgent:"copilot",model:"gpt-5.6-luna"};
+    expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject({acpxAgent:"copilot",model:config.model});
+    expect(resolvePaperclipRunnerNativeProviderInput({backend:"acpx_runtime",adapterConfig:config})).toMatchObject({acpxAgent:"copilot",model:config.model});
+    expect(resolveAcpxQualification({...provider,model:config.model},{})).toBe("copilot");
+  });
+  it.each(["", " ", "auto", "default"])("refuses implicit Copilot model %s",model=>{
+    expect(()=>resolvePaperclipRunnerProviderProfile({provider:"acpx",acpxAgent:"copilot",model})).toThrow(expect.objectContaining({code:"paperclip_runner_acpx_model_required"}));
+    expect(()=>resolveAcpxQualification({...provider,model},{})).toThrow("explicit available model");
   });
   it("does not alter existing qualified providers", () => {
     expect(resolveAcpxQualification({ ...provider, agent: "codex" } as typeof provider, authorize([]))).toBeUndefined();

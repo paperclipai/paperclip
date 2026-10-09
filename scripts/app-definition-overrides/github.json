@@ -8,10 +8,6 @@
     "ai"
   ],
   "featured": true,
-  "branding": {
-    "logoUrl": "/brands/apps/github.svg",
-    "darkLogoUrl": "/brands/apps/github-dark.svg"
-  },
   "urlPatterns": [
     "https://api.githubcopilot.com/mcp/*",
     "https://github.com/*"
@@ -69,7 +65,7 @@
           "required": true,
           "placeholder": "github_pat_...",
           "secret": true,
-          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
         }
       ],
       "keyPlacement": {

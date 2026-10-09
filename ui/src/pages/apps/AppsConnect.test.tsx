@@ -949,6 +949,49 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect for tool access instead");
   });
 
+  it.each([false, true])("opens Copilot with visible personal defaults and shares only by explicit choice (%s)", async (share) => {
+    mockSearch.value = "source=github&method=copilot-token";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.environments.list("company-1"), [
+      { id: "local-env", name: "Local", driver: "local", status: "active", config: {} },
+    ]);
+    client.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "local-env" });
+    const createAiAccount = vi.spyOn(aiConnectionsApi, "create").mockResolvedValue({
+      connectionId: "copilot-ai-account", grantId: "copilot-ai-grant",
+    });
+    await render(client);
+    await passAccessStep();
+    expect(container.textContent).toContain("personal fine-grained token with Copilot Requests permission");
+    expect(container.querySelector('input[placeholder="github_pat_..."]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Copilot execution environment"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Connects as you");
+    expect(container.textContent?.match(/Connects as you/g)).toHaveLength(1);
+    expect(container.textContent).toContain("Connect GitHub Copilot");
+    await openAccessAdvanced();
+    expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Only agents I choose")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("false");
+    if (share) {
+      await act(async () => radioContaining("Shared organization GitHub account")!.click());
+      await act(async () => radioContaining("Any agent")!.click());
+    }
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => setInputValue(key, "fixture-copilot-token"));
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(createAiAccount).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "github", method: "api_key", apiKey: "fixture-copilot-token",
+      ownership: share ? "shared" : "personal", allAgents: share, agentIds: [],
+      environmentId: "local-env",
+    }));
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/copilot-ai-account/permissions");
+  });
+
   it("states the GitHub identity default and keeps its controls one click away", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });

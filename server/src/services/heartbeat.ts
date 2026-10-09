@@ -323,6 +323,7 @@ import {
   isAiConnectionBusy,
   AI_AUTH_ENV_KEYS,
 } from "./ai-connection-runtime.js";
+import { supportsManagedNativeWarmSession, supportsNativeWarmFiles } from "./native-runtime/native-warm-capability.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "./ai-connection-session.js";
@@ -6836,8 +6837,7 @@ export function heartbeatService(
             const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
             const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
             const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-            const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
-              (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
+            const warmFiles = nativeRuntimeResolution.kind === "native" && (supportsNativeWarmFiles({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }) || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
               (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
                 ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
                 : parseObject(agent.adapterConfig).lifecycleMode === "warm");
@@ -7157,11 +7157,11 @@ export function heartbeatService(
             executionTarget.transport === "sandbox"
               ? (executionTarget.runnerLifecyclePolicy ?? null)
               : null;
-          // Native Codex owns a durable, session-scoped home. It flushes refreshed
-          // auth into each invocation's private home before that home is removed.
-          // Other managed harnesses still require per-turn credential cleanup.
+          // Codex refreshes its durable auth home; Copilot owns a fenced home
+          // and an explicitly bound token. Both retire on credential generation
+          // changes. Other managed harnesses require per-turn cleanup.
           const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-            nativeRuntimeResolution.profile.backend === "codex_app_server";
+            supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution);
           const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
             (nativeRuntimeResolution.profile.backend === "openai_dot_mcp" || managedAiRuntime && !supportsManagedWarmSession
               ? { mode: "per_turn" as const, idleTimeoutMs: null }

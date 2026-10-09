@@ -111,7 +111,7 @@ async function flushReact() {
   });
 }
 
-async function mount() {
+async function mount(nativeRunnerEnabled?: boolean) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -124,6 +124,7 @@ async function mount() {
     session: { id: "session-1", userId: "user-1" },
     user: { id: "user-1", name: "Example", email: "user-1@example.com", image: null },
   });
+  if (nativeRunnerEnabled !== undefined) queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: nativeRunnerEnabled, enableOpenAiDot: true });
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -286,5 +287,22 @@ describe("OnboardingWizard adapter selection", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("does not offer or retain Copilot when only OpenAI Dot is enabled", async () => {
+    mockAdapterRegistry.list = [{ type: "paperclip_runner" }, { type: "codex_local" }];
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
+    const { root, container } = await mount(false);
+    expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "codex_local", onboardingCopilot: false, model: "" });
+    expect(container.textContent).not.toContain("GitHub Copilot");
+    await act(async () => root.unmount());
+  });
+
+  it("restores a qualified Copilot draft without changing its explicit model", async () => {
+    mockAdapterRegistry.list = [{ type: "paperclip_runner" }];
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
+    const { root } = await mount(true);
+    expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" });
+    await act(async () => root.unmount());
   });
 });

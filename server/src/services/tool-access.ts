@@ -1039,7 +1039,8 @@ function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
   const availableMethods = new Set(getAvailableConnectionMethods(app));
   const toolMethods = app.methods.filter(
     (candidate) =>
-      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+      candidate.purpose !== "channel" && candidate.purpose !== "ai"
+      && candidate.transport !== "chat_sdk" && candidate.transport !== "runtime_auth"
       && (availableMethods.has(candidate) || isPaperclipCloudConnectorStrategy(candidate.oauthStrategy)),
   );
   const method = normalizedMethodKey
@@ -12457,7 +12458,8 @@ export function toolAccessService(
       galleryEntry &&
       getAvailableConnectionMethods(galleryEntry).filter(
         (candidate) =>
-          candidate.purpose !== "channel" && candidate.transport !== "chat_sdk",
+          candidate.purpose !== "channel" && candidate.purpose !== "ai"
+          && candidate.transport !== "chat_sdk" && candidate.transport !== "runtime_auth",
       ).length > 1 &&
       !inferredMethodKey
     ) {

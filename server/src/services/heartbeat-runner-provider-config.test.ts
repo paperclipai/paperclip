@@ -30,6 +30,23 @@ describe("Paperclip Runner native provider configuration", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server",
       adapterConfig: { provider: "codex", model }, codexCliVersion })).toMatchObject({ model });
   });
+  it.each([undefined, "0.156.0", "0.159.0"])(
+    "keeps the exact Copilot model independent of Codex CLI version %s",
+    (codexCliVersion) => {
+      const adapterConfig = {
+        provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+        acpxPermissionMode: "approve-paperclip",
+      };
+      expect(resolvePaperclipRunnerNativeProviderInput({
+        backend: "acpx_runtime", adapterConfig, codexCliVersion,
+      })).toEqual({
+        provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+        acpxPermissionMode: "approve-paperclip",
+      });
+      expect(adapterConfig.model).toBe("gpt-5.6-luna");
+    },
+  );
+
   it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
     "passes Grok's full-auto default or explicit %s policy to the native runner",
     (acpxPermissionMode) => {

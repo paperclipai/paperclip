@@ -157,6 +157,7 @@ const pass = {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  managedApi.setDefault.mockResolvedValue({});
   managedApi.list.mockResolvedValue({ currentUserId: "user-1", canManageConnections: true, connections: [] });
   container = document.createElement("div");
   document.body.append(container);
@@ -200,6 +201,59 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("refuses an undiscovered Copilot model before hiring with a saved connection", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT" }]);
+    await render("paperclip_runner", "copilot");
+    await fill("Model", "unavailable-copilot-model");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("select an available model");
+  });
+  it("preserves the authenticated Copilot model when hiring with a saved connection", async () => {
+    api.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT" }]);
+    await render("paperclip_runner", "copilot");
+    await fill("Model", "gpt-5.6-luna");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }),
+      runtimeConfig: expect.objectContaining({ aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } }),
+    }));
+  });
+  it("discovers models after the first Copilot token becomes the responsible user's default", async () => {
+    let defaultSaved = false;
+    managedApi.setDefault.mockImplementation(async () => { defaultSaved = true; return {}; });
+    api.adapterModels.mockImplementation(async () => {
+      if (!defaultSaved) throw new ApiError("Connect Copilot first", 422, null);
+      return [{ id: "gpt-5.6-luna", label: "GPT" }];
+    });
+    await render("paperclip_runner", "copilot");
+    const beforeConnection = api.adapterModels.mock.calls.length;
+    expect(beforeConnection).toBeGreaterThan(0);
+    const trigger = document.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.includes("Connect an account"));
+    expect(option).toBeDefined();
+    await act(async () => option!.click());
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="API key"]')!;
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "github_pat_fixture_first");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent?.trim() === "Connect")!;
+    expect(save).toBeTruthy();
+    await act(async () => save.click());
+    await settle();
+    expect(managedApi.setDefault).toHaveBeenCalledWith("company-1", "managed-grant");
+    expect(api.adapterModels).toHaveBeenCalledTimes(beforeConnection + 1);
+    expect(api.adapterModels.mock.invocationCallOrder[beforeConnection]).toBeGreaterThan(managedApi.setDefault.mock.invocationCallOrder[0]);
+    expect(api.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      provider: "acpx", acpxAgent: "copilot", aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" },
+    }));
+  });
+
   it("creates Dot through its independent choice without CLI or model setup, then routes to pairing", async () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true, enablePublicMcp: true });
     await render("paperclip_runner", "openai_dot");

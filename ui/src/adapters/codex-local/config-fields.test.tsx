@@ -99,7 +99,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("offers qualified Claude, Cursor and Pi while keeping Copilot disabled", async () => {
+  it("offers qualified Claude, Cursor, Pi and Copilot", async () => {
     const html = await renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
@@ -112,7 +112,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(Array.from(options, option => ({ label: option.textContent?.trim(), disabled: option.hasAttribute("data-disabled") })))
       .toEqual(expect.arrayContaining([
         { label: "Claude", disabled: false }, { label: "Cursor", disabled: false },
-        { label: "Pi", disabled: false }, { label: "GitHub Copilot — qualification pending", disabled: true },
+        { label: "Pi", disabled: false }, { label: "GitHub Copilot", disabled: false },
       ]));
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
