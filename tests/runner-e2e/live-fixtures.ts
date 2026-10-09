@@ -41,7 +41,7 @@ interface AgentRecord {
 interface ManagedAccountFixture {
   connectionId: string;
   binding: {
-    provider: "openai" | "anthropic" | "openrouter";
+    provider: "openai" | "anthropic" | "github" | "openrouter";
     method: "api_key";
     mode: "responsible_user";
   };
@@ -242,14 +242,15 @@ export async function setupLiveFixtures(input: {
   });
 
   const managedHiring = isManagedHiringCase(execution.suite.id, execution.task.id);
-  if (managedHiring) {
+  const savedCopilot = execution.profile.qualificationCandidate === "copilot";
+  if (managedHiring || savedCopilot) {
     registry.register<ManagedAccountFixture>({
       id: "ai-connection",
-      dependencies: ["company"],
+      dependencies: ["company", ...(savedCopilot ? ["environment"] : [])],
       async setup(resolved) {
         const company = value<CompanyRecord>(resolved, "company");
-        const key = execution.profile.credential;
-        const provider = key === "ANTHROPIC_API_KEY" ? "anthropic"
+        const key = savedCopilot ? "COPILOT_GITHUB_TOKEN" : execution.profile.credential;
+        const provider = savedCopilot ? "github" : key === "ANTHROPIC_API_KEY" ? "anthropic"
           : key === "OPENROUTER_API_KEY" ? "openrouter"
           : key === "OPENAI_API_KEY" ? "openai" : null;
         if (!provider) throw new Error(`Unsupported managed hiring credential ${key}`);
@@ -262,6 +263,7 @@ export async function setupLiveFixtures(input: {
             method: "api_key",
             name: `Runner E2E account ${input.executionNonce}`,
             ownership: "personal",
+            ...(savedCopilot ? { environmentId: value<EnvironmentRecord>(resolved, "environment").id } : {}),
             apiKey,
             agentIds: [],
             allAgents: false,
@@ -282,7 +284,7 @@ export async function setupLiveFixtures(input: {
       "secrets",
       "environment",
       ...(grokSubscription ? ["subscription-login"] : []),
-      ...(managedHiring ? ["ai-connection"] : []),
+      ...(managedHiring || savedCopilot ? ["ai-connection"] : []),
     ],
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
@@ -299,7 +301,7 @@ export async function setupLiveFixtures(input: {
         || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
         agent.budgetMonthlyCents = 1_000;
       }
-      if (managedHiring) {
+      if (managedHiring || savedCopilot) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
         delete config.env;

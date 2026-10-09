@@ -7,6 +7,10 @@ on:
         description: "Branch in this repository to build; resolved to one immutable commit before checkout"
         type: string
         required: false
+      build_eval_image:
+        description: "Build an immutable qualification image as an inspectable OCI artifact without publication"
+        type: boolean
+        default: false
       publish_eval_image:
         description: "Publish an immutable Daytona qualification image on hosted Linux (no provider credentials)"
         type: boolean
@@ -137,7 +141,11 @@ jobs:
           package-manager-cache: false
       - name: Resolve source dependencies without lifecycle scripts
         run: |
-          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          if [[ "${{ inputs.build_eval_image || inputs.publish_eval_image }}" == true ]]; then
+            pnpm install --frozen-lockfile --ignore-scripts
+          else
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          fi
           mkdir -p remote-verification
           sha256sum pnpm-lock.yaml > remote-verification/lock.sha256
           git rev-parse HEAD > remote-verification/source.txt
@@ -148,28 +156,46 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build checksum-verified Grok provider image
-        if: inputs.publish_eval_image
+      - name: Prepare hosted image build capacity
+        if: inputs.build_eval_image || inputs.publish_eval_image
+        run: |
+          # These preinstalled SDKs are absent from the image build context.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h .
+          test "$(df --output=avail -BG . | tail -1 | tr -dc '0-9')" -ge 35
+      - name: Build checksum-verified qualification image
+        if: inputs.build_eval_image || inputs.publish_eval_image
         env:
           SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}
         run: |
           set -euo pipefail
           image="ghcr.io/paperclipai/paperclip-daytona-runner:qualification-${SOURCE_SHA}-${GITHUB_RUN_ID}"
           lock_sha="$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+          content_id="$(node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/daytona-image-content.ts)"
+          [[ "$content_id" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s\n' "$content_id" > remote-verification/content-id.txt
+          output_args=(--output type=oci,dest=remote-verification/image.oci.tar)
+          if [[ "${{ inputs.publish_eval_image }}" == true ]]; then
+            output_args=(--push)
+          fi
           docker buildx build --platform linux/amd64 \
             --file docker/daytona-runner/Dockerfile \
             --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$SOURCE_SHA" \
-            --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=qualification-$SOURCE_SHA" \
+            --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=$content_id" \
             --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=$lock_sha" \
             --cache-from type=registry,ref=ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64 \
-            --tag "$image" --metadata-file remote-verification/image.json --push .
+            --tag "$image" --metadata-file remote-verification/image.json "${output_args[@]}" .
           digest="$(jq -r '."containerimage.digest"' remote-verification/image.json)"
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           immutable="${image%:*}@$digest"
-          docker logout ghcr.io
-          docker buildx imagetools inspect "$immutable" >/dev/null
+          if [[ "${{ inputs.publish_eval_image }}" == true ]]; then
+            docker logout ghcr.io
+            docker buildx imagetools inspect "$immutable" >/dev/null
+          else
+            sha256sum remote-verification/image.oci.tar > remote-verification/image-archive.sha256
+          fi
           echo "$immutable" > remote-verification/image.txt
-          echo "Image: $immutable" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: $immutable; published: ${{ inputs.publish_eval_image }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Verify repository on hosted Linux
         if: inputs.verify_source
         # Leave time for artifact retention within the job deadline.
@@ -213,4 +239,5 @@ jobs:
         with:
           name: grok-remote-verification-${{ github.run_id }}
           path: remote-verification/
-          retention-days: 7
+          compression-level: 0
+          retention-days: ${{ inputs.build_eval_image && 1 || 7 }}

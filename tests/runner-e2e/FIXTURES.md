@@ -153,7 +153,9 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines. The ordinary warm fixture uses managed instructions,
+ten-minute turn deadlines. Warm prompts define each newline as the actual LF
+byte 10 and require byte verification independent of the write expression;
+literal backslash-plus-n remains a failing output. The ordinary warm fixture uses managed instructions,
 updates AGENT_HOME each turn, and verifies memory, an unchanged 8 MiB binary and
 a deletion through public file APIs. Native turns 2 and 3 must copy/hash only the
 changed memory file, with a saved receipt and the same provider PID. Journal and
@@ -172,7 +174,12 @@ Native turns 1 and 2 include an actionable human review in the completion report
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
 task state. Each case creates and tears down its own company, secrets,
-environment selection, agent, and browser-created task. The current plan case
+environment selection, agent, and browser-created task. Strict Copilot command,
+denial, pending-permission Stop and provider-death fixtures create an explicit
+title through the production search composer and bind the task to the public
+browser creation response ID. Automatic prompt-only naming must not add a
+native semantic operation or break task correlation. Command, permission,
+receipt, ordering and cleanup assertions remain unchanged. The current plan case
 proves three runs on the same issue: publish a two-step Plan,
 request a three-step revision through the UI, and accept the exact new revision
 through the UI before verifying implementation and Done.

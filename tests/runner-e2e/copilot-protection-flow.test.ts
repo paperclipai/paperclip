@@ -1,5 +1,5 @@
 import { matchCopilotFixtureCommand } from "./copilot-protection-evidence.js";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, utimesSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, mkdtemp, rm, writeFile, unlink, rename, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { createCopilotToolEvidence } from "../../packages/paperclip-runner/src/d
 import { validateAcpxRichEvent } from "../../packages/paperclip-runner/src/drivers/acpx/profile-extensions.js";
 import { copilotOrigin, readCopilotToolEvidence } from "./copilot-evidence.js";
 import { copilotProtectionCases, gradeCopilotAttachedSettlement, gradeCopilotDeniedWrite } from "./copilot-protection-cases.js";
-import { createAttachedCommandFixture, createDeniedTargetFixture, bindDeniedTargetPrompt, watchDeniedTarget, exists, isPerTurnRunProcess } from "./copilot-local-fixtures.js";
+import { createAttachedCommandFixture, createDeniedTargetFixture, bindDeniedTargetPrompt, watchDeniedTarget, exists, isPerTurnRunProcess, retainRunProcessIdentity } from "./copilot-local-fixtures.js";
 import { runnerMatrix, suiteDefinitionHash } from "./catalog.js";
 import { selectRunnerExecutions, parseRunnerSelectors } from "./selectors.js";
 
@@ -26,8 +26,8 @@ function projected(name: string, target = "copilot-denied-nonce.txt") {
 describe("Copilot Product protection integration", () => {
   it("registers two explicit cases on both environments with honest terminal expectations", () => {
     const cells = runnerMatrix.filter(x => x.suite.id === "copilot-protection");
-    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 9, naturalSettlementObservationMs: 2000, denialTerminal: "correlated-provider-settlement-and-audited-run-stop",
-      denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v3", activeTurnCancellation: "not-implied-by-completed-provider-turn" });
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 23, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", naturalSettlementObservationMs: 2000, denialTerminal: "correlated-provider-settlement-and-audited-run-stop",
+      denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v4", activeTurnCancellation: "not-implied-by-completed-provider-turn" });
     expect(suiteDefinitionHash(cells[0]!.suite)).not.toBe(suiteDefinitionHash({ ...cells[0]!.suite, definitionMetadata: { version: 2 } }));
     expect(cells).toHaveLength(4); expect(new Set(cells.map(c => c.environment.id))).toEqual(new Set(["local", "daytona"]));
     expect(cells.every(c => c.profile.qualificationCandidate === "copilot" && c.task.expectedRunCount === 1)).toBe(true);
@@ -41,9 +41,10 @@ describe("Copilot Product protection integration", () => {
       request: { ...request, requestId: "permission", method: "session/request_permission" as const, targetRelativePath: request.target!, offeredActions: request.declineOffered ? ["decline"] : [] },
       decision: { ...delivered, requestId: "permission", browserRequestId: "permission", action: delivered.outcome === "reject_once" ? "decline" : "accept" },
       deliveredDecision: { ...delivered, requestId: "permission", outcome: delivered.outcome! },
-      toolResult: { ...failed, status: "failed" as const }, terminal: { runId: "run", turnId: "turn", observedAtMs: 50, status: "cancelled" as const }, settlement: { schema: "paperclip.e2e.copilot-denial-settlement.v3" as const, ...copilotOrigin(request), requestId: "permission",
+      toolResult: { ...failed, status: "failed" as const }, terminal: { runId: "run", turnId: "turn", observedAtMs: 50, status: "cancelled" as const }, settlement: { schema: "paperclip.e2e.copilot-denial-settlement.v4" as const, ...copilotOrigin(request), requestId: "permission",
         branch: "provider_cancelled_or_interrupted" as const, providerCancellationTerminalObserved: true,
         preStop: { schema: "paperclip.e2e.copilot-pre-stop-observation.v2" as const, ...copilotOrigin(request), requestId: "permission", companyId: "company", normalizedSessionId: "normalized", sourceInstanceId: "runner", failedToolSourceSeq: 5, failedToolRowSha256: `sha256:${"a".repeat(64)}`, terminal: null, apiReadCompletedMonotonicNs: "10", cancellationRequestId: "11111111-1111-4111-8111-111111111111" }, stopDispatchMonotonicNs: "20",
+      stopAcknowledgement: { schema: "paperclip.e2e.copilot-stop-acknowledgement.v1" as const, companyId: "company", runId: "run", issueId: "issue", callerUserId: "local-board", fixtureCorrelationId: "11111111-1111-4111-8111-111111111111", dispatchMonotonicNs: "20", apiResponseObservedMonotonicNs: "21", intentId: "native-cancellation:11111111-1111-4111-8111-111111111111", intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", responseMetadataSha256: `sha256:${"c".repeat(64)}` },
       providerTerminal: { rowSha256: `sha256:${"b".repeat(64)}`, failedToolRowSha256: `sha256:${"a".repeat(64)}`, eventType: "turn.cancelled" as const, normalizedSessionId: "normalized", sourceInstanceId: "runner", requestSourceSeq: 1, resolvedSourceSeq: 2, deliveredSourceSeq: 3, failedNoticeSourceSeq: 4, failedToolSourceSeq: 5, failedToolRowCreatedAtMs: 31, sourceSeq: 6, emittedAtMs: 50, rowCreatedAtMs: 51 },
         runStop: { companyId: "company", issueId: "issue", scope: "run" as const, status: "cancelled" as const, issueStatus: "in_progress" as const, intentId: "native-cancellation:11111111-1111-4111-8111-111111111111", intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", requestedAtMs: 40, recordedAtMs: 41, acknowledgedAtMs: 52, finishedAtMs: 53 } },
       cleanup: { observedAtMs: 60, ownedProcessesRemaining: 0 }, nativeAttemptsForTarget: 1,
@@ -89,15 +90,18 @@ describe("Copilot Product protection integration", () => {
   });
   it("retains a coverage gap when create/delete occurs before callbacks can arrive", async () => {
     const root = await mkdtemp("/tmp/pc-denial-gap-");
-    const fixture = await createDeniedTargetFixture(root, "denied");
+    // Make the pre-mutation version distinct even on filesystems that coalesce
+    // directory timestamps within one clock tick. Assertions remain immediate.
+    utimesSync(root, new Date(0), new Date(0));
+    const watcher = watchDeniedTarget(root, "denied"), targetPath = join(root, "denied");
     try {
-      writeFileSync(fixture.targetPath, "x"); unlinkSync(fixture.targetPath);
-      const receipt = fixture.watcher.finish();
+      writeFileSync(targetPath, "x"); unlinkSync(targetPath);
+      const receipt = watcher.finish();
       expect(receipt).toMatchObject({ complete: false, targetMutationCount: 0 });
       expect(receipt.reasons).toContain("coverage-gap-parent-version-changed");
       expect(receipt.finalParent).not.toEqual(receipt.initialParent);
-      expect(fixture.watcher.finish()).toBe(receipt);
-    } finally { fixture.watcher.finish(); await rm(root, { recursive: true, force: true }); }
+      expect(watcher.finish()).toBe(receipt);
+    } finally { watcher.finish(); await rm(root, { recursive: true, force: true }); }
   });
   it("refuses a preexisting target, symlink parent and ambiguous prompt", async () => {
     const root = await mkdtemp("/tmp/pc-denial-invalid-");
@@ -134,6 +138,13 @@ describe("Copilot Product protection integration", () => {
     expect(isPerTurnRunProcess({ ...authority, groupId: 101 }, observed, args)).toBe(false);
     expect(isPerTurnRunProcess(authority, { ...observed, start: new Date(1_700_000_001_000).toString() }, args)).toBe(false);
   });
+  it("retains lost process identity after a later empty retirement sample", () => {
+    let sample = { captured: true, live: [100], identityChanged: false };
+    sample = retainRunProcessIdentity(sample, { captured: true, live: [], identityChanged: true });
+    sample = retainRunProcessIdentity(sample, { captured: true, live: [], identityChanged: false });
+    expect(sample).toEqual({ captured: true, live: [], identityChanged: true });
+    expect(retainRunProcessIdentity({ captured: true, live: [100] }, { captured: true, live: [] }).identityChanged).toBe(false);
+  });
   it("reaps a real finite child before its provider-style client can exit", async () => {
     const root = await mkdtemp("/tmp/pc-copilot-command-"); const fixture = await createAttachedCommandFixture(join(root, "marker"), 150);
     try {
@@ -143,6 +154,22 @@ describe("Copilot Product protection integration", () => {
       expect(proof.commandExit?.code).toBe(0); expect(proof.commandExit!.observedAtMs).toBeLessThanOrEqual(observedAtMs);
       expect(await readFile(join(root, "marker"), "utf8")).toBe(fixture.marker);
     } finally { await fixture.close(); await rm(root, { recursive: true, force: true }); }
+  });
+  it("holds only the owned child until the controller releases the observed finish boundary", async () => {
+    const root = await mkdtemp("/tmp/pc-copilot-gated-command-"); const fixture = await createAttachedCommandFixture(join(root, "marker"), 100, true);
+    const client = spawn("/bin/sh", ["-c", fixture.command], { stdio: "ignore" });
+    const exited = new Promise<number | null>(resolve => client.once("exit", resolve));
+    try {
+      const deadline = Date.now() + 3000;
+      while (!fixture.snapshot().childPid && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(fixture.snapshot()).toMatchObject({ connections: 1, failure: null, commandExit: null, childGone: false, clientGone: false });
+      const release = fixture.releaseAfterFinish();
+      expect(() => fixture.releaseAfterFinish()).toThrow();
+      expect(await exited).toBe(0);
+      expect(fixture.snapshot().commandExit!.observedAtMs).toBeGreaterThan(release.releasedAtMs);
+      expect(await readFile(join(root, "marker"), "utf8")).toBe(fixture.marker);
+    } finally { await fixture.close(); await exited; await rm(root, { recursive: true, force: true }); }
   });
 });
 

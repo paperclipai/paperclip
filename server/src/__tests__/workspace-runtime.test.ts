@@ -7363,7 +7363,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const blockerScript = [
       "const net=require('node:net');",
       "const port=Number(process.argv[1]);",
-      "net.createServer((socket)=>socket.destroy()).listen(port,'127.0.0.1');",
+      "net.createServer((socket)=>socket.destroy()).listen(port,'127.0.0.1',()=>process.send({ready:true}));",
     ].join("");
     const raceScript = [
       "const fs=require('node:fs');",
@@ -7376,8 +7376,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       "const start=()=>http.createServer((_req,res)=>res.end('ok')).listen(port,'127.0.0.1');",
       "if(!fs.existsSync(marker)){",
       "fs.writeFileSync(marker,String(port));",
-      "const blocker=spawn(process.execPath,['-e',blockerScript,String(port)],{detached:true,stdio:'ignore'});",
-      "fs.writeFileSync(pidFile,String(blocker.pid));blocker.unref();setTimeout(start,200);",
+      "const blocker=spawn(process.execPath,['-e',blockerScript,String(port)],{detached:true,stdio:['ignore','ignore','ignore','ipc']});",
+      "fs.writeFileSync(pidFile,String(blocker.pid));",
+      "const readyDeadline=setTimeout(()=>{throw new Error('Fixture blocker did not become ready');},5000);",
+      "blocker.once('message',(message)=>{if(message?.ready!==true)throw new Error('Invalid fixture readiness message');clearTimeout(readyDeadline);blocker.disconnect();blocker.unref();start();});",
       "}else{start();}",
       "setInterval(()=>{},1000);",
     ].join("");

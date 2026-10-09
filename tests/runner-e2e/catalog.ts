@@ -11,6 +11,7 @@ import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./nativ
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
+import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
@@ -952,7 +953,8 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
     `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
     turn === 1
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
-      : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
+      : `Before changing anything, read ${file} and verify its content is exactly these prior lines in order, each followed by a newline: ${lines.slice(0, -1).join(" | ")}. Then append exactly ${lines.at(-1)} followed by a newline.`,
+    "Each newline in this task means the actual LF character (byte 10), including in personal memory files. An escaped representation containing a literal backslash and n is not a newline. Verify the saved bytes against the requested line content and LF byte 10, independently of the string expression used to write them.",
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
     `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},attentionRequests:${JSON.stringify(reviewRequests)},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
     legacyCompletion,
@@ -1134,20 +1136,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     excludedExecutionIds: ["pi-native.runner-acpx-pi.daytona.restrictive-denial", "pi-native.runner-acpx-pi.local.native-pending-provider-death"],
     definitionMetadata: { version: 23, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", agentMemoryParent: "public-managed-file-seed-before-admission", incompleteTerminalCleanup: "retirement-retained-with-failed-watch", qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, agentMemoryContent: "utf8-nonce-plus-final-lf", agentMemoryPrompt: "single-json-write-and-content-bound-native-read-both-runs", agentMemoryReadAuthority: "local-withheld-or-exact-remote-agent-run-file", taskPromptTransport: "fenced-markdown-paste-and-multiline-literal-escapes", nativeFinish: "current-contract-objective-evidence-refs", providerDeath: "daytona-exact-pi-child-pidfd-production-expiry", providerFaultExecutable: "stable-preinstalled-runner-link-and-snapshot-node-inode-with-held-bootstrap-fd-3-or-7", remoteBootstrapAdmission: "owned-active-lease-with-native-runtime-readiness-rpc-v1", remoteBootstrapApproval: "exact-published-native-read-public-accept-once-v1", remoteDenyAll: "unsupported-native-bootstrap-read-is-denied", remoteEvidence: "owned-lease-sealed-observer", pendingControllerRestart: "same-live-native-request-trusted-ancestry-cleanup" },
   },
-  {
-    id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
-    description: "Stop while one exact Cursor or Copilot native permission remains unanswered; require cancelled provider settlement, caller-owned acknowledgement, stale-answer refusal and independent retirement/no effects.",
-    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => ["cursor", "copilot"].includes(profile.qualificationCandidate ?? "")),
-    environments: runnerEnvironments, tasks: nativeActiveStopTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v2", pendingObservation: "retained-api-before-caller-uuid-stop", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" },
-  },
-  {
-    id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
-    description: "Exact native denial with independently correlated provider settlement and acknowledged run Stop, plus attached command settlement with independent process evidence.",
-    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
-    environments: runnerEnvironments, tasks: copilotProtectionTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 9, outputProhibition: "separate-publication-and-attachment", semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v2", qualification: "pending", naturalSettlementObservationMs: 2000, scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "correlated-provider-settlement-and-audited-run-stop", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v3", activeTurnCancellation: "not-implied-by-completed-provider-turn", settlement: "attached-finite-command-only", settlementMarker: "private-diagnostic-not-deliverable", remoteEvidence: "owned-lease-sealed-observer" },
-  },
+
+
   {
     id: "rich-acp-warm-continuity", label: "Rich ACP warm continuity", manualOnly: true,
     description: "Three browser-driven turns with stable native session, runner process and workspace identity for Cursor, Copilot and Pi.",
@@ -1202,7 +1192,30 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["legacy"], profiles: runnerProfiles.filter(p => ["legacy-codex", "legacy-claude"].includes(p.id)).map(blockerProfile),
     environments: [localEnvironment], tasks: blockerTasks, expectedMatrixSize: 6,
     definitionMetadata: { version: 1, instructions: "production-coordination-skill", grading: "saved-human-decision-ownership-and-resume", scheduling: "explicit-only" },
-  }, {
+  },
+
+  {
+    id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
+    description: "Stop while one exact Cursor or Copilot native permission remains unanswered; require cancelled provider settlement, caller-owned acknowledgement, stale-answer refusal and independent retirement/no effects.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => ["cursor", "copilot"].includes(profile.qualificationCandidate ?? "")),
+    environments: runnerEnvironments, tasks: nativeActiveStopTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 20, copilotDefinition: { version: 19, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", processAuthority: "local-native-root-or-attested-remote-root", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", bootstrapPrompt: "already-exposed-dedicated-context-before-native-edit", editOrigin: "exact-permission-target-and-native-call-identity", stopAcknowledgement: "retained-current-mainline-api-response", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v3", pendingObservation: "retained-api-before-stop-with-fixture-correlation", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" }, qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v2", pendingObservation: "retained-api-before-caller-uuid-stop", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" },
+  },
+  {
+    id: "copilot-provider-death", label: "Copilot provider death", manualOnly: true,
+    description: "Terminate only the verified owned Copilot child with an unanswered permission; require callback expiry, stale-answer refusal, no replay and independent retirement.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
+    environments: runnerEnvironments, tasks: copilotProviderDeathTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 17, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", linuxDeathExecutable: "verified-inherited-descriptor-and-live-executable-inode", processAuthority: "local-native-root-or-attested-remote-root", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", finalUiStatus: "blocked-with-current-mainline-attention-label", bootstrapPrompt: "already-exposed-dedicated-context-before-native-edit", editOrigin: "exact-permission-target-and-native-call-identity", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.copilot-provider-death.v1", signal: "SIGKILL", target: "owned-native-child-only", permissionPolicy: "approve-reads", lifecycle: "per_turn", automaticRetries: 0 },
+  },
+  {
+    id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
+    description: "Exact native denial with independently correlated provider settlement and acknowledged run Stop, plus attached command settlement with independent process evidence.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
+    environments: runnerEnvironments, tasks: copilotProtectionTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 23, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", denialContext: "already-exposed-dedicated-tool-before-write", stopAcknowledgement: "retained-current-mainline-api-response", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v4", qualification: "pending", naturalSettlementObservationMs: 2000, scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "correlated-provider-settlement-and-audited-run-stop", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v4", activeTurnCancellation: "not-implied-by-completed-provider-turn", settlement: "attached-finite-command-released-after-native-finish-receipt", settlementMarker: "private-diagnostic-not-deliverable", remoteEvidence: "owned-lease-sealed-observer" },
+  },
+  {
     id: "native-provider-loss", label: "Lose a runtime with an unanswered native permission", manualOnly: true,
     description: "Lose the owned Cursor runtime while a native mutation remains unanswered; require a visible failed run, closed unanswerable input, stale-answer refusal and independent retirement with no effects or replay.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
@@ -1217,7 +1230,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       buildMatchers: () => [],
     }], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", fault: "observed-per-turn-run-root-loss", remoteFaultAuthority: "pidfd-start-ticks-boot-id", replayAllowed: false },
-  },  {
+  },
+
+  {
     id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,
     description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
@@ -1553,7 +1568,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
-    definitionMetadata: { version: 3, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
+    definitionMetadata: { version: 4, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
   },
   {
     id: "daytona-journal-continuity",
@@ -1601,7 +1616,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     }],
     tasks: [daytonaGitStreamingTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 8, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+    definitionMetadata: { version: 9, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
 ] as const;

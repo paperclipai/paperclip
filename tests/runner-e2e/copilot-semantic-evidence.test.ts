@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { onlyCopilotAttachedOperations, readCopilotSemanticCompletion } from "./copilot-semantic-evidence.js";
+import { copilotAttachedFinishReady, copilotFinishAttemptBeforeCommandExit, onlyCopilotAttachedOperations, readCopilotSemanticCompletion } from "./copilot-semantic-evidence.js";
 import { readCopilotToolEvidence } from "./copilot-evidence.js";
+import { copilotActionNotices, findCopilotFixtureCommand } from "./copilot-protection-evidence.js";
 import { validatePrpStructuredRunResult } from "../../packages/paperclip-runner/src/protocol/replay-contract.js";
 import { runnerSuites, suiteDefinitionHash } from "./catalog.js";
 const hash = (v: string) => createHash("sha256").update(v).digest("hex");
@@ -30,10 +31,47 @@ function fixture() {
 const frame = (r: any) => r.payload.prpEvent;
 function setField(r: any, key: string, value: string) { frame(r).payload.details.find((d: any) => d.name === key).value = value; }
 describe("Copilot semantic completion public-event oracle", () => {
-  it("versions the actual Copilot suite oracle without changing denial settlement", () => {
+  it("attests the retained v15 context read before independently accepting its exact finish", async () => {
+    const retained = JSON.parse(await readFile(new URL("./fixtures/copilot-context-attached-completion-v15.json", import.meta.url), "utf8"));
+    const notices = readCopilotToolEvidence(retained.rows, retained.rows[0].runId);
+    const command = notices.find(n => n.operation === "execute" && n.status === "pending")!;
+    const proof = readCopilotSemanticCompletion(retained.rows, { companyId: retained.rows[0].companyId,
+      runId: command.runId, turnId: command.turnId, nativeSessionId: command.sessionId, command,
+      summary: retained.summary, requireContextRead: true });
+    expect(proof).toMatchObject({ schema: "paperclip.e2e.copilot-semantic-completion.v4", contextRead: { canonicalSeqs: expect.any(Array) } });
+    expect(proof.contextRead!.completedSeq).toBeLessThan(command.seq);
+    expect(onlyCopilotAttachedOperations(copilotActionNotices(notices, command, undefined, retained.rows), command, proof)).toBe(true);
+    for (const invalid of ["missing", "duplicate", "error", "foreign", "late", "mutating", "wrong-input", "missing-canonical", "failed-canonical", "native-mutation", "canonical-mutation", "not-read-only", "source-sequence-drift", "extra-context-call"]) {
+      const rows = structuredClone(retained.rows);
+      const receipt = rows.find((r: any) => r.seq === proof.contextRead!.receiptSeq)!;
+      if (invalid === "missing") rows.splice(rows.indexOf(receipt), 1);
+      if (invalid === "duplicate") rows.push(structuredClone(receipt));
+      if (invalid === "error") setField(receipt, "outcome", "error");
+      if (invalid === "foreign") frame(receipt).sourceInstanceId = "foreign";
+      if (invalid === "late") receipt.seq = command.seq + 1;
+      if (invalid === "mutating") setField(receipt, "operationId", "report_progress");
+      if (invalid === "wrong-input") setField(receipt, "inputSha256", hash("foreign"));
+      const canonical = rows.find((r: any) => r.seq === proof.contextRead!.canonicalSeqs.at(-1))!;
+      if (invalid === "missing-canonical") rows.splice(rows.indexOf(canonical), 1);
+      if (invalid === "failed-canonical") frame(canonical).payload.status = "failed";
+      if (invalid === "native-mutation") setField(rows.find((r: any) => r.seq === proof.contextRead!.pendingSeq), "operation", "edit");
+      if (invalid === "canonical-mutation") frame(canonical).payload.operation = "edit";
+      if (invalid === "not-read-only") frame(canonical).payload.readOnly = false;
+      if (invalid === "source-sequence-drift") { frame(canonical).sourceSeq = command.seq + 1; canonical.sourceSeq = command.seq + 1; }
+      if (invalid === "extra-context-call") rows.push(structuredClone(rows.find((r: any) => r.seq === proof.contextRead!.completedSeq)));
+      expect(() => readCopilotSemanticCompletion(rows, { companyId: rows[0].companyId,
+        runId: command.runId, turnId: command.turnId, nativeSessionId: command.sessionId, command,
+        summary: retained.summary, requireContextRead: true }), invalid).toThrow();
+    }
+  });
+  it("cannot qualify a historical finish without the now-required context read", () => {
+    const f = fixture();
+    expect(() => readCopilotSemanticCompletion(f.rows, { ...f.expected, requireContextRead: true })).toThrow("context read");
+  });
+  it("versions semantic completion and current-mainline denial settlement independently", () => {
     const suite = runnerSuites.find(s => s.id === "copilot-protection")!;
-    expect(suite.definitionMetadata).toMatchObject({ version: 9, semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v2", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v3" });
-    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, version: 7 } }));
+    expect(suite.definitionMetadata).toMatchObject({ version: 23, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v4", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v4" });
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, version: 8 } }));
   });
   it("joins exact native lifecycle, authoritative callback, proposed content and accepted control-plane result", () => {
     const { rows, expected } = fixture(); const proof = readCopilotSemanticCompletion(rows, expected);
@@ -125,6 +163,35 @@ describe("Copilot semantic completion public-event oracle", () => {
     expect(f.notices.find(n => n.toolCallId === "shell-read" && n.status === "pending")?.commandToolCallId).toBeUndefined();
     expect(onlyCopilotAttachedOperations(f.notices, f.command, f.proof)).toBe(true);
   });
+  it("rejects waiting on read_bash before attempting finish", () => {
+    const f = attachedFixture();
+    f.notices.find(n => n.toolCallId === "shell-read" && n.status === "pending")!.seq = 16;
+    expect(onlyCopilotAttachedOperations(f.notices, f.command, f.proof)).toBe(false);
+  });
+  it("requires an independently observed exit strictly after the finish attempt", () => {
+    const f = attachedFixture(), at = f.proof.nativePendingObservedAtMs;
+    expect(copilotFinishAttemptBeforeCommandExit(f.proof, at + 1)).toBe(true);
+    for (const exitAt of [at - 1, at, NaN, Infinity]) expect(copilotFinishAttemptBeforeCommandExit(f.proof, exitAt)).toBe(false);
+  });
+  it("releases the fixture only after a matching native finish receipt", () => {
+    const f = attachedFixture();
+    expect(copilotAttachedFinishReady(f.notices, f.command)).toMatchObject({ toolCallId: f.proof.nativeToolCallId, status: "pending" });
+    for (const changed of [{ turnId: "foreign" }, { sessionId: "foreign" }, { semanticOutcome: "error" }]) {
+      const partial = f.notices.map(n => n.semanticOperationId === "paperclip_finish" ? { ...n, ...changed } : n);
+      expect(copilotAttachedFinishReady(partial as any, f.command)).toBeUndefined();
+    }
+    const incomplete = f.notices.filter(n => !(n.toolCallId === f.proof.nativeToolCallId && n.status === "pending"));
+    expect(() => copilotAttachedFinishReady(incomplete, f.command)).toThrow("matching finish origin");
+  });
+  it.each(["", " ", "\t ", "        "])("releases an accepted whitespace-prefixed command through the same finish gate: %j", prefix => {
+    const f = attachedFixture(), command = "printf fixture";
+    const nativeDigest = `sha256:${hash(prefix + command)}`;
+    for (const n of f.notices.filter(n => n.toolCallId === f.command.toolCallId)) n.commandSha256 = nativeDigest;
+    const matched = findCopilotFixtureCommand(f.notices, command);
+    expect(matched?.match.leadingWhitespace).toBe(prefix);
+    expect(copilotAttachedFinishReady(f.notices, matched!.call)?.toolCallId).toBe(f.proof.nativeToolCallId);
+    expect(findCopilotFixtureCommand(f.notices, command + " changed")).toBeNull();
+  });
   it("accepts bounded in-progress shell updates without inventing terminal command identity", () => {
     const f = attachedFixture(), pending = f.notices.find(n => n.toolCallId === "shell-read" && n.status === "pending")!;
     f.notices.push({ ...pending, status: "in_progress", seq: 53 });
@@ -169,7 +236,7 @@ describe("Copilot semantic completion public-event oracle", () => {
   it("keeps actual flow correlation before no-extra-operation gate and keeps visible marker independent", async () => {
     const source = await readFile(new URL("./copilot-protection-flow.ts", import.meta.url), "utf8");
     expect(source.indexOf("readCopilotSemanticCompletion(runEvents")).toBeLessThan(source.indexOf('check("no-extra-native-operation", onlyCopilotAttachedOperations('));
-    expect(source).toContain("undefined), call!, semantic)");
+    expect(source).toContain("undefined, runEvents), call!, semantic)");
     expect(source).toContain('check("exact-completion-marker", comments.filter');
     expect(source).not.toContain('if (remote) check("no-extra-native-operation"');
   });

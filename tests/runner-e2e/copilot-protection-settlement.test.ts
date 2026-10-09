@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { applyMainlineStopMetadata, stopAcknowledgementForTest } from "./copilot-stop-test-fixtures.js";
 import { readCopilotToolEvidence } from "./copilot-evidence.js";
 import { observeCopilotPreStop, copilotDenialSampleCursor, readCopilotDenialSettlement } from "./copilot-protection-evidence.js";
 import { settleCopilotDeniedRun } from "./copilot-protection-flow.js";
@@ -30,18 +31,19 @@ function fixture(eventType = "turn.completed") {
       dispatchState: "acknowledged", reasonCode: "cancellation_run_only", effects: ["release_run_resources"], intentId: "native-cancellation:11111111-1111-4111-8111-111111111111",
       intentAuditId: "intent-audit", acknowledgementAuditId: "ack-audit", recordedAt: date(901), acknowledgedAt: date(909),
     } } };
+  applyMainlineStopMetadata(run);
   const request = readCopilotToolEvidence(events, "run")[0]!;
   const preStop = observeCopilotPreStop({ events, request, companyId: "company", cancellationRequestId: "11111111-1111-4111-8111-111111111111" });
-  return { events, request, run, issue: { id: "issue", companyId: "company", status: "in_progress" }, preStop, stopDispatchMonotonicNs: process.hrtime.bigint().toString() };
+  const stopDispatchMonotonicNs = process.hrtime.bigint().toString();
+  const stopAcknowledgement = stopAcknowledgementForTest(run, preStop.cancellationRequestId, stopDispatchMonotonicNs);
+  return { events, request, run, issue: { id: "issue", companyId: "company", status: "in_progress" }, preStop, stopDispatchMonotonicNs, stopAcknowledgement };
 
 }
 const terminal = (f: ReturnType<typeof fixture>) => f.events[4]!.payload.prpEvent;
 const liveRun = (f: ReturnType<typeof fixture>) => ({ ...f.run, status: "running", resultJson: {} });
 function stopPost(f: ReturnType<typeof fixture>, callback = () => {}) {
-  return vi.fn(async (_path: string, body: { cancellationRequestId: string }) => {
+  return vi.fn(async (_path: string) => {
     callback();
-    f.run.resultJson.startupCancellation.cancellationRequestId = body.cancellationRequestId;
-    f.run.resultJson.nativeCancellation.intentId = `native-cancellation:${body.cancellationRequestId}`;
     return f.run;
   });
 }
@@ -54,6 +56,7 @@ describe("Copilot denial provider settlement and separate audited run Stop", () 
     // Native/provider clock skew is irrelevant to the operator causal boundary.
     terminal(f).emittedAt = date(999);
     f.preStop = observeCopilotPreStop({ ...f, companyId: "company", cancellationRequestId: "11111111-1111-4111-8111-111111111111" }); f.stopDispatchMonotonicNs = process.hrtime.bigint().toString();
+    f.stopAcknowledgement = stopAcknowledgementForTest(f.run, f.preStop.cancellationRequestId, f.stopDispatchMonotonicNs);
     expect(readCopilotDenialSettlement(f).branch).toBe("provider_completed_observed_before_stop");
   });
   it.each(["turn.cancelled", "turn.interrupted"])("retains the distinct observed %s branch", type => {
@@ -66,6 +69,7 @@ describe("Copilot denial provider settlement and separate audited run Stop", () 
   it.each(["equal", "later"])("accepts observed pre-Stop completion with %s transaction time, without ordering it against ack", kind => {
     const f = fixture(); f.events[4]!.createdAt = date(kind === "equal" ? 909 : 910);
     f.preStop = observeCopilotPreStop({ ...f, companyId: "company", cancellationRequestId: "11111111-1111-4111-8111-111111111111" }); f.stopDispatchMonotonicNs = process.hrtime.bigint().toString();
+    f.stopAcknowledgement = stopAcknowledgementForTest(f.run, f.preStop.cancellationRequestId, f.stopDispatchMonotonicNs);
     expect(readCopilotDenialSettlement(f).branch).toBe("provider_completed_observed_before_stop");
   });
   it("rejects late normal completion even when its transaction began before Stop ack", () => {
@@ -160,6 +164,37 @@ describe("Copilot denial provider settlement and separate audited run Stop", () 
       await vi.advanceTimersByTimeAsync(200); expect((await result).branch).toBe("provider_cancelled_or_interrupted"); expect(afterSettlement).toHaveBeenCalledOnce();
     } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
   });
+  it("retains completion first observed after the initial receipt write before dispatching Stop", async () => {
+    vi.useFakeTimers(); let mono = 100n; vi.spyOn(process.hrtime, "bigint").mockImplementation(() => ++mono);
+    try {
+      const f = fixture(); let completionVisible = false;
+      const receipts: Array<ReturnType<typeof observeCopilotPreStop>> = [];
+      const post = stopPost(f, () => { expect(receipts).toHaveLength(2); expect(receipts[1]!.terminal?.eventType).toBe("turn.completed"); });
+      const result = settleCopilotDeniedRun({ api: { post } as any, request: f.request, deadlineAt: Date.now() + 5000,
+        load: async () => ({ ...f, events: completionVisible ? f.events : f.events.filter((_, i) => i !== 4), run: post.mock.calls.length ? f.run : liveRun(f), retired: true }),
+        afterDeniedEdit: async () => {}, retainPreStop: async receipt => { receipts.push(receipt); completionVisible = true; }, afterSettlement: async () => {} });
+      await vi.advanceTimersByTimeAsync(2000);
+      const settled = await result;
+      expect(settled.branch).toBe("provider_completed_observed_before_stop");
+      expect(settled.preStop).toEqual(receipts[1]); expect(receipts[0]!.terminal).toBeNull(); expect(post).toHaveBeenCalledOnce();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it.each(["earlier-stop", "retention-failed"])("refuses dispatch when refreshed terminal retention encounters %s", async kind => {
+    vi.useFakeTimers(); let mono = 100n; vi.spyOn(process.hrtime, "bigint").mockImplementation(() => ++mono);
+    try {
+      const f = fixture(); let completionVisible = false, earlierStop = false, writes = 0;
+      const post = stopPost(f);
+      const result = settleCopilotDeniedRun({ api: { post } as any, request: f.request, deadlineAt: Date.now() + 5000,
+        load: async () => ({ ...f, events: completionVisible ? f.events : f.events.filter((_, i) => i !== 4), run: earlierStop ? f.run : liveRun(f), retired: true }),
+        afterDeniedEdit: async () => {}, retainPreStop: async () => {
+          writes++; completionVisible = true;
+          if (writes === 2) { if (kind === "retention-failed") throw new Error("refreshed receipt write failed"); earlierStop = true; }
+        }, afterSettlement: async () => {} });
+      const rejected = expect(result).rejects.toThrow(kind === "earlier-stop" ? "earlier Stop" : "refreshed receipt write failed");
+      await vi.advanceTimersByTimeAsync(2000); await rejected;
+      expect(writes).toBe(2); expect(post).not.toHaveBeenCalled();
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
   it("rejects normal completion first returned after Stop even with an earlier transaction timestamp", async () => {
     vi.useFakeTimers(); let mono = 100n; vi.spyOn(process.hrtime, "bigint").mockImplementation(() => ++mono);
     try {
@@ -236,14 +271,14 @@ describe("Copilot denial provider settlement and separate audited run Stop", () 
     })).rejects.toThrow("earlier Stop");
     expect(post).not.toHaveBeenCalled();
   });
-  it.each(["conflict", "foreign-response"])("cannot pass a Stop racing after the last API read: %s", async kind => {
-    const f = fixture(); const post = vi.fn(async (_path: string, _body: { cancellationRequestId: string }) => { if (kind === "conflict") throw new Error("409 cancellation intent conflict"); return f.run; });
+  it.each(["conflict", "foreign-response"])("rejects a conflicting or foreign-caller Stop API response: %s", async kind => {
+    const f = fixture(); const post = vi.fn(async (_path: string) => { if (kind === "conflict") throw new Error("409 cancellation intent conflict"); f.run.resultJson.cancelledByUserId = "foreign-caller"; return f.run; });
     const sampled = vi.fn(async () => {});
     await expect(settleCopilotDeniedRun({ api: { post } as any, request: f.request, deadlineAt: Date.now() + 1000,
       load: async () => ({ ...f, run: liveRun(f), retired: false }), afterDeniedEdit: async () => {}, retainPreStop: async () => {}, afterSettlement: sampled,
-    })).rejects.toThrow(kind === "conflict" ? "409" : "foreign cancellation intent");
+    })).rejects.toThrow(kind === "conflict" ? "409" : "Stop acknowledgement");
     expect(post).toHaveBeenCalledOnce(); expect(sampled).not.toHaveBeenCalled();
-    expect(post.mock.calls[0]?.[1]).toMatchObject({ cancellationRequestId: expect.stringMatching(/^[a-f0-9-]{36}$/) });
+    expect(post.mock.calls[0]).toEqual(["/api/heartbeat-runs/run/cancel"]);
   });
 
 });

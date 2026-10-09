@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { withCopilotSmokeResources } from "./copilot-smoke-resources.mjs";
+import { stopCopilotSmokeChild, withCopilotSmokeResources } from "./copilot-smoke-resources.mjs";
 
 // Build verification only. No prompt, credential, model request, or runtime
 // installation occurs; the provider runs offline with isolated state.
@@ -13,9 +14,21 @@ const manifest = JSON.parse(await readFile(join(pack, "provider-pack.json"), "ut
 // Bind the audited pack explicitly, just as the verified sidecar launcher does.
 process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT = pack;
 process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST = join(pack, "package.json");
-const candidate = manifest.payload.candidateProviders?.copilot;
+const released = manifest.payload.providers?.copilot;
+const pending = manifest.payload.candidateProviders?.copilot;
+assert.notEqual(Boolean(released), Boolean(pending), "One Copilot asset registration is required");
+const candidate = released ?? pending;
+// Rosetta must translate each fresh verified executable snapshot. Measured cold
+// startup of the pinned Intel binary exceeds 20 seconds on an ARM host. Native
+// platform smoke bounds stay unchanged; translation gets one bounded attempt.
+let translatedIntel = false;
+if (process.platform === "darwin" && process.arch === "x64") {
+  try { translatedIntel = execFileSync("/usr/sbin/sysctl", ["-n", "sysctl.proc_translated"], { timeout: 1_000, encoding: "utf8" }).trim() === "1"; }
+  catch { /* Native Intel has no translation flag. */ }
+}
+const initializeTimeoutMs = translatedIntel ? 60_000 : 20_000;
 assert.equal(candidate?.version, "1.0.88");
-assert.equal(candidate.qualification, "pending");
+assert.equal(candidate.qualification, released ? "qualified" : "pending");
 const { assertAcpxProfileEnvironment, verifyAcpxProfileInstallation } = await import(pathToFileURL(join(pack, "dist/drivers/acpx/profile-installation.js")));
 const { resolveQualifiedAcpxProfile } = await import(pathToFileURL(join(pack, "dist/drivers/acpx/qualified-profiles.js")));
 const { COPILOT_ACP_CLIENT_CAPABILITIES } = await import(pathToFileURL(join(pack, "dist/drivers/acpx/copilot-events.js")));
@@ -44,7 +57,7 @@ await withCopilotSmokeResources(installation, async ({ lease, root, fixture, fix
       let buffer = "";
       let stderr = "";
       let total = 0;
-      const timeout = setTimeout(() => reject(new Error(`Copilot ACP initialize timed out: ${stderr.replaceAll(root, "/fixture/workspace").replaceAll(pack, "/fixture/provider-pack").slice(0, 4000)}`)), 20_000);
+      const timeout = setTimeout(() => reject(new Error(`Copilot ACP initialize timed out: ${stderr.replaceAll(root, "/fixture/workspace").replaceAll(pack, "/fixture/provider-pack").slice(0, 4000)}`)), initializeTimeoutMs);
       timeout.unref();
       child.once("error", reject);
       child.once("exit", () => reject(new Error(`Copilot exited before initialize: ${stderr.replaceAll(root, "/fixture/workspace").replaceAll(pack, "/fixture/provider-pack").slice(0, 4000)}`)));
@@ -84,18 +97,16 @@ await withCopilotSmokeResources(installation, async ({ lease, root, fixture, fix
     process.stdout.write(`${JSON.stringify({
       schema: "paperclip.copilot-provider-pack-smoke/v1", sourceRevision: manifest.payload.runnerSourceRevision,
       providerPackDigest: manifest.digest, platform: process.platform, architecture: process.arch,
+      translatedIntel, initializeTimeoutMs,
       candidate, executableSha256: `sha256:${createHash("sha256").update(executable).digest("hex")}`,
       registryLaunch: "verifyAcpxProfileInstallation/openCommand/spawn", initializeRequestId: 0,
       initialize: safeInitialize, missingCredentialPreflight: "COPILOT_AUTH_REQUIRED", cleanExit: true, inheritedCredentials: false, promptSent: false,
       networkMode: "COPILOT_OFFLINE=true; loopback metadata-only provider", fixtureRequests, protocolFixtureModel: "gpt-4.1 (not a qualified GitHub model)", costUsd: 0,
-      qualification: "pending: no credential, entitlement, model execution or Daytona",
+      assetAdmission: candidate.qualification,
+      qualification: "installation only: no credential, entitlement, model execution or Daytona",
     }, null, 2)}\n`);
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.stdin.end();
-      child.kill("SIGTERM");
-      await within(exited, 5_000);
-    }
+    await stopCopilotSmokeChild(child);
   }
 });
 

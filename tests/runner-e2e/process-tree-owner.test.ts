@@ -27,6 +27,17 @@ it.skipIf(process.platform === "win32")("revalidates PID/start before signaling 
   } finally { f.owner.stopObserving(); }
 });
 
+it.skipIf(process.platform === "win32")("keeps surviving peer identities when a descendant traversal ends at a short-lived child", async () => {
+  const f = fixture([row(100, process.pid, 100), row(101, 100, 100), row(200, 100, 200), row(201, 200, 200)]);
+  try {
+    await f.owner.observe();
+    await f.owner.observe();
+    f.replace([row(100, process.pid, 100), row(200, 100, 200)]);
+      await f.owner.signal("SIGKILL");
+      expect(f.signals).toEqual([[200, "SIGKILL"], [100, "SIGKILL"]]);
+    } finally { f.owner.stopObserving(); }
+  });
+
 it.skipIf(process.platform === "win32")("admits replacement group members only through a still-owned ancestor", async () => {
   const f = fixture([row(100, process.pid, 100), row(200, 100, 200)]);
   try {
@@ -38,6 +49,19 @@ it.skipIf(process.platform === "win32")("admits replacement group members only t
     expect(f.signals).toEqual([[200, "SIGKILL"], [100, "SIGKILL"]]);
   } finally { f.owner.stopObserving(); }
 });
+
+it.skipIf(process.platform === "win32")("keeps surviving peers after the launcher exits without admitting an unobserved group", async () => {
+  const f = fixture([row(100, process.pid, 100), row(200, 100, 200), row(201, 200, 200)]);
+  try {
+    await f.owner.observe();
+    f.root.exitCode = 0;
+    f.replace([row(200, 1, 200), row(201, 200, 200)]);
+    await f.owner.observe();
+    f.replace([row(200, 1, 200), row(999, 1, 999)]);
+    await f.owner.signal("SIGTERM");
+    expect(f.signals).toEqual([[200, "SIGTERM"]]);
+    } finally { f.owner.stopObserving(); }
+  });
 
 it.skipIf(process.platform === "win32")("refuses replacement groups containing any unowned live member", async () => {
   const f = fixture([row(100, process.pid, 100), row(200, 100, 200)]);

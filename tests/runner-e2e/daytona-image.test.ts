@@ -13,6 +13,29 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
+  it("retains the active Copilot identity declaration in the Docker context", async () => {
+    const [generator, dockerignore] = await Promise.all([
+      readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"), "utf8"),
+      readFile(path.join(repositoryRoot, ".dockerignore"), "utf8"),
+    ]);
+    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
+    expect(fixture).toBeDefined();
+    const fixturePath = `packages/paperclip-runner/${fixture}`;
+    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(fixturePath);
+    await expect(readFile(path.join(repositoryRoot, fixturePath), "utf8")).resolves.toContain('"commandDigest"');
+    // Docker's last matching rule wins, including the parent-directory exclusion.
+    const rules = dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#"));
+    const lastRule = rules.filter(rule => {
+      const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
+      return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+    }).at(-1);
+    expect(lastRule?.startsWith("!")).toBe(true);
+    // The exception also covers the next version without exposing other live evidence.
+    const exception = lastRule!.slice(1);
+    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-profile-v999-identity.json", exception)).toBe(true);
+    expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-live-denial-2026-09-28.json", exception)).toBe(false);
+  });
+
   it("keeps the qualified native Grok binary separate from the legacy command", async () => {
     const [dockerfile, packBuilder, runnerPackage] = await Promise.all([
       readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
@@ -209,7 +232,17 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
       "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
+      "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+      "packages/paperclip-runner/scripts/copilot-profile-identity.mjs",
       "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+      "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v12-identity.json",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v14-identity.json",
+      "packages/paperclip-runner/test/fixtures/copilot-profile-v21-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v24-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v25-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v26-identity.json",
+  "packages/paperclip-runner/test/fixtures/copilot-profile-v35-identity.json",
       "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
       "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
       "packages/paperclip-runner/cursor-distributions.json",

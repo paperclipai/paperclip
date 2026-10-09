@@ -123,7 +123,7 @@ export function buildRunnerE2EProcessEnvironment(
       || (execution.suite.id === "pi-native" && agent === "pi")
       || (execution.suite.id === "pi-controls" && agent === "pi")
       || (["cursor-native", "native-provider-loss"].includes(execution.suite.id) && agent === "cursor")
-      || (execution.suite.id === "copilot-protection" && agent === "copilot")
+      || (["copilot-protection", "copilot-provider-death"].includes(execution.suite.id) && agent === "copilot")
       || (execution.suite.id === "native-active-stop" && (agent === "cursor" || agent === "copilot"));
     if (!admittedSuite || !execution.suite.manualOnly) {
       throw new Error("Candidate qualification requires an explicit provider qualification suite");

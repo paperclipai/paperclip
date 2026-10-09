@@ -76,7 +76,15 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       for (const pid of anchors) {
         for (const group of observeDescendantProcessTree(next, pid).groups) {
           if (group.processGroupId !== callerGroup) {
-            byGroup.set(group.processGroupId, group);
+            // A descendant traversal can cover only part of an already
+            // validated group. Keep every observed peer as an identity anchor.
+            const previous = byGroup.get(group.processGroupId);
+            const members = new Map(previous?.members.map(member => [member.pid, member]) ?? []);
+            for (const member of group.members) members.set(member.pid, member);
+            byGroup.set(group.processGroupId, { ...group,
+              depth: Math.max(group.depth, previous?.depth ?? group.depth),
+              members: [...members.values()],
+            });
             if (covered.has(next.find(row => row.pid === pid)!.processGroupId)) covered.add(group.processGroupId);
           }
         }
