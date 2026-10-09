@@ -36,7 +36,7 @@ export function ExternalAgentInvitePreview({
   useEffect(() => {
     if (!simulate || !watching || connection.problem || connection.phase === "ready") return;
     const phase = connection.phase;
-    const next = { waiting: "connected", connected: "subscribed", subscribed: "testing", testing: "ready" } as const;
+    const next = { waiting: "connected", connected: "subscribed", subscribed: "testing", testing: "finishing", finishing: "ready" } as const;
     const timer = window.setTimeout(() => {
       setConnection(phase === "testing" && failTest && !retrying
         ? { phase, problem: "event_timeout" } : { phase: next[phase] });
