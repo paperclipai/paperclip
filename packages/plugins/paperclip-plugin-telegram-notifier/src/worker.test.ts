@@ -11,7 +11,7 @@ import { JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
 import manifest from "./manifest.js";
 import { readPairing, setApprovalConfig, setPairedChat } from "./pairing.js";
 import type { PairingState, TelegramUpdate } from "./types.js";
-import { applyConfigPatch } from "./ui/config-patch.js";
+import { applyConfigPatch } from "./ui/index.js";
 import plugin, { postTelegramReplyComment, resolveUpdateConfig } from "./worker.js";
 
 const TOKEN_A = "111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
