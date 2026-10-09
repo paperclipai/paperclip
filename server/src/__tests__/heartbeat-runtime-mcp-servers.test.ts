@@ -894,6 +894,27 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     ).toEqual([]);
   });
 
+  it("swallows a failed run lookup so the delivery diagnostic cannot stop the agent", async () => {
+    const lookupError = new Error("run lookup unavailable");
+    const failingDb = {
+      select: () => {
+        throw lookupError;
+      },
+    } as never;
+
+    await expect(
+      createToolGatewayService(failingDb).recordRuntimeMcpDeliveryDiagnostic({
+        companyId: randomUUID(),
+        agentId: randomUUID(),
+        runId: randomUUID(),
+        permittedNotInstalledConnections: [],
+        filteredOutConnections: [
+          { id: randomUUID(), name: "Dropped MCP", reasonCode: "connection_disabled" },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("writes no delivery diagnostic when the agent has no permitted MCP connection", async () => {
     const [company] = await db.insert(companies).values({
       name: `Runtime no-permission diagnostic ${randomUUID()}`,

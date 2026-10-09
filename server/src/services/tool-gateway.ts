@@ -8509,26 +8509,30 @@ export function createToolGatewayService(
       ) {
         return;
       }
-      const [run] = await db
-        .select({
-          issueId: sql<
-            string | null
-          >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-        })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.id, input.runId),
-            eq(heartbeatRuns.companyId, input.companyId),
-            eq(heartbeatRuns.agentId, input.agentId),
-          ),
-        )
-        .limit(1);
-      // The audit row carries a run id under a foreign key. The MCP builder
-      // tolerates a run row it cannot read, so this has to tolerate it too —
-      // otherwise the insert fails the constraint and takes the run with it.
-      if (!run) return;
+      // Every read and write below is reporting, so all of it stays inside the
+      // try. The run lookup now runs for an installed-but-filtered-out
+      // delivery, where this method used to return before reaching it, and a
+      // lookup left outside would fail the heartbeat before the agent starts.
       try {
+        const [run] = await db
+          .select({
+            issueId: sql<
+              string | null
+            >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, input.runId),
+              eq(heartbeatRuns.companyId, input.companyId),
+              eq(heartbeatRuns.agentId, input.agentId),
+            ),
+          )
+          .limit(1);
+        // The audit row carries a run id under a foreign key. The MCP builder
+        // tolerates a run row it cannot read, so this has to tolerate it too —
+        // otherwise the insert fails the constraint and takes the run with it.
+        if (!run) return;
         await writeAudit({
           companyId: input.companyId,
           agentId: input.agentId,
