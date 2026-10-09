@@ -1250,9 +1250,9 @@ It owns bounded run projections, database encoding checks, task session reads an
 writes, explicit resumes, session compaction, and usage/billing helpers.
 `createHeartbeatRunState(db)` binds these operations without doing database work
 during construction. The encoding-check cache belongs to each factory instance.
-`heartbeat.ts` keeps run execution, session-goal recovery, cost accounting writes,
-and status transitions, and re-exports the existing public helpers. Keep session
-policy changes separate from run orchestration changes.
+`heartbeat.ts` keeps run execution and session-goal recovery, and re-exports the
+existing public helpers. Keep session policy changes separate from run
+orchestration changes.
 
 Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
 retry schedules, connection and workspace contention deferrals, shared-workspace
@@ -1280,6 +1280,15 @@ The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
 construction order for retry and recovery services. Keep queue policy changes
 separate from this extraction and from adapter execution changes.
+
+Run lifecycle handling is in `server/src/services/heartbeat/run-lifecycle.ts`.
+It owns status transitions, run events and progress, liveness classification,
+completion handoffs, issue-comment finalization, and runtime/cost settlement.
+`createHeartbeatLifecycle` binds the database and explicit reporting, recovery,
+and wakeup callbacks without starting work. The service supplies terminal
+reporting and forwarding callbacks preserve construction order for the other
+heartbeat modules. Existing public helpers remain re-exported by `heartbeat.ts`.
+Keep lifecycle policy changes separate from this extraction and adapter execution.
 
 ## Wake Context Delivery
 
