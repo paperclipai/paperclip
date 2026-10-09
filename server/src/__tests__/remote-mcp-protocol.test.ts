@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { forgetMcpHttpSessions, getMcpHttpSession, initializeMcpHttpSession, McpHttpInitializationError, readMcpHttpResponse } from "../services/mcp-http.js";
+import { forgetMcpHttpSession, forgetMcpHttpSessions, getMcpHttpSession, initializeMcpHttpSession, McpHttpInitializationError, readMcpHttpResponse } from "../services/mcp-http.js";
 
 const encoder = new TextEncoder();
 function stream(chunks: string[], close = true) {
@@ -59,6 +59,25 @@ describe("remote connector Streamable HTTP", () => {
     forgetMcpHttpSessions("connection-a");
     expect((await getMcpHttpSession(input))["Mcp-Session-Id"]).toBe("session-5");
     expect(count).toBe(5);
+  });
+  it("forgets only the failed session for one identity", async () => {
+    let count = 0;
+    const send = vi.fn(async (init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") { count++; return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }, { headers: { "Mcp-Session-Id": `session-${count}` } }); }
+      return new Response(null, { status: 202 });
+    });
+    const agentA = { send, requestId: "a", scope: "narrow-connection:agent-a", headers: { Authorization: "Bearer shared" } };
+    const agentB = { ...agentA, scope: "narrow-connection:agent-b" };
+    expect((await getMcpHttpSession(agentA))["Mcp-Session-Id"]).toBe("session-1");
+    expect((await getMcpHttpSession(agentB))["Mcp-Session-Id"]).toBe("session-2");
+    forgetMcpHttpSession({ ...agentA, sessionId: "session-1" });
+    expect((await getMcpHttpSession(agentB))["Mcp-Session-Id"]).toBe("session-2");
+    expect((await getMcpHttpSession(agentA))["Mcp-Session-Id"]).toBe("session-3");
+    // A late failure from the old session must not drop the session that replaced it.
+    forgetMcpHttpSession({ ...agentA, sessionId: "session-1" });
+    expect((await getMcpHttpSession(agentA))["Mcp-Session-Id"]).toBe("session-3");
+    expect(count).toBe(3);
   });
   it("does not resurrect an in-flight session after disconnect", async () => {
     let finish: (() => void) | undefined;

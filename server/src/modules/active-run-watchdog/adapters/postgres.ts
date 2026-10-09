@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -337,6 +337,8 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           .where(and(
             eq(agentWakeupRequests.id, input.run.wakeupRequestId),
             eq(agentWakeupRequests.companyId, companyId),
+            // A late success fold cannot restore cancelled assignment authority.
+            ne(agentWakeupRequests.status, "cancelled"),
           ));
       }
 

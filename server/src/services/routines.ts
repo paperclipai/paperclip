@@ -665,6 +665,14 @@ function mapRoutineDescriptionDocument(row: {
   };
 }
 
+// Match PostgreSQL UUID input, including compact/braced forms and any version.
+// Do not trim or resolve prefixes: the exact input must be safe for a UUID query.
+function isRoutineUuidInput(id: string): boolean {
+  if (/\s/.test(id)) return false;
+  const value = id.startsWith("{") && id.endsWith("}") ? id.slice(1, -1) : id;
+  return /^(?:[0-9a-f]{4}-?){7}[0-9a-f]{4}$/i.test(value);
+}
+
 export function routineService(
   db: Db,
   deps: {
@@ -682,6 +690,7 @@ export function routineService(
   });
 
   async function getRoutineById(id: string) {
+    if (!isRoutineUuidInput(id)) return null;
     return db
       .select()
       .from(routines)
@@ -766,6 +775,7 @@ export function routineService(
   }
 
   async function getTriggerById(id: string) {
+    if (!isRoutineUuidInput(id)) return null;
     return db
       .select()
       .from(routineTriggers)

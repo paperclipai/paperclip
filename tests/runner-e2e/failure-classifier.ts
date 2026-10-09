@@ -1,4 +1,4 @@
-import { ObservedStateTimeout } from "./api.js";
+import { ObservedStateTimeout, RemoteAdmissionReadError } from "./api.js";
 import type { FailureClass } from "./types.js";
 
 const TRANSIENT =
@@ -21,7 +21,7 @@ const SANDBOX_TRANSFER_TIMEOUT =
   /RPC call "environmentSync(?:In|Out)" timed out after \d+ms/i;
 
 export function classifyFailure(error: unknown): FailureClass {
-  if (error instanceof ObservedStateTimeout) return error.failureClass;
+  if (error instanceof ObservedStateTimeout || error instanceof RemoteAdmissionReadError) return error.failureClass;
   const message =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   if (/browser bootstrap failed before task creation/i.test(message))
@@ -46,9 +46,13 @@ export function classifyFailure(error: unknown): FailureClass {
   return "candidate_failure";
 }
 
-export function shouldRetryFailure(failureClass: FailureClass) {
+export function shouldRetryFailure(
+  failureClass: FailureClass,
+  maxAutomaticRetries = 1,
+) {
   return (
-    failureClass === "transient_infrastructure" ||
-    failureClass === "provider_variance"
+    maxAutomaticRetries > 0 &&
+    (failureClass === "transient_infrastructure" ||
+      failureClass === "provider_variance")
   );
 }

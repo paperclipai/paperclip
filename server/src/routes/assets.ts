@@ -1,9 +1,13 @@
+import { and, eq } from "drizzle-orm";
+import { runnerApiResponseReservations, heartbeatRuns, issues, issueAttachments } from "@paperclipai/db";
+import { authorizationService } from "../services/authorization.js";
+import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, isUuidLike, createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import {
@@ -184,7 +188,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       sha256: stored.sha256,
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : req.actor.onBehalfOfUserId ?? null,
     });
 
     await logActivity(db, {
@@ -198,7 +202,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       entityType: "asset",
       entityId: asset.id,
       details: {
-        originalFilename: asset.originalFilename,
+        ...(namespaceSuffix.startsWith("issues/") ? {} : { originalFilename: asset.originalFilename }),
         contentType: asset.contentType,
         byteSize: asset.byteSize,
       },
@@ -327,15 +331,69 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const assetId = req.params.assetId as string;
     const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
     if (!asset) return;
+    const access = authorizationService(db);
+    // Persisted storage namespaces retain provenance after attachment rows are deleted.
+    const objectParts = asset.objectKey.split("/");
+    const isDraftImage = objectParts[1] === "assets" && objectParts[2] === "issues" && objectParts[3] === "drafts";
+    const namespace = objectParts[1] === "assets" ? objectParts[2] : objectParts[1];
+    const sourceIssueId = objectParts[1] === "assets" ? objectParts[3] : objectParts[2];
+    const sourceExists = namespace !== "issues" || isDraftImage || (sourceIssueId && isUuidLike(sourceIssueId) && await db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, asset.companyId))).limit(1).then(rows => rows.length > 0));
+    if (namespace === "issues" && !isDraftImage && (!sourceExists || !(await access.decide({ actor: req.actor, action: "issue:read",
+      resource: { type: "issue", companyId: asset.companyId, issueId: sourceIssueId } })).allowed)) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
+    const captures = await db.select({ run: heartbeatRuns }).from(runnerApiResponseReservations)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, runnerApiResponseReservations.runId))
+      .where(and(eq(runnerApiResponseReservations.assetId, asset.id), eq(runnerApiResponseReservations.companyId, asset.companyId)));
+    if (namespace === "runner-api" && !captures.length) { res.status(404).json({ error: "Asset not found" }); return; }
+    for (const { run } of captures) {
+      if (!run || !(await canActorReadHeartbeatRun(db, access, req.actor, run))) {
+        res.status(404).json({ error: "Asset not found" }); return;
+      }
+    }
+    const attachments = await db.select({ issueId: issueAttachments.issueId }).from(issueAttachments)
+      .where(and(eq(issueAttachments.assetId, asset.id), eq(issueAttachments.companyId, asset.companyId)));
+    if (isDraftImage && !attachments.length && !(req.actor.type === "board"
+      ? req.actor.source === "local_implicit" || req.actor.isInstanceAdmin || req.actor.userId === asset.createdByUserId
+      : req.actor.type === "agent" && req.actor.agentId === asset.createdByAgentId
+        && (!asset.createdByUserId || req.actor.onBehalfOfUserId === asset.createdByUserId))) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
+    for (const attachment of attachments) {
+      if (!(await access.decide({ actor: req.actor, action: "issue:read", resource: {
+        type: "issue", companyId: asset.companyId, issueId: attachment.issueId,
+      } })).allowed) { res.status(404).json({ error: "Asset not found" }); return; }
+    }
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+
+    // Use the persisted size only after resource authorization. Single ranges
+    // keep saved API text pages bounded all the way to disk or object storage.
+    const rawRange = req.headers.range;
+    const rangeSyntax = rawRange && /^bytes=(\d*)-(\d*)$/i.exec(rawRange);
+    const emptyRead = asset.byteSize === 0 && rangeSyntax?.[1] === "0";
+    const ranges = rawRange && !emptyRead ? req.range(asset.byteSize) : undefined;
+    res.setHeader("Accept-Ranges", "bytes");
+    if (/^[a-f0-9]{64}$/.test(asset.sha256)) res.setHeader("ETag", `"${asset.sha256}"`);
+    if (rawRange && (!rangeSyntax || (!rangeSyntax[1] && !rangeSyntax[2])
+      || (!emptyRead && (!Array.isArray(ranges) || ranges.length !== 1)))) {
+      res.setHeader("Content-Range", `bytes */${asset.byteSize}`);
+      res.status(416).end();
+      return;
+    }
+    const range = Array.isArray(ranges) ? ranges[0] : undefined;
+    const object = await storage.getObject(asset.companyId, asset.objectKey, range ? { range } : undefined);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
     const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
     const inlineSafe = mediaType !== SVG_CONTENT_TYPE
       && isInlineAttachmentContentType(mediaType);
     res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
-    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("Content-Length", String(range ? range.end - range.start + 1 : asset.byteSize || object.contentLength || 0));
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
+    }
+    res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (!inlineSafe) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
@@ -349,6 +407,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     object.stream.on("error", (err) => {
       next(err);
     });
+    res.on("close", () => object.stream.destroy());
     object.stream.pipe(res);
   });
 

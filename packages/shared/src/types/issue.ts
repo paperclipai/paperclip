@@ -46,6 +46,46 @@ import type {
 
 export type { IssueWorkMode };
 
+export type IssueVisibility = "open" | "private";
+/** Management hints for this task; never includes protected project/parent identity. */
+export interface IssuePrivacyConstraints {
+  publicBlockedBy: "parent" | "project" | null;
+  leavesPersonalProject: boolean;
+}
+export type IssueAccessGrantSubjectType = "user" | "agent";
+export type IssueAccessGrantSource = "explicit" | "assignment" | "project" | "owner";
+export type IssueAccessGrantAgentVisibility = "discoverable" | "private";
+
+export interface IssueAccessGrant {
+  id: string;
+  issueId: string;
+  subjectType: IssueAccessGrantSubjectType;
+  subjectId: string;
+  source: IssueAccessGrantSource;
+  /** Effective access inherited from a parent or private project; not revocable here. */
+  inherited?: boolean;
+  grantedByUserId: string | null;
+  grantedByAgentId: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+  subjectDisplayName: string | null;
+  subjectAvatarUrl: string | null;
+  subjectInitials: string | null;
+  agentVisibility: IssueAccessGrantAgentVisibility | null;
+}
+
+/**
+ * Existence-only projection used when a readable issue references an issue the
+ * current principal cannot read. Edge projections may return this exact shape
+ * in place of an IssueRelationIssueSummary; direct reads and list/search rows
+ * never return locked stubs.
+ */
+export interface IssueLockedStub {
+  id: string;
+  identifier: string | null;
+  locked: true;
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -538,6 +578,12 @@ export interface IssueUnblockDescriptor {
 }
 
 export interface IssueRecoveryAction {
+  /** Read-only activity of the exact native run named by the wake policy. */
+  nativeRunActivity?: {
+    runId: string;
+    status: "queued" | "running";
+    workspaceOperationId: string | null;
+  } | null;
   id: string;
   companyId: string;
   sourceIssueId: string;
@@ -599,6 +645,7 @@ export interface IssueScheduledRetry {
 export type IssueRetryNowOutcome =
   | "promoted"
   | "already_promoted"
+  | "waiting"
   | "no_scheduled_retry"
   | "gate_suppressed";
 
@@ -768,6 +815,8 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  /** True only while the title is the provisional slice of the initial prompt. */
+  titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
   conversationUserId?: string | null;
   /** Server-owned Slack lifecycle projection; not writable through task updates. */
@@ -784,6 +833,11 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  /** Present on current API responses; optional for compatibility with older plugin payloads. */
+  visibility?: IssueVisibility;
+  privacyRootIssueId?: string | null;
+  /** Immediate task from which private access flows downward, including chat handoffs. */
+  privacyParentIssueId?: string | null;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
@@ -876,6 +930,8 @@ export type CompactIssue = Pick<
   | "projectWorkspaceId"
   | "goalId"
   | "parentId"
+  | "visibility"
+  | "privacyRootIssueId"
   | "title"
   | "description"
   | "status"
@@ -1072,6 +1128,15 @@ export interface IssueCommentMetadata {
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
+  /** Display snapshot only. Retry authority comes from the current recovery action. */
+  recovery?: {
+    kind: "disposition_repair_escalated";
+    actionId: string;
+    attemptCount: number;
+    maxAttempts: number;
+    reason: string;
+    assigneeAgentId: string | null;
+  };
   sections: IssueCommentMetadataSection[];
 }
 
@@ -1341,9 +1406,20 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  */
 export interface ConnectionIntentPayload {
   version: 1;
+  /** Server-authored consent to a fixed set of tools on an existing connection. */
+  accessRequest?: {
+    connectionId: string;
+    connectionName: string;
+    tools: Array<{
+      catalogEntryId: string;
+      toolName: string;
+      versionHash: string;
+      permission: "allowed" | "ask_first";
+    }>;
+  };
   upstreamService?: { slug: string; name: string; selectionInteractionId?: string };
-  /** Runtime authentication requests cannot be satisfied by tool credentials. */
-  purpose?: "ai";
+  /** AI authentication and inbox setup cannot be satisfied by tool credentials. */
+  purpose?: "ai" | "channel";
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;
@@ -1499,6 +1575,8 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   summary?: string | null;
   status: IssueThreadInteractionStatus;
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  /** Read-time acceptance gate; omitted when no workspace preparation is pending. */
+  acceptanceBlocker?: "workspace_sync_pending";
   /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
   resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
   requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -55,9 +55,22 @@ function registerModuleMocks() {
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
-  vi.doMock("../routes/adapters.js", async () => vi.importActual("../routes/adapters.js"));
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
+}
+
+function resetAdapterMocks() {
+  vi.resetAllMocks();
+  mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
+  mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
+  mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
+  mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
+  mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+  mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
+  mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
+  mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
+  mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
+  mockPluginLoader.getUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
 }
 
 function createApp(
@@ -83,33 +96,14 @@ function createApp(
 }
 
 describe("adapter routes", () => {
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("node:child_process");
-    vi.doUnmock("../adapters/registry.js");
-    vi.doUnmock("../adapters/plugin-loader.js");
-    vi.doUnmock("../services/adapter-plugin-store.js");
-    vi.doUnmock("../routes/adapters.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
+  // Keep the route and middleware on one module graph so HttpError retains
+  // its identity. Reset mock state and adapter overrides between tests.
+  beforeAll(async () => {
     registerModuleMocks();
-    mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
-    mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
-    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
-    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
-    mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
-    mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
-    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
-    mockPluginLoader.getUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
-    const [registry, routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-    ]);
+    resetAdapterMocks();
+    const registry = await import("../adapters/registry.js");
+    const routes = await import("../routes/adapters.js");
+    const middleware = await import("../middleware/index.js");
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
@@ -117,6 +111,10 @@ describe("adapter routes", () => {
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
+  });
+
+  beforeEach(() => {
+    resetAdapterMocks();
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
@@ -166,6 +164,15 @@ describe("adapter routes", () => {
           supportsInstructionsBundle: true,
         },
       });
+  });
+
+  it("keeps the shared implementation available for Dot independently, while honoring adapter-admin disabling", async () => {
+    const options = { getNativeRunnerEnabled: async () => false, getOpenAiDotEnabled: async () => true };
+    const enabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(enabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: false });
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
+    const disabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: true });
   });
 
   it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
@@ -375,8 +382,15 @@ describe("adapter routes", () => {
       }),
     ]));
     const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
-    expect(acpxAgent).toBeUndefined();
-    expect(JSON.stringify(res.body)).toContain("ACPX Claude");
+    expect(acpxAgent).toMatchObject({
+      type: "select",
+      default: "claude",
+      meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      options: [
+        { value: "claude", label: "Claude" },
+        { value: "grok", label: "Grok Build" },
+      ],
+    });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 

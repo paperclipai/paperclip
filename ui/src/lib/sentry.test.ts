@@ -327,18 +327,22 @@ describe("browser error diagnostics with the real SDK", () => {
       init: (options: Parameters<typeof Sentry.init>[0]) => Sentry.init({
         ...options,
         transport: () => ({ send: async () => ({}), flush: async () => true }),
-        beforeSend: (event) => { events.push(event as unknown as Record<string, unknown>); return event; },
+        beforeSend: async (event, hint) => {
+          const enriched = await options?.beforeSend?.(event, hint) ?? event;
+          events.push(enriched as unknown as Record<string, unknown>);
+          return enriched;
+        },
       }),
     }));
     const gate = await importFreshSentry();
     await gate.initBrowserErrorMonitoring(DSN, "staging");
     const previousPath = window.location.pathname + window.location.search;
-    window.history.replaceState({}, "", "/tasks/private-task?token=private-capability");
+    window.history.replaceState({}, "", "/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability");
     document.documentElement.classList.add("translated-ltr", "private-customer-class");
     try {
       gate.captureBrowserException(new DOMException("insertBefore failed", "NotFoundError"), {
         boundary: "route",
-        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/private-task?token=private-capability:3:4)",
+        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability:3:4)",
       });
       document.documentElement.classList.remove("translated-ltr");
       gate.captureBrowserException(new Error("unrelated failure"));
@@ -354,13 +358,13 @@ describe("browser error diagnostics with the real SDK", () => {
         },
       });
       expect(events[1]).not.toHaveProperty("contexts.react");
-      expect(events[1]).not.toHaveProperty("contexts.browser_state");
+      expect(events[1]).toHaveProperty("contexts.browser_state.translation_marker", false);
       expect(events[1]).not.toHaveProperty("tags.react_error_boundary");
       for (const event of events) {
         expect(event).not.toHaveProperty("request");
         expect(event.breadcrumbs).toBeUndefined();
       }
-      for (const secret of ["tenant.example", "private-task", "private-capability", "private-customer-class"]) {
+      for (const secret of ["tenant.example", "sentry-fixture-secret-task-7fa83e", "private-capability", "private-customer-class"]) {
         expect(JSON.stringify(events)).not.toContain(secret);
       }
       await gate.teardownBrowserErrorMonitoring();
@@ -424,12 +428,12 @@ describe("buildBrowserSentryInitOptions", () => {
     expect(options.tracesSampleRate).toBe(0);
   });
 
-  it("holds no beforeSend hook and no custom filter function", async () => {
+  it("adds diagnostics without a transaction filter", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
     const options = buildBrowserSentryInitOptions(DSN);
 
-    expect(options.beforeSend).toBeUndefined();
+    expect(options.beforeSend).toBeTypeOf("function");
     expect(options.beforeSendTransaction).toBeUndefined();
   });
 
@@ -467,10 +471,8 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
   /**
    * Initialize the real SDK with this module's exact options, plus a
    * transport stub so no event leaves the test process, plus `beforeSend`
-   * so the test can inspect the resolved event before it would have been
-   * sent. `beforeSend` here is test-only introspection — the shipped module
-   * adds no `beforeSend` of its own (see the "holds no beforeSend hook"
-   * test above).
+   * so the test can inspect the resolved event after the production diagnostic
+   * hook runs, before it would have been sent.
    */
   async function initRealSentryForTest(
     onEvent: (event: Record<string, unknown>) => void,
@@ -478,16 +480,41 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
   ) {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
     const Sentry = await import("@sentry/browser");
+    const options = buildBrowserSentryInitOptions(DSN, environment);
     Sentry.init({
-      ...buildBrowserSentryInitOptions(DSN, environment),
+      ...options,
       transport: () => ({ send: async () => ({}), flush: async () => true }),
-      beforeSend: (event) => {
-        onEvent(event as unknown as Record<string, unknown>);
-        return event;
+      beforeSend: async (event, hint) => {
+        const enriched = await options.beforeSend?.(event, hint) ?? event;
+        onEvent(enriched as unknown as Record<string, unknown>);
+        return enriched;
       },
     });
     return Sentry;
   }
+
+  it("enriches an undefined global rejection without page data or suppression", async () => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, "staging");
+    const previousHandler = window.onunhandledrejection;
+    try {
+      expect(previousHandler).toBeTypeOf("function");
+      document.documentElement.classList.add("translated-ltr", "private-class");
+      window.onunhandledrejection?.call(window, { reason: undefined } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({
+        tags: { browser_rejection_kind: "undefined", browser_build_mode: "development" },
+        contexts: { browser_state: { translation_marker: true } },
+        exception: { values: [{ type: "UnhandledRejection" }] },
+      });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+      expect(JSON.stringify(captured)).not.toContain("private-class");
+    } finally {
+      document.documentElement.classList.remove("translated-ltr", "private-class");
+      await Sentry.close();
+    }
+  });
 
   it.each([
     ["staging", "staging"],

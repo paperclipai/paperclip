@@ -25,6 +25,7 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
+import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -265,6 +266,8 @@ export function environmentRunOrchestrator(
     selectedEnvironmentId: string;
     localEnvironmentId: string;
     adapterType: string;
+    adapterConfig?: Record<string, unknown>;
+    admittedLifecycleMode?: "warm" | "per_turn";
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
@@ -272,11 +275,15 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
-    const environment = await resolveEnvironment({
+    const selectedEnvironment = await resolveEnvironment({
       companyId: input.companyId,
       selectedEnvironmentId: input.selectedEnvironmentId,
       localEnvironmentId: input.localEnvironmentId,
     });
+
+    const environment = resolveRunnerEnvironmentForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
 
     // Step 2: Acquire lease
     const leaseRecord = await acquireLease({

@@ -46,6 +46,10 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  // Vite owns development module revalidation and HMR. Passing that graph
+  // through an offline worker can forward bodyless 304 responses on reload.
+  // Only a stamped production build has an offline-cache contract.
+  if (BUILD_ID.startsWith("__")) return;
   const { request } = event;
   const url = new URL(request.url);
   // Only immutable Vite build assets have a public offline-cache contract.
@@ -62,6 +66,15 @@ self.addEventListener("fetch", (event) => {
   if (request.cache === "no-store") {
     privateRequests.add(request.url);
     event.waitUntil(evictRequest(request).catch(() => {}));
+    return;
+  }
+
+  // Vite development modules use the browser's conditional-response cache.
+  // Passing their requests through fetch/respondWith can return a bodyless 304
+  // to the module loader on reload and leave the app root empty. They are not
+  // build assets and have no offline contract, so leave them to the browser.
+  if (url.origin === self.location.origin &&
+      /^\/(?:@fs|@vite|@id|src|node_modules)\//.test(url.pathname)) {
     return;
   }
 

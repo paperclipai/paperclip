@@ -42,6 +42,27 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
         run: |
@@ -56,8 +77,8 @@ jobs:
         if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-typecheck-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-typecheck-v2
           # Rebuild workspace code and rerun every check. Cache only compiled
           # dependencies; never restore installed executables from cargo/bin.
           cache-workspace-crates: false
@@ -86,45 +107,46 @@ jobs:
       matrix:
         include:
           # Split the long chat file by collected test locations, and balance
-          # the remaining server files across ten runners. Normal PR/local
-          # invocations retain their complete general-server group.
-          - group: general-server-without-chat
+          # the remaining server files across ten runners. Rust-backed server
+          # suites run in the cached Runner lane below. Local invocations retain
+          # their complete general-server group.
+          - group: general-server-without-chat-or-native-runner
             group_label: server (1/10)
             shard_index: 0
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (2/10)
             shard_index: 1
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (3/10)
             shard_index: 2
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (4/10)
             shard_index: 3
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (5/10)
             shard_index: 4
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (6/10)
             shard_index: 5
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (7/10)
             shard_index: 6
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (8/10)
             shard_index: 7
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (9/10)
             shard_index: 8
             shard_count: 10
-          - group: general-server-without-chat
+          - group: general-server-without-chat-or-native-runner
             group_label: server (10/10)
             shard_index: 9
             shard_count: 10
@@ -276,6 +298,7 @@ jobs:
             checks: check:eval-kernel check:protocol
           - lane: rust
             checks: check:runner check:api-authority
+          - lane: server-integration
 
     steps:
       - name: Checkout repository
@@ -293,6 +316,27 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
 
       - name: Select the pinned Runner Rust toolchain
         working-directory: packages/paperclip-runner
@@ -325,20 +369,34 @@ jobs:
         if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: packages/paperclip-runner/runner -> target
-          shared-key: release-runner-v1
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
           # Rebuild workspace code and rerun every check. Cache only compiled
           # dependencies; never restore installed executables from cargo/bin.
           cache-workspace-crates: false
           cache-bin: false
-          # Both lanes restore the existing dependency cache. Only the Rust
+          # All lanes restore the existing dependency cache. Only the Rust
           # lane saves it, after warming both release and debug dependencies.
           save-if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Build native server test binaries
+        if: ${{ matrix.lane == 'server-integration' }}
+        timeout-minutes: 10
+        working-directory: packages/paperclip-runner
+        run: |
+          set -euo pipefail
+          pnpm build:rust
+          cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd --bin fake-codex-app-server
+
+      - name: Run native server integration suites
+        if: ${{ matrix.lane == 'server-integration' }}
+        run: pnpm test:run:general -- --group general-server-native-runner
+
       - name: Verify Paperclip Runner
+        if: ${{ matrix.lane != 'server-integration' }}
         env:
           RUNNER_CHECKS: ${{ matrix.checks }}
         run: |

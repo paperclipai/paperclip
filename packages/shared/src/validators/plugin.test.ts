@@ -33,6 +33,11 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
+    const manifest = { id: "example.pool", apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Pool", author: "Tests", categories: ["connector"], entrypoints: { worker: "worker.js" }, aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" } };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["ui.page.register"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["ai.connections.route"] }).aiConnectionRouter).toEqual(manifest.aiConnectionRouter);
+  });
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",
@@ -276,6 +281,24 @@ describe("plugin UI slot validators", () => {
 });
 
 describe("sandbox provider capability declaration validators", () => {
+  it("preserves a declared acquisition budget and keeps it optional", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ defaultAcquireTimeoutMs: 300_000 }),
+    );
+    expect(parsed.environmentDrivers?.[0]?.defaultAcquireTimeoutMs).toBe(300_000);
+    const legacy = pluginManifestV1Schema.parse(buildSandboxProviderManifest({}));
+    expect(legacy.environmentDrivers?.[0]?.defaultAcquireTimeoutMs).toBeUndefined();
+  });
+
+  it.each([0, -1, 1.5, Infinity, NaN, "300000", 86_400_001])(
+    "rejects an invalid acquisition budget: %s",
+    (defaultAcquireTimeoutMs) => {
+      expect(pluginManifestV1Schema.safeParse(
+        buildSandboxProviderManifest({ defaultAcquireTimeoutMs }),
+      ).success).toBe(false);
+    },
+  );
+
   it("test_manifest_accepts_sandbox_capabilities_and_rejects_unknown_capability_keys", () => {
     const parsed = pluginManifestV1Schema.parse(
       buildSandboxProviderManifest({

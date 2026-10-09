@@ -16,6 +16,37 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes personal membership state when a primary changes on another device", () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "user_preference", entityId: "user-1", action: "primary_agent.updated",
+      actorType: "user", actorId: "user-1",
+    }, { userId: "user-1", agentId: null });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["primary-agent", "company-1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.resourceMemberships.mine("company-1") });
+    client.clear();
+  });
+
+  it.each([
+    ["chat-1", "issue.comment_added", "agent", "agent-1", true],
+    ["task-1", "issue.comment_added", "agent", "agent-1", false],
+    ["chat-2", "issue.conversation_opened", "user", "user-1", true],
+    ["chat-2", "issue.conversation_opened", "user", "user-2", false],
+  ])("refreshes only the owner's chat list for relevant activity: %s %s %s %s", (entityId, action, actorType, actorId, refresh) => {
+    const client = new QueryClient();
+    const key = queryKeys.agentChats.list("company-1", "user-1");
+    client.setQueryData(key, [{ id: "chat-1" }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId, action, actorType, actorId,
+    }, { userId: "user-1", agentId: null });
+    if (refresh) expect(invalidate).toHaveBeenCalledWith({ queryKey: key });
+    else expect(invalidate).not.toHaveBeenCalledWith({ queryKey: key });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.agentChats.list("company-1", "user-2") });
+    client.clear();
+  });
+
   it("refreshes the source task activity when a company skill is created", () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
@@ -918,6 +949,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
     });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(invalidations).toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
+    }
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
@@ -958,6 +992,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       )).toBe(true);
       for (const ref of ["PAP-759", "issue-1"]) {
         expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.comments(ref) });
+        expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
       }
     },
   );

@@ -6,12 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
-import { runLocalGit, setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
-import { WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
+import { agents, companies, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { buildProjectMentionHref } from "@paperclipai/shared";
+import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
@@ -50,11 +52,88 @@ suite("task project repository provisioning", () => {
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     setExpensiveWorkspaceGitExecutor(null);
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "false");
     await instanceSettingsService(db).updateExperimental({
       enableIsolatedWorkspaces: false,
       enableIsolatedWorkspacesByDefault: false,
     });
   });
+
+  it("isolates repository-free low-trust tasks while preserving reassignment and authorized referenced projects", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
+    const referencedProjectId = randomUUID(), deniedProjectId = randomUUID();
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(companies).values({ id: companyId, name: "Email company", issuePrefix: `E${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Onboarding" });
+    for (const id of [referencedProjectId, deniedProjectId]) {
+      const source = path.join(root, companyId, id);
+      await mkdir(source, { recursive: true });
+      await writeFile(path.join(source, "reference.txt"), id);
+      await db.insert(projects).values({ id, companyId, name: id });
+      await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId: id, name: "Reference", sourceType: "local_path", cwd: source, isPrimary: true });
+    }
+    await db.insert(environments).values({ id: environmentId, name: "Email sandbox", driver: "sandbox", status: "active", config: { provider: "fake", image: "fake:test" } });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Email agent", role: "engineer", status: "idle", adapterType: "codex_local",
+      defaultEnvironmentId: environmentId, adapterConfig: {}, runtimeConfig: {},
+      permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId, projectIds: [projectId, referencedProjectId] },
+      } },
+    });
+    // Exercise the real lease and workspace lifecycle with the built-in fake
+    // provider, executing its setup commands in a disposable filesystem root.
+    const sandboxHeartbeat = heartbeatService(db, { environmentRuntime: {
+      ...environmentRuntimeService(db),
+      execute: async (input) => ({
+        exitCode: 0,
+        stdout: execFileSync(input.command, input.args ?? [], { cwd: root, input: input.stdin, encoding: "utf8", env: { ...process.env, ...input.env } }),
+        stderr: "", signal: null, timedOut: false,
+      }),
+    } });
+    const directories: string[] = [];
+    const issueIds: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const issueId = randomUUID();
+      issueIds.push(issueId);
+      await db.insert(issues).values({
+        id: issueId, companyId, projectId, title: "Incoming email", originKind: "chat_channel", status: "todo", assigneeAgentId: agentId,
+        description: [referencedProjectId, deniedProjectId].map((id) => `[@Reference](${buildProjectMentionHref(id)})`).join(" "),
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+      const run = await sandboxHeartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => {
+        const latest = await sandboxHeartbeat.getRun(run!.id);
+        expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
+      }, { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, sandboxHeartbeat);
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId));
+      expect(workspace).toMatchObject({ companyId, projectId, mode: "isolated_workspace", strategyType: "project_primary" });
+      expect(workspace.cwd).toContain(`/isolated-workspaces/${companyId}/${issueId}`);
+      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
+      const call = execute.mock.calls.find(([input]) => input.runId === run!.id)![0];
+      expect(call.context.paperclipEnvironment.driver).toBe("sandbox");
+      expect(call.context.paperclipWorkspaces.map((workspace: { projectId: string }) => workspace.projectId)).toEqual([referencedProjectId]);
+      directories.push(workspace.cwd!);
+      await writeFile(path.join(workspace.cwd!, "email.txt"), `private email ${index}`);
+    }
+    expect(directories[0]).not.toBe(directories[1]);
+    expect(await readFile(path.join(directories[0], "email.txt"), "utf8")).toBe("private email 0");
+    const [originalAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const reassignedAgentId = randomUUID();
+    await db.insert(agents).values({ ...originalAgent, id: reassignedAgentId, name: "Next agent", status: "idle" });
+    await db.update(issues).set({ status: "todo", assigneeAgentId: reassignedAgentId }).where(eq(issues.id, issueIds[0]));
+    const reassignedRun = await sandboxHeartbeat.wakeup(reassignedAgentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: issueIds[0], projectId } });
+    await vi.waitFor(async () => {
+      const latest = await sandboxHeartbeat.getRun(reassignedRun!.id);
+      expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
+    }, { timeout: 15_000 });
+    await drainHeartbeatRunsToQuiescence(db, sandboxHeartbeat);
+    const reassignedCall = execute.mock.calls.find(([input]) => input.runId === reassignedRun!.id)![0];
+    expect(reassignedCall.context.paperclipWorkspace.cwd).toBe(directories[0]);
+    expect(await readFile(path.join(directories[0], "email.txt"), "utf8")).toBe("private email 0");
+  }, 40_000);
 
   it.each([
     { scenario: "no configured workspace", configuredWorkspace: false, explicitIsolation: null },
@@ -142,12 +221,24 @@ suite("task project repository provisioning", () => {
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Recover startup and use existing work", status: "todo", assigneeAgentId: agentId });
     let inject = true;
     const canonicalSource = await realpath(source);
+    const scheduler = createWorkspaceGitOperationScheduler();
     setExpensiveWorkspaceGitExecutor(async (input) => {
       if (inject && (input.localDir === source || input.localDir === canonicalSource) && input.operation === "adapter_sync.ignored_files") {
         inject = scenario === "exhausted";
         throw new WorkspaceGitScanError(code, "Injected temporary scan failure");
       }
-      return runLocalGit(input.localDir, [...input.args]);
+      return scheduler.run({
+        workspacePath: input.localDir,
+        args: input.args,
+        operation: input.operation,
+        cacheTtlMs: 0,
+        timeoutMs: input.timeout,
+        maxStdoutBytes: input.maxBuffer,
+        maxStderrBytes: input.maxBuffer,
+        env: input.env,
+        onStdout: input.onStdout,
+        signal: input.signal,
+      });
     });
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(code), { timeout: 15_000 });

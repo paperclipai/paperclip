@@ -33,7 +33,7 @@ export function ChatCommunicationInstructions({ value, onSave }: {
       <div className="space-y-1">
         <label id={`${id}-label`} htmlFor={id} className="text-sm font-semibold">Additional communication instructions</label>
         <p id={`${id}-help`} className="text-sm text-muted-foreground">
-          Guide how this agent communicates in Slack. Optional; applies when new tasks start.
+          Applies to new conversations.
         </p>
       </div>
       <Textarea
@@ -43,7 +43,7 @@ export function ChatCommunicationInstructions({ value, onSave }: {
         disabled={pending}
         maxLength={4000}
         rows={4}
-        placeholder="For example: Use our product names and explain technical terms for a nontechnical audience."
+        placeholder="For example: Keep replies brief and explain technical terms."
         onChange={(event) => { setDraft(event.target.value); setSaved(false); setError(null); }}
       />
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

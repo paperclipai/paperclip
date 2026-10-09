@@ -8,6 +8,7 @@ import {
   budgetPolicies,
   companies,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -40,6 +41,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
     await db.delete(agents);

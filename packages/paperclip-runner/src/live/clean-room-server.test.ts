@@ -234,7 +234,7 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
         interactionKind: "questions",
         title: "Which way should I take this?",
         prompt: "Pick a direction for the clean-room issue.",
-        payload: { questions: [{ id: "path", prompt: "Which path?", options: ["a", "b"] }] },
+        payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "path", prompt: "Which path?", required: true, answerMode: "single_select", options: [{ id: "a", label: "Path A" }, { id: "b", label: "Path B" }] }] } },
         continuationPolicy: "wake_assignee",
       });
     }
@@ -605,6 +605,17 @@ afterEach(async () => {
 });
 
 describe("Capability clean-room chat server", () => {
+  it.each(["claude", "codex"])("allows an unlisted %s model in the test-drive configuration", async acpxAgent => {
+    const { capabilityIssueThreadServerInternals: internals } = await import("../../scripts/capability-issue-thread-server.mjs");
+    const model = "custom/model[reasoning=medium]";
+    expect(internals.harnessConfiguration({ provider: "acpx", acpxAgent, model }))
+      .toMatchObject({ provider: "acpx", acpxAgent, model });
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent, model: " " }))
+      .toThrow("requires an explicit model");
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent: "unknown", model }))
+      .toThrow("ACPX agent must be");
+  });
+
   it("validates the exact Claude Managed lab profile and canonical agent version", async () => {
     const module = await import("../../scripts/capability-issue-thread-server.mjs");
     const internals = module.capabilityIssueThreadServerInternals;

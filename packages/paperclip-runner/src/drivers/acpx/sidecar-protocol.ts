@@ -45,7 +45,9 @@ export interface AcpxSidecarOpenParams {
   agent: QualifiedAcpxAgent;
   model: string;
   permissionMode: NativeAcpxPermissionMode;
+  mode?: string;
   permissionModePinned: boolean;
+  providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
   tools: readonly Readonly<Record<string, unknown>>[];
@@ -64,6 +66,7 @@ export interface AcpxExpectedSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   permissionMode?: NativeAcpxPermissionMode;
+  mode?: string;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

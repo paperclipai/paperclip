@@ -75,6 +75,9 @@ export const ReviewIndex: Story = {
   render: () => (
     <main className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">AI Connections · Review index</h1>
+      <a className="text-sm underline underline-offset-2" href="/?path=/story/ai-connections-provider-routing-00-overview--start-here" target="_top">
+        Review the proposed provider routing flows: onboarding, connections, agents, management, and recovery
+      </a>
       <p className="text-sm text-muted-foreground">
         Milestone 1: shared UI, simulated accounts, no live authentication.
         Start with the existing Connectors page, then account details, provider
@@ -249,7 +252,6 @@ export const ChangePersonalDefault: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Make default" }));
     await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Your default");
     await expect(canvas.queryByRole("button", { name: "Make default" })).not.toBeInTheDocument();
   },
 };
@@ -511,7 +513,7 @@ export const ReconnectExisting: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Submit code" }));
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByRole("heading", { name: "My Claude subscription" })).toBeVisible();
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Your default");
+    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
   },
 };
 export const RevokeConnection: Story = {

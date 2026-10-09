@@ -9,7 +9,9 @@ import {
   CONNECTABLE_APP_DEFINITIONS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getAppDefinitionForUrl,
+  getConnectableAppDefinition,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -24,7 +26,8 @@ import {
   SELF_SERVE_MCP_CANDIDATES,
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
-import { appDefinitionsSchema } from "./validators/app-definition.js";
+import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
+import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
   `https://www.googleapis.com/auth/${scope}`;
@@ -71,7 +74,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [googleScope("drive.readonly"), googleScope("documents.readonly")],
+    scopes: [googleScope("documents.readonly")],
     writeTools: [],
   },
   {
@@ -80,11 +83,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://docsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("documents"),
-    ],
+    scopes: [googleScope("documents")],
     writeTools: ["update_doc"],
   },
   {
@@ -93,10 +92,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("spreadsheets.readonly"),
-    ],
+    scopes: [googleScope("spreadsheets.readonly")],
     writeTools: [],
   },
   {
@@ -105,11 +101,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://sheetsmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("spreadsheets"),
-    ],
+    scopes: [googleScope("spreadsheets")],
     writeTools: [
       "update_spreadsheet",
       "update_values",
@@ -123,10 +115,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "read",
     riskTier: "S3",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("presentations.readonly"),
-    ],
+    scopes: [googleScope("presentations.readonly")],
     writeTools: [],
   },
   {
@@ -135,11 +124,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     serverUrl: "https://slidesmcp.googleapis.com/mcp/v1",
     capability: "write",
     riskTier: "S4",
-    scopes: [
-      googleScope("drive.readonly"),
-      googleScope("drive.file"),
-      googleScope("presentations"),
-    ],
+    scopes: [googleScope("presentations")],
     writeTools: ["update_presentation"],
   },
   {
@@ -163,7 +148,6 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [
       googleScope("calendar.calendarlist.readonly"),
-      googleScope("calendar.events.freebusy"),
       googleScope("calendar.events"),
     ],
     writeTools: [
@@ -235,6 +219,12 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   writeTools: readonly string[];
 }>;
 describe("AppDefinition catalog", () => {
+  it("namespaces Browser Use's hosted service as browser-use-cloud", () => {
+    expect(CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === "browser-use-cloud"))
+      .toMatchObject({ name: "Browser Use Cloud", methods: [{ key: "cloud-v4", transport: "rest_api" }] });
+    expect(APP_DEFINITIONS.some(app => app.slug === "browser-use")).toBe(false);
+    expect(getAppDefinitionForUrl("https://cloud.browser-use.com/agents")?.slug).toBe("browser-use-cloud");
+  });
   it("offers Anthropic runtime authentication without the unsupported REST tool method", () => {
     const anthropic = APP_DEFINITIONS.find((app) => app.slug === "anthropic")!;
     expect(anthropic.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
@@ -244,6 +234,15 @@ describe("AppDefinition catalog", () => {
 
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
+  it("lists model providers as regular tagged catalog entries", () => {
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
+    for (const slug of slugs) {
+      const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
+      expect(app.methods.some(method => method.purpose === "ai" && method.transport === "runtime_auth")).toBe(true);
+    }
+  });
+
   it("contains every established provider plus the reviewed self-serve catalog", () => {
     expect(APP_DEFINITIONS.map((app) => app.slug)).toEqual(
       expect.arrayContaining([
@@ -274,7 +273,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(48);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(53);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -297,6 +296,17 @@ describe("AppDefinition catalog", () => {
     for (const entry of BLOCKED_MCP_PROVIDERS)
       expect(connectableSlugs.has(entry.slug)).toBe(false);
   });
+  it("separates GitHub tools from the review bot without changing the provider identity", () => {
+    const github = getConnectableAppDefinition("github")!;
+    const bot = getConnectableAppDefinition("github-code-review-bot")!;
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
+    expect(bot.name).toBe("GitHub Code Review Bot");
+    expect(bot.methods).toHaveLength(1);
+    expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
+    expect(bot.branding).toEqual(github.branding);
+    expect(bot.urlPatterns).toEqual([]);
+  });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
       slack: {
@@ -305,11 +315,11 @@ describe("AppDefinition catalog", () => {
         resources: ["workspace", "channel"],
         tool: true,
       },
-      github: {
+      "github-code-review-bot": {
         credentials: ["appId", "privateKey"],
         publicFields: ["appId"],
         resources: ["organization", "repository"],
-        tool: true,
+        tool: false,
       },
       discord: {
         credentials: ["botToken", "applicationId", "guildId"],
@@ -342,7 +352,7 @@ describe("AppDefinition catalog", () => {
         key: "chat-agent",
         label: "Chat with an agent",
         purpose: "channel",
-        provider: slug,
+        provider: slug === "github-code-review-bot" ? "github" : slug,
         transport: "chat_sdk",
         auth: "api_key",
         ownershipModes: ["customer"],
@@ -387,20 +397,20 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
         (method) => method.purpose === "channel",
       );
-    expect(channel("github")?.guidanceMd).toContain("issue_comment");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("issue_comment");
     expect(channel("discord")?.guidanceMd).toContain("Message Content intent");
     expect(channel("discord")?.guidanceMd).toContain("Discord thread");
-    expect(channel("github")?.guidanceMd).toContain("pull_request");
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("pull_request");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "pull_request_review_comment",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "installation_repositories",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "Generate the webhook secret in Paperclip",
     );
-    expect(channel("github")?.guidanceMd).toContain("SSL-verified");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("SSL-verified");
     expect(channel("microsoft-teams")?.guidanceMd).toContain(
       "resource-specific",
     );
@@ -427,15 +437,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 51 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 56 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(51);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(56);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 51);
+    ).toHaveProperty("size", 56);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -457,6 +467,76 @@ describe("AppDefinition catalog", () => {
       credentialFields: [{ key: "authorization", secret: true, type: "password", required: true }],
       keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
     });
+  });
+
+  it("supports organization tokens and OAuth for the official read-only Enterpret MCP", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(
+      (entry) => entry.slug === "enterpret",
+    )!;
+    expect(
+      getAppDefinitionForUrl("https://wisdom-api.enterpret.com/server/mcp")
+        ?.slug,
+    ).toBe("enterpret");
+    // Both methods target the official read-only MCP, not the beta Agent MCP.
+    expect(app.methods.map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(app.redirectConstraints).toBe("https-or-loopback-http");
+    expect(APP_STORE_HIDDEN_SLUGS.has("enterpret")).toBe(false);
+    expect(app.availability?.available).not.toBe(false);
+    expect(app.ownershipAvailability?.dcr).not.toBe(false);
+    expect(getAvailableConnectionMethods(app).map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(getAvailableConnectionMethod(app)?.key).toBe("mcp-api-key");
+    expect(getAvailableConnectionMethod(app, "mcp-oauth")?.key).toBe("mcp-oauth");
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    expect(app.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      // Enterpret documents no customer-registered OAuth app, only RFC 7591.
+      ownershipModes: ["dcr"],
+      grantKinds: ["user"],
+      riskTier: "S3",
+      defaults: {
+        serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+        // Narrower than the "mcp:read mcp:write" the 401 challenge advertises.
+        scopesHint: ["mcp:read"],
+      },
+    });
+    // RFC 9728 -> RFC 8414 discovery resolves from the challenge, so shipping a
+    // complete endpoint pair would suppress discovery permanently.
+    expect(app.methods[1].defaults?.authorizationEndpoint).toBeUndefined();
+    expect(app.methods[1].defaults?.tokenEndpoint).toBeUndefined();
+    expect(app.methods[1].label).toBe("Sign in with Enterpret");
+    expect(app.methods[1].warnings?.some((w) => /broader OAuth scopes/i.test(w))).toBe(
+      true,
+    );
+    // The definition records the placement of a credential, never a value.
+    const serialized = JSON.stringify(app);
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}/);
+    // "Bearer " may appear only as the header prefix, never trailed by a value.
+    expect(serialized.match(/Bearer[^"]*/g)).toEqual(["Bearer "]);
+    for (const method of app.methods)
+      for (const credentialField of method.credentialFields ?? [])
+        expect(credentialField).not.toHaveProperty("defaultValue");
   });
 
   it("uses the reviewed current endpoints and configuration modes", () => {
@@ -573,7 +653,16 @@ describe("AppDefinition catalog", () => {
         (field) => field.key === "readOnly",
       )?.defaultValue,
     ).toBe(false);
-    expect(method("asana")?.ownershipModes).toEqual(["customer"]);
+    expect(method("asana")).toMatchObject({
+      key: "managed", ownershipModes: ["platform_shared"], connectorProfile: "asana.mcp",
+      defaults: { serverUrl: "https://mcp.asana.com/v2/mcp", scopesHint: ["default"] },
+    });
+    expect(APP_DEFINITIONS.find((app) => app.slug === "asana")?.methods[1]).toMatchObject({
+      key: "mcp-own-oauth", ownershipModes: ["customer"], oauthClientSecretRequired: true,
+      defaults: { discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2" },
+      consoleLinks: { register: "https://app.asana.com/0/my-apps" },
+    });
+    expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",
@@ -599,12 +688,41 @@ describe("AppDefinition catalog", () => {
       defaults: { serverUrl: "https://api.you.com/mcp?profile=free" },
     });
     expect(method("youcom", "mcp-free")?.credentialFields).toBeUndefined();
+    expect(
+      APP_DEFINITIONS.find((app) => app.slug === "telem")?.methods.map(
+        (candidate) => candidate.key,
+      ),
+    ).toEqual(["mcp-api-key"]);
+    expect(method("telem")).toMatchObject({
+      auth: "api_key",
+      defaults: { serverUrl: "https://mcp.telem.ai/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: { keys: "https://app.telem.ai" },
+    });
+    expect(
+      method("telem")?.tenantFields?.map((field) => [
+        field.key,
+        field.required ?? false,
+        field.transport?.location,
+        field.transport?.name,
+      ]),
+    ).toEqual([
+      ["autoRouting", false, "header", "X-Telem-Auto-Routing"],
+      ["tier", false, "header", "X-Telem-Tier"],
+      ["providersInclude", false, "header", "X-Telem-Providers-Include"],
+      ["providersExclude", false, "header", "X-Telem-Providers-Exclude"],
+    ]);
   });
   it("uses discovery-first Notion MCP OAuth metadata", () => {
     const notion = APP_DEFINITIONS.find((app) => app.slug === "notion");
     expect(notion?.redirectConstraints).toBe("https-or-loopback-http");
     expect(notion?.methods[0]?.defaults).toEqual({
       serverUrl: "https://mcp.notion.com/mcp",
+      scopesHint: ["default"],
     });
   });
   it("preserves required Linear OAuth scopes", () =>
@@ -612,18 +730,26 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("requests only Hugging Face's MCP read scope", () =>
+  it("requests Hugging Face MCP read, contribution and job scopes", () =>
     expect(
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
-    ).toEqual(["read-mcp"]));
-  it("defaults every new connection action to allowed", () => {
+    ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
+  it("defaults every new connection action to allowed except Enterpret writes", () => {
     for (const app of APP_DEFINITIONS)
-      for (const method of app.methods)
+      for (const method of app.methods) {
+        if (app.slug === "enterpret") {
+          expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+            access: "all_agents",
+            askFirstRiskLevels: ["write", "destructive"],
+          });
+          continue;
+        }
         expect(recommendedDefaultsForApp(app, method.key)).toEqual({
           access: "all_agents",
           askFirstRiskLevels: [],
         });
+      }
   });
   it("defaults explicit read/write capability groups to their write-capable method", () => {
     const drive = APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
@@ -651,7 +777,7 @@ describe("AppDefinition catalog", () => {
           ].includes(candidate.key),
         ),
       )?.key,
-    ).toBe("paperclip-read");
+    ).toBe("customer-draft-oauth");
     expect(
       getRecommendedConnectionMethod(
         gmail.methods.filter(
@@ -719,7 +845,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -929,6 +1055,181 @@ describe("AppDefinition catalog", () => {
       expect(method.guidanceMd).toContain("optional advanced controls");
     }
   });
+  it("connects Neon's hosted server with optional project pinning and read-only mode", () => {
+    const neon = APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+    expect(neon).toMatchObject({
+      name: "Neon",
+      categories: ["data"],
+      urlPatterns: ["https://mcp.neon.tech/*"],
+      docsUrl: "https://neon.com/docs/ai/neon-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+      branding: { logoUrl: "/brands/apps/neon.png" },
+    });
+    expect(neon.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "neon")).toBe(true);
+    expect(neon.methods.map((candidate) => candidate.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-key",
+    ]);
+    const [oauth, apiKey] = neon.methods;
+    expect(oauth).toMatchObject({
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      requiredResourceFilters: ["project"],
+      defaults: {
+        serverUrl: "https://mcp.neon.tech/mcp",
+        scopesHint: ["read", "write"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.neon.tech/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://console.neon.tech/app/settings/api-keys",
+      },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    for (const method of neon.methods) {
+      // Nothing is required on the default path: both narrowing controls are
+      // optional and folded under Advanced, and the provider enforces them.
+      expect(method.tenantFields?.map((field) => field.key)).toEqual([
+        "projectId",
+        "readOnly",
+      ]);
+      expect(method.tenantFields?.every((field) => field.advanced && !field.required)).toBe(true);
+      expect(method.tenantFields?.[0]).toMatchObject({
+        type: "text",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      });
+      expect(method.tenantFields?.[1]).toMatchObject({
+        type: "checkbox",
+        defaultValue: false,
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      });
+      expect(method.warnings?.length).toBe(2);
+    }
+  });
+  it("connects Gauge's hosted server with browser sign-in or an organization API key", () => {
+    const gauge = APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+    expect(gauge).toMatchObject({
+      name: "Gauge",
+      categories: ["analytics"],
+      urlPatterns: ["https://app.withgauge.com/*"],
+      docsUrl: "https://docs.withgauge.com/help/mcp",
+      branding: { logoUrl: "/brands/apps/gauge.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "gauge")).toBe(true);
+    expect(gauge.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    const [oauth, apiKey] = gauge.methods;
+    expect(oauth).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S3",
+      // Gauge advertises identity scopes too; only the reviewed MCP scope is
+      // requested, and the organization is chosen on Gauge's consent screen.
+      defaults: { serverUrl: "https://app.withgauge.com/mcp", scopesHint: ["mcp"] },
+    });
+    expect(apiKey).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://app.withgauge.com/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    // The key form renders credential helper text, not method warnings, so the
+    // publish advice must live in the helper.
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("set publish actions to Ask first");
+    for (const method of gauge.methods) {
+      // One shared profile: no capability picker, but the access step shows
+      // its description (with the publish warning) before sign-in.
+      expect(method.capabilityProfile).toMatchObject({
+        key: "write",
+        description: expect.stringContaining("publish to your connected CMS"),
+      });
+      expect(method.tenantFields ?? []).toEqual([]);
+      expect(method.warnings).toEqual([
+        expect.stringContaining("one Gauge organization"),
+        expect.stringContaining("publish to your connected CMS"),
+      ]);
+    }
+  });
+  it("connects Superagent's hosted server with an organization API key only", () => {
+    const superagent = APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
+    expect(superagent).toMatchObject({
+      name: "Superagent",
+      categories: ["developer"],
+      urlPatterns: ["https://www.superagent.sh/*"],
+      docsUrl: "https://www.superagent.sh/docs/mcp",
+      branding: { logoUrl: "/brands/apps/superagent.png" },
+    });
+    // The hosted server publishes no OAuth authorization-server metadata, so
+    // there is no browser sign-in method and no OAuth redirect constraint.
+    expect(superagent.redirectConstraints).toBeUndefined();
+    expect(superagent.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "superagent")).toBe(true);
+    expect(superagent.methods).toHaveLength(1);
+    const [apiKey] = superagent.methods;
+    expect(apiKey).toMatchObject({
+      key: "mcp-api-key",
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      // The bare superagent.sh domain redirects, and some clients drop POST
+      // bodies on redirect, so the www host is pinned.
+      defaults: { serverUrl: "https://www.superagent.sh/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://www.superagent.sh/app/settings#api-keys",
+        docs: "https://www.superagent.sh/docs/mcp",
+      },
+    });
+    expect(apiKey!.tenantFields ?? []).toEqual([]);
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        placeholder: "sk_live_...",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("not scoped");
+    expect(apiKey!.warnings).toEqual([
+      expect.stringContaining("consume organization credits"),
+    ]);
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -942,6 +1243,7 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "honcho:mcp-api-key:workspaceId",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",
       "supabase:mcp-api-key:projectRef",
@@ -1018,4 +1320,49 @@ describe("Railway provider", () => {
     expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
     expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
   });
+});
+
+
+describe("tool method permission review", () => {
+  const audit = JSON.parse(fs.readFileSync(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8")) as {
+    methods: { app: string; method: string; auth: string; policy: string; requestedScopes: string[]; providerDefaultReason?: string; supportedActions: string; evidence: string[]; reviewedAt: string }[];
+  };
+  const methods = APP_DEFINITIONS.flatMap((app) => app.methods
+    .filter((method) => method.purpose !== "channel" && method.purpose !== "ai")
+    .map((method) => ({ app, method })));
+  it("requires an explicit review for every tool method, including documented scope omissions", () => {
+    expect(new Set(audit.methods.map((review) => `${review.app}/${review.method}`)).size).toBe(audit.methods.length);
+    expect(audit.methods).toHaveLength(methods.length);
+    for (const { app, method } of methods) {
+      const review = audit.methods.find((entry) => entry.app === app.slug && entry.method === method.key);
+      expect(review, `${app.slug}/${method.key}`).toBeDefined();
+      expect(review!.auth).toBe(method.auth);
+      expect(review!.supportedActions.length).toBeGreaterThan(15);
+      expect(review!.evidence.length).toBeGreaterThan(0);
+      if (method.auth === "oauth") {
+        expect(method.defaults?.scopesHint ?? []).toEqual(review!.requestedScopes);
+        if (!review!.requestedScopes.length) {
+          expect(review!.policy).toBe("provider-default");
+          expect(review!.providerDefaultReason!.length).toBeGreaterThan(30);
+        } else expect(review!.policy).toBe("explicit");
+      }
+    }
+  });
+  it("requests Airtable record, schema and comment writes, and Hugging Face repository/job actions", () => {
+    expect(APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods[0]!.defaults!.scopesHint).toEqual([
+      "data.records:read", "data.records:write", "schema.bases:read", "schema.bases:write",
+      "data.recordComments:read", "data.recordComments:write", "workspacesAndBases:read",
+    ]);
+    expect(APP_DEFINITIONS.find((app) => app.slug === "hugging-face")!.methods[0]!.defaults!.scopesHint)
+      .toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]);
+  });
+});
+
+it("validates native pool catalog entries without inventing an authentication method", () => {
+  const entry = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+  expect(appDefinitionSchema.parse(entry)).toEqual(entry);
+  expect(entry.methods).toEqual([]);
+  expect(appDefinitionSchema.safeParse({ ...entry, aiConnectionRouter: undefined }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, methods: APP_STORE_DEFINITIONS[0]!.methods }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, categories: ["developer"] }).success).toBe(false);
 });

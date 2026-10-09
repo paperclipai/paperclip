@@ -1,30 +1,34 @@
 # Runner API escape hatch
 
 `search_api` and `call_api` extend the native runner when an available dedicated
-operation cannot express the requested work. Existing tools remain preferred;
+operation cannot express the requested work. Use `set_task_monitor` to schedule or clear a one-shot task check; after confirming
+the receipt, finish with `yielded` and `continuation.kind: "monitor"` to await that
+task’s timer. `call_api` still rejects monitor/execution-policy lifecycle writes.
+Existing tools remain preferred;
 agents do not have to search before using them. Only two tool definitions are
 advertised. The API catalog is returned on demand, never injected into the
 initial prompt.
 
-## Controlled rollout
+## Default availability and operator controls
 
-The escape hatch is disabled by default. Set
-`PAPERCLIP_RUNNER_API_TOOLS_ENABLED=true` on the server to enable it. For an
-initial company rollout, also set `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS` to a
-comma-separated list of company UUIDs. An unset list allows every company;
-an explicitly empty list allows none. IDs must match exactly.
+The escape hatch is enabled by default. No environment variable is required.
+The native `hire_agent` tool shares this availability policy.
+Set `PAPERCLIP_RUNNER_API_TOOLS_ENABLED=false` on the server to disable these
+tools. An explicit `true` also enables them; other explicit values fail closed.
 
-The server always requires the explicit `true` flag, including for server-owned
-bindings. A binding can disable these tools for a baseline eval but cannot enable
-them without operator opt-in. Setting the flag to `false` disables them. The server checks this switch when advertising tools,
-when accepting a call, and immediately before HTTP dispatch after preparing any
-files. Existing dedicated tools remain available. Operators must update the
-environment of each server process and restart it for deployment-level changes;
-this environment switch is not a live settings API.
+Operators can restrict availability with `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS`,
+a comma-separated list of company UUIDs. An unset list allows every company;
+an explicitly empty list allows none. IDs must match exactly. This restriction
+also applies when the enabled flag is unset.
 
-Evaluate selected companies first. Compare success, unnecessary fallback calls,
-cost, and latency against the dedicated-tool baseline before widening. Keep the
-switch disabled if authorization, replay, or cost accounting fails.
+A server-owned binding can disable these tools for a baseline eval but cannot
+override an operator restriction. The server checks the policy when advertising
+tools, when accepting a call, and immediately before HTTP dispatch after
+preparing any files. Existing dedicated tools remain available. Operators must
+update the environment of each server process and restart it for deployment-level
+changes; this environment switch is not a live settings API.
+
+All company, run, work-mode, credential, and lifecycle checks below still apply.
 
 ## Discovery and requests
 
@@ -50,14 +54,105 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
-Requests have a 30-second HTTP timeout, 16 KiB URL limit and 10 MiB payload/response
-transfer limit. Responses above 24 KiB and binary responses become company-owned
-assets with retrievable references; text previews are limited to 2,000 bytes.
+Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **New response
+captures are limited to 1 GiB of decoded bytes.** This is separate from the 24 KiB
+inline/page limit. The receiver rejects an oversized Content-Length before
+reading and counts actual bytes before writing, including chunked or compressed
+responses. Oversized responses return `api_response_too_large`; narrow the query
+or use the endpoint's own pagination. A mutation may already have committed, so
+inspect its state rather than retrying it to obtain a smaller response.
+
+Connection setup and stalled response reads time out after 30 seconds. An active
+capture has a 10-minute total download deadline. Responses above 24 KiB stream
+into a private temporary file, then into a company-owned asset. Memory stays
+bounded by the inline prefix and stream buffers. Binary responses also become
+assets; text previews are limited to 2,000 bytes.
+
+Large captures reserve 1 GiB against a **durable 4 GiB per-run capture budget**
+before creating a file. A completed capture settles to its actual byte count;
+failed/interrupted captures retain the full reservation to bound retry loops.
+A process restart does not reset that budget. Small inline responses and reads
+of existing assets need no reservation. Concurrent large captures are limited
+to **two per company and four per server process**, including the storage upload
+and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;
+concurrency exhaustion returns `api_response_capture_busy` without queuing more
+large transfers. A **20 GiB company-wide quota** counts all stored `runner-api` snapshots plus
+unattached reservations. Admission uses a company database lock, so runs and
+server processes share the same quota. Existing snapshots from before this
+change count too. Attaching an asset converts its reservation to actual stored
+bytes; deleting the asset frees that capacity. Small binary snapshots also need
+storage admission. Ordinary inline text/JSON and existing-asset pages do not.
+
+Operators can set `PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES` to a positive
+safe integer of at least 1 GiB. Invalid values fall back to 20 GiB. No zero or
+unlimited setting is accepted. This quota covers API snapshots, not all company
+attachments. Storage capacity and backend limits still apply.
+
+Handled pre-storage failures release the company reservation after temporary
+file cleanup, but retain the run's charge against retry loops. After a metadata
+transaction fails, a locking read must prove the asset was not committed before
+the uploaded object is removed. Confirmed cleanup refunds the company quota. A crash, failed
+cleanup, or ambiguous storage write keeps an unattached reservation. Operators
+must reconcile possible orphan files/objects before deleting that reservation
+from `runner_api_response_reservations`; no automatic expiry silently refunds
+possibly occupied space. Linked rows are removed with their asset. Deleting a
+run does not release its unattached company reservations.
+
+Temporary files are removed on success or failure. Long captures revalidate the
+active run at least every MiB or at the next chunk after one second, and again
+before returning the snapshot. Stopping the run stops its download.
+
+To inspect saved text without creating another artifact, call its authorized
+content operation with `responseText`:
+
+```json
+{"operationId":"GET /api/assets/{assetId}/content","pathParams":{"assetId":"RETURNED_ARTIFACT_ID"},"responseText":{"offsetBytes":0,"limitBytes":8192}}
+```
+
+The result contains `data` as text (including JSON), plus `responseText` with
+`offsetBytes`, `nextOffsetBytes`, and `totalBytes`. Continue at `nextOffsetBytes`
+until it is null. Windows end at UTF-8 boundaries. The limit defaults to 24 KiB
+and accepts 4–24,576 bytes. The server rejects binary content, invalid UTF-8,
+and offsets inside a code point or beyond the response. This option only works
+with GET; never repeat a mutation to retrieve another part of its response.
+Read the saved artifact for a stable snapshot instead of paging a changing live
+response. A text-window call against a live response above 24 KiB also returns
+that snapshot's artifact reference; continue on its content operation. A saved
+asset page never creates another asset. An unpaged asset read also fetches only
+a bounded preview and returns the existing reference instead of copying the file. Offsets and total sizes use safe integer
+byte counts, including values above 2 GiB. Existing assets larger than the 1 GiB
+capture limit remain readable because each request transfers only a bounded range.
+Request/upload limits and all route
+authorization remain.
+Saved asset pages use authenticated HTTP byte ranges. The storage provider reads
+only the requested window, with at most two extra bytes for UTF-8/EOF handling.
+The client validates `Content-Range`, the total size, and the received byte count;
+it rejects unsupported or inconsistent ranges instead of downloading the whole
+asset for every page. Other GET routes are fetched once in full to create the
+snapshot, so use the returned asset for subsequent pages. S3 uses streamed
+multipart uploads for large snapshots. Asset sizes are stored as PostgreSQL
+`bigint`, preserving the existing numeric API shape.
+
+### Media files and upload limits
+
+The 1 GiB limit covers new snapshots returned by `call_api`, such as large JSON
+exports or binary API downloads. It does not raise attachment upload limits or
+limit files an agent creates and edits inside its workspace. Saved asset downloads
+stream from storage and support byte ranges, including video seeking.
+
+`PAPERCLIP_ATTACHMENT_MAX_BYTES` separately defaults to 10 MiB for uploads and
+native file handoffs. `call_api` uploads also have their own 10 MiB limit. Several
+upload and handoff paths buffer complete files in memory; raising those defaults
+to GiB sizes requires streaming ingestion and corresponding admission/budget
+controls first. For a future video attachment workflow, 2 GiB per streamed file
+is a reasonable default, with an operator override and storage quotas. Do not
+claim that this response-paging change enables GiB attachment uploads.
+
 Tool responses identify the HTTP route with `apiOperationId`. The native protocol
 reserves `operationId` and `callId` for semantic tool-call identity; API metadata
 must not masquerade as that envelope. Saved mutation receipts are normalized at
 the tool boundary as well, without repeating their HTTP request.
-All redirects are refused. Oversized or interrupted mutation responses have an
+All redirects are refused. Interrupted mutation responses have an
 unknown outcome, requiring inspection before another mutation.
 Mutation responses with HTTP 5xx, HTTP 408, redirects, or malformed JSON also
 retain an unknown outcome. A server may have committed the write before it

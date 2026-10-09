@@ -33,9 +33,9 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
-fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+fn send_split_event_burst(state: &FakeState, count: usize) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..96 {
+    for index in 0..count {
         send(json!({
             "method": "item/agentMessage/delta",
             "params": {
@@ -619,6 +619,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
+    let split_event_prefix_count = argument(&args, "--split-event-prefix-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(96);
+    if !(1..=4096).contains(&split_event_prefix_count) {
+        return Err("split event prefix count must be between 1 and 4096".into());
+    }
     let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
         .map(|value| value.parse::<usize>())
         .transpose()?
@@ -645,6 +652,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
+    let hold_first_durable_turn = args
+        .iter()
+        .any(|value| value == "--hold-first-durable-turn");
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
@@ -1341,6 +1351,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .checked_add(1)
                         .ok_or("fake provider turn sequence exhausted")?;
                 }
+                let hold_turn = hold_turn || (hold_first_durable_turn && state.next_turn == 1);
                 if reject_second_turn_start && turn_start_count == 2 {
                     send(json!({
                         "method": "warning",
@@ -1669,7 +1680,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
-                    send_split_event_burst(&state)?;
+                    send_split_event_burst(&state, split_event_prefix_count)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {

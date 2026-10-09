@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -29,8 +30,10 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockReadIdleSleepSafety = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/idle-sleep-safety.js", () => ({ readIdleSleepSafety: mockReadIdleSleepSafety }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
@@ -74,7 +77,7 @@ describe("instance settings routes", () => {
     return { errorHandler, instanceSettingsRoutes };
   });
 
-  function createApp(actor: any) {
+  function createApp(actor: any, pluginWorkers?: PluginWorkerManager, prepareBackup?: () => Promise<boolean>) {
     const { errorHandler, instanceSettingsRoutes } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -82,13 +85,14 @@ describe("instance settings routes", () => {
       req.actor = actor;
       next();
     });
-    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    app.use("/api", instanceSettingsRoutes(mockDb as any, pluginWorkers, prepareBackup));
     app.use(errorHandler);
     return app;
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadIdleSleepSafety.mockReset();
     // vi.clearAllMocks() clears recorded calls only; it does not remove a
     // mockImplementation a prior test installed. Reinstall the default here
     // so a stateful implementation from one test can never leak into the
@@ -124,7 +128,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: null,
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -149,7 +152,6 @@ describe("instance settings routes", () => {
     });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
@@ -174,7 +176,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: "env-1",
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -201,7 +202,6 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       },
     });
@@ -593,7 +593,6 @@ describe("instance settings routes", () => {
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -601,14 +600,12 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
@@ -628,7 +625,6 @@ describe("instance settings routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
   });
@@ -660,7 +656,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true, keyboardShortcuts: true });
+      .send({ censorUsernameInLogs: true });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
@@ -701,7 +697,6 @@ describe("instance settings routes", () => {
     it("rejects a write that changes executionMode", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -730,7 +725,6 @@ describe("instance settings routes", () => {
     it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -738,12 +732,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+        .send({ executionMode: "kubernetes", censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         executionMode: "kubernetes",
-        keyboardShortcuts: true,
+        censorUsernameInLogs: true,
       });
     });
 
@@ -752,11 +746,11 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
-      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ censorUsernameInLogs: true });
     });
 
     it("keeps executionMode writable on self-hosted instances", async () => {
@@ -809,12 +803,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ censorUsernameInLogs: false, keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: false, feedbackDataSharingPreference: "allowed" });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         censorUsernameInLogs: false,
-        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
       });
     });
 
@@ -822,7 +816,6 @@ describe("instance settings routes", () => {
       process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.backupRetention";
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       });
@@ -971,6 +964,114 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it("acquires an owned bounded idle hold and forwards its owner for inspection", async () => {
+      const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({ ownerId, startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) });
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
+      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
+      await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined);
+    });
+
+    it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ ...body, purpose: "idle" }).expect(400);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("rejects replacement and ownerless or stale release of an idle hold", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId: "current-owner" });
+      const app = createApp(adminActor);
+      await request(app).post("/api/instance/task-drain").send({}).expect(409);
+      await request(app).delete("/api/instance/task-drain").expect(409);
+      await request(app).delete("/api/instance/task-drain?ownerId=previous-owner").expect(409);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+      await request(app).delete("/api/instance/task-drain?ownerId=current-owner").expect(200);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledOnce();
+    });
+
+    it("returns the opt-in instance-wide safety report to an instance admin", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const report = { version: 1, backgroundWork: "unknown" };
+      mockReadIdleSleepSafety.mockResolvedValue(report);
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined);
+      expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it("uses the live worker manager for inspection and releases only the owned hold", async () => {
+      const inspect = vi.fn(async () => ({ backgroundWork: "none", pluginIds: [] }));
+      const release = vi.fn();
+      const workers = {
+        inspectIdleSleep: inspect,
+        releaseIdleSleep: release,
+      } as unknown as PluginWorkerManager;
+      const ownerId = "fixture-idle-owner";
+      const lease = { ownerId, expiresAt: Date.now() + 60_000 };
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId });
+      mockReadIdleSleepSafety.mockImplementation(async (_db, _status, _now, owner, _local, inspectPlugins) => {
+        expect(owner).toBe(ownerId);
+        return { version: 1, backgroundWork: (await inspectPlugins(lease)).backgroundWork };
+      });
+      const app = createApp(adminActor, workers);
+      await request(app).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(inspect).toHaveBeenCalledWith(lease);
+      expect(inspect.mock.contexts[0]).toBe(workers);
+      await request(app).delete("/api/instance/task-drain?ownerId=stale-owner").expect(409);
+      expect(release).not.toHaveBeenCalled();
+      await request(app).delete(`/api/instance/task-drain?ownerId=${ownerId}`).expect(200);
+      expect(release).toHaveBeenCalledOnce();
+    });
+
+    it("passes the operator backup hook only through the protected safety report", async () => {
+      const backup = vi.fn(async () => true);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const app = createApp(adminActor, undefined, backup);
+      await request(app).get("/api/instance/task-drain").expect(200);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(app).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, backup);
+      mockReadIdleSleepSafety.mockClear();
+      await request(createApp(nonAdminActor, undefined, backup)).get("/api/instance/task-drain?idleSleepSafety=1").expect(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      expect(backup).not.toHaveBeenCalled();
+    });
+
+    it("reserves managed checkpoint creation for verified Cloud control actors", async () => {
+      const backup = vi.fn(async () => true);
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-managed-signal";
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      try {
+        for (const source of ["session", "cloud_tenant", "local_implicit"]) {
+          const tenantAdmin = createApp({ ...adminActor, source }, undefined, backup);
+          await request(tenantAdmin).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner")
+            .set("x-paperclip-cloud-control", "unverified-header").expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        expect(backup).not.toHaveBeenCalled();
+        const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
+        await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+          "fixture-owner", expect.any(Function), undefined, backup);
+      } finally {
+        delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      }
+    });
+
+    it.each([
+      ["company member", nonAdminActor],
+      ["agent", { type: "agent", agentId: "agent-1", companyId: "company-1" }],
+      ["anonymous caller", { type: "none" }],
+    ])("does not expose the instance-wide work report to a %s", async (_name, actor) => {
+      const res = await request(createApp(actor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {

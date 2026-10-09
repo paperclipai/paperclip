@@ -18,6 +18,8 @@ export type CapabilitySemanticToolExposure = "always" | "optional";
 export type CapabilitySemanticOperationId =
   | "search_api"
   | "call_api"
+  | "set_task_title"
+  | "set_task_monitor"
   | "get_task_context"
   | "get_task_history"
   | "list_documents"
@@ -33,6 +35,10 @@ export type CapabilitySemanticOperationId =
   | "request_review"
   | "list_agents"
   | "get_agent"
+  | "read_agent_instructions"
+  | "update_agent_instructions"
+  | "get_agent_instruction_history"
+  | "restore_agent_instructions"
   | "search_tasks"
   | "list_approvals"
   | "get_approval"
@@ -42,6 +48,7 @@ export type CapabilitySemanticOperationId =
   | "reassign_task"
   | "set_dependencies"
   | "create_skill"
+  | "update_skill"
   | "create_project"
   | "list_project_repositories"
   | "list_projects"
@@ -50,6 +57,8 @@ export type CapabilitySemanticOperationId =
   | "decide_approval"
   | "comment_on_approval"
   | "schedule_wake"
+  | "submit_complaint"
+  | "submit_suggestion"
   | "generic_api_request";
 
 export interface CapabilityJsonSchema {

@@ -7,8 +7,17 @@ import {
 } from "./driver-profile.js";
 
 describe("ACPX driver profile", () => {
+  it("enables only negotiated Pi controls and keeps the static profile conservative", () => {
+    expect(acpxCapabilities("pi")).toMatchObject({ steering: false, queuedFollowUp: false });
+    expect(acpxCapabilities("pi", { steering: true, queuedFollowUp: false })).toMatchObject({ steering: true, queuedFollowUp: false });
+    expect(acpxCapabilities("pi", { steering: false, queuedFollowUp: true })).toMatchObject({ steering: false, queuedFollowUp: true });
+    for (const agent of ["cursor", "copilot", "codex", "claude"] as const) {
+      expect(acpxCapabilities(agent, { steering: true, queuedFollowUp: true })).toMatchObject({ steering: false, queuedFollowUp: false });
+    }
+  });
   it.each([
     ["codex", "available"],
+    ["grok", "available"],
     ["claude", "available"],
     ["pi", "unsupported"],
   ] as const)(
@@ -45,10 +54,8 @@ describe("ACPX driver profile", () => {
     });
   });
 
-  it.each([
-    ["claude", "claude-sonnet-5"],
-    ["codex", "gpt-5.6-sol"],
-  ] as const)("accepts the exact qualified %s model", (agent, model) => {
+  it.each(["claude", "codex", "grok", "cursor"] as const)("accepts an unlisted %s model for native verification", agent => {
+    const model = "custom/model[reasoning=medium]";
     expect(validateAcpxDriverConfig({ agent, model })).toEqual({
       ok: true,
       config: { agent, model, permissionMode: "approve-all" },
@@ -72,7 +79,7 @@ describe("ACPX driver profile", () => {
       issues: [{ path: "command", code: "unknown_field" }],
     });
     expect(
-      validateAcpxDriverConfig({ agent: "codex", model: "other" }),
+      validateAcpxDriverConfig({ agent: "codex", model: " " }),
     ).toMatchObject({
       ok: false,
       issues: [{ path: "model", code: "invalid_model" }],
@@ -84,7 +91,7 @@ describe("ACPX driver profile", () => {
       }),
     ).toMatchObject({
       ok: false,
-      issues: [{ path: "agent", code: "invalid_agent" }],
+      issues: [{ path: "agent", code: "qualification_pending" }],
     });
     expect(
       validateAcpxDriverConfig({

@@ -605,12 +605,14 @@ describe("plugin proactive company scope (LOOA-629)", () => {
   }) {
     const companiesGet = overrides?.companiesGet ?? vi.fn(async () => ({ id: "company-1", name: "Co" }));
     const stateGet = overrides?.stateGet ?? vi.fn(async () => ({ value: "ok" }));
+    const listLifecycle = vi.fn(async () => [{ id: "1", companyId: "company-1" }]);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read", "plugin.state.read"],
+      capabilities: ["companies.read", "plugin.state.read", "events.subscribe"],
       services: {
         companies: { get: companiesGet },
         state: { get: stateGet },
+        events: { listLifecycle },
       } as unknown as HostServices,
     });
     const handle = createPluginWorkerHandle("test.plugin", {
@@ -621,7 +623,7 @@ describe("plugin proactive company scope (LOOA-629)", () => {
       apiVersion: 1,
       hostHandlers,
     });
-    return { handle, companiesGet, stateGet };
+    return { handle, companiesGet, stateGet, listLifecycle };
   }
 
   it("denies a proactive company-scoped call when no company is authorized", async () => {
@@ -635,6 +637,25 @@ describe("plugin proactive company scope (LOOA-629)", () => {
         message: expect.stringContaining("company context is required"),
       });
       expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits lifecycle polling only for configured proactive companies", async () => {
+    const { handle, listLifecycle } = makeHandle();
+    const poll = (companyId: string) => handle.call("getData", {
+      params: { mode: "omit", hostMethod: "events.listLifecycle", requestedCompanyId: companyId },
+    } as unknown as HostToWorkerMethods["getData"][0]);
+    try {
+      await handle.start();
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes(["company-1"]);
+      expect(await poll("company-1")).toEqual([{ id: "1", companyId: "company-1" }]);
+      await expect(poll("company-2")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes([]);
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(listLifecycle).toHaveBeenCalledTimes(1);
     } finally {
       await handle.stop().catch(() => undefined);
     }

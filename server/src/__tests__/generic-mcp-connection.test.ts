@@ -50,6 +50,7 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import { createHttpLogger } from "../middleware/logger.js";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
+import { startOAuthRefreshFixture } from "../../../scripts/mcp-fixtures/servers/oauth-refresh-fixture.mjs";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -851,6 +852,206 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  async function approveFixtureAuthorization(authorizationUrl: string) {
+    const url = new URL(authorizationUrl);
+    const consent = await fetch(url);
+    expect(consent.status).toBe(200);
+    expect(await consent.text()).toContain("Connect the test MCP server");
+    const body = new URLSearchParams(url.search);
+    body.set("decision", "allow");
+    const response = await fetch(url, { method: "POST", body, redirect: "manual" });
+    expect(response.status).toBe(302);
+    return new URL(response.headers.get("location")!);
+  }
+
+  async function expireFixtureCredentials(connectionId: string) {
+    const expiredAt = new Date(Date.now() - 1000).toISOString();
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    const config = { ...connection!.config, oauth: { ...connection!.config.oauth as object, expiresAt: expiredAt } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, connectionId));
+    const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connectionId));
+    for (const grant of grants) {
+      await db.update(connectionGrants).set({
+        providerTenant: { ...grant.providerTenant, oauth: { ...grant.providerTenant?.oauth as object, accessTokenExpiresAt: expiredAt } },
+      }).where(eq(connectionGrants.id, grant.id));
+    }
+  }
+
+  it.each(["organization", "user"] as const)("keeps a real %s MCP connection usable across offline-access token expiry and rotation", async (grantKind) => {
+    const fixture = await startOAuthRefreshFixture();
+    try {
+      const company = await createCompany(db);
+      const app = createRouteApp(db, { deploymentMode: "local_trusted", deploymentExposure: "private" });
+      const redirectUri = "http://127.0.0.1:3100/api/tools/oauth/callback";
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://127.0.0.1:3100");
+      const actor = { actorType: "user" as const, actorId: "board-user" };
+      const connected = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ link: fixture.mcpUrl, name: "Offline access MCP", grantKind }).expect(201);
+      const connectionId = connected.body.connectionId;
+      const start = await request(app).post(`/api/tools/oauth/${connectionId}/start`)
+        .send(grantKind === "user" ? { asCurrentUser: true } : {}).expect(200);
+      const callback = await approveFixtureAuthorization(start.body.authorizationUrl);
+      await toolAccessService(db).completeOAuthCallback({
+        state: callback.searchParams.get("state")!, code: callback.searchParams.get("code")!,
+        iss: callback.searchParams.get("iss")!, redirectUri, actor,
+      });
+      const service = toolAccessService(db);
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Offline access reader", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+      const catalog = await service.refreshCatalog(connectionId, actor);
+      await service.finishGalleryAppConnection(company.id, connectionId, {
+        enabledCatalogEntryIds: catalog.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] },
+      }, actor);
+      const call = () => createToolGatewayService(db).executeTestCall({
+        companyId: company.id, connectionId, agentId: agent!.id, userId: "board-user", toolName: "read_status", parameters: {},
+      });
+      const successfulCall = { decision: "allowed", result: { data: { content: [{ type: "text", text: "Authenticated MCP call succeeded" }] } } };
+      await expect(call()).resolves.toMatchObject(successfulCall);
+      // The provider actually rejects its old access token. Expire Paperclip's
+      // cached timestamp too, without waiting an hour or mocking global time.
+      for (let rotation = 0; rotation < 2; rotation += 1) {
+        fixture.advanceTime(3_601_000);
+        await expireFixtureCredentials(connectionId);
+        await expect(service.refreshCatalog(connectionId, actor)).resolves.toMatchObject({ catalog: [expect.objectContaining({ toolName: "read_status" })] });
+        await expect(call()).resolves.toMatchObject(successfulCall);
+      }
+      expect(fixture.events.filter((event) => event.kind === "registration")).toHaveLength(1);
+      expect(fixture.events.filter((event) => event.kind === "authorization")).toEqual([
+        { kind: "authorization", scopes: ["mcp:read", "offline_access"], prompt: "consent", offline: true },
+      ]);
+      expect(fixture.events.filter((event) => event.kind === "token").map((event) => event.grantType))
+        .toEqual(["authorization_code", "refresh_token", "refresh_token"]);
+      const state = await service.getConnection(connectionId, company.id);
+      expect(JSON.stringify(state)).not.toMatch(/fixture-(access|refresh)-/);
+    } finally { await fixture.close(); }
+  });
+
+  it.each([
+    { challengeScope: false, resourceScopes: ["mcp:read"], requestedScopes: undefined },
+    { challengeScope: false, resourceScopes: [], requestedScopes: ["mcp:read"] },
+  ])("adds only offline access to generic discovery scopes ($resourceScopes)", async (options) => {
+    const fixture = await startOAuthRefreshFixture(options);
+    try {
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, { link: fixture.mcpUrl });
+      // Explicit scope overrides must still get refresh capability, and must
+      // remain the saved scope set used by reconnect and callback persistence.
+      const actor = { actorType: "user" as const, actorId: "board-user" };
+      const input = { redirectUri: "http://127.0.0.1:3100/api/tools/oauth/callback", actor, scopes: options.requestedScopes };
+      const start = await service.startOAuth(company.id, connected.connectionId, input);
+      expect(new URL(start.authorizationUrl).searchParams.get("scope")).toBe("mcp:read offline_access");
+      const saved = await service.getConnection(connected.connectionId, company.id);
+      expect(saved.config.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
+      const callback = await approveFixtureAuthorization(start.authorizationUrl);
+      const completed = await service.completeOAuthCallback({
+        state: callback.searchParams.get("state")!, code: callback.searchParams.get("code")!,
+        iss: callback.searchParams.get("iss")!, redirectUri: input.redirectUri, actor,
+      });
+      expect(completed.connection.config.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
+      const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+      expect(grants).toHaveLength(1);
+      expect(grants[0].providerTenant?.oauth).toMatchObject({
+        requestedScopes: ["mcp:read", "offline_access"],
+        scopes: ["mcp:read", "offline_access"],
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
+      const reconnect = await service.startOAuth(company.id, connected.connectionId, { redirectUri: input.redirectUri, actor });
+      expect(new URL(reconnect.authorizationUrl).searchParams.get("scope")).toBe("mcp:read offline_access");
+    } finally { await fixture.close(); }
+  });
+
+  it.each([
+    { supportsOfflineAccess: false },
+    { grantTypes: ["authorization_code"] },
+  ])("does not request offline access when the authorization server does not support refresh ($supportsOfflineAccess, $grantTypes)", async (options) => {
+    const fixture = await startOAuthRefreshFixture(options);
+    try {
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, { link: fixture.mcpUrl });
+      const start = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "http://127.0.0.1:3100/api/tools/oauth/callback", actor: { actorType: "user", actorId: "board-user" },
+      });
+      const url = new URL(start.authorizationUrl);
+      expect(url.searchParams.get("scope")).toBe("mcp:read");
+      expect(url.searchParams.has("prompt")).toBe(false);
+      const callback = await approveFixtureAuthorization(start.authorizationUrl);
+      expect(callback.searchParams.has("code")).toBe(true);
+      expect(fixture.events.find((event) => event.kind === "authorization").offline).toBe(false);
+      const completed = await service.completeOAuthCallback({
+        state: callback.searchParams.get("state")!, code: callback.searchParams.get("code")!,
+        iss: callback.searchParams.get("iss")!, redirectUri: "http://127.0.0.1:3100/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+      expect(completed.connection.status).toBe("active");
+      expect(completed.connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.access_token")).toBe(true);
+      expect(completed.connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.refresh_token")).toBe(false);
+    } finally { await fixture.close(); }
+  });
+
+  it.each([
+    { name: "different authorization endpoint", authorizationUrl: `${ISSUER}/other-authorize`, tokenUrl: `${ISSUER}/token`, issuer: ISSUER, offline: false },
+    { name: "different token endpoint", authorizationUrl: `${ISSUER}/authorize`, tokenUrl: `${ISSUER}/other-token`, issuer: ISSUER, offline: false },
+    { name: "different issuer", authorizationUrl: `${ISSUER}/authorize`, tokenUrl: `${ISSUER}/token`, issuer: `${MCP_ORIGIN}/tenant/other`, offline: false },
+    { name: "matching endpoints and issuer", authorizationUrl: `${ISSUER}/authorize`, tokenUrl: `${ISSUER}/token`, issuer: ISSUER, offline: true },
+  ])("binds offline support to the selected OAuth server: $name", async (candidate) => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const originalFetch = fixture.fetchMock.getMockImplementation()!;
+    fixture.fetchMock.mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === `${MCP_ORIGIN}/.well-known/oauth-protected-resource/mcp`) {
+        return jsonResponse({
+          resource: MCP_URL, issuer: ISSUER, authorization_servers: [candidate.issuer],
+          authorization_endpoint: `${ISSUER}/authorize`, token_endpoint: `${ISSUER}/token`,
+          registration_endpoint: `${ISSUER}/register`, scopes_supported: ["mcp:read"],
+          code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      const issuerPath = new URL(candidate.issuer).pathname;
+      if (href === `${MCP_ORIGIN}/.well-known/oauth-authorization-server${issuerPath}`) {
+        return jsonResponse({
+          issuer: candidate.issuer, authorization_endpoint: candidate.authorizationUrl,
+          token_endpoint: candidate.tokenUrl, scopes_supported: ["mcp:read", "offline_access"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+        });
+      }
+      return originalFetch(url, init);
+    });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL });
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI, actor: { actorType: "user", actorId: "board-user" },
+    });
+    const url = new URL(start.authorizationUrl);
+    expect(url.origin + url.pathname).toBe(`${ISSUER}/authorize`);
+    expect(url.searchParams.get("scope")).toBe(candidate.offline ? "mcp:read offline_access" : "mcp:read");
+    expect(url.searchParams.get("prompt")).toBe(candidate.offline ? "consent" : null);
+  });
+
+  it("discovers offline refresh support when reconnecting a legacy connection with cached endpoints", async () => {
+    const fixture = await startOAuthRefreshFixture();
+    try {
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, { link: fixture.mcpUrl });
+      const input = { redirectUri: "http://127.0.0.1:3100/api/tools/oauth/callback", actor: { actorType: "user" as const, actorId: "board-user" } };
+      await service.startOAuth(company.id, connected.connectionId, input);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      const oauth = { ...connection!.config.oauth as Record<string, unknown>, scopes: ["mcp:read"] };
+      delete oauth.offlineAccessSupported;
+      delete oauth.grantTypesSupported;
+      const config = { ...connection!.config, oauth };
+      await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, connected.connectionId));
+      const reconnect = await service.startOAuth(company.id, connected.connectionId, input);
+      const url = new URL(reconnect.authorizationUrl);
+      expect(url.searchParams.get("scope")).toBe("mcp:read offline_access");
+      expect(url.searchParams.get("prompt")).toBe("consent");
+      expect(fixture.events.filter((event) => event.kind === "registration")).toHaveLength(1);
+    } finally { await fixture.close(); }
   });
 
   it("discovers OAuth for a personal URL connection before its user grant exists", async () => {

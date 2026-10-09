@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -28,6 +29,231 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it("rejects forged permission session identifiers before delegating or applying full-auto policy", async () => {
+    const pending = pendingExtensionTurn("turn-1");
+    const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: (value) => { created = value; return runtime; },
+    });
+    const handler = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    const turn = port.startTurn({ text: "Write", requestId: "turn-1", onPermissionRequest: handler });
+    const signal = new AbortController().signal;
+    for (const [sessionId, rawSessionId] of [["forged", "backend-1"], ["backend-1", "forged"]]) {
+      const request = { sessionId, raw: { sessionId: rawSessionId }, inferredKind: "edit" as const };
+      await expect(created.onPermissionRequest!(request as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
+    }
+    expect(handler).not.toHaveBeenCalled();
+    const responseDelivery = Promise.resolve();
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal, responseDelivery })).resolves.toEqual({ outcome: "allow_once" });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ responseDelivery }));
+    options.permissionMode = "approve-all";
+    await expect(created.onPermissionRequest!({ sessionId: "forged", raw: {}, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
+    pending.settle(); await turn.result; await port.close({ reason: "session checks complete" });
+  });
+  it("cancels an outstanding native permission callback on the exact active turn", async () => {
+    const pending = pendingExtensionTurn("turn-1");
+    const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    let callbackSignal!: AbortSignal;
+    const handler = vi.fn((_request, context) => new Promise<{ outcome: "cancel" }>(resolve => {
+      callbackSignal = context.signal;
+      context.signal.addEventListener("abort", () => resolve({ outcome: "cancel" }), { once: true });
+    }));
+    const turn = port.startTurn({ text: "Write", requestId: "turn-1", onPermissionRequest: handler });
+    const permission = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    expect(callbackSignal.aborted).toBe(false);
+    const oldMode = options.permissionMode;
+    options.permissionMode = "approve-all";
+    const expiredContext = new AbortController(); expiredContext.abort();
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: expiredContext.signal })).resolves.toEqual({ outcome: "cancel" });
+    options.permissionMode = oldMode;
+    await turn.cancel();
+    expect(callbackSignal.aborted).toBe(true);
+    await expect(permission).resolves.toEqual({ outcome: "cancel" });
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    expect(handler).toHaveBeenCalledOnce();
+    pending.settle(); await turn.result;
+    // The active-turn pointer has been cleared. Even full-auto policy cannot
+    // authorize a late callback from the retired turn.
+    options.permissionMode = "approve-all";
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "edit" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "cancel" });
+    await port.close({ reason: "test complete" });
+  });
+
+  it("fails Cursor adapter admission when the provider never acknowledges instructions", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" };
+    await expect(openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    })).rejects.toThrow("Cursor instruction admission failed");
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalled();
+  });
+  it.each(["valid", "missing", "unsupported"])("cold Cursor adapter admission requires %s load/config and renews only on success", async mode => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "cursor" };
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    vi.mocked(runtime.setConfigOption).mockImplementation(async () => {
+      const guard = created.protocolGuardFactory!();
+      const binding = cursorInstructionBinding(options.systemInstructions);
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: mode === "missing" ? {} : { modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      if (mode === "unsupported") throw new Error("Exact model unsupported");
+    });
+    const opening = openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    if (mode === "valid") {
+      const port = await opening; expect(options.refreshConsumedCommand).toHaveBeenCalledOnce(); await port.close({ reason: "fixture cleanup" });
+    } else {
+      await expect(opening).rejects.toThrow(mode === "missing" ? /Cursor instruction admission failed/ : /Exact model unsupported/);
+      expect(options.refreshConsumedCommand).not.toHaveBeenCalled(); expect(runtime.close).toHaveBeenCalled();
+    }
+    expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "model", value: options.profile.reportedModelId });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
+  it.each(["plan", "ask"] as const)("admission explicitly selects %s and renews temporary command authority", async selected => {
+    const runtime = fakeRuntime(); const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" }; options.mode = selected;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const binding = cursorInstructionBinding(options.systemInstructions);
+    const configs = (mode: string) => [{ id: "mode", currentValue: mode }];
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: configs("agent"), _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: configs(input.key === "mode" ? selected : "agent") } });
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    expect(vi.mocked(runtime.setConfigOption).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
+    expect(options.refreshConsumedCommand).toHaveBeenCalledTimes(2);
+    expect(await port.identity()).toMatchObject({ mode: selected });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "mode fixture cleanup" });
+  });
+
+  it("routes only profile-allowed extensions to the owning turn and expires late responses", async () => {
+    const runtime = fakeRuntime();
+    const first = pendingExtensionTurn("turn-1");
+    const second = pendingExtensionTurn("turn-2");
+    vi.mocked(runtime.startTurn).mockReturnValueOnce(first.turn).mockReturnValueOnce(second.turn);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" };
+    options.clientCapabilities = { _meta: { cursor: { test: true } } };
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (value) => {
+        created = value;
+        const guard = value.protocolGuardFactory!();
+        const binding = cursorInstructionBinding(options.systemInstructions);
+        guard("outbound", { id: 0, method: "session/new", params: {} });
+        guard("inbound", { id: 0, result: { sessionId: "backend-1", modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength } } } });
+        return runtime;
+      },
+    });
+    expect(created.clientCapabilities).toEqual(options.clientCapabilities);
+    expect(JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls)).not.toContain("clientCapabilities");
+    const notification = vi.fn();
+    const request = vi.fn(async (_method, _params, context) => ({ requestId: context.requestId }));
+    const admittedFirst = port.startTurn({ text: "First", requestId: "turn-1", onExtensionRequest: request, onExtensionNotification: notification });
+    const signal = new AbortController().signal;
+    await expect(created.onExtensionRequest!("cursor/ask_question", { sessionId: "backend-1" }, { requestId: 0, signal })).resolves.toEqual({ requestId: 0 });
+    const sessionless = { toolCallId: "native-cursor-plan", plan: "Review the complete plan" };
+    const responseDelivery = Promise.resolve();
+    await expect(created.onExtensionRequest!("cursor/create_plan", sessionless, { requestId: "plan", signal, responseDelivery })).resolves.toEqual({ requestId: "plan" });
+    expect(request).toHaveBeenLastCalledWith("cursor/create_plan", { ...sessionless, sessionId: "backend-1" }, expect.objectContaining({ requestId: "plan", responseDelivery }));
+    expect(sessionless).not.toHaveProperty("sessionId");
+    await expect(created.onExtensionRequest!("pi/steer", {}, { requestId: 1, signal })).rejects.toThrow("admitted active turn");
+    await expect(created.onExtensionRequest!("cursor/ask_question", { sessionId: "other" }, { requestId: 1, signal })).rejects.toThrow("admitted active turn");
+    created.onExtensionNotification!("cursor/task", { sessionId: "backend-1", taskId: "t" });
+    created.onExtensionNotification!("cursor/task", { sessionId: "other" });
+    created.onExtensionNotification!("cursor/ask_question", { sessionId: "backend-1" });
+    expect(notification).toHaveBeenCalledExactlyOnceWith("cursor/task", { sessionId: "backend-1", taskId: "t" });
+    created.onExtensionNotification!("cursor/task", { toolCallId: "native-child" });
+    expect(notification).toHaveBeenLastCalledWith("cursor/task", { sessionId: "backend-1", toolCallId: "native-child" });
+    created.onExtensionNotification!("cursor/task", { sessionId: "agent-1" });
+    expect(notification).toHaveBeenCalledTimes(2);
+    request.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = created.onExtensionRequest!("cursor/ask_question", {}, { requestId: 2, signal });
+    const rejected = expect(pending).rejects.toThrow("expired");
+    first.settle(); await admittedFirst.result; await rejected;
+    const nextRequest = vi.fn(async () => ({ accepted: true }));
+    const admittedSecond = port.startTurn({ text: "Second", requestId: "turn-2", onExtensionRequest: nextRequest });
+    expect(nextRequest).not.toHaveBeenCalled();
+    await admittedSecond.cancel({ reason: "cancelled" });
+    await expect(created.onExtensionRequest!("cursor/ask_question", {}, { requestId: 3, signal })).rejects.toThrow("admitted active turn");
+    second.settle(); await admittedSecond.result; await port.close({ reason: "test finished" });
+  });
+
+  it("requires the Pi capability handshake and acknowledgments, preserves follow-up order, and never starts a second prompt", async () => {
+    const pending = pendingExtensionTurn("turn-1");
+    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({ accepted: true })) });
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "pi" };
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (value) => { created = value; return runtime; },
+    });
+    const turn = port.startTurn({ text: "Initial", requestId: "turn-1" });
+    await expect(port.steerActiveTurn!("Update", "turn-1")).rejects.toThrow("supported active turn");
+    created.onAgentInitialize!({ agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
+    expect(port.steeringCapability!()).toEqual({ steering: true, queuedFollowUp: true });
+    await expect(port.steerActiveTurn!("Update", "wrong")).rejects.toThrow("supported active turn");
+    await port.steerActiveTurn!("Update", "turn-1");
+    await Promise.all([port.queueFollowUp!("One", "turn-1"), port.queueFollowUp!("Two", "turn-1")]);
+    expect(runtime.requestExtension.mock.calls.map((call) => call[0])).toEqual([
+      { handle: HANDLE, method: "pi/steer", params: { sessionId: "backend-1", message: "Update" }, sessionMode: "persistent" },
+      { handle: HANDLE, method: "pi/follow_up", params: { sessionId: "backend-1", message: "One" }, sessionMode: "persistent" },
+      { handle: HANDLE, method: "pi/follow_up", params: { sessionId: "backend-1", message: "Two" }, sessionMode: "persistent" },
+    ]);
+    expect(runtime.startTurn).toHaveBeenCalledTimes(1);
+    runtime.requestExtension.mockResolvedValueOnce({ accepted: false });
+    await expect(port.steerActiveTurn!("Denied", "turn-1")).rejects.toThrow("not acknowledged");
+    runtime.requestExtension.mockImplementationOnce(() => new Promise(() => undefined));
+    const stale = port.queueFollowUp!("Stale", "turn-1");
+    const rejected = expect(stale).rejects.toThrow("expired");
+    pending.settle(); await turn.result; await rejected;
+    await expect(port.queueFollowUp!("Late", "turn-1")).rejects.toThrow("supported active turn");
+    await port.close({ reason: "test finished" });
+  });
+
+  it("does not grant steering to Copilot or Cursor when an untrusted initialize result claims Pi support", async () => {
+    const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "copilot" };
+    const runtime = fakeRuntime();
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => {
+        (created as AcpRuntimeOptions & { onAgentInitialize: (result: unknown) => void }).onAgentInitialize({ agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
+        return runtime;
+      },
+    });
+    expect(port.steeringCapability!()).toBeNull();
+    await port.close({ reason: "test finished" });
+  });
   it.each(["approve-reads", "approve-paperclip"] as const)("%s stops unassigned operations when approval has no handler", async (permissionMode) => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
@@ -68,6 +294,27 @@ describe("Codex ACPX runtime adapter", () => {
       settle();
       await port.close({ reason: "permission failure verified" });
     }
+  });
+
+  it.each(["PERMISSION_PROMPT_UNAVAILABLE", "AGENT_DISCONNECTED"])("preserves the meaning of ACPX terminal failure %s", async (code) => {
+    const runtime = fakeRuntime();
+    const result = { status: "failed" as const, error: { code, message: "Provider failed" } };
+    vi.mocked(runtime.startTurn).mockReturnValue({
+      requestId: "permission-fallback", promptStarted: Promise.resolve(),
+      events: { async *[Symbol.asyncIterator]() {} }, result: Promise.resolve(result),
+      cancel: vi.fn(), closeStream: vi.fn(),
+    });
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    try {
+      const turn = port.startTurn({ text: "Attempt a write", requestId: "permission-fallback" });
+      if (code === "PERMISSION_PROMPT_UNAVAILABLE") {
+        await expect(turn.result).rejects.toMatchObject({ code: "approval_required" });
+      } else {
+        await expect(turn.result).resolves.toEqual(result);
+      }
+    } finally { await port.close({ reason: "terminal permission outcome verified" }); }
   });
 
   it("rejects a pre-aborted admission before constructing or spawning ACPX", async () => {
@@ -279,6 +526,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       cumulative_cost: { amount: 0.1, currency: "USD" },
+      messages: [{ User: { id: "prompt", content: [] } }],
+      cursor_prompt_usage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       acpx: {
         current_model_id: "gpt-5.6-sol",
         available_models: ["gpt-5.6-sol"],
@@ -301,6 +550,8 @@ describe("Codex ACPX runtime adapter", () => {
       lastRequestId: "run:turn-1",
       requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
       usageCost: { amount: 0.1, currency: "USD" },
+      promptMessageIds: ["prompt"],
+      cursorPromptUsage: { request_id: "run:turn-1", prompt_message_id: "prompt", receipt: { diagnostic: "fixture" } },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],
@@ -1660,7 +1911,7 @@ describe("Codex ACPX runtime adapter", () => {
       await expect(
         runtimeOptions?.onPermissionRequest?.(
           {
-            sessionId: "session-1",
+            sessionId: "backend-1",
             inferredKind: "write",
             raw: {},
           },
@@ -2805,6 +3056,17 @@ function fakeRuntime(handle: AcpRuntimeHandle = HANDLE): AcpRuntime {
     cancel: vi.fn(),
     close: vi.fn(),
   };
+}
+
+function pendingExtensionTurn(requestId: string) {
+  let settle!: () => void;
+  const result = new Promise<void>((resolve) => { settle = resolve; });
+  return { settle, turn: {
+    requestId, promptStarted: Promise.resolve(),
+    events: (async function* () { await result; })(),
+    result: result.then(() => ({ status: "completed" as const })),
+    cancel: async () => undefined, closeStream: async () => undefined,
+  } };
 }
 
 function runtimeWithProvider(

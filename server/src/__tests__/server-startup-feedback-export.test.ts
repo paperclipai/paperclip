@@ -1,5 +1,12 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import * as idleLocalWork from "../services/idle-local-work.js";
+import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
+import { reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -10,6 +17,7 @@ const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
+  completionSweepMock,
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
@@ -33,9 +41,13 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
+  const completionSweepMock = vi.fn(async () => undefined);
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
-      toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
+      toolGateway: {
+        sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
+        cleanupExpiredSessions: vi.fn(async () => ({ deletedCount: 0 })),
+      },
       toolActionDeliveries: { sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
     },
   }) as never);
@@ -52,6 +64,7 @@ const {
     reason: null,
   }));
   const heartbeatServiceMock = {
+    reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
       restartKind: "hard",
@@ -136,6 +149,7 @@ const {
   const loadConfigMock = vi.fn();
 
   return {
+    completionSweepMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -349,6 +363,8 @@ vi.mock("../services/index.js", () => ({
   })),
 }));
 
+vi.mock("../services/chat-completion-delivery.js", () => ({ chatCompletionDeliveryService: () => ({ sweepPending: completionSweepMock }) }));
+
 vi.mock("../services/connection-intent-delivery.js", () => ({
   connectionIntentDeliveryService: vi.fn(() => ({
     sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
@@ -426,6 +442,128 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true].flatMap(checkpointMode => [false, true].map(fails => ({ checkpointMode, fails }))))
+  ("finishes restart backup before idle eligibility (checkpoint=$checkpointMode, failure=$fails)", async ({ checkpointMode, fails }) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "startup-idle-backup-"));
+    const previousFlag = process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+    process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = checkpointMode ? "1" : "0";
+    loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
+    const eligible = vi.spyOn(idleLocalWork, "markIdleStartupComplete");
+    let retry: (() => void) | undefined;
+    const timers = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
+      if (ms === 60 * 60 * 1000) retry = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const writeBackup = async (options: Parameters<typeof runDatabaseBackup>[0]) => {
+      const backupFile = path.join(directory, "paperclip-restart.sql.gz");
+      const bytes = gzipSync("SELECT 'restart recovery';\n");
+      writeFileSync(backupFile, bytes);
+      expect(options.retention).toEqual({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+      expect(options.verifyBeforePrune).toEqual(expect.any(Function));
+      await options.verifyBeforePrune!(backupFile);
+      return { backupFile, sizeBytes: bytes.length, prunedCount: 0 };
+    };
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(async options => {
+      await pending;
+      if (fails) throw new Error("fixture restart backup failed");
+      return writeBackup(options);
+    });
+    let starting: ReturnType<typeof startServer> | undefined;
+    try {
+      await markIdleBackupWakeRequired(directory);
+      starting = startServer();
+      await vi.waitFor(() => expect(runDatabaseBackup).toHaveBeenCalledOnce());
+      expect(eligible).not.toHaveBeenCalled();
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      finish();
+      await starting;
+      expect(eligible).toHaveBeenCalledWith({ scheduledBackups: true });
+      const options = createAppMock.mock.calls[0]?.[1] as unknown as { prepareIdleDatabaseBackup?: unknown };
+      expect(Boolean(options.prepareIdleDatabaseBackup)).toBe(checkpointMode);
+      expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
+      if (fails) {
+        vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
+        expect(retry).toEqual(expect.any(Function));
+        const activeBeforeRetry = idleWorkSnapshot().active;
+        retry!();
+        await vi.waitFor(() => {
+          expect(existsSync(idleBackupWakeMarker(directory))).toBe(false);
+          // Marker removal precedes directory fsync and release of the work receipt.
+          expect(idleWorkSnapshot().active).toBe(activeBeforeRetry);
+        });
+        expect(runDatabaseBackup).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      finish();
+      await starting;
+      timers.mockRestore(); eligible.mockRestore();
+      if (previousFlag === undefined) delete process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+      else process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = previousFlag;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(([
+    ["built-in agents", reconcileBuiltInAgentsOnStartup],
+    ["managed homes", reconcileCodexLocalManagedHomesOnStartup],
+    ["runtime services", reconcilePersistedRuntimeServicesOnStartup],
+  ] as const).flatMap(([name, reconcile]) => [false, true].map(fail => ({ name, reconcile, fail }))))
+  ("counts detached $name startup writes after readiness (failure=$fail)", async ({ reconcile, fail }) => {
+    let finishStartup!: () => void;
+    const pending = new Promise<void>(resolve => { finishStartup = resolve; });
+    vi.mocked(reconcile).mockImplementationOnce(async () => {
+      await pending;
+      if (fail) throw new Error("fixture startup write failed");
+      return { reconciled: 0, seeded: 0, failed: 0 } as never;
+    });
+    const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ execute: async () => [{ blocked: false }] }) };
+    const hold = { ownerId: "fixture-owner", draining: true, activeRuns: 0, pendingWakes: 0,
+      startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
+    const report = () => readIdleSleepSafety(emptyDb as never, () => hold, Date.now, hold.ownerId, async () => "none");
+    try {
+      await startServer();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(idleWorkSnapshot().active).toBe(1);
+      expect((await report()).backgroundWork).toBe("unknown");
+      finishStartup();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect((await report()).backgroundWork).toBe("none");
+    } finally {
+      finishStartup();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  });
+
+  it.each([false, true])("counts an accepted backup until completion, including failure=%s", async fails => {
+    await startServer();
+    await new Promise(resolve => setImmediate(resolve));
+    const before = idleWorkSnapshot().active;
+    let resolveBackup!: (value: never) => void;
+    let rejectBackup!: (error: Error) => void;
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveBackup = resolve; rejectBackup = reject;
+    }));
+    const options = createAppMock.mock.calls[0]?.[1] as unknown as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+    const backup = options.databaseBackupService.runManualBackup();
+    await Promise.resolve();
+    expect(idleWorkSnapshot().active).toBe(before + 1);
+    if (fails) {
+      const rejection = expect(backup).rejects.toThrow("backup failed");
+      rejectBackup(new Error("backup failed"));
+      await rejection;
+    } else {
+      resolveBackup({ backupFile: "backup.sql.gz", sizeBytes: 1, prunedCount: 0 } as never);
+      await backup;
+    }
+    expect(idleWorkSnapshot().active).toBe(before);
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {
@@ -530,6 +668,13 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("keeps startup available when completion delivery recovery fails", async () => {
+    completionSweepMock.mockRejectedValueOnce(new Error("temporary delivery failure"));
+    const { startServer } = await import("../index.js");
+    await expect(startServer()).resolves.toBeDefined();
+    expect(completionSweepMock).toHaveBeenCalled();
+  });
+
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -544,11 +689,13 @@ describe("startServer feedback export wiring", () => {
     }) as typeof setInterval);
     try {
       await startServer();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
@@ -645,6 +792,7 @@ describe("startServer feedback export wiring", () => {
       // reaped at startup and on the interval.
       expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
@@ -652,9 +800,30 @@ describe("startServer feedback export wiring", () => {
 
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it.each([false, true])("retries failed accounting recovery with heartbeat scheduling enabled: %s", async (enabled) => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    heartbeatServiceMock.reconcileCostAccounting.mockRejectedValueOnce(new Error("temporary ledger outage"));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      expect((await startServer()).server).toBe(fakeServer);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(tick).toBeDefined();
+      tick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
+    } finally {
+      timer.mockRestore();
     }
   });
 

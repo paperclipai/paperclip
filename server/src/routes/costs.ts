@@ -1,4 +1,10 @@
+import { importProviderDailyCosts } from "../services/provider-billing-import.js";
+import { importProviderCostsSchema } from "@paperclipai/shared";
+import { accountingIntegrityService } from "../services/accounting-integrity.js";
+import { billingReconciliationService } from "../services/billing-reconciliation.js";
+import { adjustCostSchema, importBillingInvoiceSchema, repairAccountingSchema, retryAccountingSchema } from "@paperclipai/shared";
 import { Router } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
@@ -18,28 +24,37 @@ import {
   issueService,
   heartbeatService,
   accessService,
-  logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
-import { badRequest } from "../errors.js";
+import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const reportDateSchema = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
+
 export function parseCostDateRange(query: Record<string, unknown>) {
+  if (query.period !== undefined && query.period !== "all" && query.period !== "month") throw badRequest("invalid 'period'");
+  if (query.period === "all") {
+    if (query.from !== undefined || query.to !== undefined) throw badRequest("all-time period cannot have date bounds");
+    return { allTime: true };
+  }
+  if (query.from !== undefined && !reportDateSchema.safeParse(query.from).success) throw badRequest("invalid 'from' date");
+  if (query.to !== undefined && !reportDateSchema.safeParse(query.to).success) throw badRequest("invalid 'to' date");
   const fromRaw = query.from as string | undefined;
   const toRaw = query.to as string | undefined;
   const from = fromRaw ? new Date(fromRaw) : undefined;
   const to = toRaw ? new Date(toRaw) : undefined;
   if (from && isNaN(from.getTime())) throw badRequest("invalid 'from' date");
   if (to && isNaN(to.getTime())) throw badRequest("invalid 'to' date");
+  if (from && to && from > to) throw badRequest("from must not be after to");
   return (from || to) ? { from, to } : undefined;
 }
 
 export function parseCostLimit(query: Record<string, unknown>) {
-  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  const raw = query.limit;
   if (raw == null || raw === "") return 100;
-  const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
-  if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
+  const limit = typeof raw === "number" || typeof raw === "string" ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
     throw badRequest("invalid 'limit' value");
   }
   return limit;
@@ -120,22 +135,11 @@ export function costRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     const event = await costs.createEvent(companyId, {
       ...req.body,
       occurredAt: new Date(req.body.occurredAt),
-    });
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "cost.reported",
-      entityType: "cost_event",
-      entityId: event.id,
-      details: { costCents: event.costCents, model: event.model },
-    });
+    }, { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId });
 
     res.status(201).json(event);
   });
@@ -145,27 +149,11 @@ export function costRoutes(
     assertCompanyAccess(req, companyId);
     assertBoard(req);
 
+    const actor = getActorInfo(req);
     const event = await finance.createEvent(companyId, {
       ...req.body,
       occurredAt: new Date(req.body.occurredAt),
-    });
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "finance_event.reported",
-      entityType: "finance_event",
-      entityId: event.id,
-      details: {
-        amountCents: event.amountCents,
-        biller: event.biller,
-        eventKind: event.eventKind,
-        direction: event.direction,
-      },
-    });
+    }, { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId });
 
     res.status(201).json(event);
   });
@@ -187,6 +175,14 @@ export function costRoutes(
     const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
     const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
+  });
+
+  router.get("/companies/:companyId/costs/by-user", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    res.json(await costs.byUser(companyId, range));
   });
 
   router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
@@ -281,7 +277,7 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
+    const results = await fetchCompanyQuotaWindows(db, companyId, getActorInfo(req).actorId);
     res.json(results);
   });
 
@@ -331,34 +327,19 @@ export function costRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.budget_updated",
-      entityType: "company",
-      entityId: companyId,
-      details: { budgetMonthlyCents: req.body.budgetMonthlyCents },
-    });
-
     await budgets.upsertPolicy(
       companyId,
       {
         scopeType: "company",
         scopeId: companyId,
         amount: req.body.budgetMonthlyCents,
+        isActive: req.body.budgetMonthlyCents > 0,
         windowKind: "calendar_month_utc",
       },
       req.actor.userId ?? "board",
     );
 
-    res.json(company);
+    res.json(await companies.getById(companyId));
   });
 
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
@@ -368,37 +349,63 @@ export function costRoutes(
 
     assertBoard(req);
 
-    const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
-    if (!updated) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: updated.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "agent.budget_updated",
-      entityType: "agent",
-      entityId: updated.id,
-      details: { budgetMonthlyCents: updated.budgetMonthlyCents },
-    });
-
     await budgets.upsertPolicy(
-      updated.companyId,
+      agent.companyId,
       {
         scopeType: "agent",
-        scopeId: updated.id,
-        amount: updated.budgetMonthlyCents,
+        scopeId: agent.id,
+        amount: req.body.budgetMonthlyCents,
+        isActive: req.body.budgetMonthlyCents > 0,
         windowKind: "calendar_month_utc",
       },
       req.actor.type === "board" ? req.actor.userId ?? "board" : null,
     );
 
-    res.json(updated);
+    res.json(await agents.getById(agentId));
   });
+
+  const integrity = accountingIntegrityService(db, budgetHooks);
+  const billing = billingReconciliationService(db, budgetHooks);
+  // Operational accounting evidence and repairs are board-only. These payloads
+  // can contain company-wide billing identifiers even for an agent's own run.
+  router.use("/companies/:companyId/accounting", (req, _res, next) => {
+    assertCompanyAccess(req, req.params.companyId as string); assertBoard(req); next();
+  });
+  router.post("/companies/:companyId/accounting/provider-costs/import", (req, _res, next) => {
+    // Unlike ledger inspection, this operation discloses a stored credential
+    // to a provider. Ordinary company membership does not authorize that use.
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
+      && !(membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole)))) {
+      throw forbidden("Company admin access required to import provider billing.");
+    }
+    next();
+  }, validate(importProviderCostsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const result = await importProviderDailyCosts(db, companyId, req.body, getActorInfo(req).actorId);
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/accounting/health", async (req, res) => res.json(await integrity.health(req.params.companyId as string)));
+  router.get("/companies/:companyId/accounting/inspect", async (req, res) => res.json(await integrity.inspect(req.params.companyId as string)));
+  router.post("/companies/:companyId/accounting/repair", validate(repairAccountingSchema), async (req, res) =>
+    res.json(await integrity.repair(req.params.companyId as string, req.body.fingerprint, req.body.reason, getActorInfo(req).actorId)));
+  router.post("/companies/:companyId/accounting/retry", validate(retryAccountingSchema), async (req, res) =>
+    res.json(await integrity.retry(req.params.companyId as string, req.body.runId, getActorInfo(req).actorId)));
+  router.get("/companies/:companyId/accounting/invoices", async (req, res) => res.json(await billing.list(req.params.companyId as string)));
+  router.post("/companies/:companyId/accounting/invoices", validate(importBillingInvoiceSchema), async (req, res) =>
+    res.status(201).json(await billing.importInvoice(req.params.companyId as string, req.body, getActorInfo(req).actorId)));
+  router.get("/companies/:companyId/accounting/invoices/:invoiceId", async (req, res) =>
+    res.json(await billing.reconcile(req.params.companyId as string, req.params.invoiceId as string)));
+  router.get("/companies/:companyId/accounting/events/:eventId/adjustments", async (req, res) =>
+    res.json(await billing.adjustments(req.params.companyId as string, req.params.eventId as string)));
+  router.post("/companies/:companyId/accounting/events/:eventId/adjustments", validate(adjustCostSchema), async (req, res) =>
+    res.status(201).json(await billing.adjust(req.params.companyId as string, req.params.eventId as string, req.body, getActorInfo(req).actorId)));
 
   return router;
 }

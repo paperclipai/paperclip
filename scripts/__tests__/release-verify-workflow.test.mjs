@@ -244,10 +244,10 @@ test("release verify workflow covers the same split test surface as stable PR ve
   assert.match(buildJob, /persist-credentials: false/);
   assert.doesNotMatch(buildJob, /cache: pnpm/);
 
-  for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
+  for (const group of ["general-server-without-chat-or-native-runner", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-  for (const [group, count] of [["general-server-without-chat", 10], ["general-chat", 3]]) {
+  for (const [group, count] of [["general-server-without-chat-or-native-runner", 10], ["general-chat", 3]]) {
     const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
@@ -269,6 +269,30 @@ test("release verify workflow covers the same split test surface as stable PR ve
 
   assert.match(verifyWorkflow, /pnpm test:run:general -- --group/);
   assert.match(verifyWorkflow, /pnpm test:run:serialized -- --shard-index/);
+});
+
+test("release verification builds native test binaries in a required Rust-cached lane", () => {
+  const workflow = readWorkflow("release-verify.yml");
+  const runnerJob = workflow.match(/  verify_paperclip_runner:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  assert.equal((runnerJob.match(/- lane: server-integration/g) ?? []).length, 1);
+  assert.doesNotMatch(runnerJob, /continue-on-error/);
+  assert.match(runnerJob, /timeout-minutes: 20/);
+  assert.match(runnerJob, /shared-key: release-runner-v2/);
+  assert.match(runnerJob, /cache-workspace-crates: false/);
+  assert.match(runnerJob, /cache-bin: false/);
+  assert.match(runnerJob, /save-if: \$\{\{ matrix\.lane == 'rust'/);
+  assert.match(runnerJob, /Build native server test binaries\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+timeout-minutes: 10/);
+  assert.match(runnerJob, /pnpm build:rust\n\s+cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd --bin fake-codex-app-server/);
+  assert.match(runnerJob, /Run native server integration suites\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+run: pnpm test:run:general -- --group general-server-native-runner/);
+  assert.ok(runnerJob.indexOf("Cache Runner Rust dependencies") < runnerJob.indexOf("Build native server test binaries"));
+  assert.ok(runnerJob.indexOf("Build native server test binaries") < runnerJob.indexOf("Run native server integration suites"));
+
+  // The reusable workflow result includes every matrix child. Its caller must
+  // await that result without an override that can certify a failed native lane.
+  const cloud = readWorkflow("cloud-readiness.yml");
+  assert.match(cloud, /verify:[\s\S]*?uses: \.\/\.github\/workflows\/release-verify\.yml/);
+  assert.match(cloud, /source_verified:[\s\S]*?needs: \[verify\]/);
+  assert.doesNotMatch(cloud, /continue-on-error|always\(\)/);
 });
 
 test("Runner eval workflows pin actions and gate paid live execution", () => {
@@ -436,8 +460,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
 test("direct Grok qualification installs the pinned binary and scopes the selected credential", () => {
   const workflow = readWorkflow("runner-protocol-live-evals.yml");
   assert.ok(workflow.includes("XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}"));
-  assert.ok(workflow.includes("if [ -f packages/grok-acp/install.mjs ]; then"));
-  assert.ok(workflow.indexOf("node packages/grok-acp/install.mjs") < workflow.indexOf("pnpm --filter @paperclipai/paperclip-runner deploy --prod"));
+  assert.ok(workflow.includes("if [ -f packages/paperclip-runner/scripts/provision-grok.mjs ]; then"));
+  assert.ok(workflow.indexOf("sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok") < workflow.indexOf("pnpm --filter @paperclipai/paperclip-runner deploy --prod"));
   assert.ok(workflow.includes("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}"));
   assert.equal((workflow.match(/secrets\.GROK_AUTH_JSON/gu) ?? []).length, 1);
 });

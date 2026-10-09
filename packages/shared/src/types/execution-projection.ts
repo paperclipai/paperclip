@@ -5,6 +5,15 @@ export interface ExecutionBlocker {
   agentId: string | null;
   cause: string;
   nextAction: string;
+  runStatus?: string | null;
+  runError?: string | null;
+  /** Candidate only: admission must still verify termination and all gates. */
+  canContinue?: boolean;
+  /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
+  canRetry?: boolean;
+  /** Required workspace files must be recovered before another provider turn. */
+  workspaceRepairRequired?: boolean;
+  savedMessageCount?: number;
 }
 
 /** Presentation of existing execution records, not a second task status machine. */

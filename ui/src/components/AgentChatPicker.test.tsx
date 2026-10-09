@@ -41,6 +41,19 @@ afterEach(async () => {
 });
 
 describe("AgentChatPicker", () => {
+  it("does not close a reopened picker when an earlier selection finishes", async () => {
+    let finish!: () => void;
+    await render({ onSelect: () => new Promise<void>(resolve => { finish = resolve; }) });
+    await act(async () => options()[0].click());
+    await render({ open: false });
+    await render({ open: true });
+    await search("designer");
+    await act(async () => finish());
+    expect(props.onOpenChange).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLInputElement>("[role=combobox]")!.value).toBe("designer");
+    expect(options()).toHaveLength(1);
+  });
+
   it("searches by role and selects the correct same-name agent with Enter", async () => {
     await render();
     expect(options()).toHaveLength(2);
@@ -50,8 +63,24 @@ describe("AgentChatPicker", () => {
     await act(async () => {
       document.querySelector("[role=combobox]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
-    expect(props.onSelect).toHaveBeenCalledWith(agents[1]);
+    expect(props.onSelect).toHaveBeenCalledWith(agents[1], expect.any(AbortSignal));
     expect(props.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("distinguishes existing conversations and selects the same agent when reopened", async () => {
+    await render({ existingChatAgentIds: ["first"] });
+    expect(options()[0].textContent).toContain("Open chat");
+    expect(options()[1].textContent).toContain("New chat");
+    await search("designer");
+    await act(async () => options()[0].click());
+    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1], expect.any(AbortSignal));
+    await render({ open: false });
+    await render({ open: true, existingChatAgentIds: ["first", "second"] });
+    await search("designer");
+    expect(options()[0].textContent).toContain("Open chat");
+    expect(options()[0].textContent).not.toContain("New chat");
+    await act(async () => options()[0].click());
+    expect(props.onSelect).toHaveBeenLastCalledWith(agents[1], expect.any(AbortSignal));
   });
 
   it("recovers from no results and resets search when reopened", async () => {

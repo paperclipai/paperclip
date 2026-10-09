@@ -37,6 +37,7 @@ import type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   PluginManagedAgentResolution,
@@ -143,6 +144,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   Agent,
@@ -544,6 +546,14 @@ export interface PluginLocalFoldersClient {
  * @see PLUGIN_SPEC.md §16 — Event System
  */
 export interface PluginEventsClient {
+  /** Read durable resource hooks. Requires events.subscribe and a company scope.
+   * Creation is delivered first, then the remaining events in id order.
+   * Page using afterId; reset it each polling sweep to retry failures and late commits.
+   * Events repeat until acknowledged; use a company-scoped provider idempotency key.
+   */
+  listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
+  /** Acknowledge only after the provider operation succeeds. */
+  acknowledgeLifecycle(companyId: string, eventId: string): Promise<void>;
   /**
    * Subscribe to a core Paperclip domain event or a plugin-namespaced event.
    *
@@ -580,6 +590,16 @@ export interface PluginEventsClient {
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
 }
+
+export type ResourceLifecycleEvent = {
+  id: string;
+  companyId: string;
+  resourceId: string;
+  createdAt: string;
+} & (
+  | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" }
+);
 
 /**
  * `ctx.jobs` — register handlers for scheduled jobs declared in the manifest.
@@ -1544,7 +1564,7 @@ export interface PluginIssuesClient {
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,
-    interaction: CreateIssueThreadInteraction,
+    interaction: CreateIssueThreadInteractionInput,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueThreadInteraction>;
@@ -1556,7 +1576,7 @@ export interface PluginIssuesClient {
   ): Promise<SuggestTasksInteraction>;
   askUserQuestions(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "ask_user_questions" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<AskUserQuestionsInteraction>;

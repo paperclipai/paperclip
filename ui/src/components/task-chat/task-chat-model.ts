@@ -13,6 +13,7 @@
  * CSS motion tokens in ui/src/index.css.
  */
 import type {
+  TaskBrowser,
   IssueAttachment,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -507,6 +508,8 @@ export interface TaskChatTurnItem {
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /** Superseded execution status is omitted; activity remains inspectable. */
+  historical?: boolean;
   /** Agent identity retained when a live runner turn becomes durable history. */
   agentName?: string;
   agentIcon?: string | null;
@@ -558,7 +561,16 @@ export interface TaskChatSkillCreatedItem {
   timestamp: string;
 }
 
+export interface TaskChatBrowserItem {
+  id: string;
+  kind: "browser";
+  browser: TaskBrowser;
+  label: string;
+  timestamp: string;
+}
+
 export type TaskChatItem =
+  | TaskChatBrowserItem
   | TaskChatProjectCreatedItem
   | TaskChatSkillCreatedItem
   | TaskChatMessageItem

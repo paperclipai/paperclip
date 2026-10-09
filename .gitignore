@@ -79,3 +79,6 @@ tests/storybook-visual/playwright-report/
 .vercel/
 .env.local
 test-results/
+
+# Retained local lifecycle behavior measurements
+.lifecycle-baseline/

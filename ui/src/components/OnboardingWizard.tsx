@@ -762,6 +762,7 @@ function OnboardingWizardInner({
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
   const managedProvider = aiProviderForAdapter(adapterType);
+  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
@@ -1014,14 +1015,14 @@ function OnboardingWizardInner({
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
   const localLogin = useLocalAiLogin(createdCompanyId, {
-    provider: managedProvider ?? "anthropic", method: "subscription",
+    provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
   }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
-  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
+  );
   // A result from a previous selection must not hire or advance this wizard.
   // Environment query updates are not user navigation: the test resolves its
   // own environment, and those updates must not interrupt the pending attempt.
@@ -2815,7 +2816,7 @@ function OnboardingWizardInner({
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
-                        aiConnection={managedProvider ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
+                        aiConnection={managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
                         autoStart
                         onPromptReady={(url) => {
                           setConnectAuthUrl(url);
@@ -2850,7 +2851,7 @@ function OnboardingWizardInner({
                           );
                         }}
                         onConnected={() => {
-                          if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+                          if (managedSubscriptionProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedSubscriptionProvider, method: "subscription", mode: "responsible_user" } };
                           setConnectAuthUrl(null);
                           // Not into a card the customer has left. The panel is
                           // still mounted through Back's exit, and a login that
@@ -2990,8 +2991,11 @@ function OnboardingWizardInner({
                             Prompt:{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
-                          {adapterType === "cursor" ||
-                          adapterType === "codex_local" ||
+                          {adapterType === "claude_local" || adapterType === "codex_local" ? (
+                            <p className="text-muted-foreground">
+                              If authentication fails, connect your subscription in the browser above or use an API key.
+                            </p>
+                          ) : adapterType === "cursor" ||
                           adapterType === "gemini_local" ||
                           adapterType === "kimi_local" ||
                           adapterType === "opencode_local" ? (
@@ -3010,9 +3014,7 @@ function OnboardingWizardInner({
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
-                                  : adapterType === "codex_local"
-                                    ? "codex login"
-                                    : adapterType === "gemini_local"
+                                  : adapterType === "gemini_local"
                                       ? "gemini auth"
                                       : adapterType === "kimi_local"
                                         ? "kimi login"
@@ -3021,11 +3023,7 @@ function OnboardingWizardInner({
                               .
                             </p>
                           ) : (
-                            <p className="text-muted-foreground">
-                              If login is required, run{" "}
-                              <span className="font-mono">claude login</span>{" "}
-                              and retry.
-                            </p>
+                            <p className="text-muted-foreground">If login is required, connect the provider above and retry.</p>
                           )}
                         </div>
                       )}

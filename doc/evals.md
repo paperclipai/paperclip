@@ -1,7 +1,25 @@
 # Paperclip evaluation guide
 
+The [Slack connector probe catalog](../server/src/services/connectors/slack/evals/README.md)
+organizes eleven manual model acceptance probes and a selector for existing
+deterministic regressions (`pnpm test:slack-connector`). It is not a registered
+model campaign; transport fixtures do not prove that an agent chooses a tool
+or that a real Slack interaction completes.
+
+The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
+is a Product E2E workflow for fresh subscription/API-key/gateway connections,
+with attended login and independent artifact checks against local or staging targets.
+
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
+
+The explicit-only [native instruction consolidation comparison](plans/2026-10-03-native-completion-consolidation.md)
+uses six Product E2E cells per source variant. It measures the completion
+constraint reduction separately from the earlier native tool-description
+trial. Provider-free start/resume payload capture is a byte measurement;
+behavioral qualification requires the original paired live outcomes and
+retained content. Neither source admission nor a scripted pass proves model
+behavior.
 
 - **Runner Evals:** real Runner/provider behavior against a seeded mock control
   plane. Definitions live in `paperclip-evals/evals/paperclip-runner`; see the
@@ -17,6 +35,23 @@ Evals answer whether a person can complete a product workflow through the real
 Paperclip surfaces and whether the resulting artifact and state are usable.
 The names describe the system under test; “headless” is an execution option,
 not an eval category.
+
+The explicit Product E2E `completion-updates` suite compares onboarding and
+idle, busy, multiple-task, and restart Agent Chat handoffs on native Claude/Codex. It separates mechanical
+completion delivery/result access from semantic review of the retained answer;
+see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
+
+The explicit-only [task-titles suite](../tests/runner-e2e/README.md#automatic-task-titles)
+checks that production guidance causes a real native agent to name prompt-only
+standard/Ask tasks early, while preserving user-supplied titles. Its oracle
+correlates browser creation, native tool receipts, durable titles, audit ownership,
+and the reloaded task UI; fixture prompts contain no naming instructions.
+
+The explicit-only [native connection guidance suite](../tests/runner-e2e/README.md#native-connection-guidance-explicit-only)
+adds neutral decline prompts, same-task run-attributed explanations, and measured
+no-use controls across three native local profiles. Its fifteen configured cells
+are preparation for future matched instruction comparisons, not a live result.
+Historical Everyday cases and production prompts are preserved.
 
 ## Selecting a family
 
@@ -66,13 +101,56 @@ Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguish
 startup cancellation from active response cancellation and HTTP send replay
 from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
 
+The explicit-only [production hiring templates suite](../tests/runner-e2e/README.md#production-hiring-templates)
+adds two local native Codex/Claude cells. It exercises API-created production
+CEO defaults, an explicitly requested hiring skill/reference read, a permanent
+coder hire, independently computed saved JSON fixtures and worker reuse.
+Each cell requires five work turns and admits at most two strictly attributed
+server task-completion turns. Every actual run remains counted; unknown or
+extra-work turns fail. Source/read coverage and workflow outcome are
+separate: missing read provenance leaves the candidate/baseline pair
+uncomparable even if work succeeds. Baseline bundles and coder examples derive
+from their own source revision, without requiring candidate wording or length.
+
+The explicit-only `context-integrity` Product E2E suite covers ordered public
+comment continuation and explicit invocation of an assigned pinned skill across
+the seven selected legacy/native local profiles. Select it by suite or exact
+execution ID because `--all` excludes explicit-only suites. Each cell applies a
+1,000-cent company and agent budget hard stop before task creation and records
+both limits in its evidence.
+
+The explicit-only [stock-harness suite](../tests/runner-e2e/STOCK-HARNESS.md)
+reuses skill, ordered-continuation, and chat-restart journeys across eight local
+legacy/native profiles with production-default hires. It closes the custom QA
+manual coverage gap. Its required credential-free prerequisite maps vendor
+instruction layering, the tiny hire bundle, and shared startup/resume reductions
+to executable checks. The 24 live cells are configured; no live qualification is
+claimed from their setup or unit calibration.
+
 The explicit-only `agent-chat-stories` suite covers the experimental settings
 lifecycle for a configured native agent and follow-ups during active work. Its
 fixture-driven file wait and persisted-plan oracle are documented in the
 [Product E2E guide](../tests/runner-e2e/README.md). It does not qualify the native
 onboarding wizard or change the native API-tool rollout defaults.
 
+The explicit-only `grok-qualification` and `grok-subscription-qualification`
+Product suites exercise Grok Build with API and company subscription
+authentication respectively. Keep their results separate; the subscription
+fixture seeds an explicitly supplied login and does not qualify interactive
+login. See the [Grok fixture contract](../tests/runner-e2e/README.md#grok-build-qualification).
+
+The explicit [Direct blocker guidance suite](../tests/runner-e2e/README.md#direct-blocker-guidance)
+checks the legacy coordination skill against human authority, missing hiring
+permission, and requester scope decisions through saved browser interactions.
+
 ## Validation ladder
+
+The explicit-only [public MCP suite](../tests/runner-e2e/PUBLIC-MCP.md) evaluates
+paid assistant delegation, later retrieval, feedback, review, uncertain retries
+and permission boundaries. It uses the Product E2E fixtures, launcher, evidence
+packaging and dashboard, with separate external-assistant and team-worker billing.
+The [2026-10-01 results](plans/2026-10-01-public-mcp-paid-eval-results.md) retain
+two complete model matrices, provenance, costs and the earlier failure history.
 
 Start with credential-free checks and a catalog listing. For Product E2E:
 
@@ -138,6 +216,14 @@ analytical label.
 
 ## Evidence, provenance, and history
 
+Retained result snapshots and dated measurement reports belong in
+`paperclip-evals`; application tests, Product E2E fixtures/graders, and executable
+scenario inventories remain in this repository. Keep a compact results index
+with immutable archive links and public report links, as in the
+[lifecycle baseline](../tests/lifecycle-baseline/README.md#recorded-results-moved-to-paperclip-evals).
+The private archive is not a dependency of app test execution. Keep large logs,
+traces, and videos in the existing campaign artifact storage.
+
 An Evalbook report is a presentation of immutable attempt records, not the
 source of truth. Keep the campaign ID, Paperclip commit, `paperclip-evals`
 commit, catalog/roster or definition fingerprint, model/profile, environment,
@@ -165,6 +251,78 @@ The consolidated eval hub is at
 For a repeatable workflow, use the matching skill: [paperclip-evals](../.agents/skills/paperclip-evals/SKILL.md),
 [add-runner-eval](../.agents/skills/add-runner-eval/SKILL.md), or
 [add-product-e2e-eval](../.agents/skills/add-product-e2e-eval/SKILL.md).
+
+## Diagnose failures before buying another campaign
+
+Use this loop to turn eval failures into product improvements. The unit of work
+is a broken user outcome or invariant, not an individual red cell.
+
+1. **Freeze the evidence.** Record the inspected application revision and each
+   campaign's evaluated revision, definition/grader fingerprint, model/profile,
+   environment, exact selected IDs, attempts, and usage coverage. Read the
+   history feed and retained attempt records before launching models. A report
+   refresh, skipped workflow, passing unit suite, or old-definition green cell
+   is not a new live measurement. Inventory explicit-only suites separately
+   from `--all`.
+2. **Reconstruct the failed boundary.** Read durable task state, interactions,
+   event chronology, source/worker identity, delivered output, and the failing
+   assertion. State whether the test reached the boundary it claims to test.
+   Separate observed failure, machine class, analytical cause, and confidence.
+   A cancelled queued wake does not by itself prove lost work; a failed decline
+   assertion does not prove unauthorized execution. A saved artifact does not
+   prove the user received a correct completion update.
+3. **Group by cause and product contract.** Join cells only when their evidence
+   supports the same mechanism. Check for already-merged fixes and definition
+   corrections before proposing new work. Keep product defects, provider/model
+   behavior, grading defects, infrastructure, and unexercised boundaries
+   distinct. Preserve the original grades when attribution changes.
+4. **Design the smallest general correction.** Name the desired user behavior,
+   the authoritative state/transaction or provider boundary that owns it, the
+   affected callers, and the existing guarantees that must survive. Check it
+   against `PRODUCT.md` and `SPEC-implementation.md`. A change to an intentional
+   product rule is a contract change, not an excuse to delete its guard. Avoid
+   case-name branches, phrase-specific prompts, unconditional retries, or
+   weakening approval, ownership, cancellation, and budget gates to get green.
+5. **Prove the mechanism cheaply.** Calibrate a grader against correct and
+   plausible wrong retained evidence. Reproduce a product race with scripted
+   providers or service tests. Pair every proposed fix with a regression that
+   exercises the opposite boundary (for example, eligible delivery versus
+   revoked access, benign obsolete wake versus interrupted active work).
+   Presentation-only changes use the existing report refresh path and make no
+   provider calls; do not claim replay can prove changed runtime behavior.
+6. **Select a bounded live confirmation.** Write the exact failed representative
+   IDs and only the passing controls affected by the change. Pin the source,
+   definitions, models, and remote image. Record an attempt cap, provider and
+   compute budget, wall-clock deadline, and concurrency before dispatch under
+   the existing live-run authorization. Missing pricing means unknown, not free.
+   Do not rerun unaffected green cells during diagnosis or retry usable behavior
+   failures until they happen to pass. Preserve every attempt. Expand to a
+   compatible qualification campaign only after the causal fix passes.
+7. **Close with evidence and remaining scope.** Report original versus new
+   measurements, exact selected coverage, regression results, cost coverage,
+   and unresolved boundaries. A partial verification may close one defect; it
+   cannot turn the full catalog green or establish reliability from one attempt.
+
+Keep one triage record per cause with: affected cell IDs; evidence links;
+observed failure; supported cause and confidence; existing fix/revision; proposed
+product contract; invariant regressions; next exact live selection; budget and
+stop condition; owner; and disposition. Useful dispositions include confirmed
+product defect, model behavior, grader correction, infrastructure repair,
+fixed-but-not-remeasured, historical pass, and unqualified coverage.
+
+Parallelize independent artifact inventory, deterministic checks, and isolated
+cells. Keep a cell's dependent turns ordered. When delegating, use inexpensive
+agents for bounded extraction, catalog reconciliation, and test execution; keep
+causal attribution, product design, and final review with the lead. Begin local
+browser campaigns at the documented conservative concurrency and increase only
+with measured host headroom. Hosted fanout must respect the workflow's provider
+and fleet caps; more simultaneous timeouts do not improve wall-clock efficiency.
+
+Current tools support exact-ID selection and retained-evidence report refresh,
+but not an automatic cause-aware "rerun unresolved failures" planner. Build an
+explicit selection manifest rather than treating `--all` as that planner. Review
+the launcher's automatic retry policy when budgeting; Product E2E may create one
+fresh attempt for a retryable failure.
 
 ## Install the authoring skills
 
@@ -232,3 +390,49 @@ records. See the [workflow and qualification limits](../tests/runner-e2e/README.
 The 26 native `first-task` cells exercise onboarding before native selection
 becomes the UI default. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
+
+The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
+separates a completed two-answer user journey from semantic-tool documentation
+qualification. It verifies the exact provider-pause or semantic-response-wake
+binding for each answer and preserves prior grades when the definition changes.
+
+## Lifecycle behavior baseline
+
+The credential-free [lifecycle baseline](../tests/lifecycle-baseline/README.md)
+joins unit, scripted-runner, and database integration assertions to a scenario
+inventory before changing narrative-based lifecycle policy. Run
+`pnpm test:lifecycle-baseline` to retain current passes and failures. Its Product
+E2E matcher calibration is separate from live execution; unrun live coverage
+remains explicitly unmeasured.
+
+The separate [live lifecycle baseline](../tests/runner-e2e/LIFECYCLE-BASELINE.md)
+defines 46 real-provider Product E2E cells, including paired narrative probes and
+named existing controls on legacy and native Codex. Discover it with
+`pnpm test:e2e:runner -- --list --suite lifecycle-baseline`. Historical execution
+results and follow-up coverage are recorded in that suite's guide.
+
+Continuation accounting has an explicit-only eight-cell Product E2E [baseline suite](../tests/runner-e2e/CONTINUATION-ACCOUNTING.md), complementing the deterministic lifecycle inventory.
+
+The explicit Product E2E `instruction-persistence` suite verifies private file
+edits, nested and binary agent files, stopped-provider directory saves, server restart, and a fresh task's
+downloaded proof on local native/legacy Codex and native Daytona. See the
+[Product E2E runbook](../tests/runner-e2e/README.md).
+
+The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
+large saved API responses on local and Daytona native Codex runs. See the
+[Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).
+
+The explicit-only Product E2E `extended-harnesses` suite covers pending Cursor,
+Copilot and Pi ACP profiles on local and Daytona. See the
+[fixture admission, credentials and budget contract](../tests/runner-e2e/README.md#extended-acp-harnesses-explicit-only).
+The private Runner Evals campaign of the same name provides complementary
+semantic protocol cases; catalog membership is not live qualification.
+
+The explicit-only Product E2E `confirmation-replies` suite tests conversational
+approval and rejection, persisted message provenance, approval before execution,
+ambiguous proposals, and the existing card-click path with native Claude/Codex.
+See the [suite contract](../tests/runner-e2e/README.md#conversational-confirmation-replies-explicit-only).
+
+Hiring notification accounting now also requires exact completed action attribution. Missing native/provider ID mapping is uncomparable evidence; it must not be reported as a model task regression or waived through name/order matching. The fixture waits for both known completion callbacks and settled bracketed observations, including the gap before pending outbox work becomes a wake. Strict action replay and original machine verdicts are retained separately.
+
+The explicit-only [planning guidance utility comparison](../tests/runner-e2e/PLAN-TASK-GUIDANCE.md) measures task decomposition and handoffs with current, short, and disabled skills.

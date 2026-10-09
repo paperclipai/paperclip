@@ -47,13 +47,14 @@ The command prints issue-safe markdown links for the final task comment.
 
 ## Task artifact presentation
 
-While a task is open, a new agent attachment, work product, or document opens
-the task's Artifacts tab and reveals the side panel (or mobile drawer). This
-uses stored object IDs, so it works with either runner. Uploading a file and
-registering its work product counts as one arrival. Existing history, revisions,
-and repeated query refreshes preserve the user's tab selection. Plans retain
-their existing Plan-tab behavior; unregistered user input attachments remain in
-the conversation.
+Existing and newly arriving agent attachments, work products, and documents add
+the task's Artifacts tab without selecting it, opening the side panel or mobile
+drawer, or changing the current document/file link. If the pane is closed, the
+tab is available when the user opens it. This uses stored object IDs, so it works
+with either runner. Uploading a file and registering its work product counts as
+one arrival. Revisions and repeated query refreshes preserve dismissed tabs and
+the user's selection. Plans retain their existing Plan-tab behavior;
+unregistered user input attachments remain in the conversation.
 
 ## Uploaded Artifacts vs Workspace Files
 
@@ -173,6 +174,13 @@ Use `type: "artifact"`, `provider: "paperclip"`, and metadata containing the
 uploaded `attachmentId`. The server canonicalizes `contentType`, `byteSize`,
 `contentPath`, `openPath`, `downloadPath`, and `originalFilename`.
 
+The optional `executionWorkspaceId` on work-product create and update requests
+must identify an execution workspace in the same company. A project workspace
+ID is a different identifier and cannot be used here. Omit the field when no
+execution workspace is available, or send `null` to clear an existing link.
+Invalid references return `422` without changing the work product or the current
+primary product.
+
 ## Verification
 
 The file-delivery integration suite runs the real helper through queue and
@@ -193,3 +201,27 @@ PAPERCLIP_FILE_DELIVERY_DAYTONA=1 pnpm exec vitest run server/src/__tests__/file
 
 The live fixture deletes each sandbox before checking that its attachments
 remain downloadable from Paperclip. It does not run unless explicitly enabled.
+
+## Text attachment previews
+
+In the task chat layout, select a text attachment in Artifacts, a work-product
+card, or a chat attachment chip to open a named right-side tab. Reopening the
+same attachment focuses its existing tab. Tabs can be switched and closed.
+On mobile, the same viewer opens in the task details drawer.
+
+Markdown work products keep their expandable review document, annotations,
+revision indicator, and document links. **Open in tab** is a separate action.
+Work-product cards keep **Download** as a direct original-file download.
+Text file cards provide **Open in tab** beside their existing actions. CSV cards
+keep this action before and after loading their data preview.
+
+Markdown attachments offer **Rendered** and **Raw** views. Other supported text
+files display literal text. Image references and diagram source remain inert;
+opening a preview does not load attachment-selected media URLs. The viewer
+provides a download action. Preview reads
+are limited to 512 KiB; oversized, unsupported, or unavailable files show an
+explicit fallback instead of attempting an unbounded render. A failed read can
+be retried. Workspace files continue to use the existing workspace file viewer.
+
+Storybook: **Tasks / Text file tabs** covers opening from Artifacts, Markdown,
+plain text, empty files, oversized files, missing attachments, and a narrow panel.

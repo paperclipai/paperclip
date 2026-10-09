@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { MemoryRouter } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { INSTANCE_FEATURE_KEYS } from "@paperclipai/shared";
@@ -19,6 +20,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 
 vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompany: { id: "butter", issuePrefix: "BUT" } }),
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -72,6 +77,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
+    enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableIsolatedWorkspacesByDefault: false,
@@ -79,11 +85,14 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStreamlinedUi: true,
     enableApps: true,
     enableMcpAggregators: true,
+    enablePublicMcp: false,
+    enableOpenAiDot: false,
     enableChatConnectors: false,
     enableMemoryConnectors: false,
     enablePipelines: false,
     enableCases: false,
     enableAgentChat: false,
+    enableCombinedInboxTasks: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
@@ -164,7 +173,9 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceExperimentalSettings />
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -225,10 +236,51 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("defaults Combined Inbox + Task List off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle combined inbox and task list experimental setting"]';
+    expect(container.textContent).toContain("Combined Inbox + Task List");
+    expect(container.textContent).not.toContain("Agent Chat v2");
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableCombinedInboxTasks: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
   it("does not offer a retired MCP aggregators toggle", async () => {
     await renderPage();
     expect(container.querySelector('button[aria-label="Toggle MCP aggregators experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("MCP aggregators");
+  });
+
+  it("defaults assistant connections off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle assistant connections experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("work already delegated continues");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enablePublicMcp: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(Boolean(container.querySelector('a[href="/BUT/apps/assistant-connection"]'))).toBe(enabled);
+    }
+  });
+
+  it("names Dot prerequisites and saves its opt-in independently in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableOpenAiDot: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
   });
 
   it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
@@ -770,7 +822,9 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceExperimentalSettings />
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -923,7 +977,9 @@ describe("InstanceExperimentalSettings — card ordering and headings (PAP-393)"
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceExperimentalSettings />
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -1038,12 +1094,32 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceExperimentalSettings />
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
     await flushReact();
   }
+
+  it.each([
+    { cloud: false, enabled: false },
+    { cloud: false, enabled: true },
+    { cloud: true, enabled: false },
+    { cloud: true, enabled: true },
+  ])("offers no AI routing control with cloud=$cloud and enabled=$enabled", async ({ cloud, enabled }) => {
+    await renderPage(undefined, {
+      ...defaultExperimentalSettings(),
+      enableAiConnectionRouters: enabled,
+      ...(cloud ? { managedKeys: { enableAiConnectionRouters: { managed: true, managedBy: "paperclip-cloud" as const } } } : {}),
+    });
+
+    expect(container.textContent).toContain("Experimental features");
+    expect(container.textContent).not.toContain("AI connection routers");
+    expect(container.querySelector('button[aria-label="Toggle AI connection routers experimental setting"]')).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
 
   it("renders nothing for an operator-hidden toggle and keeps the rest", async () => {
     await renderPage(["instance.experimental.enableEnvironments"]);

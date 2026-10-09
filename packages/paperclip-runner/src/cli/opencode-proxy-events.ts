@@ -1,3 +1,24 @@
+/** Forward bounded tool activity without inventing a host-call identity or arguments. */
+export function openCodeProxyToolNotification(input: {
+  eventType: string; threadId: string; turnId?: string; payload: Record<string, unknown>;
+}): { method: string; params: Record<string, unknown> } | null {
+  const phase = ({ "tool.execution.started": "started", "tool.execution.progressed": "updated", "tool.execution.completed": "completed" } as Record<string, string>)[input.eventType];
+  if (!phase) return null;
+  const p = input.payload;
+  if (!input.turnId || typeof p.executionId !== "string" || !p.executionId || p.schema !== "paperclip.tool.execution.v1")
+    throw new Error("OpenCode tool activity omitted its bound identity");
+  const type = ({ builtin: "builtinToolCall", mcp: "mcpToolCall", dynamic: "dynamicToolCall", process: "commandExecution" } as Record<string, string>)[String(p.transport)];
+  if (!type) throw new Error("OpenCode tool activity has an unsupported transport");
+  return { method: `item/${phase}`, params: {
+    threadId: input.threadId, turnId: input.turnId, itemId: p.executionId,
+    item: { id: p.executionId, type, tool: p.name, server: p.namespace,
+      readOnlyHint: p.readOnly, status: p.status, durationMs: p.durationMs, exitCode: p.exitCode,
+      // This is the already bounded provider-visible result, not raw input or a private trace.
+      output: typeof p.output === "string" ? p.output.slice(0, 16_384) : "",
+    },
+  } };
+}
+
 export function shouldForwardOpenCodeProxyItem(input: {
   turnId?: string;
   kind?: unknown;

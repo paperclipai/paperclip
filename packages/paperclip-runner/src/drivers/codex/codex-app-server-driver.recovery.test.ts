@@ -45,6 +45,29 @@ import {
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("does not resend a restart continuation when its history anchor is missing", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-restart-anchor", normalizedSessionId: "session-restart-anchor", workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Finish the request." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: {
+      id: "turn-1", status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true }, items: [],
+    } });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller lost before continuation checkpoint" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "uncheckpointed-turn", status: "completed", items: [] }],
+    } };
+    await expect(driver.recoverSession?.(snapshot)).resolves.toMatchObject({
+      recovered: false, reason: "restart interruption history is incomplete",
+    });
+    expect(second.calls.some(call => call.method === "turn/start")).toBe(false);
+  });
+
   it.each([null, "checkpointed-prior-turn"])("recovers an autonomous goal turn beyond checkpoint %s", async (checkpointTurnId) => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
@@ -194,10 +217,11 @@ describe("Codex app-server Codex driver", () => {
     },
   );
 
-  it("persists and verifies the tagged runnerd provider identity on recovery", async () => {
+  it.each([undefined, "agent", "plan", "ask"] as const)("persists and verifies the tagged runnerd provider identity including mode %s on recovery", async (mode) => {
     const providerIdentity = {
       kind: "acpx",
       normalizedSessionId: "normalized-tagged-recovery",
+      ...(mode === undefined ? {} : { mode }),
       acpxRecordId: "acpx-record-1",
       backendSessionId: "backend-session-1",
       agentSessionId: "agent-session-1",

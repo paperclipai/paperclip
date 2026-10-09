@@ -462,6 +462,29 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
 });
 
 describe("assertGitWorktreeBaseWorkspaceReady", () => {
+  it.each(["all_external", "mixed", "malformed"])("keeps materialization aggregation fail-closed: %s", async (kind) => {
+    const first = { schemaVersion: 1, provider: "git", operation: "clone", reason: "authentication_failed" } as const;
+    const second = kind === "all_external" ? { ...first, reason: "dns_failure" as const } :
+      kind === "malformed" ? { ...first, reason: "unknown" } : undefined;
+    const failures = [first, second].map((connectionFailure, index) => ({
+      projectWorkspaceId: `workspace-${index}`, repoUrl: "https://example.test/team/repo.git",
+      error: "Managed checkout failed", ...(connectionFailure ? { connectionFailure } : {}),
+    }));
+    const error = await assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: { id: "issue-1", identifier: "TEST-1", projectId: "project-1", projectWorkspaceId: "workspace-0" },
+      base: { baseCwd: "/tmp/unused-fallback", source: "project_primary", projectId: "project-1", workspaceId: "workspace-0", repoUrl: "https://example.test/team/repo.git", repoRef: null },
+      anchor: { baseCwdFallback: true, materializationFailures: failures as never },
+    }).catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { workspaceValidation: { reason: "git_worktree_base_materialization_failed", materializationFailures: failures } },
+    });
+    expect((error as { resultJson: Record<string, unknown> }).resultJson.connectionFailure)
+      .toEqual(kind === "all_external" ? first : undefined);
+  });
+
   it("rejects projectless isolated git worktrees that resolved to agent_home", async () => {
     const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
 
@@ -566,6 +589,112 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  function configuredLocalPathInput(cwd: string): Parameters<typeof assertGitWorktreeBaseWorkspaceReady>[0] {
+    return {
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: { id: "issue-1", identifier: null, projectId: "project-1", projectWorkspaceId: "workspace-1" },
+      base: { baseCwd: cwd, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: null },
+      anchor: { localPathOnlyWorkspace: true, baseCwdFallback: false, materializationFailures: [] },
+    };
+  }
+
+  it("marks a proven non-Git local path as an owner configuration conflict without changing the failure", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-path-policy-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady(configuredLocalPathInput(cwd))).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("is not a git checkout"),
+        resultJson: { workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+        } },
+      });
+    } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+  });
+
+  it.each(["legacy", "repository", "fallback", "materialization", "session", "unbound"])(
+    "does not mark ambiguous non-Git workspace evidence as a configuration-only failure: %s", async (kind) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ambiguous-workspace-"));
+      try {
+        const input = configuredLocalPathInput(cwd);
+        if (kind === "legacy") input.anchor!.localPathOnlyWorkspace = undefined;
+        if (kind === "repository") input.base.repoUrl = "https://example.com/repository.git";
+        if (kind === "fallback") input.anchor!.baseCwdFallback = true;
+        if (kind === "materialization") input.anchor!.materializationFailures = [{ projectWorkspaceId: "another-workspace", repoUrl: null, error: "checkout failed" }];
+        if (kind === "session") input.base.source = "task_session";
+        if (kind === "unbound") input.base.workspaceId = null;
+        const error = await assertGitWorktreeBaseWorkspaceReady(input).catch((error) => error);
+        expect(error.code).toBe("workspace_validation_failed");
+        expect(error.resultJson.workspaceValidation.configurationReason).toBeUndefined();
+      } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(["missing_git", "permission", "git_error", "killed", "missing_directory"])(
+    "does not classify a Git or filesystem failure as an owner-only configuration mismatch: %s", async (kind) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-probe-failure-"));
+      const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-probe-bin-"));
+      try {
+        if (kind !== "missing_git" && kind !== "missing_directory") {
+          const command = kind === "killed"
+            ? "kill -TERM $$"
+            : kind === "permission"
+              ? "printf '%s\\n' 'fatal: cannot open .git: Permission denied' >&2; exit 128"
+              : "printf '%s\\n' 'fatal: bad object HEAD' >&2; exit 128";
+          await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\n${command}\n`, { mode: 0o755 });
+        }
+        if (kind !== "missing_directory") vi.stubEnv("PATH", bin);
+        const input = configuredLocalPathInput(kind === "missing_directory" ? path.join(cwd, "absent") : cwd);
+        const error = await assertGitWorktreeBaseWorkspaceReady(input).catch((error) => error);
+        expect(error.code).toBe("workspace_validation_failed");
+        expect(error.resultJson.workspaceValidation.configurationReason).toBeUndefined();
+      } finally {
+        vi.unstubAllEnvs();
+        await fs.rm(cwd, { recursive: true, force: true });
+        await fs.rm(bin, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("still accepts a configured local path that is a Git checkout", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try { await expect(assertGitWorktreeBaseWorkspaceReady(configuredLocalPathInput(cwd))).resolves.toBeUndefined(); }
+    finally { await fs.rm(cwd, { recursive: true, force: true }); }
+  });
+
+  it.each(["empty_metadata", "missing_head", "damaged_head", "dangling_metadata", "ancestor_metadata", "bare_metadata"])(
+    "keeps real broken repository metadata reportable even when Git says not a repository: %s", async (kind) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-broken-local-repo-"));
+      try {
+        let cwd = root;
+        if (kind === "missing_head" || kind === "damaged_head") {
+          await execFile("git", ["init", root]);
+          if (kind === "missing_head") await fs.rm(path.join(root, ".git", "HEAD"));
+          else await fs.writeFile(path.join(root, ".git", "HEAD"), "damaged HEAD\n");
+        } else if (kind === "dangling_metadata") {
+          await fs.symlink(path.join(root, "missing-git-dir"), path.join(root, ".git"));
+        } else if (kind === "bare_metadata") {
+          await fs.mkdir(path.join(root, "objects"));
+        } else {
+          await fs.mkdir(path.join(root, ".git"));
+          if (kind === "ancestor_metadata") {
+            cwd = path.join(root, "documents");
+            await fs.mkdir(cwd);
+          }
+        }
+        const gitFailure = await execFile("git", ["rev-parse", "--show-toplevel"], {
+          cwd, env: { ...process.env, LC_ALL: "C" },
+        }).catch((error) => error);
+        expect(gitFailure.code).toBe(128);
+        expect(gitFailure.stderr).toMatch(/^fatal: not a git repository/);
+        const failure = await assertGitWorktreeBaseWorkspaceReady(configuredLocalPathInput(cwd)).catch((error) => error);
+        expect(failure.code).toBe("workspace_validation_failed");
+        expect(failure.resultJson.workspaceValidation.configurationReason).toBeUndefined();
+      } finally { await fs.rm(root, { recursive: true, force: true }); }
+    },
+  );
 
   it("rejects isolated git worktrees when the project workspace could not be materialized, even if the fallback cwd is a git checkout", async () => {
     // The fallback agent-home dir being a git repo must not let the run proceed: it would be an
@@ -2211,6 +2340,14 @@ function sessionParamsWithConfigMetadata(
 }
 
 describe("effective run session config freshness", () => {
+  it("resets legacy sessions after connection instructions change or disappear", async () => {
+    const first = await buildSessionConfigMetadata({ effectiveAdapterConfig: { paperclipConnectionInstructions: { text: "Use the handbook.", digest: "before" } } });
+    for (const instructions of [null, { text: "Use the updated handbook.", digest: "after" }]) {
+      const next = await buildSessionConfigMetadata({ effectiveAdapterConfig: { paperclipConnectionInstructions: instructions } });
+      expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "gpt-5.4-mini", taskSessionParams: sessionParamsWithConfigMetadata(first), configMetadata: next }).reset).toBe(true);
+    }
+  });
+
   it("reuses managed AI sessions across temporary credential homes while preserving configuration boundaries", async () => {
     const config = (home: string) => ({
       model: "gpt-5.4-mini",
@@ -2740,6 +2877,15 @@ describe("comment wake batching", () => {
     );
 
     expect(merged.forceFreshSession).toBe(true);
+  });
+
+  it("keeps connection tool refresh intent while allowing harness session recovery", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      { issueId: "issue-1", wakeReason: "issue_commented", refreshTools: true },
+      { issueId: "issue-1", wakeReason: "issue_commented", refreshTools: false },
+    );
+    expect(merged.refreshTools).toBe(true);
+    expect(shouldResetTaskSessionForWake(merged)).toBe(false);
   });
 });
 

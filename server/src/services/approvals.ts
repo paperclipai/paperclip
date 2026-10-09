@@ -1,17 +1,16 @@
 import { agentAppearanceSchema } from "@paperclipai/shared";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
-import { budgetService } from "./budgets.js";
+import { budgetService, budgetServiceInTransaction } from "./budgets.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
-  const agentsSvc = agentService(db);
-  const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
@@ -25,15 +24,15 @@ export function approvalService(db: Db) {
     };
   }
 
-  async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>) {
+  async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>, database: Db) {
     const sourceBuiltInAgentKey = typeof payload.sourceBuiltInAgentKey === "string" ? payload.sourceBuiltInAgentKey : null;
     if (!sourceBuiltInAgentKey) return;
     const { builtInAgentService } = await import("./built-in-agents.js");
-    await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
+    await builtInAgentService(database).ensure(companyId, sourceBuiltInAgentKey);
   }
 
-  async function getExistingApproval(id: string) {
-    const existing = await db
+  async function getExistingApproval(id: string, database: Db = db) {
+    const existing = await database
       .select()
       .from(approvals)
       .where(eq(approvals.id, id))
@@ -47,8 +46,9 @@ export function approvalService(db: Db) {
     targetStatus: "approved" | "rejected",
     decidedByUserId: string,
     decisionNote: string | null | undefined,
+    database: Db = db,
   ): Promise<ResolutionResult> {
-    const existing = await getExistingApproval(id);
+    const existing = await getExistingApproval(id, database);
     if (!canResolveStatuses.has(existing.status)) {
       if (existing.status === targetStatus) {
         return { approval: existing, applied: false };
@@ -59,7 +59,7 @@ export function approvalService(db: Db) {
     }
 
     const now = new Date();
-    const updated = await db
+    const updated = await database
       .update(approvals)
       .set({
         status: targetStatus,
@@ -76,7 +76,7 @@ export function approvalService(db: Db) {
       return { approval: updated, applied: true };
     }
 
-    const latest = await getExistingApproval(id);
+    const latest = await getExistingApproval(id, database);
     if (latest.status === targetStatus) {
       return { approval: latest, applied: false };
     }
@@ -87,9 +87,10 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    list: (companyId: string, status?: string, readCondition?: SQL<boolean>) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
+      if (readCondition) conditions.push(readCondition);
       return db.select().from(approvals).where(and(...conditions));
     },
 
@@ -142,93 +143,110 @@ export function approvalService(db: Db) {
     },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const { approval: updated, applied } = await resolveApproval(
-        id,
-        "approved",
-        decidedByUserId,
-        decisionNote,
-      );
-
-      let hireApprovedAgentId: string | null = null;
       const now = new Date();
-      if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-        if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId, payload);
-          await reconcileApprovedBuiltInAgent(updated.companyId, payload);
-          hireApprovedAgentId = payloadAgentId;
-        } else {
-          const created = await agentsSvc.create(updated.companyId, {
-            name: String(payload.name ?? "New Agent"),
-            appearance: payload.appearance == null ? undefined : agentAppearanceSchema.parse(payload.appearance),
-            role: String(payload.role ?? "general"),
-            title: typeof payload.title === "string" ? payload.title : null,
-            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
-            capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
-            adapterType: String(payload.adapterType ?? "process"),
-            adapterConfig:
-              typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
-                ? (payload.adapterConfig as Record<string, unknown>)
-                : {},
-            budgetMonthlyCents:
-              typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
-            metadata:
-              typeof payload.metadata === "object" && payload.metadata !== null
-                ? (payload.metadata as Record<string, unknown>)
-                : null,
-            status: "idle",
-            spentMonthlyCents: 0,
-            permissions: undefined,
-            lastHeartbeatAt: null,
-          });
-          hireApprovedAgentId = created?.id ?? null;
-        }
-        if (hireApprovedAgentId) {
-          const budgetMonthlyCents =
-            typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
-          if (budgetMonthlyCents > 0) {
-            await budgets.upsertPolicy(
-              updated.companyId,
-              {
-                scopeType: "agent",
-                scopeId: hireApprovedAgentId,
-                amount: budgetMonthlyCents,
-                windowKind: "calendar_month_utc",
-              },
-              decidedByUserId,
-            );
-          }
-          void notifyHireApproved(db, {
-            companyId: updated.companyId,
-            agentId: hireApprovedAgentId,
-            source: "approval",
-            sourceId: id,
-            approvedAt: now,
-          }).catch(() => {});
-        }
-      }
+      const existing = await getExistingApproval(id);
+      // Receipt writers lock company before agent. Hire approval must use that
+      // order too, including activation of an existing pending agent.
+      const result = await withAccountingTransaction(db, existing.companyId, async (txDb, publications) => {
+        const agentsSvc = agentService(txDb);
+        const budgets = budgetServiceInTransaction(txDb, publications);
+        const { approval: updated, applied } = await resolveApproval(
+          id,
+          "approved",
+          decidedByUserId,
+          decisionNote,
+          txDb,
+        );
 
-      return { approval: updated, applied };
+        let hireApprovedAgentId: string | null = null;
+        if (applied && updated.type === "hire_agent") {
+          const payload = updated.payload as Record<string, unknown>;
+          const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+          if (payloadAgentId) {
+            await agentsSvc.activatePendingApproval(payloadAgentId, payload);
+            await reconcileApprovedBuiltInAgent(updated.companyId, payload, txDb);
+            hireApprovedAgentId = payloadAgentId;
+          } else {
+            const created = await agentsSvc.create(updated.companyId, {
+              name: String(payload.name ?? "New Agent"),
+              appearance: payload.appearance == null ? undefined : agentAppearanceSchema.parse(payload.appearance),
+              role: String(payload.role ?? "general"),
+              title: typeof payload.title === "string" ? payload.title : null,
+              reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
+              capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
+              adapterType: String(payload.adapterType ?? "process"),
+              adapterConfig:
+                typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+                  ? (payload.adapterConfig as Record<string, unknown>)
+                  : {},
+              budgetMonthlyCents:
+                typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
+              metadata:
+                typeof payload.metadata === "object" && payload.metadata !== null
+                  ? (payload.metadata as Record<string, unknown>)
+                  : null,
+              status: "idle",
+              spentMonthlyCents: 0,
+              permissions: undefined,
+              lastHeartbeatAt: null,
+            }, { createdByUserId: updated.requestedByAgentId ? null : updated.requestedByUserId });
+            hireApprovedAgentId = created?.id ?? null;
+          }
+          if (hireApprovedAgentId) {
+            const budgetMonthlyCents =
+              typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
+            if (budgetMonthlyCents > 0) {
+              await budgets.upsertPolicy(
+                updated.companyId,
+                {
+                  scopeType: "agent",
+                  scopeId: hireApprovedAgentId,
+                  amount: budgetMonthlyCents,
+                  windowKind: "calendar_month_utc",
+                },
+                decidedByUserId,
+              );
+            }
+
+          }
+        }
+
+        return { approval: updated, applied, hireApprovedAgentId };
+      });
+      if (result.hireApprovedAgentId) {
+        await budgetService(db).deliverPendingEnforcement(result.approval.companyId);
+        void notifyHireApproved(db, {
+          companyId: result.approval.companyId,
+          agentId: result.hireApprovedAgentId,
+          source: "approval",
+          sourceId: id,
+          approvedAt: now,
+        }).catch(() => {});
+      }
+      return { approval: result.approval, applied: result.applied };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const { approval: updated, applied } = await resolveApproval(
-        id,
-        "rejected",
-        decidedByUserId,
-        decisionNote,
-      );
+      return db.transaction(async tx => {
+        const txDb = tx as unknown as Db;
+        const { approval: updated, applied } = await resolveApproval(
+          id,
+          "rejected",
+          decidedByUserId,
+          decisionNote,
+          txDb,
+        );
 
-      if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-        if (payloadAgentId) {
-          await agentsSvc.terminate(payloadAgentId);
+        if (applied && updated.type === "hire_agent") {
+          const payload = updated.payload as Record<string, unknown>;
+          const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+          if (payloadAgentId) {
+            await agentService(txDb).terminate(payloadAgentId);
+          }
         }
-      }
 
-      return { approval: updated, applied };
+        return { approval: updated, applied };
+      });
     },
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {

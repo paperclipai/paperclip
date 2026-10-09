@@ -20,6 +20,8 @@ export interface CapabilityDiscoveryResult {
 const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
+  set_task_title: "active_task",
+  set_task_monitor: "continuation",
   search_api: "api_fallback",
   call_api: "api_fallback",
   get_task_context: "active_task", get_task_history: "active_task",
@@ -27,12 +29,18 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   report_progress: "active_task", answer_status_question: "active_task", write_document: "documents",
   request_human_input: "documents", register_deliverable: "documents", finish_task: "active_task",
   block_task: "active_task", request_review: "active_task", search_tasks: "discovery",
-  list_agents: "discovery", get_agent: "discovery", create_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+  list_agents: "discovery", get_agent: "discovery",
+  read_agent_instructions: "agent_instructions",
+  update_agent_instructions: "agent_instructions",
+  get_agent_instruction_history: "agent_instructions",
+  restore_agent_instructions: "agent_instructions",
+ create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
   get_workspace_runtime: "workspace", control_workspace_service: "workspace",
   schedule_wake: "continuation", generic_api_request: "test_infrastructure",
+  submit_complaint: "feedback", submit_suggestion: "feedback",
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
@@ -42,6 +50,7 @@ export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
   { name: "workspace", description: "Inspect and control active-task workspace services." },
   { name: "continuation", description: "Schedule a bounded continuation wake." },
+  { name: "feedback", description: "Submit internal complaints and improvement suggestions." },
 ]);
 
 export const CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS = Object.freeze([{
@@ -102,6 +111,9 @@ export function discoverCapabilityDefinitions(
   const tokens = normalized.split(/[^a-z0-9]+/).filter((token) => token.length > 1);
   const permitted = CAPABILITY_SEMANTIC_TOOL_CATALOG
     .filter((descriptor) => descriptor.exposure === "optional")
+    // Retain dispatch support for pre-upgrade sessions, but do not advertise
+    // revision history/restore as a capability of current agent directories.
+    .filter((descriptor) => descriptor.operationId !== "get_agent_instruction_history" && descriptor.operationId !== "restore_agent_instructions")
     .filter((descriptor) => options.namespace === undefined || capabilityToolNamespace(descriptor.operationId) === options.namespace)
     .filter((descriptor) => decideCapabilitySemanticAuthorization(descriptor, context, "exposure").allowed)
     .map((descriptor) => ({ descriptor, score: score(descriptor, tokens, normalized) }))

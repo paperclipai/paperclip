@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 // Bundles the remote-lane mock state and every mocked execution-target
 // function behind one hoisted object, so the `vi.mock` factory below (which
@@ -62,8 +63,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
     (mocks.ensureRuntimeInstalledMock as (...args: unknown[]) => unknown)(...args),
   prepareAdapterExecutionTargetRuntime: (...args: unknown[]) =>
     (mocks.prepareRuntimeMock as (...args: unknown[]) => unknown)(...args),
-  readAdapterExecutionTarget: () =>
-    mocks.state.isRemote ? { kind: "remote", transport: "ssh" } : { kind: "local" },
+  readAdapterExecutionTarget: (input: { executionTarget?: unknown }) => input.executionTarget ??
+    (mocks.state.isRemote ? { kind: "remote", transport: "ssh" } : { kind: "local" }),
   resolveAdapterExecutionTargetCommandForLogs: (...args: unknown[]) =>
     (mocks.resolveCommandForLogsMock as (...args: unknown[]) => unknown)(...args),
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
@@ -128,6 +129,8 @@ function makeRestoreWorkspace(
 
 function makeSuccessfulRunResult(overrides: Partial<{ sessionId: string }> = {}) {
   return {
+    pid: null,
+    startedAt: new Date().toISOString(),
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -160,6 +163,48 @@ async function makeCtx(runId: string, cwd: string): Promise<AdapterExecutionCont
 }
 
 describe("grok_local execute", () => {
+  it.each([false, true])("resumes a managed connection only when its isolated history exists (%s)", async present => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("managed-resume", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "fixture-session", cwd: root };
+    if (present) await fs.mkdir(path.join(root, "home", "sessions", "encoded-cwd", "fixture-session"), { recursive: true });
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "next-session" }));
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(present);
+    expect(result.sessionParams?.sessionId).toBe("next-session");
+  });
+  it("resumes the conversation while rotating runtime tool access", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "existing-session" }));
+    const first = await execute(await makeCtx("before-tools", root));
+    const second = await makeCtx("after-tools", root);
+    second.runtime.sessionParams = first.sessionParams ?? null;
+    second.context.refreshTools = true;
+    second.runtimeTools = { version: 1, guidance: "GitHub is now connected", mcpEndpoint: "https://example.test/current-tools/mcp",
+      rest: { connectionsSearch: "https://example.test/search", connectionRequest: "https://example.test/request" },
+      bearerToken: "current-tool-token", expiresAt: "2027-01-01T00:00:00Z", tools: ["connections_search", "connection_request"] };
+    const result = await execute(second);
+    const args = runProcessMock.mock.calls[1][3] as string[];
+    expect(args[args.indexOf("--resume") + 1]).toBe("existing-session");
+    expect(runProcessMock.mock.calls[1][4].env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL).toBe("https://example.test/current-tools/mcp");
+    expect(result.sessionParams?.sessionId).toBe("existing-session");
+  });
+
+  it("clears an unavailable managed session when the fresh turn provides no replacement ID", async () => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("missing-history", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "discarded-session", cwd: root };
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stdout: JSON.stringify({ type: "end", stopReason: "EndTurn" }) });
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(false);
+    expect(result.sessionParams).toBeNull();
+    expect(result.clearSession).toBe(true);
+  });
+
   it.each(["grok-4.7", "grok-4.6"])("forwards the explicit %s model and xhigh effort", async (model) => {
     const root = await makeTempRoot();
     const ctx = await makeCtx("model-selection", root);
@@ -185,6 +230,94 @@ describe("grok_local execute", () => {
 
   afterEach(async () => {
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  async function cancellableContext(stop: () => Promise<void>) {
+    const ctx = await makeCtx("remote-cancellation", await makeTempRoot());
+    const controller = new AbortController();
+    const remoteExecute = vi.fn(async () => makeSuccessfulRunResult());
+    ctx.signal = controller.signal;
+    ctx.stopRemoteStartup = vi.fn(stop);
+    ctx.onCancellationReady = vi.fn(async () => {});
+    ctx.executionTarget = { kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/remote/workspace",
+      runner: { execute: remoteExecute } };
+    remoteState.isRemote = true;
+    runProcessMock.mockImplementation(async (_runId, target) => {
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      return target.runner.execute({ command: "grok" });
+    });
+    return { ctx, controller, remoteExecute };
+  }
+
+  it("settles remote cancellation only after the sandbox stop receipt, even if the command RPC hangs", async () => {
+    let confirmStop!: () => void;
+    const receipt = new Promise<void>(resolve => { confirmStop = resolve; });
+    const f = await cancellableContext(() => receipt);
+    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    let settled = false;
+    const execution = execute(f.ctx).finally(() => { settled = true; });
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort(new Error("Interrupted to send queued messages"));
+    await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    confirmStop();
+    expect(await execution).toMatchObject({ errorCode: "cancelled",
+      resultJson: { executionCancellation: { state: "acknowledged" } } });
+    expect(runProcessMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps ownership of the command when remote termination cannot be verified", async () => {
+    const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
+    let finishCommand!: (result: ReturnType<typeof makeSuccessfulRunResult>) => void;
+    f.remoteExecute.mockImplementation(() => new Promise(resolve => { finishCommand = resolve; }));
+    let settled = false;
+    const execution = execute(f.ctx).catch(error => error).finally(() => { settled = true; });
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort();
+    await vi.waitFor(() => expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    finishCommand(makeSuccessfulRunResult());
+    expect(await execution).toEqual(new Error("stop unverified"));
+    expect(runProcessMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not start Grok when cancellation was requested before registration", async () => {
+    const f = await cancellableContext(async () => {});
+    f.ctx.onCancellationReady = vi.fn(async () => { f.controller.abort(); });
+    expect(await execute(f.ctx)).toMatchObject({ errorCode: "cancelled",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { executionCancellation: { state: "acknowledged" } } });
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(f.ctx.stopRemoteStartup).toHaveBeenCalledOnce();
+  });
+
+  it("does not acknowledge an early cancellation when its acquired sandbox cannot stop", async () => {
+    const f = await cancellableContext(async () => { throw new Error("stop unverified"); });
+    f.ctx.onCancellationReady = vi.fn(async () => { f.controller.abort(); });
+    await expect(execute(f.ctx)).rejects.toThrow("stop unverified");
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
+  it("retains workspace recovery evidence when a confirmed stop prevents copy-back", async () => {
+    const f = await cancellableContext(async () => {});
+    prepareRuntimeMock.mockImplementationOnce(async () => ({ workspaceRemoteDir: "/remote/workspace", assetDirs: {},
+      restoreWorkspace: async () => { throw new Error("sandbox stopped during restore"); },
+    }));
+    f.remoteExecute.mockImplementation(() => new Promise(() => {}));
+    const execution = execute(f.ctx);
+    await vi.waitFor(() => expect(f.remoteExecute).toHaveBeenCalledOnce());
+    f.controller.abort();
+    const result = await execution;
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    expect(result.resultJson?.workspaceRestoreFailure).toBeTruthy();
+  });
+
+  it("does not stop the sandbox after a normal completed turn", async () => {
+    const f = await cancellableContext(async () => {});
+    expect(await execute(f.ctx)).toMatchObject({ exitCode: 0 });
+    f.controller.abort();
+    expect(f.ctx.stopRemoteStartup).not.toHaveBeenCalled();
   });
 
   it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
@@ -757,6 +890,69 @@ describe("grok_local execute", () => {
       expect(await pathExists(stagedDir)).toBe(false);
     });
 
+    it("keeps collection failure separate from a successful workspace restore", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      const collectionError = new Error("instruction collection failed");
+      const order: string[] = [];
+      let stagedDir = "";
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
+      prepareRuntimeMock.mockImplementationOnce(async (input: { assets?: Array<{ localDir: string }> }) => {
+        stagedDir = input.assets?.[0]?.localDir ?? "";
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: async () => { order.push("restore"); },
+        };
+      });
+      const ctx = await makeCtx("run-collection-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { order.push("collect"); throw collectionError; };
+      const result = await execute(ctx);
+      expect(result.errorCode).toBe("instruction_collection_failed");
+      expect(result.resultJson?.instructionCollectionFailure).toBe("collection_failed");
+      expect(result.resultJson?.workspaceRestoreFailure).toBeUndefined();
+      expect(order).toEqual(["collect", "restore"]);
+      expect(stagedDir).not.toBe("");
+      expect(await pathExists(stagedDir)).toBe(false);
+    });
+
+    it.each([0, 2])("preserves provider output when collection and restore both fail after exit %s", async (exitCode) => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return {
+          ...makeSuccessfulRunResult(), exitCode,
+          stderr: exitCode ? "Model request failed." : "",
+          stdout: [JSON.stringify({ type: "text", data: "Saved output." }), JSON.stringify({
+            type: "end", sessionId: "sess-1", requestId: "req-1", stopReason: "EndTurn",
+            usage: { input_tokens: 4, output_tokens: 9 },
+          })].join("\n"),
+        };
+      });
+      prepareRuntimeMock.mockImplementationOnce(async () => ({
+        workspaceRemoteDir: "/remote/workspace",
+        assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+        restoreWorkspace: async () => { throw new Error("restore failed"); },
+      }));
+      const ctx = await makeCtx("run-collection-and-restore-reject", await makeTempRoot());
+      ctx.onProviderStopped = async () => { throw new Error("instruction collection failed"); };
+      const result = await execute(ctx);
+      expect(result).toMatchObject({
+        errorCode: "workspace_restore_failed", exitCode, sessionId: "sess-1", summary: "Saved output.",
+        usage: { inputTokens: 4, outputTokens: 9 },
+        resultJson: { instructionCollectionFailure: "collection_failed", workspaceRestoreFailure: "restore_failed",
+          requestId: "req-1", finalResponseRecorded: true, executionBeforeRestore: { exitCode } },
+      });
+      expect(result.errorMessage).toContain("Instruction collection failed");
+      if (exitCode) expect(result.errorMessage).toContain("Model request failed.");
+    });
+
     it.each(["completed", "failed", "timed_out"])("preserves %s output and removes the staged home when restore fails", async (state) => {
       delete process.env.XAI_API_KEY;
       mocks.state.isRemote = true;
@@ -879,6 +1075,63 @@ describe("grok_local execute", () => {
       expect(await fs.readFile(path.join(hostGrokHome, "auth.json"), "utf8")).toBe(
         grokAuth({ key: "host-key", expiresAt: OLDER_EXPIRY }),
       );
+    });
+
+    it("delivers the owned assignment and ordered wake comments through --single", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      let deliveredPrompt = "";
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        deliveredPrompt = String(args.at(-1) ?? "");
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-context-ownership", root);
+      ctx.context = fixture;
+
+      await execute(ctx);
+
+      expect(deliveredPrompt).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(deliveredPrompt.indexOf("Append the same ledger entry.")).toBeLessThan(
+        deliveredPrompt.lastIndexOf("Append the same ledger entry."),
+      );
+      expect(deliveredPrompt.indexOf("comment-first")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-second"),
+      );
+      expect(deliveredPrompt.indexOf("comment-second")).toBeLessThan(
+        deliveredPrompt.indexOf("comment-scope"),
+      );
+      expect(deliveredPrompt).toContain("Change the final scope to the launch checklist.");
+    });
+
+    it("retries a stale session with the full assignment and wake context", async () => {
+      const root = await makeTempRoot();
+      const fixture = createPromptContextFixture();
+      const prompts: string[] = [];
+      runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+        prompts.push(String(args.at(-1) ?? ""));
+        if (prompts.length === 1) {
+          return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "unknown session sess-stale" };
+        }
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-grok-recovery-context", root);
+      ctx.runtime = {
+        sessionId: "sess-stale",
+        sessionParams: { sessionId: "sess-stale", cwd: root },
+        sessionDisplayId: "sess-stale",
+        taskKey: null,
+      };
+      ctx.context = fixture;
+      const result = await execute(ctx);
+
+      expect(result.exitCode).toBe(0);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain(fixture.paperclipTaskMarkdownAssignmentCompact);
+      expect(prompts[1]).toContain(fixture.paperclipTaskMarkdownAssignment);
+      expect(prompts[1]).toContain("comment-first");
+      expect(prompts[1]).toContain("comment-scope");
     });
   });
 });

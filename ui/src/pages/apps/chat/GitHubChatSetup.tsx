@@ -125,7 +125,7 @@ export function GitHubChatSetup() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Connectors", href: "/apps" },
-      { label: "Connect GitHub bot" },
+      { label: "GitHub Code Review Bot" },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);

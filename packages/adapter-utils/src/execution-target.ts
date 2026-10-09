@@ -38,6 +38,7 @@ import {
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
   HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  runSandboxBridgeControlCommand,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
@@ -267,6 +268,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
   } | null;
+  cleanupWorkspaceSnapshot?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -279,6 +281,9 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /** Trusted invocation observation, not a turn completion callback. Called only
+   * after local child close or a remotely observed exit, including nonzero exits. */
+  onProcessStopped?: () => void;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -368,13 +373,9 @@ export interface AdapterExecutionTargetProcessSessionBridgeHandle {
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
-// 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
-// last-resort kill switch, not the primary hang detector: genuinely hung runs
-// are caught much earlier by the adapters' output-inactivity monitors (e.g.
-// codex-local's 7-minute monitor). The value intentionally matches the
-// recovery watchdog's ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS (4h) in
-// server/src/services/recovery/service.ts so healthy long runs are never
-// killed by the adapter before the watchdog would even consider them stuck.
+// Four-hour wall-clock backstop for sandbox-backed adapter runs. Keep this
+// execution limit independent of the earlier informational silence warnings
+// and the short deadlines for bridge control operations.
 export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 14_400;
 
 function parseObject(value: unknown): Record<string, unknown> {
@@ -893,6 +894,7 @@ export async function runAdapterExecutionTargetProcess(
       // after the clean process completion cannot latch a false mid-run loss. A
       // control channel that died before this clean completion still fails the
       // run closed.
+      if (!result.timedOut && typeof result.exitCode === "number" && Number.isInteger(result.exitCode) && result.exitCode >= 0) options.onProcessStopped?.();
       const settled = applyRunDispositionSeam(result, options.settleRunDisposition);
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
@@ -911,7 +913,7 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  return await runChildProcess(runId, command, args, {
+  const result = await runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
@@ -923,6 +925,13 @@ export async function runAdapterExecutionTargetProcess(
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+  // Closing an SSH client on timeout/disconnect does not prove the remote
+  // provider exited. SSH status 255 is transport failure, never a stop receipt.
+  if (!target || target.kind === "local" ||
+      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
+    options.onProcessStopped?.();
+  }
+  return result;
 }
 
 export async function runAdapterExecutionTargetShellCommand(
@@ -1425,6 +1434,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
+  /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
+  workspaceFileMode?: "all";
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
@@ -1466,6 +1477,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
+      workspaceFileMode: input.workspaceFileMode,
+      workspaceExclude: input.workspaceExclude,
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
@@ -1505,6 +1518,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: input.workspaceExclude,
+    workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,
@@ -1522,6 +1536,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
     workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
+    cleanupWorkspaceSnapshot: prepared.cleanupWorkspaceSnapshot,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
@@ -1972,6 +1987,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
+  // Failure diagnostics are best effort: stalled or failed run-log persistence
+  // must not prevent sending shutdown or removing the bridge's session files.
+  const logFailureWithoutWaiting = (message: string) => {
+    void Promise.resolve().then(() => onLog("stderr", message)).catch(() => undefined);
+  };
   const runner = requireSandboxRunner(target);
   // Run one unit of run-time work under its named wrapper span when a span
   // runner is injected. Without a runner, run the work under the current run
@@ -2045,7 +2065,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   } else {
     const payloadPath = path.posix.join(sessionDir, "command.b64");
     const runPayloadSetup = async (script: string) => {
-      const result = await runner.execute({
+      const result = await runSandboxBridgeControlCommand(runner, {
         command: shellCommand,
         args: shellCommandArgs(script),
         cwd: target.remoteCwd,
@@ -2074,7 +2094,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // as one foreground session command further down instead, so skip this.
   if (!streamOutput) {
     await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
-    const startResult = await runner.execute({
+    const startResult = await runSandboxBridgeControlCommand(runner, {
       command: shellCommand,
       args: shellCommandArgs(
         [
@@ -2122,7 +2142,49 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // a big earlier chunk, so the wrapper reads the stdin bytes out of order and
   // corrupts a large prompt on the stdin path.
   let stdinWriteChain: Promise<void> = Promise.resolve();
+  let stdinDeliveryFailed = false;
+  const writeStdinFile = async (filePath: string, body: string) => {
+    // Retry the same sequence, never the ACP request or the tool itself. Each
+    // upload uses private temporary paths, and the wrapper drops sequences it
+    // already consumed when a provider loses the final rename's response.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await client.writeTextFile(filePath, body);
+        return;
+      } catch (error) {
+        // Plugin RPC preserves provider messages but not HTTP error classes.
+        // Match the Daytona SDK and Cloudflare bridge's gateway diagnostics
+        // exactly; shell failures and auth errors must still fail immediately.
+        const gatewayFailure = error instanceof Error && (
+          /^Request failed with status code (502|503|504)$/.test(error.message) ||
+          /^Cloudflare sandbox bridge request failed with HTTP (502|503|504)\.$/.test(error.message)
+        );
+        if (!gatewayFailure || attempt >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+  };
   let pollTimer: NodeJS.Timeout | null = null;
+  let terminalEvidenceRecorded = false;
+  const recordTerminalEvidence = (
+    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    event: { type?: string; code?: number | null; signal?: string | null },
+  ) => {
+    if (terminalEvidenceRecorded) return;
+    terminalEvidenceRecorded = true;
+    // Remote frames are untrusted. Keep the retained diagnostic bounded and
+    // independent of messages, commands, paths, payloads, and provider errors.
+    const outcome = event.type === "exit" ? "exit" : "error";
+    const code = typeof event.code === "number" && Number.isInteger(event.code)
+      && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
+    const signal = typeof event.signal === "string" && [
+      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
+      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
+    ].includes(event.signal) ? event.signal : "unknown";
+    logFailureWithoutWaiting(
+      `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
+    );
+  };
   const pendingRemoteEvents: Array<{
     type?: string;
     stream?: "stdout" | "stderr";
@@ -2149,22 +2211,30 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
+    // `stopping` can already be set by a terminal frame buffered before auth.
+    // Use the socket's outbound state instead: once end() has been called,
+    // another write would destroy it and truncate the frame still draining.
+    // This also covers input-delivery failure, which ends the socket directly.
+    if (socket.writableEnded || socket.destroyed) return true;
     socket.write(jsonLine(event));
-    if (event.type === "exit") {
+    if (event.type === "exit" || event.type === "error") {
       stopping = true;
+      // Flush the terminal frame and all earlier output before closing. An
+      // immediate destroy can discard the cause and leave only connection_close.
       socket.end();
-    } else if (event.type === "error") {
-      stopping = true;
-      socket.destroy();
     }
     return true;
   };
 
-  const deliverRemoteEvent = (event: (typeof pendingRemoteEvents)[number]) => {
+  const deliverRemoteEvent = (
+    event: (typeof pendingRemoteEvents)[number],
+    source: "remote_event" | "output_poll" | "output_stream" = "remote_event",
+  ) => {
     if (event.type === "shutdownAck") {
       signalShutdownAcknowledged();
       return;
     }
+    if (event.type === "exit" || event.type === "error") recordTerminalEvidence(source, event);
     if (socket) {
       writeRemoteEventToSocket(event);
       return;
@@ -2206,6 +2276,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     nextSocket.on("close", () => {
       clearTimeout(authTimer);
       liveSockets.delete(nextSocket);
+      if (authenticated && !stopping) recordTerminalEvidence("proxy_close", { type: "error" });
     });
     nextSocket.on("data", (chunk) => {
       connectionBuffer += chunk;
@@ -2253,19 +2324,30 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           // Chain this write after the previous one, so the atomic rename for
           // file N finishes before the write for file N+1 starts. Keep the
           // per-message `sandbox.agentSession.sendInput` span inside the chain.
-          const write = stdinWriteChain.then(() =>
-            runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-              client.writeTextFile(filePath, jsonLine(stdinPayload)),
-            ),
-          );
-          // The next message chains after this write on success or failure, so a
-          // failed write never blocks the chain. This mirrors the wrapper
-          // `writeChain` pattern for its event files.
-          stdinWriteChain = write.then(() => undefined, () => undefined);
-          // Keep the failure behavior: send one error line, then destroy the socket.
-          write.catch((error) => {
-            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-            nextSocket.destroy();
+          stdinWriteChain = stdinWriteChain.then(async () => {
+            if (stdinDeliveryFailed) return;
+            try {
+              await runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+                writeStdinFile(filePath, jsonLine(stdinPayload)),
+              );
+            } catch {
+              stdinDeliveryFailed = true;
+              stopping = true;
+              recordTerminalEvidence("input_delivery", { type: "error" });
+              const message = "ACP process session input delivery failed.";
+              // Flush the diagnostic before closing; destroy() can discard it
+              // and leave only ACP's generic connection_close error. Do not
+              // expose provider error text, which may contain a command payload.
+              // A remote terminal frame may already be draining while this
+              // accepted stdin write fails. end(data) would write after end
+              // and discard that first failure just like socket.write(data).
+              if (!nextSocket.writableEnded && !nextSocket.destroyed) {
+                nextSocket.end(jsonLine({ type: "error", message }));
+              }
+              // stop() awaits this input chain before sending shutdown. Run-log
+              // persistence must not hold teardown open when it stalls or fails.
+              logFailureWithoutWaiting(`[paperclip] ${message}\n`);
+            }
           });
         }
       }
@@ -2293,8 +2375,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
+      // A stuck log sink must not strand the adapter waiting for this failure.
+      deliverRemoteEvent({ type: "error", message }, "output_poll");
       return;
     } finally {
       if (!stopping) {
@@ -2420,14 +2502,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             deliverRemoteEvent({
               type: "exit",
               code: typeof result.exitCode === "number" ? result.exitCode : null,
-            });
+              signal: result.signal,
+            }, "output_stream");
           }
         } catch (error) {
           if (!stopping) {
             deliverRemoteEvent({
               type: "error",
               message: error instanceof Error ? error.message : String(error),
-            });
+            }, "output_stream");
           }
         }
       })();
@@ -2536,10 +2619,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       ]);
       stopReadingForShutdownAck = true;
       if (!acknowledgedInTime) {
-        await onLog(
-          "stderr",
+        logFailureWithoutWaiting(
           `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
-        ).catch(() => undefined);
+        );
       }
       // Unconditional: this removal runs whether or not the wrapper
       // acknowledged, and whether or not any event (real or forged) arrived
@@ -2970,6 +3052,14 @@ async function pollStdin() {
     for (const name of entries) {
       if (shuttingDown) break;
       const entrySeq = Number.parseInt(name, 10);
+      const file = path.posix.join(stdinDir, name);
+      // A successful publication can be retried after its provider response
+      // was lost, even after we consumed it. Never send those bytes twice or
+      // move the expected sequence backwards. This also handles late uploads.
+      if (Number.isFinite(entrySeq) && entrySeq < stdinExpectedSeq) {
+        await fs.rm(file, { force: true }).catch(() => undefined);
+        continue;
+      }
       // Hold the send order when an earlier file has not appeared. Do not consume
       // this later file: wait for the missing file on a later cycle, bounded by
       // the retry budget. After the budget, fail loud and advance past the gap,
@@ -2988,7 +3078,6 @@ async function pollStdin() {
         stdinGapRetries = 0;
         stdinExpectedSeq = entrySeq;
       }
-      const file = path.posix.join(stdinDir, name);
       let message;
       try {
         // Hardening (I3): open with O_NOFOLLOW where the platform defines it,

@@ -4,6 +4,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
 
+const mockRetainBacklogAssignment = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../services/human-directed-work.js", () => ({ retainBacklogHumanAssignment: mockRetainBacklogAssignment }));
+
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
@@ -331,6 +334,10 @@ describe("assigned backlog creation contract", () => {
       assigneeAgentId,
       status: "backlog",
     }));
+    expect(mockRetainBacklogAssignment).toHaveBeenCalledWith(
+      expect.anything(), expect.objectContaining({ assigneeAgentId, status: "backlog" }),
+      expect.objectContaining({ actorType: "user", actorId: "local-board" }),
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
