@@ -13,7 +13,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, projects, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, reconcileAgentPolicyHolds } from "../../../services/agent-lifecycle.js";
@@ -232,6 +232,21 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toEqual([]);
     const active = await hire();
     expect(await lifecycle.updateAndTransition(active.id, "pause", { name: "Paused agent" })).toMatchObject({ name: "Paused agent", lifecycleState: "pausing" });
+  });
+
+  it("preserves a disabled positive budget at approval and applies explicit configuration changes", async () => {
+    const agent = await hire("pending_approval");
+    const budgets = budgetService(db);
+    await budgets.upsertPolicy(companyId, { scopeType: "agent", scopeId: agent.id, amount: 1000, isActive: false }, null);
+    const approval = await approvalService(db).create(companyId, { type: "hire_agent",
+      payload: { agentId: agent.id, budgetMonthlyCents: 1000 }, status: "pending" });
+    const policy = async () => (await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id)))[0]!;
+    await approvalService(db).approve(approval.id, "board");
+    expect(await policy()).toMatchObject({ amount: 1000, isActive: false });
+    await agentConfiguration(db).update(agent.id, { budgetMonthlyCents: 2000 });
+    expect(await policy()).toMatchObject({ amount: 2000, isActive: true });
+    await agentConfiguration(db).update(agent.id, { budgetMonthlyCents: 0 });
+    expect(await policy()).toMatchObject({ amount: 0, isActive: false });
   });
 
   it("limits invocation policy checks to the requested agent", async () => {

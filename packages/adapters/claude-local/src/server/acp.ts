@@ -721,7 +721,10 @@ export async function probeClaudeAcpSandboxLogin(input: {
     });
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", targetIsSandbox)];
   }
-  return [];
+  if (!/\bhello\b/i.test(parsedStream.summary)) {
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not return hello.", targetIsSandbox)];
+  }
+  return [{ code: "claude_hello_probe_passed", level: "info", message: "Claude login probe succeeded." }];
 }
 
 export async function testClaudeAcpEnvironment(

@@ -190,7 +190,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
 
       if (normalizedPatch.budgetMonthlyCents !== undefined) {
         await effects.setAgentBudget(txDb, publications, existing.companyId, id,
-          normalizedPatch.budgetMonthlyCents, options?.recordRevision?.createdByUserId ?? null);
+          normalizedPatch.budgetMonthlyCents, options?.recordRevision?.createdByUserId ?? null, normalizedPatch.budgetMonthlyCents > 0);
       }
       const normalizedUpdated = await agentRecordQueries(txDb).getById(updated.id);
       if (!normalizedUpdated) {

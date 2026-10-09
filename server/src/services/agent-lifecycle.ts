@@ -18,9 +18,9 @@ export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lif
   return {
     transaction: withAccountingTransaction,
     policyBlocks,
-    setAgentBudget: (db, publications, companyId, agentId, amount, userId) =>
+    setAgentBudget: (db, publications, companyId, agentId, amount, userId, isActive) =>
       budgetServiceInTransaction(db, publications).upsertPolicy(companyId, {
-        scopeType: "agent", scopeId: agentId, amount, isActive: amount > 0, windowKind: "calendar_month_utc",
+        scopeType: "agent", scopeId: agentId, amount, isActive, windowKind: "calendar_month_utc",
       }, userId),
     enforceBudget: (db, companyId) => deliverBudgetEnforcement(db, hooks, companyId),
     recordCreation: (db, companyId, agentId) => recordResourceCreationEvent(db, companyId, "agent", agentId),
