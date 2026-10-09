@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
@@ -653,6 +653,29 @@ function mockPersistedWikiSpace(harness: ReturnType<typeof createTestHarness>, s
       return [defaultWikiSpaceRow(), row] as T[];
     }
     return originalQuery<T>(sql, params);
+  };
+}
+
+function mockPersistedResourceBindings(harness: ReturnType<typeof createTestHarness>) {
+  const bindings = new Map<string, { resolved_id: unknown; metadata: unknown }>();
+  const originalQuery = harness.ctx.db.query.bind(harness.ctx.db);
+  const originalExecute = harness.ctx.db.execute.bind(harness.ctx.db);
+  harness.ctx.db.query = async <T,>(sql: string, params?: unknown[]) => {
+    if (sql.includes("wiki_resource_bindings")) {
+      harness.dbQueries.push({ sql, params });
+      const binding = bindings.get(JSON.stringify(params));
+      return (binding ? [binding] : []) as T[];
+    }
+    return originalQuery<T>(sql, params);
+  };
+  harness.ctx.db.execute = async (sql, params) => {
+    if (sql.includes("INSERT INTO") && sql.includes("wiki_resource_bindings")) {
+      bindings.set(JSON.stringify(params?.slice(1, 5)), {
+        resolved_id: params?.[5],
+        metadata: JSON.parse(String(params?.[6])),
+      });
+    }
+    return originalExecute(sql, params);
   };
 }
 
@@ -1465,6 +1488,143 @@ Duplicate headings receive stable suffixes.
         projectId: expect.any(String),
       }));
       expect(routine.missingRefs).toEqual([]);
+    }
+  });
+
+  it("preserves selected resources and routine owners during reconciliation and bootstrap", async () => {
+    const harness = createTestHarness({ manifest });
+    const agent = { ...existingAgent(), status: "paused" as const, budgetMonthlyCents: 5000 };
+    const project = existingProject();
+    harness.seed({ agents: [agent], projects: [project] });
+    mockPersistedResourceBindings(harness);
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("select-managed-agent", { companyId: COMPANY_ID, agentId: agent.id });
+    await harness.performAction("select-managed-project", { companyId: COMPANY_ID, projectId: project.id });
+    const reconcileAgent = vi.spyOn(harness.ctx.agents.managed, "reconcile");
+    const reconcileProject = vi.spyOn(harness.ctx.projects.managed, "reconcile");
+
+    expect(await harness.performAction("reconcile-managed-agent", { companyId: COMPANY_ID }))
+      .toMatchObject({ source: "selected", agentId: agent.id });
+    expect(await harness.performAction("reconcile-managed-project", { companyId: COMPANY_ID }))
+      .toMatchObject({ source: "selected", projectId: project.id });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const repaired = await harness.performAction<{
+        managedRoutines: PluginManagedRoutineResolution[];
+      }>("reconcile-managed-routines", { companyId: COMPANY_ID });
+      expect(repaired.managedRoutines).toHaveLength(WIKI_MAINTENANCE_ROUTINE_KEYS.length);
+      for (const routine of repaired.managedRoutines) {
+        expect(routine.routine).toMatchObject({ companyId: COMPANY_ID, assigneeAgentId: agent.id, projectId: project.id });
+      }
+    }
+    const bootstrapped = await harness.performAction("bootstrap-root", { companyId: COMPANY_ID, path: "/tmp/company-wiki" });
+    expect(bootstrapped).toMatchObject({
+      managedAgent: { source: "selected", agentId: agent.id },
+      managedProject: { source: "selected", projectId: project.id },
+    });
+    expect(reconcileAgent).not.toHaveBeenCalled();
+    expect(reconcileProject).not.toHaveBeenCalled();
+    expect(harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_resource_bindings"))).toHaveLength(2);
+    expect(await harness.ctx.agents.get(agent.id, COMPANY_ID)).toEqual(agent);
+    expect(await harness.ctx.projects.get(project.id, COMPANY_ID)).toEqual(project);
+  });
+
+  it("provisions missing defaults and keeps their bindings on repeated reconciliation", async () => {
+    const harness = createTestHarness({ manifest });
+    mockPersistedResourceBindings(harness);
+    await plugin.definition.setup(harness.ctx);
+    const reconcileAgent = vi.spyOn(harness.ctx.agents.managed, "reconcile");
+    const reconcileProject = vi.spyOn(harness.ctx.projects.managed, "reconcile");
+    const first = await harness.performAction<{
+      managedAgent: { agentId: string };
+      managedProject: { projectId: string };
+      managedRoutines: PluginManagedRoutineResolution[];
+    }>("reconcile-managed-routines", { companyId: COMPANY_ID });
+    expect(first.managedAgent.agentId).toEqual(expect.any(String));
+    expect(first.managedProject.projectId).toEqual(expect.any(String));
+    for (const routine of first.managedRoutines) {
+      expect(routine.routine).toMatchObject({
+        companyId: COMPANY_ID,
+        assigneeAgentId: first.managedAgent.agentId,
+        projectId: first.managedProject.projectId,
+      });
+    }
+    const second = await harness.performAction<typeof first>("reconcile-managed-routines", { companyId: COMPANY_ID });
+    expect(second.managedAgent).toMatchObject({ source: "managed", agentId: first.managedAgent.agentId });
+    expect(second.managedProject).toMatchObject({ source: "managed", projectId: first.managedProject.projectId });
+    expect(reconcileAgent).toHaveBeenCalledExactlyOnceWith(WIKI_MAINTAINER_AGENT_KEY, COMPANY_ID);
+    expect(reconcileProject).toHaveBeenCalledExactlyOnceWith(WIKI_PROJECT_KEY, COMPANY_ID);
+    expect(harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_resource_bindings"))).toHaveLength(2);
+  });
+
+  it("preserves existing routine owners after selecting a different maintainer and project", async () => {
+    const harness = createTestHarness({ manifest });
+    const agent = existingAgent();
+    const project = existingProject();
+    harness.seed({ agents: [agent], projects: [project] });
+    mockPersistedResourceBindings(harness);
+    await plugin.definition.setup(harness.ctx);
+    const first = await harness.performAction<{
+      managedRoutines: PluginManagedRoutineResolution[];
+    }>("reconcile-managed-routines", { companyId: COMPANY_ID });
+    await harness.performAction("select-managed-agent", { companyId: COMPANY_ID, agentId: agent.id });
+    await harness.performAction("select-managed-project", { companyId: COMPANY_ID, projectId: project.id });
+
+    const repaired = await harness.performAction<typeof first>("reconcile-managed-routines", { companyId: COMPANY_ID });
+    expect(repaired).toMatchObject({
+      managedAgent: { source: "selected", agentId: agent.id },
+      managedProject: { source: "selected", projectId: project.id },
+    });
+    expect(repaired.managedRoutines.map((resolution) => resolution.routine))
+      .toEqual(first.managedRoutines.map((resolution) => resolution.routine));
+    expect(harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_resource_bindings"))).toHaveLength(4);
+  });
+
+  it("repairs bindings when the selected agent is terminated and the project is missing", async () => {
+    const harness = createTestHarness({ manifest });
+    const agent = existingAgent();
+    const project = existingProject();
+    harness.seed({ agents: [agent], projects: [project] });
+    mockPersistedResourceBindings(harness);
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("select-managed-agent", { companyId: COMPANY_ID, agentId: agent.id });
+    await harness.performAction("select-managed-project", { companyId: COMPANY_ID, projectId: project.id });
+    harness.seed({ agents: [{ ...agent, status: "terminated" }], projects: [{ ...project, companyId: OTHER_COMPANY_ID }] });
+
+    const repaired = await harness.performAction<{
+      managedAgent: { source: string; agentId: string };
+      managedProject: { source: string; projectId: string };
+    }>("reconcile-managed-routines", { companyId: COMPANY_ID });
+    expect(repaired.managedAgent.source).toBe("managed");
+    expect(repaired.managedAgent.agentId).not.toBe(agent.id);
+    expect(repaired.managedProject.source).toBe("managed");
+    expect(repaired.managedProject.projectId).not.toBe(project.id);
+    expect(await harness.ctx.agents.get(repaired.managedAgent.agentId, COMPANY_ID)).not.toBeNull();
+    expect(await harness.ctx.projects.get(repaired.managedProject.projectId, COMPANY_ID)).not.toBeNull();
+  });
+
+  it("keeps explicit reset able to replace selected bindings with managed defaults", async () => {
+    const harness = createTestHarness({ manifest });
+    const agent = existingAgent();
+    const project = existingProject();
+    harness.seed({ agents: [agent], projects: [project] });
+    mockPersistedResourceBindings(harness);
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("select-managed-agent", { companyId: COMPANY_ID, agentId: agent.id });
+    await harness.performAction("select-managed-project", { companyId: COMPANY_ID, projectId: project.id });
+    const resetAgent = await harness.performAction<{ source: string; agentId: string }>("reset-managed-agent", { companyId: COMPANY_ID });
+    const resetProject = await harness.performAction<{ source: string; projectId: string }>("reset-managed-project", { companyId: COMPANY_ID });
+    expect(resetAgent.source).toBe("managed");
+    expect(resetAgent.agentId).not.toBe(agent.id);
+    expect(resetProject.source).toBe("managed");
+    expect(resetProject.projectId).not.toBe(project.id);
+    expect(await harness.performAction("reconcile-managed-routines", { companyId: COMPANY_ID })).toMatchObject({
+      managedAgent: { source: "managed", agentId: resetAgent.agentId },
+      managedProject: { source: "managed", projectId: resetProject.projectId },
+    });
+    const bindingWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_resource_bindings"));
+    expect(bindingWrites).toHaveLength(4);
+    for (const write of bindingWrites.slice(2)) {
+      expect(JSON.parse(String(write.params?.[6]))).toMatchObject({ source: "managed-default", updatedBy: "reset" });
     }
   });
 
