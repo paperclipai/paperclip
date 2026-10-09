@@ -1,3 +1,4 @@
+import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { configuredEnvironment } from "../configured-environment.js";
@@ -3182,6 +3183,14 @@ function opencodeRunnerLaunchProfile(
   };
 }
 
+function resolveRunnerOpenCodeExecutable(options: RunnerdCodexTransportOptions): string {
+  if (options.opencodeCommand !== undefined) return options.opencodeCommand;
+  if (options.runnerFilesystemRoot) {
+    throw new Error("runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack");
+  }
+  return resolvePinnedOpenCodeCommand();
+}
+
 function authorizedToolSet(
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
@@ -4731,8 +4740,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       : undefined;
     const opencodeExecutable =
       provider === "opencode"
-        ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        ? resolveRunnerOpenCodeExecutable(this.options)
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -4757,9 +4765,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ) {
       const providerPaths = [
         ["provider Node", providerNodeCommand],
-        ["OpenCode proxy", opencodeProxyPath],
-        ["ACPX sidecar", acpxSidecarPath],
-        ["OpenCode executable", opencodeExecutable ?? "opencode"],
+        ...(provider === "opencode"
+          ? [["OpenCode proxy", opencodeProxyPath], ["OpenCode executable", opencodeExecutable!]] as const
+          : [["ACPX sidecar", acpxSidecarPath]] as const),
       ] as const;
       for (const [label, candidate] of providerPaths) {
         if (
@@ -5358,8 +5366,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.options.providerNodeCommand ?? process.execPath;
     const opencodeExecutable =
       provider === "opencode"
-        ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        ? resolveRunnerOpenCodeExecutable(this.options)
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -7040,6 +7047,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   acpxProviderPackageAuthority,
   acpxRunnerLaunchProfile,
   resolveBuildOwnedCliArtifact,
+  resolveRunnerOpenCodeExecutable,
   maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
