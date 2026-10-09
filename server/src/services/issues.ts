@@ -93,6 +93,7 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueExecutionPolicy,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -102,6 +103,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  isPluginOperationIssueOriginKind,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -143,6 +145,7 @@ import {
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
   buildInitialIssueMonitorFields,
+  issueAllowsMonitor,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -385,7 +388,7 @@ function readStringFromRecord(record: unknown, key: string) {
     : null;
 }
 
-async function resolveResponsibleUserIdForIssueCreate(
+export async function resolveResponsibleUserIdForIssueCreate(
   reader: DbReader,
   companyId: string,
   input: {
@@ -2188,14 +2191,60 @@ const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
   "skipExecutionWorkspaceInheritance",
 ]);
 
+// normalizeIssueExecutionPolicy mints a fresh randomUUID for any stage or
+// participant that arrives without an id -- which includes every policy
+// resolved from a company/project default (instantiateExecutionPolicyTemplate
+// strips the template's ids on purpose) and any caller-supplied policy that
+// simply omits them. Leaving those ids in the fingerprint would make an
+// identical retry of the same decomposition request look like a different
+// child set and fail with a 409.
+function stripExecutionPolicyIdsForFingerprint(policy: unknown): unknown {
+  if (!policy || typeof policy !== "object") return policy;
+  const { stages, ...rest } = policy as { stages?: unknown[] } & Record<
+    string,
+    unknown
+  >;
+  if (!Array.isArray(stages)) return policy;
+  return {
+    ...rest,
+    stages: stages.map((stage) => {
+      if (!stage || typeof stage !== "object") return stage;
+      const { id: _stageId, participants, ...stageRest } = stage as {
+        id?: unknown;
+        participants?: unknown[];
+      } & Record<string, unknown>;
+      return {
+        ...stageRest,
+        participants: Array.isArray(participants)
+          ? participants.map((participant) => {
+              if (!participant || typeof participant !== "object")
+                return participant;
+              const { id: _participantId, ...participantRest } =
+                participant as Record<string, unknown>;
+              return participantRest;
+            })
+          : participants,
+      };
+    }),
+  };
+}
+
 function normalizeAcceptedPlanDecompositionFingerprintChild(
   child: IssueChildCreateInput,
 ) {
   return Object.fromEntries(
-    Object.entries(child).filter(
-      ([key]) =>
-        !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(key),
-    ),
+    Object.entries(child)
+      .filter(
+        ([key]) =>
+          !ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS.has(
+            key,
+          ),
+      )
+      .map(([key, value]) =>
+        key === "executionPolicy"
+          ? [key, stripExecutionPolicyIdsForFingerprint(value)]
+          : [key, value],
+      ),
   );
 }
 
@@ -6706,6 +6755,100 @@ export async function readIssueCommentRunLogText(run: {
   return content;
 }
 
+// A routine-generated issue carries one of the origin kinds
+// server/src/services/routines.ts assigns at create time (see its
+// `issueOriginKind` local around the dispatch of a routine run): either the
+// flat "routine_execution" kind, or — when the routine drives a plugin
+// operation — a `plugin:<key>:operation` kind. Both are excluded from the
+// company/project default execution policy below; a routine's own
+// configuration is the source of truth for its issues' sign-off gate.
+function isRoutineOriginatedIssueOriginKind(
+  originKind: string | null | undefined,
+): boolean {
+  return (
+    originKind === "routine_execution" ||
+    isPluginOperationIssueOriginKind(originKind)
+  );
+}
+
+// A conversation-thread issue is identified exactly as the
+// issues_conversation_identity_check constraint
+// (packages/db/src/schema/issues.ts) does: both conversationAgentId and
+// conversationUserId set. These are ephemeral chat threads, not work items —
+// attaching a sign-off gate to them would block normal chat replies.
+function isConversationThreadIssueCreate(data: {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+}): boolean {
+  return data.conversationAgentId != null && data.conversationUserId != null;
+}
+
+/**
+ * Strips any stage/participant ids carried by a stored default-policy
+ * template so normalizeIssueExecutionPolicy mints fresh ones for the issue
+ * it is being attached to, rather than reusing the template's ids across
+ * every issue that inherits it.
+ */
+function instantiateExecutionPolicyTemplate(
+  policy: IssueExecutionPolicy,
+): unknown {
+  return {
+    ...policy,
+    stages: policy.stages.map((stage) => ({
+      ...stage,
+      id: undefined,
+      participants: stage.participants.map((participant) => ({
+        ...participant,
+        id: undefined,
+      })),
+    })),
+  };
+}
+
+/**
+ * Resolves the execution policy a newly created issue should get when the
+ * caller omits one: the project's defaultExecutionPolicy if the issue has a
+ * project and the project sets one, else the company's, else null (today's
+ * behavior, unchanged). Callers are responsible for excluding
+ * routine-generated and conversation-thread issues before calling this —
+ * see isRoutineOriginatedIssueOriginKind and isConversationThreadIssueCreate.
+ */
+export async function resolveDefaultIssueExecutionPolicy(
+  dbOrTx: Db | DbTransaction,
+  params: { companyId: string; projectId?: string | null },
+): Promise<IssueExecutionPolicy | null> {
+  if (params.projectId) {
+    const [project] = await dbOrTx
+      .select({ defaultExecutionPolicy: projects.defaultExecutionPolicy })
+      .from(projects)
+      .where(
+        and(
+          eq(projects.id, params.projectId),
+          eq(projects.companyId, params.companyId),
+        ),
+      );
+    if (project?.defaultExecutionPolicy) {
+      return normalizeIssueExecutionPolicy(
+        instantiateExecutionPolicyTemplate(
+          project.defaultExecutionPolicy as IssueExecutionPolicy,
+        ),
+      );
+    }
+  }
+  const [company] = await dbOrTx
+    .select({ defaultExecutionPolicy: companies.defaultExecutionPolicy })
+    .from(companies)
+    .where(eq(companies.id, params.companyId));
+  if (company?.defaultExecutionPolicy) {
+    return normalizeIssueExecutionPolicy(
+      instantiateExecutionPolicyTemplate(
+        company.defaultExecutionPolicy as IssueExecutionPolicy,
+      ),
+    );
+  }
+  return null;
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -10362,6 +10505,49 @@ export function issueService(db: Db) {
           }
           const personalProject = await ensurePersonalPrivateProject(tx, companyId, responsibleUserId);
           issueData.projectId = personalProject.id;
+        }
+
+        // When the caller omits executionPolicy entirely, fall back to the
+        // project's (or, failing that, the company's) defaultExecutionPolicy
+        // — unless this issue is routine-generated or a conversation thread,
+        // neither of which should pick up a sign-off gate by default. An
+        // explicit executionPolicy (including an explicit null) always wins.
+        if (
+          issueData.executionPolicy === undefined &&
+          !isRoutineOriginatedIssueOriginKind(issueData.originKind) &&
+          !isConversationThreadIssueCreate(issueData)
+        ) {
+          const defaultExecutionPolicy = await resolveDefaultIssueExecutionPolicy(
+            tx,
+            { companyId, projectId: issueData.projectId ?? null },
+          );
+          if (defaultExecutionPolicy) {
+            // A direct service caller (e.g. inbound email creating a "todo"
+            // issue) never goes through withAuthorizedInheritedMonitor the
+            // way the HTTP routes do, so an inherited monitor that this
+            // issue's status/assignee can't hold yet would otherwise reach
+            // buildInitialIssueMonitorFields() below and throw 422 on every
+            // such create. Drop it here too; the default's approval stages
+            // still apply.
+            const defaultMonitorExpired = Boolean(
+              defaultExecutionPolicy.monitor?.timeoutAt &&
+                new Date(defaultExecutionPolicy.monitor.timeoutAt).getTime() <=
+                  Date.now(),
+            );
+            const defaultAllowsMonitor =
+              !defaultExecutionPolicy.monitor ||
+              (!defaultMonitorExpired &&
+                issueAllowsMonitor(
+                  issueData.status ?? "backlog",
+                  issueData.assigneeAgentId ?? null,
+                  issueData.assigneeUserId ?? null,
+                ));
+            issueData.executionPolicy = (
+              defaultAllowsMonitor
+                ? defaultExecutionPolicy
+                : { ...defaultExecutionPolicy, monitor: undefined }
+            ) as unknown as Record<string, unknown>;
+          }
         }
 
         const values = {

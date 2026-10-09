@@ -160,6 +160,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockResolveDefaultIssueExecutionPolicy = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 
@@ -189,6 +190,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+    resolveDefaultIssueExecutionPolicy: mockResolveDefaultIssueExecutionPolicy,
   }));
 
   vi.doMock("../services/work-products.js", () => ({
@@ -2913,6 +2915,50 @@ describe("agent issue mutation checkout ownership", () => {
         watchdogReportIssueId,
         expect.anything(),
       );
+    });
+
+    it("applies the company/project default execution policy to an accepted-plan child that omits one, but not to a child with an explicit policy", async () => {
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+        ambiguous: false,
+        agent: reference === ownerAgentId ? makeAgent(ownerAgentId) : null,
+      }));
+      const defaultPolicy = {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [
+          {
+            type: "approval" as const,
+            approvalsNeeded: 1 as const,
+            participants: [{ type: "user" as const, userId: "default-reviewer", agentId: null }],
+          },
+        ],
+      };
+      mockResolveDefaultIssueExecutionPolicy.mockResolvedValueOnce(defaultPolicy);
+
+      const app = await createApp(ownerActor());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+        .send({
+          acceptedPlanRevisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          children: [
+            { title: "Omits a policy", assigneeAgentId: ownerAgentId },
+            {
+              title: "Explicitly opts out",
+              assigneeAgentId: ownerAgentId,
+              executionPolicy: null,
+            },
+          ],
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const decompositionInput = mockIssueService.decomposeAcceptedPlan.mock.calls[0]?.[1];
+      const children = decompositionInput.children as Array<Record<string, unknown>>;
+      expect(children).toHaveLength(2);
+      expect(children[0]?.executionPolicy).toMatchObject({
+        stages: [expect.objectContaining({ type: "approval" })],
+      });
+      expect(children[1]?.executionPolicy).toBeNull();
+      expect(mockResolveDefaultIssueExecutionPolicy).toHaveBeenCalledTimes(1);
     });
 
     it("lets a watchdog run reassign a watched issue to an active same-company agent", async () => {

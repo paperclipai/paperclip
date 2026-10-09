@@ -158,7 +158,10 @@ async function seedValidWorktreeSource(
     role: "instance_admin",
   });
   // Seed only columns present in the historical source schema. The current
-  // model includes accounting columns that the worktree migration adds later.
+  // model includes accounting columns the worktree migration adds later, and
+  // (on this branch) companies.default_execution_policy -- a raw insert with
+  // an explicit column list keeps this fixture working regardless of which
+  // migration is pending.
   await db.$client`
     insert into companies (id, name, issue_prefix, require_board_approval_for_new_agents)
     values (${companyId}, 'Seed Source', 'SEED', false)

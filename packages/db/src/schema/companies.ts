@@ -1,4 +1,4 @@
-import type { InteractionResolverGovernance } from "@paperclipai/shared";
+import type { InteractionResolverGovernance, IssueExecutionPolicy } from "@paperclipai/shared";
 import { numeric, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -23,6 +23,12 @@ export const companies = pgTable(
       .$type<InteractionResolverGovernance>()
       .notNull()
       .default({}),
+    // The flat, unconditional execution policy template applied to a new
+    // issue when the create call omits one. Null means "no company default
+    // — leave unset" (today's behavior). See resolveDefaultIssueExecutionPolicy
+    // in server/src/services/issues.ts for how this is applied, and its
+    // exclusions (routine-generated and conversation-thread issues).
+    defaultExecutionPolicy: jsonb("default_execution_policy").$type<IssueExecutionPolicy>(),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")
       .notNull()
       .default(false),

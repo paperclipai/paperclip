@@ -113,6 +113,18 @@ vi.mock("../services/activity-log.js", async () => ({
   publishActivity: vi.fn(),
 }));
 
+// issueRoutes() is given a stub ({}) db in this file -- these tests are
+// about environment/driver guards, not execution-policy defaulting. The
+// real resolveDefaultIssueExecutionPolicy issues a raw db.select(...) query
+// (it is imported directly from services/issues.js, not through the
+// services/index.js factory mocked above), which throws against the stub
+// db whenever a create request omits executionPolicy. Stub it out here,
+// same pattern used in issue-agent-mutation-ownership-routes.test.ts.
+vi.mock("../services/issues.js", async () => ({
+  ...await vi.importActual<typeof import("../services/issues.js")>("../services/issues.js"),
+  resolveDefaultIssueExecutionPolicy: vi.fn(async () => null),
+}));
+
 vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));

@@ -23,6 +23,7 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   hidesCompanyPage,
+  putCompanyDefaultExecutionPolicySchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -497,6 +498,58 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     }
     res.json(company);
   });
+
+  // The flat, unconditional execution policy template applied to a new issue
+  // when its create call omits one (see resolveDefaultIssueExecutionPolicy in
+  // ../services/issues.ts). Readable by anyone with company access; writable
+  // only by board actors, matching the write-gating idiom used throughout
+  // this file and server/src/routes/access.ts.
+  router.get("/:companyId/default-execution-policy", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.getById(companyId);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({ defaultExecutionPolicy: company.defaultExecutionPolicy ?? null });
+  });
+
+  router.put(
+    "/:companyId/default-execution-policy",
+    validate(putCompanyDefaultExecutionPolicySchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can set the company default execution policy" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      const company = await svc.update(
+        companyId,
+        { defaultExecutionPolicy: req.body.defaultExecutionPolicy },
+        actor,
+      );
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.updated",
+        entityType: "company",
+        entityId: companyId,
+        details: { defaultExecutionPolicy: company.defaultExecutionPolicy ?? null },
+      });
+      res.json({ defaultExecutionPolicy: company.defaultExecutionPolicy ?? null });
+    },
+  );
 
   router.get("/:companyId/feedback-traces", async (req, res) => {
     const companyId = req.params.companyId as string;

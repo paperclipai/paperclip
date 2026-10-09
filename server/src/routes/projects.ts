@@ -20,6 +20,7 @@ import {
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  putProjectDefaultExecutionPolicySchema,
   normalizeProjectUrlKey,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
@@ -495,6 +496,50 @@ export function projectRoutes(db: Db) {
 
     res.json(project);
   });
+
+  // Project-level override of the company's defaultExecutionPolicy (see
+  // GET/PUT /companies/:companyId/default-execution-policy in
+  // ../routes/companies.ts). Readable by anyone with project access;
+  // writable only by board actors.
+  router.get("/projects/:id/default-execution-policy", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    res.json({ defaultExecutionPolicy: project.defaultExecutionPolicy ?? null });
+  });
+
+  router.put(
+    "/projects/:id/default-execution-policy",
+    validate(putProjectDefaultExecutionPolicySchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      if (!existing) return;
+      if (!(await assertProjectReadAllowed(req, res, existing))) return;
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can set the project default execution policy" });
+        return;
+      }
+      const project = await svc.update(id, { defaultExecutionPolicy: req.body.defaultExecutionPolicy });
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.updated",
+        entityType: "project",
+        entityId: project.id,
+        details: { defaultExecutionPolicy: project.defaultExecutionPolicy ?? null },
+      });
+      res.json({ defaultExecutionPolicy: project.defaultExecutionPolicy ?? null });
+    },
+  );
 
   router.get("/projects/:id/access-members", async (req, res) => {
     const id = req.params.id as string;

@@ -77,12 +77,14 @@ import {
   addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  putProjectDefaultExecutionPolicySchema,
   // Company
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
   companyArtifactsQuerySchema,
   companyArtifactsResponseSchema,
+  putCompanyDefaultExecutionPolicySchema,
   // Decisions
   addDecisionQueueItemSchema,
   createDecisionQueueSchema,
@@ -2136,6 +2138,33 @@ registry.registerPath({
     body: jsonBody(updateCompanyBrandingSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/default-execution-policy",
+  tags: ["companies"],
+  summary: "Get the company's default execution policy",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/default-execution-policy",
+  tags: ["companies"],
+  summary: "Set the company's default execution policy",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(putCompanyDefaultExecutionPolicySchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({
@@ -4803,6 +4832,33 @@ registry.registerPath({
   summary: "Delete a project",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/default-execution-policy",
+  tags: ["projects"],
+  summary: "Get the project's default execution policy",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/default-execution-policy",
+  tags: ["projects"],
+  summary: "Set the project's default execution policy",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(putProjectDefaultExecutionPolicySchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({

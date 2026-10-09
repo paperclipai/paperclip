@@ -4,6 +4,7 @@ import type {
   IssueThreadInteractionResolverPolicy,
   PauseReason,
 } from "../constants.js";
+import type { IssueExecutionPolicy } from "./issue.js";
 
 export interface InteractionResolverKindGovernance {
   defaultPolicy?: IssueThreadInteractionResolverPolicy;
@@ -28,6 +29,7 @@ export interface Company {
   defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
+  defaultExecutionPolicy: IssueExecutionPolicy | null;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;

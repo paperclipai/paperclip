@@ -6688,6 +6688,64 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(companyIssues).toHaveLength(2);
   });
 
+  it("tolerates a retry whose children carry a freshly re-minted executionPolicy (e.g. resolved from a company/project default on each call)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+
+    // resolveDefaultIssueExecutionPolicy -> normalizeIssueExecutionPolicy mints
+    // a fresh stage/participant id on every call when none is supplied, which
+    // is exactly what happens each time a company/project default is resolved
+    // for a retry. The fingerprint must ignore those ids, or an identical
+    // retry looks like a different child set and 409s.
+    function buildChildren() {
+      return [
+        {
+          title: "Implement the claim table",
+          status: "todo" as const,
+          workMode: "ask" as const,
+          priority: "medium" as const,
+          executionPolicy: {
+            mode: "normal" as const,
+            commentRequired: true,
+            maxReviewRounds: null,
+            stages: [
+              {
+                id: randomUUID(),
+                type: "approval" as const,
+                approvalsNeeded: 1 as const,
+                participants: [
+                  {
+                    id: randomUUID(),
+                    type: "agent" as const,
+                    agentId: assigneeAgentId,
+                    userId: null,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ];
+    }
+
+    const first = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: buildChildren(),
+      actorAgentId: assigneeAgentId,
+    });
+    expect(first.decomposition.status).toBe("completed");
+    expect(first.childIssueIds).toHaveLength(1);
+
+    const second = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: buildChildren(),
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(second.decomposition.status).toBe("completed");
+    expect(second.childIssueIds).toEqual(first.childIssueIds);
+    expect(second.newlyCreatedIssues).toHaveLength(0);
+  });
+
   it("rejects a different child set for the same accepted plan fingerprint", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
 

@@ -115,6 +115,18 @@ export const companiesApi = {
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
+  getDefaultExecutionPolicy: (companyId: string) =>
+    api.get<{ defaultExecutionPolicy: Company["defaultExecutionPolicy"] }>(
+      `/companies/${companyId}/default-execution-policy`,
+    ),
+  putDefaultExecutionPolicy: (
+    companyId: string,
+    defaultExecutionPolicy: Company["defaultExecutionPolicy"],
+  ) =>
+    api.put<{ defaultExecutionPolicy: Company["defaultExecutionPolicy"] }>(
+      `/companies/${companyId}/default-execution-policy`,
+      { defaultExecutionPolicy },
+    ),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (

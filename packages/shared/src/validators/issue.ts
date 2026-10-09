@@ -449,6 +449,22 @@ export const issueExecutionPolicySchema = z.object({
     .default(null),
 });
 
+// A stricter variant for saving a reusable company/project default-policy
+// template (as opposed to attaching a policy to one issue). A stage with no
+// participants passes issueExecutionPolicySchema but normalizeIssueExecutionPolicy
+// (server/src/services/issue-execution-policy.ts) silently drops it — and
+// drops the whole policy down to null if every stage was empty — so saving
+// one through the per-issue path just produces an ungated issue with no
+// error. A template has no issue-specific participant context to fall back
+// on, so an empty stage here is always a mistake worth rejecting outright.
+export const issueExecutionPolicyTemplateSchema = issueExecutionPolicySchema
+  .nullable()
+  .refine(
+    (policy) =>
+      !policy || policy.stages.every((stage) => stage.participants.length > 0),
+    { message: "Each stage must have at least one participant" },
+  );
+
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
   nextCheckAt: z.string().datetime().nullable(),
