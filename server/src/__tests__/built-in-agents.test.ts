@@ -133,7 +133,8 @@ describeEmbeddedPostgres("built-in agents", () => {
         return service.get(args[0], args[1]);
       },
       async get(...args: Parameters<typeof service.get>) {
-        await lifecycleWorker.sweep();
+        const result = await service.get(...args);
+        if (result.agentId) await lifecycleWorker.process(result.agentId);
         return service.get(...args);
       },
     };
