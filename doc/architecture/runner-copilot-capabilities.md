@@ -6,7 +6,17 @@ It binds master's shared protocol-validation sources without changing the
 executable or supplying new paid qualification. Historical checkpoints below
 retain their original identities and outcomes.
 
-Historical source candidate (2026-10-01): **Copilot profile v12 is unqualified**.
+Historical source candidate (2026-10-02): **Copilot profile v13 is unqualified**.
+Pi's explicit reasoning-mode support changed four shared transport and schema
+source files included in Copilot's execution identity. Version 13 records those
+source hashes with digest
+`sha256:3ff08fbe76fe4549c9eb01e8794428d8909c65c151d775220f2ec111d9e6f7c1`.
+The Copilot executable closure, model and provider behavior are unchanged. The
+historical v12 declaration is preserved; v12 warm sessions are rejected by the
+current candidate. This identity update supplies no new paid qualification.
+Fresh runtime packages and local/Daytona qualification remain required.
+
+Historical source candidate (2026-10-01): **Copilot profile v12 was unqualified**.
 Receipt v2 preserves the original `inputSha256` and separately captures
 `normalizedInputSha256` from the same invocation's validated outgoing body.
 For the native sidecar, only a successful, correlated `tool.resolve` commits

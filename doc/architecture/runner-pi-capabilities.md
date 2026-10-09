@@ -22,7 +22,58 @@ for the exact source/image evidence and merge status.
 All dated checkpoints below describe historical qualification attempts. Their
 failures and profile numbers are retained; they are not current release gates.
 
-## Historical Pi 1.0 candidate (2026-10-02, profile v12)
+## Historical Pi 1.0 candidate (2026-10-02, profile v13)
+
+Pi remains pinned to **`@earendil-works/pi-coding-agent@1.0.0`**, with
+`pi-acp@0.0.33`, ACPX `0.13.1`, and Node `24.21.0`. Profile 13 adds explicit
+reasoning-mode selection and rejects previous profile identities. It is a new
+qualification candidate; profile-12 results below remain historical evidence.
+
+Pi's new field also changes four shared files covered by Copilot's source
+identity. Copilot therefore advances to a still-unqualified profile v13 without
+changing its executable or model. Pi's profile-13 identity and native closure
+remain unchanged. Final artifacts must bind the corrected source; the initial
+ARM startup and 61 contract passes alone do not establish production readiness.
+
+The normal Pi configuration records `piThinkingLevel` as `off`, `low`, `high`,
+or `max`. New configurations and qualification cases explicitly select `low`.
+The runner binds that setting to the session identity and requires native
+confirmation of the effective level before sending the prompt, including after
+session restoration. An unsupported level, absent acknowledgement, or effective
+level different from the requested value must fail admission. Changing the
+level requires a new compatible session; a warm session cannot silently retain
+its previous setting.
+
+The wrapper obtains available levels from Pi's native
+`get_available_thinking_levels` RPC, exposes them through ACP session modes and
+the `thought_level` configuration option, and confirms changes with native
+`get_state`. This avoids advertising the static `minimal`, `medium`, or `xhigh`
+aliases when the selected model does not support them. For the pinned DeepSeek
+model, Pi 1.0 supports `off`, `low`, `high`, and `max`. Pi's implicit `medium`
+default resolves to `high`; Pi 0.84.2 also resolved that default to `high`, so
+this is a configuration gap rather than evidence of a new Pi 1.0 default.
+
+The [provider-free wire proof](../../packages/paperclip-runner/test-fixtures/pi-acp/thinking-modes.v13.darwin-arm64.json)
+records actual Pi 1.0 request bodies changing from `high` to `low` through ACP,
+truthful `max` restoration, blocked non-loopback connections, and owned-process
+retirement. Synthetic responses establish propagation, not paid qualification.
+
+The paid profile-12 hello passed in the actual installed application. Its first
+question continuation failed at the unchanged 120-second native deadline after
+1,019 reasoning deltas and no emitted tool call or question. The required tool
+was present with its exact schema. This establishes model activity without the
+required interaction; it does not prove the reasoning setting caused the timeout.
+The test remains failed. Profile-13 deterministic, local paid, Runner, native
+control, and Daytona results must be established independently.
+
+| Capability | Native / ACP surface | Paperclip surface | Remaining boundary |
+| --- | --- | --- | --- |
+| Supported thinking levels | `get_available_thinking_levels`; ACP available session modes and `thought_level` choices | Pi reasoning-level configuration | Model selection is explicit and unrestricted; historical qualification used the recorded model and level. |
+| Set and verify thinking level | Native `set_thinking_level`, then `get_state`; ACP `session/set_mode` / config option | Saved agent setting, typed runner input, effective-mode admission | Live setting changes during an active turn are not exposed; a new compatible session is required. |
+| Recover selected level | Native restored state plus explicit effective-level verification | Mode-bound durable session identity | Old profiles and missing or mismatched mode identity cannot reuse a warm session. |
+| Provider notice severity and pricing provenance | `paperclip/pi_notice` and canonical `provider.notice.recorded` | Retained run event and usage metadata | The activity row currently renders a generic provider-update label and warning icon even for informational pricing estimates. P2: render the safe summary and severity; do not imply an estimated price is a bill. |
+
+## Historical Pi 1.0 profile-v12 checkpoint (2026-10-02)
 
 The candidate now pins **`@earendil-works/pi-coding-agent@1.0.0`** with
 `pi-acp@0.0.33`, ACPX `0.13.1`, and portable Node `24.21.0`. Pi v11 and older
