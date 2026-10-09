@@ -408,8 +408,8 @@ export interface PluginExecutionWorkspaceMetadata {
   id: string;
   /** UUID of the owning company. */
   companyId: string;
-  /** UUID of the parent project. */
-  projectId: string;
+  /** Source project whose access policy protects these files; null for task-owned sources. */
+  projectId: string | null;
   /** UUID of the backing project workspace, when present. */
   projectWorkspaceId: string | null;
   /** Absolute filesystem path to the workspace when locally realized. */

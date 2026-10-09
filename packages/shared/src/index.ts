@@ -2866,3 +2866,8 @@ export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE } from "./externa
 export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOperation } from "./types/agent-lifecycle.js";
 
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
+
+export * from "./types/task-workspace.js";
+export * from "./validators/task-workspace.js";
+
+export { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository } from "./validators/workspace-repository.js";

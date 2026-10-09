@@ -1,3 +1,4 @@
+import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -267,6 +268,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
   workspaceSyncSnapshot: {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
+    repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
@@ -1433,8 +1435,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  /** Probe bounded remote manifest capture; unsupported hosts keep full transfer. */
+  workspaceCheckpoint?: boolean;
+  onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
+  workspaceSeedCacheDirectory?: string;
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
+  workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   workspaceExclude?: string[];
   /** Plain persistent directories include all files, independent of Git and task cache exclusions. */
   workspaceFileMode?: "all";
@@ -1518,8 +1525,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceCheckpoint: input.workspaceCheckpoint,
+    onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
+    workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
+    workspaceRepositories: input.workspaceRepositories,
     workspaceExclude: input.workspaceExclude,
     workspaceFileMode: input.workspaceFileMode,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,

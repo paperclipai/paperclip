@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
@@ -6,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
@@ -41,7 +42,7 @@ suite("task project repository provisioning", () => {
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, input.context.issueId));
       return { exitCode: 0, signal: null, timedOut: false };
     });
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     if (db && heartbeat) await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db?.$client.end({ timeout: 5 });
@@ -65,6 +66,7 @@ suite("task project repository provisioning", () => {
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     await db.insert(companies).values({ id: companyId, name: "Email company", issuePrefix: `E${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Onboarding" });
     for (const id of [referencedProjectId, deniedProjectId]) {
       const source = path.join(root, companyId, id);
@@ -147,6 +149,7 @@ suite("task project repository provisioning", () => {
       enableIsolatedWorkspacesByDefault: true,
     });
     await db.insert(companies).values({ id: companyId, name: "Research", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
     await db.insert(projects).values({
       id: projectId, companyId, name: "Research", status: "in_progress",
       executionWorkspacePolicy: explicitIsolation === "project" ? { enabled: true, defaultMode: "isolated_workspace" } : null,
@@ -186,7 +189,7 @@ suite("task project repository provisioning", () => {
         expect(workspace.strategy).toBe("git_worktree");
         expect(execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspace.cwd, encoding: "utf8" }).trim()).toBe("true");
       } else {
-        expect(workspace.cwd).toContain(`${projectId}/_default`);
+        expect(workspace.cwd).toContain(`/isolated-workspaces/${companyId}/${issueId}`);
       }
     }
   }, 25_000);
@@ -212,6 +215,7 @@ suite("task project repository provisioning", () => {
     await writeFile(path.join(source, "README.md"), "preserved dirty work");
     await writeFile(path.join(source, "private.secret"), "must not copy");
     await db.insert(companies).values({ id: companyId, name: "Bootstrap recovery", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Local source", status: "in_progress" });
     await db.insert(projectWorkspaces).values([
       { id: randomUUID(), companyId, projectId, name: "Anchor", sourceType: "local_path", cwd: source, isPrimary: true, createdAt: new Date(Date.now() - 1000) },
@@ -313,6 +317,7 @@ suite("task project repository provisioning", () => {
       repositoryRows.push({ id: randomUUID(), companyId, projectId, name: `Repo ${index}`, sourceType: "git_repo", repoUrl: pathToFileURL(source).href, cwd: null, isPrimary: index === 0 });
     }
     await db.insert(companies).values({ id: companyId, name: "Repo test", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Multi-repo", status: "in_progress" });
     await db.insert(projectWorkspaces).values(repositoryRows);
     await db.insert(agents).values({ id: agentId, companyId, name: "Test", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });

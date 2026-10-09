@@ -238,3 +238,5 @@ export { agentIdentityKeys } from "./agent_identity_keys.js";
 export * from "./decision_models.js";
 export { userCompanyPreferences } from "./user_company_preferences.js";
 export { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections } from "./ai_subscriptions.js";
+
+export { executionWorkspaceRepositories } from "./execution_workspace_repositories.js";

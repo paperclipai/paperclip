@@ -24,7 +24,7 @@ const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "report_progress", "answer_status_question", "write_document",
   "request_human_input", "register_deliverable", "finish_task", "block_task",
   "set_task_title", "request_review", "create_task", "reassign_task", "set_dependencies",
-  "create_project", "request_approval",
+  "create_project", "select_workspace", "prepare_repository", "request_approval",
 ]);
 
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */

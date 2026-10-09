@@ -80,7 +80,7 @@ describe("native runner performance trace", () => {
       });
       expect(ingress).toEqual({
         name: "question_response.to_run_created",
-        parentName: "task.run",
+        parentName: "task.provider_session",
         startedAtMs: answeredAtMs,
         endedAtMs: answeredAtMs + 10,
       });
@@ -120,7 +120,7 @@ describe("native runner performance trace", () => {
         clock.mockRestore();
       }
       expect(
-        events.find((event) => event.payload?.span === "task.run.measured")
+        events.find((event) => event.payload?.span === "task.provider_session.measured")
           ?.payload,
       ).toMatchObject({ durationMs: 19_000 });
       expect(original.createdAt).toBe(new Date(1_000).toISOString());
@@ -144,7 +144,7 @@ describe("native runner performance trace", () => {
       }),
     ).toEqual({
       name: "comment.to_run_created",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: 1_000,
       endedAtMs: 3_000,
     });
@@ -210,7 +210,7 @@ describe("native runner performance trace", () => {
         },
       });
       const prepare = trace.start("task.prepare", {
-        parentName: "task.run",
+        parentName: "task.provider_session",
         startedAtMs: starts.preparationStartedAtMs,
       });
       await trace.end(prepare, { endedAtMs: attemptStartedAtMs + 50 });
@@ -263,7 +263,7 @@ describe("native runner performance trace", () => {
         schema: "paperclip.run-performance-span.v1",
         traceSchemaVersion: NATIVE_RUN_TRACE_SCHEMA_VERSION,
         span: "runner.transport.selected",
-        parentSpan: "task.run",
+        parentSpan: "task.provider_session",
         startOffsetMs: 125,
         durationMs: 0,
         outcome: "ok",
@@ -304,7 +304,7 @@ describe("native runner performance trace", () => {
     const { traceContext, spans } = createRecordingTraceContext();
     const trace = createNativeRunTrace({ runId: "skills-run", startedAtMs: 100,
       traceContext, onEvent: async () => { throw new Error("run log unavailable"); } });
-    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: 100 });
+    const preparation = trace.start("task.prepare", { parentName: "task.provider_session", startedAtMs: 100 });
     await expect(trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: 120, endedAtMs: 170 })).resolves.toBeUndefined();
     await trace.end(preparation, { endedAtMs: 200 });
     expect(spans.find((span) => span.name === "skills.prepare")).toMatchObject({ name: "skills.prepare", parentName: "task.prepare", endedAtMs: 170 });
@@ -350,7 +350,7 @@ describe("native runner performance trace", () => {
     });
 
     const prepare = trace.start("task.prepare", {
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: 1_010,
     });
     const environment = trace.start("environment.startup", {
@@ -367,7 +367,7 @@ describe("native runner performance trace", () => {
     await trace.end(prepare, { endedAtMs: 1_040 });
 
     const execute = trace.start("native.session.execute", {
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: 1_050,
     });
     const startup = trace.start("runner.session.startup", {
@@ -417,11 +417,11 @@ describe("native runner performance trace", () => {
 
     const parentOf = (name: string) =>
       spans.find((span) => span.name === name)?.parentName;
-    expect(parentOf("task.run")).toBeNull();
-    expect(parentOf("task.prepare")).toBe("task.run");
+    expect(parentOf("task.provider_session")).toBeNull();
+    expect(parentOf("task.prepare")).toBe("task.provider_session");
     expect(parentOf("environment.startup")).toBe("task.prepare");
     expect(parentOf("environment.acquire")).toBe("environment.startup");
-    expect(parentOf("native.session.execute")).toBe("task.run");
+    expect(parentOf("native.session.execute")).toBe("task.provider_session");
     expect(parentOf("runner.session.startup")).toBe("native.session.execute");
     expect(parentOf("runner.artifact.prepare")).toBe("runner.session.startup");
     expect(parentOf("runner.artifact.discover")).toBe(
@@ -437,10 +437,10 @@ describe("native runner performance trace", () => {
     expect(parentOf("provider.dynamic")).toBe("agent.turn");
     expect(parentOf("provider.turn.queue")).toBe("agent.turn");
 
-    expect(spans.filter((span) => span.name === "task.run")).toHaveLength(1);
-    expect(spans.some((span) => span.name === "task.run.measured")).toBe(false);
+    expect(spans.filter((span) => span.name === "task.provider_session")).toHaveLength(1);
+    expect(spans.some((span) => span.name === "task.provider_session.measured")).toBe(false);
     expect(
-      events.some((event) => event.payload?.span === "task.run.measured"),
+      events.some((event) => event.payload?.span === "task.provider_session.measured"),
     ).toBe(true);
   });
 });

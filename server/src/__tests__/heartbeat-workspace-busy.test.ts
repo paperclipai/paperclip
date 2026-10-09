@@ -525,7 +525,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toHaveLength(0);
   });
 
-  it("allow passes the busy gate for a sandbox environment and adds coordination context", async () => {
+  it("rejects unproven concurrent physical sharing in a sandbox environment", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" },
       agentEnvironmentDriver: "sandbox",
@@ -540,11 +540,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
-    expect(executedRunIds).toContain(run!.id);
-    expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
-    );
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(finishedRun?.error).toContain("cannot place concurrent agents in one physical shared folder");
     const retryRuns = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)

@@ -1,3 +1,6 @@
+import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -1937,7 +1940,10 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration"> & {
+type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration" | "workspaceSelection"> & {
+  workspaceSelection?: TaskWorkspaceSelection;
+  workspaceSelectionSource?: "explicit" | "channel";
+  workspaceSelectionActor?: AuthorizationActor;
   title?: string;
   initialPlan?: string | null;
   labelIds?: string[];
@@ -4999,6 +5005,9 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  workspaceSelection: sql<null>`null`,
+  workspacePendingSelection: sql<null>`null`,
+  workspaceBindingRevision: issues.workspaceBindingRevision,
   sourceTrust: issues.sourceTrust,
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
@@ -7301,11 +7310,6 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Execution workspace not found");
     if (workspace.companyId !== companyId)
       throw unprocessable("Execution workspace must belong to same company");
-    if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable(
-        "Execution workspace must belong to the selected project",
-      );
-    }
     return workspace;
   }
 
@@ -9913,6 +9917,7 @@ export function issueService(db: Db) {
       dbOrTx: Db | DbTransaction = db,
     ) => {
       const {
+        workspaceSelection, workspaceSelectionSource = "explicit", workspaceSelectionActor,
         initialPlan,
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -10080,12 +10085,14 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        let inheritedWorkspaceSelection = false;
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
             issueData.parentId ??
             null);
         const hasExplicitExecutionWorkspaceOverride =
+          (workspaceSelection !== undefined && workspaceSelectionSource === "explicit") ||
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
@@ -10113,6 +10120,7 @@ export function issueService(db: Db) {
             workspaceSource.projectWorkspaceId
           ) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
+            inheritedWorkspaceSelection = true;
           }
           if (
             inheritsSourceProject &&
@@ -10135,6 +10143,7 @@ export function issueService(db: Db) {
               .then((rows) => rows[0] ?? null);
             if (sourceWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
+              inheritedWorkspaceSelection = true;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
                 ...((workspaceSource.executionWorkspaceSettings as
@@ -10146,23 +10155,19 @@ export function issueService(db: Db) {
             }
           }
         }
-        if (issueData.projectId == null && projectWorkspaceId) {
-          const workspace = await assertValidProjectWorkspace(
-            companyId,
-            null,
-            projectWorkspaceId,
-            tx,
-          );
-          issueData.projectId = workspace.projectId;
-        }
-        if (issueData.projectId == null && executionWorkspaceId) {
-          const workspace = await assertValidExecutionWorkspace(
-            companyId,
-            null,
-            executionWorkspaceId,
-            tx,
-          );
-          issueData.projectId = workspace.projectId;
+        const workspaceActor: AuthorizationActor = workspaceSelectionActor ?? (issueData.createdByUserId
+          ? { type: "board", userId: issueData.createdByUserId, companyIds: [companyId] }
+          : { type: "agent", agentId: issueData.createdByAgentId ?? issueData.assigneeAgentId, companyId });
+        let workspaceIntent: TaskWorkspaceIntent | null = null;
+        if (workspaceSelection && (workspaceSelectionSource === "explicit" || !inheritedWorkspaceSelection)) {
+          const projection = await executionWorkspaceService(db).validateSelection({ companyId,
+            actor: workspaceActor,
+            selection: workspaceSelection }, tx);
+          projectWorkspaceId = projection.projectWorkspaceId;
+          executionWorkspaceId = projection.executionWorkspaceId;
+          executionWorkspacePreference = projection.executionWorkspacePreference;
+          executionWorkspaceSettings = projection.executionWorkspaceSettings;
+          workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
         }
         const projectGoalId = await getProjectDefaultGoalId(
           tx,
@@ -10210,7 +10215,7 @@ export function issueService(db: Db) {
               ),
             ) as Record<string, unknown> | null;
         }
-        if (!projectWorkspaceId && issueData.projectId) {
+        if (!projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
           const project = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
@@ -10245,10 +10250,21 @@ export function issueService(db: Db) {
               .then((rows) => rows[0]?.id ?? null);
           }
         }
+        if (projectWorkspaceId && workspaceSelectionActor) {
+          const [readableSource] = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+            .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+            .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
+          if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
+        }
+        if (executionWorkspaceId && workspaceSelectionActor) {
+          const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+            .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
+          if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
+        }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
             companyId,
-            issueData.projectId,
+            null,
             projectWorkspaceId,
             tx,
           );
@@ -10256,7 +10272,7 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(
             companyId,
-            issueData.projectId,
+            null,
             executionWorkspaceId,
             tx,
           );
@@ -10367,6 +10383,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          workspaceSelection: workspaceIntent,
           visibility,
           privacyRootIssueId,
           privacyParentIssueId,
@@ -11083,46 +11100,8 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      let validatedProjectWorkspace: { projectId: string } | null = null;
-      let validatedExecutionWorkspace: { projectId: string } | null = null;
-      if (!nextProjectId && nextProjectWorkspaceId) {
-        const workspace = await assertValidProjectWorkspace(
-          existing.companyId,
-          null,
-          nextProjectWorkspaceId,
-        );
-        validatedProjectWorkspace = workspace;
-        nextProjectId = workspace.projectId;
-        patch.projectId = workspace.projectId;
-      }
-      if (!nextProjectId && nextExecutionWorkspaceId) {
-        const workspace = await assertValidExecutionWorkspace(
-          existing.companyId,
-          null,
-          nextExecutionWorkspaceId,
-        );
-        validatedExecutionWorkspace = workspace;
-        nextProjectId = workspace.projectId;
-        patch.projectId = workspace.projectId;
-      }
-      if (nextProjectWorkspaceId) {
-        if (!validatedProjectWorkspace) {
-          await assertValidProjectWorkspace(
-            existing.companyId,
-            nextProjectId,
-            nextProjectWorkspaceId,
-          );
-        }
-      }
-      if (nextExecutionWorkspaceId) {
-        if (!validatedExecutionWorkspace) {
-          await assertValidExecutionWorkspace(
-            existing.companyId,
-            nextProjectId,
-            nextExecutionWorkspaceId,
-          );
-        }
-      }
+      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined

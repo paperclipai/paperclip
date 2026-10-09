@@ -7691,7 +7691,7 @@ async function executePaperclipNativeSessionWithinScope(
   });
   const toolTrace = createNativeToolTrace(trace);
   const taskPrepareScope = trace.start("task.prepare", {
-    parentName: "task.run",
+    parentName: "task.provider_session",
     startedAtMs: preparationStarts.preparationStartedAtMs,
   });
   const environmentSpans = preparationSpans.filter(
@@ -7719,7 +7719,7 @@ async function executePaperclipNativeSessionWithinScope(
     await trace.record({
       ...span,
       parentName: rootMilestone
-        ? "task.run"
+        ? "task.provider_session"
         : environmentSpans.includes(span)
           ? "environment.startup"
           : "task.prepare",
@@ -8280,7 +8280,7 @@ async function executePaperclipNativeSessionWithinScope(
             outcome,
           });
           taskSettleScope = trace.start("task.settle", {
-            parentName: "task.run",
+            parentName: "task.provider_session",
             startedAtMs: milestoneAtMs,
           });
           trace.activate(taskSettleScope);
@@ -8950,7 +8950,7 @@ async function executePaperclipNativeSessionWithinScope(
         });
         return result;
       },
-      { parentName: "task.run" },
+      { parentName: "task.provider_session" },
     );
     // A detached consumer can resolve successfully after its stream closes.
     // Only the replacement controller may settle the run or certify accounting.
@@ -9054,7 +9054,7 @@ async function executePaperclipNativeSessionWithinScope(
       ).slice(-4_096);
       if (!taskSettleScope) {
         taskSettleScope = trace.start("task.settle", {
-          parentName: "task.run",
+          parentName: "task.provider_session",
           startedAtMs: failedAtMs,
         });
       }

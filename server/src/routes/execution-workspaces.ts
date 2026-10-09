@@ -3,7 +3,7 @@ import { canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition } fr
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -321,7 +321,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             and(
               eq(projectWorkspaces.id, existing.projectWorkspaceId),
               eq(projectWorkspaces.companyId, existing.companyId),
-              eq(projectWorkspaces.projectId, existing.projectId),
+              existing.projectId ? eq(projectWorkspaces.projectId, existing.projectId) : sql`false`,
             ),
           )
           .then((rows) => rows[0] ?? null)

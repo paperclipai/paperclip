@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { multilineTextSchema } from "./text.js";
+import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
+
+export const chatExecutionDefaultsSchema = z.object({
+  projectId: z.string().uuid().nullable().optional(),
+  workspace: taskWorkspaceSelectionSchema.nullable().optional(),
+}).strict();
 import {
   CHAT_CONCURRENCY_POLICIES,
   CHAT_DELIVERY_STATES,
@@ -88,6 +94,7 @@ export const createChatEndpointSchema = z
 
 export const updateChatEndpointSchema = z
   .object({
+    executionDefaults: chatExecutionDefaultsSchema.nullable().optional(),
     communicationInstructions: multilineTextSchema.pipe(z.string().trim().max(4000)).optional(),
     slackApp: slackAppConfigurationSchema.optional(),
     slackSetupMethod: z.enum(["automatic", "manual", "existing"]).optional(),
@@ -147,7 +154,8 @@ export const replaceChatEndpointResourcesSchema = z
         z
           .object({
             id: z.string().uuid(),
-            enabled: z.boolean(),
+            enabled: z.boolean().optional(),
+            executionDefaults: chatExecutionDefaultsSchema.nullable().optional(),
           })
           .strict(),
       )

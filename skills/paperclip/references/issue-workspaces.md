@@ -1,6 +1,6 @@
 # Issue Workspace Runtime Controls
 
-Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services, especially for QA/browser verification.
+Use this reference to choose task file placement or inspect and run workspace services. A workspace may be a plain task directory without a project or Git repository.
 
 ## Discover the Workspace
 
@@ -19,6 +19,20 @@ Read `currentExecutionWorkspace`:
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
 If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
+
+## Choose Files and Repositories
+
+`GET /api/issues/:issueId/workspace` returns the current binding, revision, pending selection, repository inventory, and available preparation capabilities. The Runner equivalents are `get_workspace` and `list_workspaces`.
+
+`PUT /api/issues/:issueId/workspace` accepts a stable `requestKey`, the inspected `expectedBindingRevision`, and one typed `selection`:
+
+- `{ "kind": "task_directory" }`: the task's separate directory.
+- `{ "kind": "existing", "workspaceId": "<authorized-id>" }`: intentionally reuse a workspace.
+- `{ "kind": "configured_source", "projectWorkspaceId": "<authorized-source-id>", "mode": "shared" }`: use its configured folder; `managed_isolated` requests an isolated checkout.
+
+`POST /api/issues/:issueId/workspace/repositories` accepts a stable `requestKey`, optional `ref`, and `repository: { kind: "catalog", id: "<authorized-repository-id>" }`. Discover IDs with `list_project_repositories`. Existing public HTTPS GitHub URLs can use `{ kind: "url", url: "https://github.com/owner/repo" }`; URLs do not grant private credentials or create a remote repository.
+
+Root selections and repository preparation return `next_normal_admission`. The active process retains its root. Do not claim a queued checkout is ready or repeatedly request it. A different ref cannot silently reset an existing checkout. New noncoding work can proceed immediately in task files without any repository. Explicitly shared folders remain shared; do not remove them when finishing one task.
 
 ## Control Services
 

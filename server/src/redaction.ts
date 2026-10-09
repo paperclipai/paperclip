@@ -341,7 +341,9 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "runner.turn.submit",
   "task.prepare",
   "task.run",
+  "task.provider_session",
   "task.run.measured",
+  "task.provider_session.measured",
   "task.settle",
 ]);
 const CLI_SECRET_FLAG_RE = new RegExp(

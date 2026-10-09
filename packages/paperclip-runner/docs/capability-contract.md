@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 162
+- Skill/reference headings: 164
 - Eval cases: 106 across 16 groups
-- Total normative rows: 268
+- Total normative rows: 270
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -61,19 +61,20 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/SKILL.md:cases:520 | optional_agent_tool | skills/paperclip/SKILL.md:520 |
 | skill:skills/paperclip/SKILL.md:company-skills-workflow:525 | optional_agent_tool | skills/paperclip/SKILL.md:525 |
 | skill:skills/paperclip/SKILL.md:routines:536 | optional_agent_tool | skills/paperclip/SKILL.md:536 |
-| skill:skills/paperclip/SKILL.md:issue-workspace-runtime-controls:547 | optional_agent_tool | skills/paperclip/SKILL.md:547 |
-| skill:skills/paperclip/SKILL.md:proposing-credentials-safely:554 | optional_agent_tool | skills/paperclip/SKILL.md:554 |
-| skill:skills/paperclip/SKILL.md:reading-granted-secrets:561 | optional_agent_tool | skills/paperclip/SKILL.md:561 |
-| skill:skills/paperclip/SKILL.md:critical-rules:587 | optional_agent_tool | skills/paperclip/SKILL.md:587 |
-| skill:skills/paperclip/SKILL.md:comment-style-required:608 | always_agent_tool | skills/paperclip/SKILL.md:608 |
-| skill:skills/paperclip/SKILL.md:update:640 | optional_agent_tool | skills/paperclip/SKILL.md:640 |
-| skill:skills/paperclip/SKILL.md:task-documents-and-deliverables:650 | always_agent_tool | skills/paperclip/SKILL.md:650 |
-| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:664 | optional_agent_tool | skills/paperclip/SKILL.md:664 |
-| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:695 | optional_agent_tool | skills/paperclip/SKILL.md:695 |
-| skill:skills/paperclip/SKILL.md:searching-issues:724 | optional_agent_tool | skills/paperclip/SKILL.md:724 |
-| skill:skills/paperclip/SKILL.md:full-reference:734 | optional_agent_tool | skills/paperclip/SKILL.md:734 |
-| skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:738 | always_agent_tool | skills/paperclip/SKILL.md:738 |
-| skill:skills/paperclip/SKILL.md:incidental-feedback:755 | optional_agent_tool | skills/paperclip/SKILL.md:755 |
+| skill:skills/paperclip/SKILL.md:task-files-and-workspace-choices:547 | optional_agent_tool | skills/paperclip/SKILL.md:547 |
+| skill:skills/paperclip/SKILL.md:issue-workspace-runtime-controls:553 | optional_agent_tool | skills/paperclip/SKILL.md:553 |
+| skill:skills/paperclip/SKILL.md:proposing-credentials-safely:560 | optional_agent_tool | skills/paperclip/SKILL.md:560 |
+| skill:skills/paperclip/SKILL.md:reading-granted-secrets:567 | optional_agent_tool | skills/paperclip/SKILL.md:567 |
+| skill:skills/paperclip/SKILL.md:critical-rules:593 | optional_agent_tool | skills/paperclip/SKILL.md:593 |
+| skill:skills/paperclip/SKILL.md:comment-style-required:614 | always_agent_tool | skills/paperclip/SKILL.md:614 |
+| skill:skills/paperclip/SKILL.md:update:646 | optional_agent_tool | skills/paperclip/SKILL.md:646 |
+| skill:skills/paperclip/SKILL.md:task-documents-and-deliverables:656 | always_agent_tool | skills/paperclip/SKILL.md:656 |
+| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:670 | optional_agent_tool | skills/paperclip/SKILL.md:670 |
+| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:701 | optional_agent_tool | skills/paperclip/SKILL.md:701 |
+| skill:skills/paperclip/SKILL.md:searching-issues:730 | optional_agent_tool | skills/paperclip/SKILL.md:730 |
+| skill:skills/paperclip/SKILL.md:full-reference:740 | optional_agent_tool | skills/paperclip/SKILL.md:740 |
+| skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:744 | always_agent_tool | skills/paperclip/SKILL.md:744 |
+| skill:skills/paperclip/SKILL.md:incidental-feedback:761 | optional_agent_tool | skills/paperclip/SKILL.md:761 |
 | skill:skills/paperclip/references/api-reference.md:paperclip-api-reference:1 | optional_agent_tool | skills/paperclip/references/api-reference.md:1 |
 | skill:skills/paperclip/references/api-reference.md:response-schemas:9 | optional_agent_tool | skills/paperclip/references/api-reference.md:9 |
 | skill:skills/paperclip/references/api-reference.md:agent-record-get-api-agents-me-or-get-api-agents-agentid:11 | optional_agent_tool | skills/paperclip/references/api-reference.md:11 |
@@ -176,12 +177,13 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/issue-documents.md:update-or-resolve-an-unclear-write:49 | optional_agent_tool | skills/paperclip/references/issue-documents.md:49 |
 | skill:skills/paperclip/references/issue-workspaces.md:issue-workspace-runtime-controls:1 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:1 |
 | skill:skills/paperclip/references/issue-workspaces.md:discover-the-workspace:5 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:5 |
-| skill:skills/paperclip/references/issue-workspaces.md:control-services:23 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:23 |
-| skill:skills/paperclip/references/issue-workspaces.md:start-all-configured-services-waits-for-configured-readiness-checks:28 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:28 |
-| skill:skills/paperclip/references/issue-workspaces.md:restart-all-configured-services:36 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:36 |
-| skill:skills/paperclip/references/issue-workspaces.md:stop-all-running-services:44 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:44 |
-| skill:skills/paperclip/references/issue-workspaces.md:read-the-url:63 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:63 |
-| skill:skills/paperclip/references/issue-workspaces.md:mcp-tools:72 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:72 |
+| skill:skills/paperclip/references/issue-workspaces.md:choose-files-and-repositories:23 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:23 |
+| skill:skills/paperclip/references/issue-workspaces.md:control-services:37 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:37 |
+| skill:skills/paperclip/references/issue-workspaces.md:start-all-configured-services-waits-for-configured-readiness-checks:42 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:42 |
+| skill:skills/paperclip/references/issue-workspaces.md:restart-all-configured-services:50 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:50 |
+| skill:skills/paperclip/references/issue-workspaces.md:stop-all-running-services:58 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:58 |
+| skill:skills/paperclip/references/issue-workspaces.md:read-the-url:77 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:77 |
+| skill:skills/paperclip/references/issue-workspaces.md:mcp-tools:86 | optional_agent_tool | skills/paperclip/references/issue-workspaces.md:86 |
 | skill:skills/paperclip/references/routines.md:paperclip-routines:1 | optional_agent_tool | skills/paperclip/references/routines.md:1 |
 | skill:skills/paperclip/references/routines.md:lifecycle:16 | optional_agent_tool | skills/paperclip/references/routines.md:16 |
 | skill:skills/paperclip/references/routines.md:creating-a-routine:27 | optional_agent_tool | skills/paperclip/references/routines.md:27 |

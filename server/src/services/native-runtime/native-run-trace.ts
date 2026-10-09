@@ -9,7 +9,7 @@ import {
 } from "../../instrumentation.js";
 
 export const NATIVE_RUN_SPAN_EVENT_TYPE = "run.performance.span";
-export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 2;
+export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 3;
 
 export type NativeRunSpanOutcome = "ok" | "failed";
 
@@ -41,7 +41,7 @@ export function buildNativeWakeIngressSpan(input: {
   if (answeredAt !== null && Number.isFinite(answeredAt) && answeredAt >= 0) {
     return {
       name: "question_response.to_run_created",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: answeredAt,
       endedAtMs: Math.max(answeredAt, input.runCreatedAtMs),
     };
@@ -60,7 +60,7 @@ export function buildNativeWakeIngressSpan(input: {
     ? null
     : {
         name: "comment.to_run_created",
-        parentName: "task.run",
+        parentName: "task.provider_session",
         startedAtMs: createdAt,
         endedAtMs: Math.max(createdAt, input.runCreatedAtMs),
       };
@@ -77,13 +77,13 @@ export function buildNativeHeartbeatPreparationSpans(input: {
   return [
     {
       name: "heartbeat.queue",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: input.runCreatedAtMs,
       endedAtMs: Math.max(input.runCreatedAtMs, input.runStartedAtMs),
     },
     {
       name: "heartbeat.prepare_before_environment",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       // A same-run resume retains startedAt for wall-time accounting; it is
       // not the beginning of this dispatch attempt's preparation.
       startedAtMs: input.attemptStartedAtMs,
@@ -94,7 +94,7 @@ export function buildNativeHeartbeatPreparationSpans(input: {
     },
     {
       name: "heartbeat.prepare_after_environment",
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: Math.min(
         input.nativeDispatchAtMs,
         input.environmentRealizeEndedAtMs,
@@ -210,7 +210,7 @@ export function createNativeRunTrace(input: {
   const runIdHash = hashedId(input.runId);
   let rootSpan: SpanHandle;
   try {
-    rootSpan = tracing.tracer.startSpan("task.run", {
+    rootSpan = tracing.tracer.startSpan("task.provider_session", {
       startTime: traceStartedAtMs,
       attributes: {
         "paperclip.task.run.run_id": runIdHash,
@@ -249,19 +249,19 @@ export function createNativeRunTrace(input: {
       ? { name: active.name, context: active.context }
       : runtimeParentScope && !runtimeParentScope.ended
         ? { name: runtimeParentScope.name, context: runtimeParentScope.context }
-        : { name: "task.run", context: rootContext };
+        : { name: "task.provider_session", context: rootContext };
   };
 
   const parentFor = (
     parentName?: string,
   ): { name: string; context: unknown } => {
-    if (parentName && parentName !== "task.run") {
+    if (parentName && parentName !== "task.provider_session") {
       const named = namedScopes.get(parentName);
       if (named) return { name: named.name, context: named.context };
       return currentParent();
     }
-    if (parentName === "task.run")
-      return { name: "task.run", context: rootContext };
+    if (parentName === "task.provider_session")
+      return { name: "task.provider_session", context: rootContext };
     return currentParent();
   };
 
@@ -298,7 +298,7 @@ export function createNativeRunTrace(input: {
           schema: "paperclip.run-performance-span.v1",
           traceSchemaVersion: NATIVE_RUN_TRACE_SCHEMA_VERSION,
           span: span.name,
-          parentSpan: span.parentName ?? "task.run",
+          parentSpan: span.parentName ?? "task.provider_session",
           startOffsetMs: startedAtMs - traceStartedAtMs,
           durationMs,
           outcome,
@@ -508,8 +508,8 @@ export function createNativeRunTrace(input: {
     // Preserve the historical run-log record without emitting a duplicate
     // full-width child span into the OpenTelemetry waterfall.
     await emitCompletedSpanEvent({
-      name: "task.run.measured",
-      parentName: "task.run",
+      name: "task.provider_session.measured",
+      parentName: "task.provider_session",
       startedAtMs: traceStartedAtMs,
       endedAtMs,
       outcome,
@@ -541,7 +541,7 @@ export async function recordFailedSkillPreparation(input: {
 }): Promise<void> {
   try {
     const trace = createNativeRunTrace(input);
-    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: input.startedAtMs });
+    const preparation = trace.start("task.prepare", { parentName: "task.provider_session", startedAtMs: input.startedAtMs });
     const endedAtMs = Date.now();
     await trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: input.startedAtMs, endedAtMs, outcome: "failed" });
     await trace.end(preparation, { endedAtMs, outcome: "failed" });

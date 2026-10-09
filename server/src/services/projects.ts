@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
+  executionWorkspaces,
   projectAccessMembers,
   projectGoals,
   goals,
@@ -30,7 +31,7 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -1054,16 +1055,13 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => {
+      const [retained] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.projectId, id)).limit(1);
+      if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+      const [row] = await db.delete(projects).where(eq(projects.id, id)).returning();
+      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

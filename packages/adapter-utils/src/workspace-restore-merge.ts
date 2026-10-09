@@ -662,7 +662,7 @@ export async function mergeDirectoryWithBaseline(input: {
   afterApply?: () => Promise<void>;
   /** Caller holds the target's writer lock and validated an immutable sparse
    * source. Unchanged entries need no payload and are never copied. */
-  snapshots?: { source: DirectorySnapshot; current: DirectorySnapshot };
+  snapshots?: { source: DirectorySnapshot; current?: DirectorySnapshot };
 }): Promise<void> {
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
   const source = input.snapshots?.source ?? await captureDirectorySnapshot(input.sourceDir, options);

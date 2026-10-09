@@ -267,6 +267,7 @@ describe("closed isolated workspace issue routes", () => {
       workspaceId: closedWorkspaceId,
       issue: { id: issueId, companyId: "company-1", projectId: null },
       actor: expect.objectContaining({ actorType: "user" }),
+      authorizationActor: expect.objectContaining({ type: "board", source: "local_implicit" }),
     });
     // The closed-workspace dead end is gone: the comment is accepted.
     expect(res.status).toBe(201);

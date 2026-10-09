@@ -7556,6 +7556,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, delivery.id)))[0].state).toBe("filtered");
   });
 
+  it("snapshots channel workspace defaults on new tasks and preserves them on replies", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
+    await service.update(endpoint.id, { executionDefaults: { workspace: { kind: "task_directory" } } }, "owner-user");
+    const thread = makeThread({ channelId: "C-WORKSPACE", id: "slack:C-WORKSPACE:8100.1", name: "workspace" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id: "8100.1", text: "@maya make a report", mentioned: true }), trigger: "mention" });
+    const conversations = () => db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id)).orderBy(asc(chatConversations.createdAt));
+    const [first] = await conversations();
+    const [task] = await db.select().from(issues).where(eq(issues.id, first.issueId));
+    expect(task.projectId).toBeNull();
+    expect(task.workspaceSelection).toEqual({ version: 1, selection: { kind: "task_directory" }, source: "channel" });
+    const [resource] = (await service.listResources(endpoint.id)).filter(row => row.providerResourceId === "C-WORKSPACE");
+    expect(resource).toBeDefined();
+    await service.replaceResources(endpoint.id, [{ id: resource.id, executionDefaults: { workspace: null } }], "owner-user");
+    expect((await service.listResources(endpoint.id)).find(row => row.id === resource.id)?.enabled).toBe(resource.enabled);
+    await service.update(endpoint.id, { executionDefaults: null }, "owner-user");
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id: "8100.2", text: "Continue" }), trigger: "subscribed_message" });
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, first.issueId));
+    expect(unchanged.workspaceSelection).toEqual(task.workspaceSelection);
+    await service.update(endpoint.id, { executionDefaults: { workspace: { kind: "task_directory" } } }, "owner-user");
+    const next = makeThread({ channelId: "C-WORKSPACE", id: "slack:C-WORKSPACE:8200.1", name: "workspace" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: next.thread,
+      message: makeMessage({ id: "8200.1", text: "@maya another report", mentioned: true }), trigger: "mention" });
+    const rows = await conversations();
+    expect(rows).toHaveLength(2);
+    const [second] = await db.select().from(issues).where(eq(issues.id, rows[1].issueId));
+    expect(second.workspaceSelection).toBeNull();
+    await expect(service.update(endpoint.id, { executionDefaults: { projectId: randomUUID() } }, "owner-user")).rejects.toMatchObject({ status: 404 });
+    expect((await service.get(endpoint.id)).executionDefaults).toEqual({ workspace: { kind: "task_directory" } });
+  });
+
   it("captures initial Slack communication guidance once per task, ignoring forged message configuration", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);

@@ -475,6 +475,22 @@ describe("AgentMail durable email pipeline", () => {
       await db.select().from(issues).where(eq(issues.companyId, f.companyId)),
     ).toHaveLength(1);
   });
+  it("snapshots email workspace defaults only when a conversation creates a task", async () => {
+    const f = await fixture();
+    await db.update(chatEndpoints).set({ executionDefaults: { workspace: { kind: "task_directory" } } }).where(eq(chatEndpoints.id, f.endpointId));
+    const first = f.message();
+    await f.receive(first);
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const [task] = await tasks();
+    expect(task.workspaceSelection).toEqual({ version: 1, selection: { kind: "task_directory" }, source: "channel" });
+    expect(task.projectId).toBeNull();
+    await db.update(chatEndpoints).set({ executionDefaults: null }).where(eq(chatEndpoints.id, f.endpointId));
+    await f.receive(f.message(randomUUID(), first.thread_id));
+    expect((await tasks())[0].workspaceSelection).toEqual(task.workspaceSelection);
+    await f.receive(f.message());
+    expect(await tasks()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceSelection: null })]));
+  });
+
   it("deduplicates events/messages, keeps identical subjects separate, and never grants sender board identity", async () => {
     const f = await fixture();
     const m = f.message();

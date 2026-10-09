@@ -1,3 +1,5 @@
+import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
+export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -681,23 +683,6 @@ export async function ensureServerWorkspaceLinksCurrent(
   );
 }
 
-export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
-      delete env[key];
-    }
-  }
-  // These origin settings belong to the parent instance. Letting them leak into a
-  // managed worktree runtime can send auth cookies and OAuth callbacks to the wrong
-  // Paperclip instance. Runtime/service overrides are merged back after sanitizing.
-  delete env.BETTER_AUTH_URL;
-  delete env.BETTER_AUTH_BASE_URL;
-  delete env.DATABASE_URL;
-  delete env.npm_config_tailscale_auth;
-  delete env.npm_config_authenticated_private;
-  return env;
-}
 
 function stableRuntimeServiceId(input: {
   adapterType: string;
@@ -3781,8 +3766,8 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const realized: RealizedExecutionWorkspace = {
     baseCwd: input.base.baseCwd,
     source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
-    projectId: input.workspace.projectId ?? input.base.projectId,
-    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
+    projectId: input.workspace.projectId === undefined ? input.base.projectId : input.workspace.projectId,
+    workspaceId: input.workspace.projectWorkspaceId === undefined ? input.base.workspaceId : input.workspace.projectWorkspaceId,
     repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     repoRef: input.workspace.baseRef ?? input.base.repoRef,
     additionalWorkspaces: input.base.additionalWorkspaces ?? [],

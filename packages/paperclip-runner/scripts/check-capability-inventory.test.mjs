@@ -42,7 +42,7 @@ function validInventories() {
       schemaVersion: 2,
       inventoryRole: "normative",
       generatedFrom: ["skills/paperclip/SKILL.md"],
-      rows: Array.from({ length: 162 }, (_, index) => row(`capability-${index}`)),
+      rows: Array.from({ length: 164 }, (_, index) => row(`capability-${index}`)),
     },
     evaluations: {
       schemaVersion: 2,

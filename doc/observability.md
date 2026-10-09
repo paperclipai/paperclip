@@ -163,14 +163,17 @@ Those sections follow below.
 ## Native Runner Trace Spans
 
 Paperclip Runner task runs emit a single foldable OpenTelemetry trace. This is
-the native-run trace schema version `2`. `task.run` is the only full-run root;
+the native-run trace schema version `3`. `task.provider_session` is the native
+provider lifecycle root; it includes preparation and provider execution, but
+ends before outer workspace persistence. The heartbeat-owned local run-log
+`task.run.measured` records terminal elapsed time including durable copyback;
 every other native span carries a real OpenTelemetry parent context rather than
 only a descriptive `parentName` field.
 
 The canonical lifecycle is:
 
 ```text
-task.run
+task.provider_session
 ├── heartbeat.queue
 ├── task.prepare
 │   ├── environment.startup
@@ -252,10 +255,11 @@ and outcome. Native child attributes use the bounded
 `paperclip.native.span.` prefix and a closed key allowlist; values are limited
 to finite numbers, booleans, or short strings. Commands, arguments, environment
 values, paths, output, credentials, and raw identifiers are discarded by the
-trace helper. `task.run.measured` remains in the local run log for compatibility
-but is not exported as a second full-width OTel span.
+trace helper. `task.provider_session.measured` records that same interval in the
+local run log, without a duplicate full-width OTel span. The separate heartbeat
+`task.run.measured` event is the authoritative end-to-end duration.
 Persisted `run.performance.span` events retain the v1 run-log schema and include
-`traceSchemaVersion: 2` so local tooling can distinguish the hierarchy.
+`traceSchemaVersion: 3` so local tooling can distinguish the hierarchy.
 
 Like every span in this document, native-run spans are opt-in. When
 `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the tracer remains a no-op; the local
@@ -1013,16 +1017,16 @@ spans. A run-time
 (`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
 `sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
 wrapper span parents to the live run span (`agent.turn` during the turn,
-`task.run` otherwise). With no active trace context the exec span opens
+`task.provider_session` otherwise). With no active trace context the exec span opens
 unparented.
 
 `sandbox.agentProcess` wraps the persistent streamed agent process. The
 process-session bridge launches it during `bridge.process-session`, so it opens
-under `task.run` — no turn has started yet. It therefore overlaps the sibling
+under `task.provider_session` — no turn has started yet. It therefore overlaps the sibling
 `agent.turn` rather than nesting under it or dangling off the short-lived bring-up
 step. The span ends when the process settles or when the bridge tears down,
 whichever comes first. The bridge tears down before the run root span ends, so
-the span never outlives `task.run` even when the process lingers past teardown
+the span never outlives `task.provider_session` even when the process lingers past teardown
 (the sandbox `execute` has no cancel, so a lingering process cannot be forced to
 resolve).
 

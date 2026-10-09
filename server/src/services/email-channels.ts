@@ -45,6 +45,7 @@ import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-po
 import { emailConnectionService } from "./email-connections.js";
 import { secretService } from "./secrets.js";
 import { authorizationService } from "./authorization.js";
+import { assertChatExecutionDefaultsAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -1318,10 +1319,27 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             endpoint.companyId,
             endpoint.assignedAgentId,
           );
+          const defaults = resolveChatExecutionDefaults(endpoint.executionDefaults, null);
+          // A channel default cannot widen the receiving agent's trust boundary.
+          if ("projectId" in placement && defaults.projectId !== undefined && defaults.projectId !== placement.projectId) {
+            throw forbidden("Default project conflicts with the assigned agent's trust boundary");
+          }
+          await assertChatExecutionDefaultsAccess(db, {
+            companyId: endpoint.companyId,
+            actor: endpoint.sponsorUserId ? { type: "board", userId: endpoint.sponsorUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
+            defaults,
+          }, tx);
+          await assertChatExecutionDefaultsAccess(db, {
+            companyId: endpoint.companyId,
+            actor: { type: "agent", agentId: endpoint.assignedAgentId, companyId: endpoint.companyId, onBehalfOfUserId: endpoint.sponsorUserId, source: "agent_key" },
+            defaults,
+          }, tx);
           const task = await issueService(db).create(
             endpoint.companyId,
             {
+              ...(defaults.projectId !== undefined ? { projectId: defaults.projectId } : {}),
               ...placement,
+              ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${endpoint.botExternalId}`,
               status: "todo",

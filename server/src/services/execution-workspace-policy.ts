@@ -446,3 +446,21 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   return nextConfig;
 }
+
+/** Persisted filesystem authority survives UI feature-flag changes. */
+export function taskWorkspaceRuntimeSelectionEnabled(input: {
+  legacyUiEnabled: boolean;
+  hasTypedSelection: boolean;
+  hasBinding: boolean;
+}): boolean {
+  return input.legacyUiEnabled || input.hasTypedSelection || input.hasBinding;
+}
+
+/** Defaults and pending intent never rewrite an already admitted native run. */
+export function canApplyTaskWorkspaceSelectionAtAdmission(input: {
+  admittedInput: unknown;
+  restarting: boolean;
+  hasLeaseOwner: boolean;
+}): boolean {
+  return input.admittedInput == null && !input.restarting && !input.hasLeaseOwner;
+}

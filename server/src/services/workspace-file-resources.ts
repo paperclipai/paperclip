@@ -1094,7 +1094,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     if (explicitTarget) return [explicitTarget];
 
     const candidates: WorkspaceCandidate[] = [];
-    if ((selector === "auto" || selector === "execution") && issue.projectId) {
+    if (selector === "auto" || selector === "execution") {
       const executionIds = [issue.executionWorkspaceId].filter((id): id is string => Boolean(id));
       let executionRows: ExecutionWorkspaceRow[] = [];
       if (executionIds.length > 0) {
@@ -1110,7 +1110,6 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
         const activeRows = await db.select().from(executionWorkspaces).where(
           and(
             eq(executionWorkspaces.companyId, issue.companyId),
-            eq(executionWorkspaces.projectId, issue.projectId),
             inArray(executionWorkspaces.sourceIssueId, sourceIssueIds),
             eq(executionWorkspaces.status, "active"),
             isNull(executionWorkspaces.closedAt),
@@ -1126,24 +1125,23 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       }
     }
 
-    if ((selector === "auto" || selector === "project") && issue.projectId) {
+    if ((selector === "auto" || selector === "project") && (issue.projectId || issue.projectWorkspaceId)) {
       if (issue.projectWorkspaceId) {
         const rows = await db.select().from(projectWorkspaces).where(
           and(
             eq(projectWorkspaces.companyId, issue.companyId),
-            eq(projectWorkspaces.projectId, issue.projectId),
             eq(projectWorkspaces.id, issue.projectWorkspaceId),
           ),
         ).limit(1);
         if (rows[0]) candidates.push(candidateFromProjectWorkspace(rows[0]));
       }
-      const primaryRows = await db.select().from(projectWorkspaces).where(
+      const primaryRows = issue.projectId ? await db.select().from(projectWorkspaces).where(
         and(
           eq(projectWorkspaces.companyId, issue.companyId),
           eq(projectWorkspaces.projectId, issue.projectId),
           eq(projectWorkspaces.isPrimary, true),
         ),
-      ).limit(1);
+      ).limit(1) : [];
       if (primaryRows[0] && !candidates.some((candidate) => candidate.workspaceId === primaryRows[0]!.id)) {
         candidates.push(candidateFromProjectWorkspace(primaryRows[0]));
       }

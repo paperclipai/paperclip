@@ -803,8 +803,8 @@ export function ExecutionWorkspaceDetail() {
   const workspace = workspaceQuery.data ?? null;
 
   const projectQuery = useQuery({
-    queryKey: workspace ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
-    queryFn: () => projectsApi.get(workspace!.projectId, workspace!.companyId),
+    queryKey: workspace?.projectId ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
+    queryFn: () => projectsApi.get(workspace!.projectId!, workspace!.companyId),
     enabled: Boolean(workspace?.projectId),
   });
   const project = projectQuery.data ?? null;
@@ -958,7 +958,7 @@ export function ExecutionWorkspaceDetail() {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
       setRuntimeActionMessage(
         request.action === "run"
@@ -1426,7 +1426,7 @@ export function ExecutionWorkspaceDetail() {
               </CardHeader>
               <CardContent>
               <DetailRow label="Project">
-                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId} />}
+                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId ?? "No project"} />}
               </DetailRow>
               <DetailRow label="Project workspace">
                 {project && linkedProjectWorkspace ? (
