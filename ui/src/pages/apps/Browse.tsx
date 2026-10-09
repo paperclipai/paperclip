@@ -704,6 +704,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       );
       if (!target) {
         const names = {
+          speko: "Speko",
           slack: "Slack",
           github: "GitHub",
           discord: "Discord",
