@@ -1,3 +1,4 @@
+import { createTransportFailureTracker } from "./tool-connection-transport-failures.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
@@ -3650,11 +3651,24 @@ export function createToolGatewayService(
     return { headers, summary };
   }
 
+  // A single network error or timeout must not mark a healthy connection as failed.
+  const remoteTransportFailures = createTransportFailureTracker();
+
+  async function markRemoteTransportFailure(
+    connection: typeof toolConnections.$inferSelect,
+    message: string,
+  ) {
+    if (remoteTransportFailures.recordFailure(connection.id)) {
+      await markRemoteConnectionHealth(connection, "error", message);
+    }
+  }
+
   async function markRemoteConnectionHealth(
     connection: typeof toolConnections.$inferSelect,
     status: "ok" | "error" | "missing_secret" | "degraded",
     message: string | null,
   ) {
+    if (status === "ok") remoteTransportFailures.recordSuccess(connection.id);
     const now = new Date();
     await db
       .update(toolConnections)
@@ -6336,11 +6350,7 @@ export function createToolGatewayService(
         );
       }
       if (error instanceof Error && error.name === "AbortError") {
-        await markRemoteConnectionHealth(
-          connection,
-          "error",
-          "Remote MCP tool call timed out.",
-        );
+        await markRemoteTransportFailure(connection, "Remote MCP tool call timed out.");
         throw new ToolGatewayHttpError(
           504,
           "Remote MCP tool call timed out",
@@ -6352,11 +6362,7 @@ export function createToolGatewayService(
           },
         );
       }
-      await markRemoteConnectionHealth(
-        connection,
-        "error",
-        "Remote MCP tool call failed.",
-      );
+      await markRemoteTransportFailure(connection, "Remote MCP tool call failed.");
       throw new ToolGatewayHttpError(
         502,
         "Remote MCP tool call failed",
