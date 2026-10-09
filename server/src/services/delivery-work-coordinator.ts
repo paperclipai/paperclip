@@ -22,6 +22,8 @@ export function createDeliveryWorkCoordinator(input: {
       retryMs: number;
       run: (signal: AbortSignal) => Promise<unknown>;
       hasPending: () => Promise<boolean>;
+      // Optional maintenance/retry deadline restored from durable state.
+      nextRunAt?: () => number | null;
     }) {
       if (stopped) throw new Error("Delivery coordinator is stopped");
       if (workers.has(queue)) throw new Error(`Delivery worker already registered: ${queue}`);
@@ -51,6 +53,8 @@ export function createDeliveryWorkCoordinator(input: {
           .then(() => workerStopped || !input.canRun() ? undefined : task.run(attempt.signal)).then(() => workerStopped ? false : task.hasPending()).then(pending => {
           if (pending || databaseWorkPending(input.owner, queue)) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }
+          const next = task.nextRunAt?.();
+          if (next != null) schedule(Math.max(0, next - Date.now()));
         }).catch(error => {
           schedule(task.retryMs);
           // Logging must never turn a recoverable sweep failure into an

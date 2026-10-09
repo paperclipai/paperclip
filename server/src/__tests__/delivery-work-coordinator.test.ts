@@ -27,7 +27,7 @@ function setup() {
 function task() { return { retryMs: 5000, run: vi.fn(async () => {}), hasPending: vi.fn(async () => false) }; }
 
 describe("delivery work coordinator", () => {
-  it("leaves five empty queues with no deadlines, timers, or periodic queries", async () => {
+  it("leaves empty queues with no deadlines, timers, or periodic queries", async () => {
     const s = setup();
     const tasks = Object.values(DELIVERY_QUEUES).map(queue => {
       const t = task(); return { queue, t, worker: s.coordinator.register(queue, t) };
@@ -44,6 +44,21 @@ describe("delivery work coordinator", () => {
     for (const { t } of tasks) expect(t.run).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
     expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it("schedules maintenance without holding idle intent, and lets new work preempt it", async () => {
+    const s = setup(), t = task();
+    let next: number | null = Date.now() + 60_000;
+    await s.coordinator.register(DELIVERY_QUEUES.email, { ...t, nextRunAt: () => next }).ready;
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(t.run).toHaveBeenCalledTimes(1);
+    await s.enqueue(DELIVERY_QUEUES.email);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(idleWorkSnapshot().active).toBe(0);
+    next = null;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.run).toHaveBeenCalledTimes(3);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
   });
   it("does not postpone an already committed wake when another producer starts writing", async () => {
     const s = setup(), t = task();
