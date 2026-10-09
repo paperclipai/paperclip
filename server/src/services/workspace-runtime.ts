@@ -1040,7 +1040,7 @@ async function refreshRemoteTrackingBaseRefWithDiagnostic(
       .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
       .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
     const authNote = auth
-      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
+      ? ` The fetch used ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}.`
       : "";
     return { warnings: [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`], diagnostic };
   }
@@ -2434,7 +2434,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 }
 
 // A configured base ref that does not resolve to a commit, even after an
-// authenticated fetch of its `origin/<branch>` counterpart. The caller must
+// attempted fetch of its remote-tracking counterpart. The caller must
 // stop before `git worktree add` and raise a pre-dispatch configuration
 // failure. `requestedRef` keeps the operator spelling for the human notice.
 // `recoveryIdentityRef` is the canonical remote ref the resolver probed, so two
@@ -2454,7 +2454,8 @@ export class UnresolvedWorkspaceBaseRefError extends Error {
     fetchError?: string | null;
   }) {
     super(
-      `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+      `Configured workspace base ref "${input.requestedRef}" could not be resolved to a commit ` +
+      `(tried: ${input.attemptedRefs.join(", ")}). Check that the ref exists and the repository is accessible before retrying.`,
     );
     this.name = "UnresolvedWorkspaceBaseRefError";
     this.requestedRef = input.requestedRef;

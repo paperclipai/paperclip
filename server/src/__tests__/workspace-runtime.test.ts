@@ -631,6 +631,21 @@ describe("resolveRuntimeProvisionCommand", () => {
 });
 
 describe("refreshRemoteTrackingBaseRef git auth", () => {
+  it("does not diagnose a missing remote branch as a rejected credential", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/main", async () => ({
+      configArgs: [],
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      source: "server_environment",
+      secretName: null,
+    }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("couldn't find remote ref refs/heads/main");
+    expect(warnings[0]).toContain("server-environment GitHub credential");
+    expect(warnings[0]).not.toContain("rejected");
+    expect(warnings[0]).not.toContain("authenticated with");
+  });
+
   it("offers the remote URL to the provider and keeps ambient behavior when it returns null", async () => {
     const { remotePath, repoRoot } = await createClonedRepoWithRemote();
     const offeredUrls: string[] = [];
@@ -1254,6 +1269,26 @@ describe("realizeExecutionWorkspace", () => {
     await expect(
       fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
     ).rejects.toThrow();
+  });
+
+  it("rejects explicit main on a master-only remote and succeeds after correcting the base ref", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const error = await realizeWorktreeForTest(repoRoot, "main").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("main");
+    expect(unresolved.attemptedRefs).toEqual(["origin/main"]);
+    expect(unresolved.fetchError).toContain("couldn't find remote ref refs/heads/main");
+    expect(unresolved.message).toContain("Check that the ref exists");
+    expect(unresolved.message).not.toContain("authenticated fetch");
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
+    ).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "master");
+    expect(workspace.created).toBe(true);
+    expect(workspace.baseRefSha).toBe(await readGit(repoRoot, ["rev-parse", "origin/master"]));
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(workspace.baseRefSha);
   });
 
   it("gives equivalent spellings of one absent remote ref the same recovery identity", async () => {

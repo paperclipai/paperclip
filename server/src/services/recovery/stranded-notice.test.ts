@@ -67,6 +67,31 @@ describe("stranded recovery notice seeds", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
   });
 
+  it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "workspace_base_ref_unresolved",
+      requestedRef: "main",
+      attemptedRefs: ["origin/main"],
+      fetchError: "fatal: couldn't find remote ref refs/heads/main",
+      missingBindings: [],
+    });
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed,
+      recoveryActionId: "base-ref-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
+    });
+    expect(notice.presentation.title).toBe("Workspace base ref unavailable");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).toContain("base ref");
+    expect(notice.body).not.toContain("secret/env bindings");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Next action",
+      value: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+    });
+  });
+
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
