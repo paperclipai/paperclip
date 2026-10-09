@@ -778,7 +778,8 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactPostgresUrlsInValue, redactSensitiveText } from "../redaction.js";
+import { createPostgresUrlStreamRedactor } from "@paperclipai/adapter-utils/command-redaction";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
   resolvePaperclipRunnerIdleTimeoutMs,
@@ -5250,9 +5251,9 @@ export function heartbeatService(
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
-      ? redactSensitiveText(
+      ? redactPostgresUrlsInValue(redactSensitiveText(
           redactCurrentUserText(event.message, currentUserRedactionOptions),
-        )
+        ), { possiblyPartial: true })
       : event.message;
     const boundedPayload = event.payload
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
@@ -11250,6 +11251,7 @@ export function heartbeatService(
       };
 
       let handle: RunLogHandle | null = null;
+      let flushRunLogRedactors: (() => Promise<void>) | null = null;
       const goalCheckpointSession: {
         current: {
           params: Record<string, unknown>;
@@ -11461,8 +11463,27 @@ export function heartbeatService(
             },
           });
         };
-        const onLog = (stream: "stdout" | "stderr", chunk: string) =>
-          appendIdentityRedactedLog(stream, identityRedactor.chunk(stream, chunk));
+        const postgresUrlRedactor = createPostgresUrlStreamRedactor();
+        const onLog = (stream: "stdout" | "stderr", chunk: string) => {
+          const redactedChunk = postgresUrlRedactor.chunk(
+            stream,
+            identityRedactor.chunk(stream, chunk),
+          );
+          return redactedChunk
+            ? appendIdentityRedactedLog(stream, redactedChunk)
+            : Promise.resolve();
+        };
+        flushRunLogRedactors = async () => {
+          for (const stream of ["stdout", "stderr"] as const) {
+            const tail = identityRedactor.finish(stream);
+            if (tail) {
+              const redactedTail = postgresUrlRedactor.chunk(stream, tail);
+              if (redactedTail) await appendIdentityRedactedLog(stream, redactedTail);
+            }
+            const uriTail = postgresUrlRedactor.finish(stream);
+            if (uriTail) await appendIdentityRedactedLog(stream, uriTail);
+          }
+        };
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
             "stdout",
@@ -13153,10 +13174,7 @@ export function heartbeatService(
             providerResourceDispositionForRun = "stop_and_retain";
             await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence);
           }
-          for (const stream of ["stdout", "stderr"] as const) {
-            const tail = identityRedactor.finish(stream);
-            if (tail) await appendIdentityRedactedLog(stream, tail);
-          }
+          await flushRunLogRedactors();
           if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
 
           if (parseObject(adapterResult.executionRecovery).providerWorkStarted !== false) {
@@ -14144,6 +14162,13 @@ export function heartbeatService(
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
       } catch (err) {
+        // Adapter/setup failures still need the final buffered bytes in the
+        // persisted log before its error-path snapshot is finalized.
+        try {
+          await flushRunLogRedactors?.();
+        } catch {
+          logger.warn({ runId: run.id }, "failed to flush sanitized run-log tail after error");
+        }
         await persistUsageCaptureFailure?.();
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
@@ -18244,7 +18269,7 @@ export function heartbeatService(
           store: run.logStore as "local_file",
           logRef: run.logRef,
         },
-        opts,
+        { ...opts, redactPostgresCredentials: true },
       );
 
       return {
@@ -18252,8 +18277,7 @@ export function heartbeatService(
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        // Run-log chunks are already redacted before they are appended to the store.
-        // Rewriting the full chunk again on every poll creates avoidable string copies.
+        // The store rechecks historical ranges with stable byte offsets.
         content: result.content,
       };
     },

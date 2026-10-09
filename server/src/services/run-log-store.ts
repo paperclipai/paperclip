@@ -20,11 +20,131 @@ export interface RunLogReadOptions {
   offset?: number;
   limitBytes?: number;
   signal?: AbortSignal;
+  /** Recheck historical run logs before serving company-readable byte ranges. */
+  redactPostgresCredentials?: boolean;
 }
 
 export interface RunLogReadResult {
   content: string;
   nextOffset?: number;
+}
+
+type RawRunLogReadResult = { bytes: Buffer; nextOffset?: number };
+const POSTGRES_URI_READ_CONTEXT_BYTES = 256 * 1024;
+const POSTGRES_URI_SCHEME_RE = /postgres(?:ql)?:\/\//gi;
+const RUN_LOG_TRUNCATION_MARKER_RE = /^\n\[paperclip truncated run log chunk: omitted \d+ chars\]\n/;
+
+type MappedChunk = { text: string; starts: number[]; ends: number[] };
+
+function mappedRunLogChunk(line: string, lineStart: number): MappedChunk | null {
+  const field = /"chunk"\s*:\s*"/.exec(line);
+  if (!field) return null;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let text = "";
+  let index = field.index + field[0].length;
+  while (index < line.length && line[index] !== '"') {
+    const start = index;
+    let decoded: string;
+    if (line[index] === "\\") {
+      index += line[index + 1] === "u" ? 6 : 2;
+      if (index > line.length) return null;
+      decoded = JSON.parse(`"${line.slice(start, index)}"`) as string;
+    } else {
+      decoded = line[index]!;
+      index += 1;
+    }
+    text += decoded;
+    for (let character = 0; character < decoded.length; character += 1) {
+      starts.push(lineStart + start);
+      ends.push(lineStart + index);
+    }
+  }
+  return index < line.length ? { text, starts, ends } : null;
+}
+
+/** Mask only chunk bytes, preserving NDJSON framing and original API offsets. */
+function maskPostgresCredentialsInRange(
+  bytes: Buffer,
+  pageStart: number,
+  pageEnd: number,
+  sourceOffset: number,
+  rightTruncated: boolean,
+) {
+  const source = bytes.toString("latin1");
+  const streams = new Map<string, MappedChunk>();
+  const maskUnclassifiedLine = (start: number, end: number) => {
+    const maskStart = Math.max(pageStart, start);
+    const maskEnd = Math.min(pageEnd, end);
+    if (maskStart < maskEnd) bytes.fill(0x2a, maskStart, maskEnd);
+  };
+  for (let lineStart = 0; lineStart < source.length;) {
+    const newline = source.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 ? source.length : newline;
+    const line = source.slice(lineStart, lineEnd);
+    if (line.length) {
+      try {
+        const record = JSON.parse(line) as { stream?: unknown; chunk?: unknown };
+        const streamName = record.stream;
+        const chunk = record.chunk;
+        if (typeof streamName !== "string" || typeof chunk !== "string") {
+          maskUnclassifiedLine(lineStart, lineEnd);
+        } else {
+          const mapped = mappedRunLogChunk(line, lineStart);
+          if (!mapped || mapped.text !== chunk) {
+            maskUnclassifiedLine(lineStart, lineEnd);
+          } else {
+            const stream = streams.get(streamName) ?? { text: "", starts: [], ends: [] };
+            stream.text += mapped.text;
+            for (let index = 0; index < mapped.starts.length; index += 1) {
+              stream.starts.push(mapped.starts[index]!);
+              stream.ends.push(mapped.ends[index]!);
+            }
+            streams.set(streamName, stream);
+          }
+        }
+      } catch {
+        // A bounded range can start or end inside a historical oversized
+        // record. Its chunk may contain escaped bytes or a URL completed in
+        // another record, so no substring of the partial line is provably safe.
+        maskUnclassifiedLine(lineStart, lineEnd);
+      }
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+  }
+
+  for (const stream of streams.values()) {
+    const maskCharacters = (start: number, end: number) => {
+      for (let index = start; index < end; index += 1) {
+        bytes.fill(0x2a, stream.starts[index], stream.ends[index]);
+      }
+    };
+    // If the bounded lookbehind began inside a prior chunk, its URL scheme
+    // may be outside this read. Hide the first undecidable token on each stream.
+    if (sourceOffset > 0) {
+      const firstScheme = stream.text.search(POSTGRES_URI_SCHEME_RE);
+      const firstBoundary = stream.text.search(/[\s@]/);
+      const end = Math.min(
+        firstScheme < 0 ? stream.text.length : firstScheme,
+        firstBoundary < 0 ? stream.text.length : firstBoundary,
+      );
+      maskCharacters(0, end);
+    }
+    POSTGRES_URI_SCHEME_RE.lastIndex = 0;
+    for (const match of stream.text.matchAll(POSTGRES_URI_SCHEME_RE)) {
+      const userinfoStart = match.index + match[0].length;
+      let end = userinfoStart;
+      while (end < stream.text.length && !/[@\s"`<>\\/?#]/.test(stream.text[end]!)) end += 1;
+      // Older writers truncated a chunk after redaction, leaving a partial
+      // authority before this marker even when the following tail has no @.
+      const cutByMarker = RUN_LOG_TRUNCATION_MARKER_RE.test(stream.text.slice(end));
+      if (stream.text[end] === "@" || cutByMarker || (end === stream.text.length &&
+        (rightTruncated || stream.text.slice(userinfoStart, end).includes(":")))) {
+        maskCharacters(userinfoStart, end);
+      }
+    }
+  }
 }
 
 export interface RunLogFinalizeSummary {
@@ -220,7 +340,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     offset: number,
     limitBytes: number,
     signal?: AbortSignal,
-  ): Promise<RunLogReadResult | null> {
+  ): Promise<RawRunLogReadResult | null> {
     signal?.throwIfAborted();
     const start = Math.max(0, offset);
     // Read one extra byte to discover whether another page exists. A single
@@ -239,9 +359,9 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     }
     signal?.throwIfAborted();
     const bytes = Buffer.concat(chunks);
-    const content = bytes.subarray(0, limitBytes).toString("utf8");
+    const content = bytes.subarray(0, limitBytes);
     const nextOffset = bytes.length > limitBytes ? start + limitBytes : undefined;
-    return { content, nextOffset };
+    return { bytes: content, nextOffset };
   }
 
   async function readS3Range(
@@ -249,7 +369,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     offset: number,
     limitBytes: number,
     signal?: AbortSignal,
-  ): Promise<RunLogReadResult> {
+  ): Promise<RawRunLogReadResult> {
     signal?.throwIfAborted();
     if (!s3) throw notFound("Run log not found");
     const key = s3Key(logRef);
@@ -263,7 +383,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     // must short-circuit to an empty read instead of clamping end up to
     // start and requesting `bytes=total-total`.
     const end = Math.min(start + limitBytes - 1, total - 1);
-    if (total === 0 || start > end) return { content: "", nextOffset: start < total ? start : undefined };
+    if (total === 0 || start > end) return { bytes: Buffer.alloc(0), nextOffset: start < total ? start : undefined };
 
     const result = await s3.provider.getObject({ objectKey: key, range: { start, end }, signal });
     // Destroy a body that stalls after headers arrive, including a body
@@ -274,9 +394,9 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     signal?.throwIfAborted();
-    const content = Buffer.concat(chunks).toString("utf8");
+    const content = Buffer.concat(chunks);
     const nextOffset = end + 1 < total ? end + 1 : undefined;
-    return { content, nextOffset };
+    return { bytes: content, nextOffset };
   }
 
   async function sha256File(filePath: string): Promise<string> {
@@ -424,12 +544,38 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       opts?.signal?.throwIfAborted();
       if (handle.store !== "local_file") throw notFound("Run log not found");
       const absPath = resolveWithin(basePath, handle.logRef);
-      const offset = opts?.offset ?? 0;
+      const offset = Math.max(0, opts?.offset ?? 0);
       const limitBytes = opts?.limitBytes ?? 256_000;
-      const local = await readLocalRange(absPath, offset, limitBytes, opts?.signal);
-      if (local) return local;
+      const contextStart = opts?.redactPostgresCredentials
+        ? Math.max(0, offset - POSTGRES_URI_READ_CONTEXT_BYTES)
+        : offset;
+      const prefixBytes = offset - contextStart;
+      const readBytes = opts?.redactPostgresCredentials
+        ? prefixBytes + limitBytes + POSTGRES_URI_READ_CONTEXT_BYTES
+        : limitBytes;
+      const local = await readLocalRange(absPath, contextStart, readBytes, opts?.signal);
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
-      return readS3Range(handle.logRef, offset, limitBytes, opts?.signal);
+      const result = local ?? await readS3Range(handle.logRef, contextStart, readBytes, opts?.signal);
+      if (!opts?.redactPostgresCredentials) {
+        return { content: result.bytes.toString("utf8"), nextOffset: result.nextOffset };
+      }
+      if (prefixBytes >= result.bytes.length) {
+        return { content: "", nextOffset: undefined };
+      }
+      const pageEnd = Math.min(result.bytes.length, prefixBytes + limitBytes);
+      maskPostgresCredentialsInRange(
+        result.bytes,
+        prefixBytes,
+        pageEnd,
+        contextStart,
+        result.nextOffset !== undefined,
+      );
+      return {
+        content: result.bytes.subarray(prefixBytes, pageEnd).toString("utf8"),
+        nextOffset: result.bytes.length > prefixBytes + limitBytes || result.nextOffset !== undefined
+          ? offset + limitBytes
+          : undefined,
+      };
     },
 
     async flushInflightMirrors() {

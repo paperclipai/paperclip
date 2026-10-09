@@ -147,6 +147,8 @@ import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
+  redactPostgresUrlsInValue,
+  redactSensitiveText,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -7108,7 +7110,12 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(runs.map(run => serializeRunListRow(req, run)))));
+    // Mask while capped fields still have their original length. Replacing a
+    // different registered secret first could hide that a URL was truncated.
+    const rows = redactPostgresUrlsInValue(await Promise.all(
+      runs.map(run => serializeRunListRow(req, run)),
+    ));
+    res.json(await runRedactions.redactForRuns(companyId, rows));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -7244,13 +7251,14 @@ export function agentRoutes(
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
+    const responseRows = redactPostgresUrlsInValue(await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
       ...heartbeat.decorateActiveRunStatus(run),
       agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    })))));
+    }))));
+    res.json(await runRedactions.redactForRuns(companyId, responseRows));
   });
 
   function readHeartbeatRunId(req: Request): string {
@@ -7270,11 +7278,18 @@ export function agentRoutes(
     if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
+    const responseRun = redactPostgresUrlsInValue({
+      ...decoratedRun,
+      execution: await executionProjectionForRun(db, run.companyId, run.id),
+      identityHistory: await listRunIdentityContexts(db, run.companyId, run.id),
+      retryExhaustedReason,
+      outputSilence: await heartbeat.buildRunOutputSilence(run),
+    });
     res.json(await runRedactions.redactForRun(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        responseRun,
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -7755,7 +7770,12 @@ export function agentRoutes(
     const redactedEvents = events.map((event) =>
       redactCurrentUserValue({
         ...event,
-        payload: redactEventPayload(event.payload),
+        message: typeof event.message === "string"
+          ? redactPostgresUrlsInValue(redactSensitiveText(event.message), { possiblyPartial: true })
+          : event.message,
+        // Older events may have been bounded inside URL userinfo before write
+        // redaction. Hide that undecidable authority on the read path too.
+        payload: redactPostgresUrlsInValue(redactEventPayload(event.payload), { possiblyPartial: true }),
       }, currentUserRedactionOptions),
     );
     res.json(await runRedactions.redactForRun(run.companyId, run.id, redactedEvents));

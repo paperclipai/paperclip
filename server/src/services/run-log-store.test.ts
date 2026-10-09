@@ -364,6 +364,154 @@ describe("createDurableRunLogStore", () => {
     }
   });
 
+  it.each([false, true])("masks a historical PostgreSQL URL across byte-range pages (S3: %s)", async (fromS3) => {
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    const url = "postgresql://etl_user:p%40ss%3Aword@db.example.test/app";
+    await store.append(handle, { stream: "stdout", chunk: `ps --dbname=${url} complete`, ts: "t" });
+    const raw = await store.read(handle);
+    if (fromS3) {
+      await store.finalize(handle);
+      await fs.rm(path.join(baseDir, handle.logRef));
+    }
+    let content = "";
+    for (let offset = 0; offset < Buffer.byteLength(raw.content); offset += 7) {
+      const page = await store.read(handle, { offset, limitBytes: 7, redactPostgresCredentials: true });
+      content += page.content;
+      expect(page.nextOffset).toBe(offset + 7 < Buffer.byteLength(raw.content) ? offset + 7 : undefined);
+      expect(page.content).not.toContain("etl_user");
+    }
+    expect(content).toMatch(/postgresql:\/\/\*+@db\.example\.test\/app/);
+    expect(content).toContain("complete");
+    expect(content).not.toContain("etl_user");
+    expect(content).not.toContain("p%40ss%3Aword");
+    expect(await store.read(handle, {
+      offset: 300_000,
+      limitBytes: 7,
+      redactPostgresCredentials: true,
+    })).toEqual({ content: "", nextOffset: undefined });
+    expect((await store.read(handle)).content).toBe(raw.content);
+  });
+
+  it.each([false, true])("masks historical userinfo split across NDJSON records (S3: %s)", async (fromS3) => {
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "ps --dbname=postgres://worker:pa", ts: "t1" });
+    await store.append(handle, { stream: "stderr", chunk: "ordinary diagnostic", ts: "t2" });
+    await store.append(handle, { stream: "stdout", chunk: "'ss%40", ts: "t3" });
+    await store.append(handle, { stream: "stdout", chunk: "word@db.example.test/app done", ts: "t4" });
+    const raw = await store.read(handle);
+    if (fromS3) {
+      await store.finalize(handle);
+      await fs.rm(path.join(baseDir, handle.logRef));
+    }
+    const redacted = await store.read(handle, { limitBytes: 4096, redactPostgresCredentials: true });
+    const records = redacted.content.trim().split("\n").map((line) => JSON.parse(line) as { stream: string; chunk: string });
+    const stdout = records.filter((record) => record.stream === "stdout").map((record) => record.chunk).join("");
+    expect(stdout).toMatch(/postgres:\/\/\*+@db\.example\.test\/app done/);
+    expect(stdout).not.toContain("worker");
+    expect(stdout).not.toContain("pa'ss%40word");
+    expect(records.find((record) => record.stream === "stderr")?.chunk).toBe("ordinary diagnostic");
+    const pageOffset = raw.content.indexOf("ss%40");
+    expect(pageOffset).toBeGreaterThan(0);
+    expect(await store.read(handle, { offset: pageOffset, limitBytes: 5, redactPostgresCredentials: true }))
+      .toEqual({ content: "*****", nextOffset: pageOffset + 5 });
+  });
+
+  it.each([false, true])("masks historical userinfo cut by a run-log truncation marker (S3: %s)", async (fromS3) => {
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    const marker = "\n[paperclip truncated run log chunk: omitted 100 chars]\n";
+    await store.append(handle, {
+      stream: "stdout",
+      chunk: `ps --dbname=postgresql://worker:p%40ss${marker}diagnostic tail`,
+      ts: "t1",
+    });
+    const raw = await store.read(handle);
+    if (fromS3) {
+      await store.finalize(handle);
+      await fs.rm(path.join(baseDir, handle.logRef));
+    }
+    let content = "";
+    for (let offset = 0; offset < Buffer.byteLength(raw.content); offset += 9) {
+      const page = await store.read(handle, { offset, limitBytes: 9, redactPostgresCredentials: true });
+      content += page.content;
+      expect(page.nextOffset).toBe(offset + 9 < Buffer.byteLength(raw.content) ? offset + 9 : undefined);
+    }
+    expect(content).toMatch(/postgresql:\/\/\*+\\n\[paperclip truncated run log chunk:/);
+    expect(content).toContain("diagnostic tail");
+    expect(content).not.toContain("worker");
+    expect(content).not.toContain("p%40ss");
+    expect((await store.read(handle)).content).toBe(raw.content);
+  });
+
+  it("masks credentials longer than the bounded read context", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
+    const handle = await store.begin(begin);
+    const password = "x".repeat(300_000);
+    await store.append(handle, {
+      stream: "stdout",
+      chunk: `postgres://user:${password}@db.example.test/app`,
+      ts: "t",
+    });
+    const raw = await store.read(handle);
+    const schemeOffset = raw.content.indexOf("postgres://");
+    const middleOffset = raw.content.indexOf(password) + 280_000;
+    const start = await store.read(handle, {
+      offset: schemeOffset,
+      limitBytes: 32,
+      redactPostgresCredentials: true,
+    });
+    const middle = await store.read(handle, {
+      offset: middleOffset,
+      limitBytes: 32,
+      redactPostgresCredentials: true,
+    });
+    // The oversized record cannot be classified within the bounded read, so
+    // even its otherwise diagnostic scheme is hidden on this page.
+    expect(start.content).toBe("*".repeat(32));
+    expect(middle.content).toBe("*".repeat(32));
+    expect(middle.nextOffset).toBe(middleOffset + 32);
+  });
+
+  it.each([false, true])("fails closed inside an oversized historical record (S3: %s)", async (fromS3) => {
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    // 50,000 control characters expand beyond the 256 KiB lookbehind when
+    // encoded in NDJSON. The URL authority finishes in the following record.
+    await store.append(handle, {
+      stream: "stdout",
+      chunk: `${"\u0001".repeat(50_000)}postgres://worker:partial`,
+      ts: "t1",
+    });
+    await store.append(handle, {
+      stream: "stdout",
+      chunk: "secret@db.example.test/app done",
+      ts: "t2",
+    });
+    const raw = await store.read(handle, { limitBytes: 400_000 });
+    if (fromS3) {
+      await store.finalize(handle);
+      await fs.rm(path.join(baseDir, handle.logRef));
+    }
+    for (const fragment of ["partial", "secret"]) {
+      const offset = raw.content.indexOf(fragment) + 2;
+      expect(offset).toBeGreaterThan(2);
+      const page = await store.read(handle, {
+        offset,
+        limitBytes: 4,
+        redactPostgresCredentials: true,
+      });
+      expect(page.content).toBe("****");
+      expect(page.nextOffset).toBe(offset + 4);
+    }
+    expect((await store.read(handle, { limitBytes: 400_000 })).content).toBe(raw.content);
+  });
+
   it("throws notFound when neither local nor S3 has the log (pre-S3 run after a roll)", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

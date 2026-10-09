@@ -5,6 +5,17 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+The stdout/stderr writer holds split PostgreSQL URL userinfo until it can
+redact the complete credential. The run-log reader also masks userinfo in
+historical local or object-storage logs before it returns byte-range pages.
+If a bounded read cuts through an oversized historical NDJSON record, the
+reader masks that record's page bytes because it cannot classify the fragment.
+The original log file stays intact for authorized incident forensics; the API
+cursor still uses offsets in that original file.
+Event payload strings are redacted before their 16 KiB storage cap. The writer
+and event HTTP reader also mask incomplete PostgreSQL authorities in messages
+and payloads, including older payloads that were capped before redaction.
+
 ## Native PRP Run-Log Events
 
 Fresh remote Codex model substitution emits `runner.model_fallback` on the

@@ -1,8 +1,12 @@
 import express from "express";
 import request from "supertest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDurableRunLogStore } from "../services/run-log-store.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -17,6 +21,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  list: vi.fn(),
+  listEvents: vi.fn(),
+  getRetryExhaustedReason: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -329,6 +336,7 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRetryExhaustedReason.mockResolvedValue(null);
     mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
       ...run,
       currentStatusMessage: null,
@@ -380,6 +388,7 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       status: "succeeded",
     });
+    mockHeartbeatService.listEvents.mockResolvedValue([]);
     mockWorkspaceOperationService.getById.mockResolvedValue({
       id: "operation-1",
       companyId: "company-1",
@@ -618,6 +627,181 @@ describe("agent live run routes", () => {
       nextOffset: 5,
     });
   });
+
+  it.each(["board", "agent"])("does not return a historical DB URL to a %s reader", async (actorType) => {
+    const basePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-redacted-api-log-"));
+    try {
+      const store = createDurableRunLogStore({ basePath });
+      const handle = await store.begin({ companyId: "company-1", agentId: routeAgentId, runId: "run-1" });
+      await store.append(handle, {
+        stream: "stdout",
+        chunk: "ps --dbname=postgresql://etl_user:p%40ssword@db.example.test/app complete",
+        ts: "test-time",
+      });
+      await store.append(handle, {
+        stream: "stdout",
+        chunk: "postgres://worker:p%40ss\n[paperclip truncated run log chunk: omitted 100 chars]\ndiagnostic tail",
+        ts: "test-time",
+      });
+      mockHeartbeatService.readLog.mockImplementation(async (_run, options) => ({
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        store: handle.store,
+        logRef: handle.logRef,
+        ...await store.read(handle, { ...options, redactPostgresCredentials: true }),
+      }));
+      const actor = actorType === "board"
+        ? { type: "board", userId: "test-user", companyIds: ["company-1"], source: "session" }
+        : { type: "agent", agentId: routeAgentId, companyId: "company-1", source: "agent_key" };
+      const app = await createApp({}, actor);
+      const full = await requestApp(app, (url) => request(url).get(
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=0&limitBytes=1024",
+      ));
+      expect(full.status).toBe(200);
+      expect(full.body.content).toMatch(/postgresql:\/\/\*+@db\.example\.test\/app/);
+      expect(full.body.content).toContain("complete");
+      expect(full.body.content).not.toContain("etl_user");
+      expect(full.body.content).not.toContain("p%40ssword");
+      expect(full.body.content).not.toContain("worker");
+      expect(full.body.content).not.toContain("p%40ss");
+      expect(full.body.content).toContain("diagnostic tail");
+
+      const raw = await store.read(handle);
+      const passwordOffset = raw.content.indexOf("p%40ssword");
+      expect(passwordOffset).toBeGreaterThan(0);
+      const page = await requestApp(app, (url) => request(url).get(
+        `/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=${passwordOffset + 2}&limitBytes=5`,
+      ));
+      expect(page.status).toBe(200);
+      expect(page.body.content).toBe("*****");
+      expect(page.body.nextOffset).toBe(passwordOffset + 7);
+    } finally {
+      await fs.rm(basePath, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it.each(["board", "agent"])("masks truncated historical run excerpts for a %s reader", async (actorType) => {
+    const password = "q".repeat(33_000);
+    const output = `postgres://worker:${password}@db.example.test/app finished`;
+    const excerpt = Buffer.from(output).subarray(-32 * 1024).toString("utf8");
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      scopeKind: "company",
+      issueId: null,
+      status: "succeeded",
+      stdoutExcerpt: excerpt,
+    });
+    const actor = actorType === "board"
+      ? { type: "board", userId: "test-user", companyIds: ["company-1"], source: "session" }
+      : { type: "agent", agentId: routeAgentId, companyId: "company-1", source: "agent_key" };
+    const identityQuery = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn(async () => []),
+    };
+    const res = await requestApp(await createApp({ select: vi.fn(() => identityQuery) }, actor), (url) => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.stdoutExcerpt).toBe("***REDACTED***@db.example.test/app finished");
+    expect(res.body.stdoutExcerpt).not.toContain(password.slice(0, 32));
+  }, 45_000);
+
+  it("masks a shortened run-list URL before registered-secret replacement changes its length", async () => {
+    const registered = "r".repeat(300);
+    const partialUrl = "postgres://worker:fragment";
+    const summary = `${registered}${"x".repeat(500 - registered.length - partialUrl.length)}${partialUrl}`;
+    mockHeartbeatService.list.mockResolvedValueOnce([{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      scopeKind: "company",
+      issueId: null,
+      status: "succeeded",
+      resultJson: { summary },
+    }]);
+    mockRunSecretRedactionRegistry.redactForRuns.mockImplementationOnce(async (_companyId, rows) =>
+      rows.map((row: { resultJson: { summary: string } }) => ({
+        ...row,
+        resultJson: { summary: row.resultJson.summary.replace(registered, "***REDACTED***") },
+      })),
+    );
+
+    const res = await requestApp(await createApp(), (url) => request(url).get(
+      "/api/companies/company-1/heartbeat-runs?summary=true",
+    ));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body[0].resultJson.summary).toContain("postgres://***REDACTED***");
+    expect(res.body[0].resultJson.summary).not.toContain("worker");
+    expect(res.body[0].resultJson.summary).not.toContain("fragment");
+  }, 45_000);
+
+  it("masks a capped excerpt before registered-secret replacement changes its byte length", async () => {
+    const registered = "r".repeat(300);
+    const password = "q".repeat(33_000);
+    const output = `postgres://worker:${password}@db.example.test/app ${registered}`;
+    const excerpt = Buffer.from(output).subarray(-32 * 1024).toString("utf8");
+    expect(excerpt.startsWith("q")).toBe(true);
+    mockHeartbeatService.getRun.mockResolvedValueOnce({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      scopeKind: "company",
+      issueId: null,
+      status: "succeeded",
+      stdoutExcerpt: excerpt,
+    });
+    mockRunSecretRedactionRegistry.redactForRun.mockImplementationOnce(async (_companyId, _runId, value) => {
+      const run = value as { stdoutExcerpt: string };
+      return { ...run, stdoutExcerpt: run.stdoutExcerpt.replace(registered, "***REDACTED***") };
+    });
+    const identityQuery = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn(async () => []),
+    };
+
+    const res = await requestApp(await createApp({ select: vi.fn(() => identityQuery) }), (url) => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.stdoutExcerpt).toMatch(/^\*\*\*REDACTED\*\*\*@db\.example\.test\/app /);
+    expect(res.body.stdoutExcerpt).not.toContain(password.slice(0, 32));
+    expect(res.body.stdoutExcerpt).toContain("***REDACTED***");
+  }, 45_000);
+
+  it.each(["board", "agent"])("masks truncated historical event userinfo for a %s reader", async (actorType) => {
+    const marker = "synthetic-event-credential";
+    const historicalOutput = `started postgres://worker:${marker}${"q".repeat(16 * 1024)}\n[truncated 40 chars]`;
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      scopeKind: "company",
+      issueId: null,
+      status: "succeeded",
+    });
+    mockHeartbeatService.listEvents.mockResolvedValue([
+      { seq: 1, eventType: "adapter", message: "historical postgres://worker:synthetic-partial", payload: { output: historicalOutput } },
+      { seq: 2, eventType: "adapter", message: "complete event", payload: { output: "postgresql://worker:synthetic-full@db.example.test/app ready" } },
+      { seq: 3, eventType: "adapter", message: "host only", payload: { output: "postgres://db.example.test/app" } },
+    ]);
+    const actor = actorType === "board"
+      ? { type: "board", userId: "test-user", companyIds: ["company-1"], source: "session" }
+      : { type: "agent", agentId: routeAgentId, companyId: "company-1", source: "agent_key" };
+    const res = await requestApp(await createApp({}, actor), (url) => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+    ));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body[0].message).toBe("historical postgres://***REDACTED***");
+    expect(res.body[0].payload.output).toContain("started postgres://***REDACTED***");
+    expect(res.body[0].payload.output).not.toContain(marker);
+    expect(res.body[0].payload.output).not.toContain("worker");
+    expect(res.body[1].payload.output).toBe("postgresql://***REDACTED***@db.example.test/app ready");
+    expect(res.body[2].payload.output).toBe("postgres://db.example.test/app");
+  }, 45_000);
 
   it.each(["skill_test", "task_bridge"])(
     "denies %s keys from company-wide run and workspace logs",

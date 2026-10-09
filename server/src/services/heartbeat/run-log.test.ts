@@ -58,6 +58,25 @@ describe("heartbeat run-log payload formatting", () => {
     });
   });
 
+  it("redacts URL userinfo before the event string cap cuts off its closing @", () => {
+    const marker = "synthetic-event-credential";
+    const output = `job ${"x".repeat(16_300)} postgresql://worker:${marker}${"y".repeat(200)}@db.example.test/app done`;
+    const bounded = boundHeartbeatRunEventPayloadForStorage({ output });
+
+    expect(bounded.output).toContain("postgresql://***REDACTED***@db.example.test/app done");
+    expect(bounded.output).not.toContain("worker");
+    expect(bounded.output).not.toContain(marker);
+    expect(bounded.output).toContain("job ");
+  });
+
+  it("hides an incomplete PostgreSQL authority in a new event", () => {
+    const bounded = boundHeartbeatRunEventPayloadForStorage({
+      output: "ps postgres://worker:synthetic-partial",
+    });
+
+    expect(bounded.output).toBe("ps postgres://***REDACTED***");
+  });
+
   it("keeps the first 50 array entries and reports omitted items", () => {
     const exact = Array.from({ length: 50 }, (_, index) => index);
     expect(boundHeartbeatRunEventPayloadForStorage({ exact, oversized: [...exact, 50, 51] }))

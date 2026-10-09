@@ -40,4 +40,13 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
   });
+
+  it("redacts PostgreSQL URLs in ordinary process output", () => {
+    const compacted = compactRunLogChunk(
+      "ps 23 psql --dbname=postgres://worker:encoded%40password@db.internal/app\n",
+    );
+    expect(compacted).toContain("postgres://***REDACTED***@db.internal/app");
+    expect(compacted).not.toContain("worker");
+    expect(compacted).not.toContain("encoded%40password");
+  });
 });
