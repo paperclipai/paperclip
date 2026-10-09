@@ -80,9 +80,11 @@ PATCH /api/agents/{agentId}
 `adapterConfig` is a partial update by default. Its `env` map is also merged by
 key: omitted bindings stay unchanged, and setting `env.KEY` to `null` removes
 that binding. Set `replaceAdapterConfig: true` to replace the complete adapter
-configuration instead. Strict secret validation applies to environment keys
-submitted by the current partial update, so callers do not need to read and
-resubmit existing bindings.
+configuration instead; its `env` map is complete, so omitted bindings are
+removed and `null` is not a valid binding. Strict secret validation applies only
+to environment keys submitted by the current partial update, so callers do not
+need to read and resubmit existing bindings. A full replacement applies strict
+secret validation to every environment binding it supplies.
 
 ## Pause Agent
 
