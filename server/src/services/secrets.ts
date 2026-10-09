@@ -608,7 +608,7 @@ async function cleanupPreparedProviderWrite(input: {
   }
 }
 
-type CanonicalEnvBinding =
+export type CanonicalEnvBinding =
   | { type: "plain"; value: string }
   | {
       type: "secret_ref";
@@ -774,7 +774,9 @@ function deriveSecretNameFromExternalRef(externalRef: string) {
   return name.split("/").filter(Boolean).at(-1) ?? name;
 }
 
-function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
+// Single source of truth for the stored shape of an env binding: callers that compare a stored
+// binding against a proposed one must canonicalize both sides instead of string-comparing them.
+export function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   if (typeof binding === "string") {
     return { type: "plain", value: binding };
   }
