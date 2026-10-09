@@ -1,0 +1,23 @@
+{
+  "name": "@paperclipai/speko-voice-proof",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "init": "node cli.mjs init",
+    "serve": "node cli.mjs serve",
+    "provision": "node cli.mjs provision",
+    "live": "node live-client.mjs"
+  },
+  "engines": {
+    "node": ">=24.11"
+  },
+  "dependencies": {
+    "standardwebhooks": "1.0.0"
+  },
+  "devDependencies": {
+    "@livekit/rtc-node": "1.0.0",
+    "@spekoai/client": "0.0.13",
+    "esbuild": "0.25.12"
+  }
+}
