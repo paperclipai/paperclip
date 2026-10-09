@@ -321,6 +321,21 @@ describeEmbeddedPostgres("heartbeat provider login hold", () => {
     expect(await httpWake.evaluate(await load(first))).toMatchObject({ hold: false, probe: true });
   });
 
+  it("holds a re-claimed probe when the lane failed authentication again", async () => {
+    const companyId = await insertCompany();
+    const failedAgent = await insertAgent(companyId);
+    const probeAgent = await insertAgent(companyId);
+    await insertFinishedRun(companyId, failedAgent, 6, "claude_auth_required");
+    const probe = await insertQueuedRun(companyId, probeAgent);
+    const load = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then((rows) => rows[0]!);
+    const hold = providerLoginHoldService(db);
+
+    expect(await hold.evaluate(await load(probe))).toMatchObject({ hold: false, probe: true });
+    // A run that was already active fails authentication before the probe starts.
+    await insertFinishedRun(companyId, failedAgent, 0, "claude_auth_required");
+    expect(await hold.evaluate(await load(probe))).toMatchObject({ hold: true, reason: "login_failed", failures: 2 });
+  });
+
   describe("issue comment", () => {
     async function runOnIssue(result: Record<string, unknown>) {
       const companyId = await insertCompany();
