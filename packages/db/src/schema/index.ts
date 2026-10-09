@@ -184,7 +184,7 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
-  companySkillVersions,
+  companySkillVersions, companySkillRepositorySnapshots,
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,

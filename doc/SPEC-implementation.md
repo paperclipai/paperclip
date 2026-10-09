@@ -2019,7 +2019,22 @@ unavailable. Preserve current ownership and newer-work fences. See
   and declared `compatibility` requirements with source entries. Preview reads reauthorize
   the current caller and audit the requested package at the scanned immutable commit;
   discovery and source metadata contain no file contents. Reference checks are advisory,
-  do not establish complete runtime dependencies, and never expand package boundaries.
+  do not establish complete runtime dependencies, and never expand package boundaries automatically.
+- Optional `packageMode: repository` preserves the full regular-file repository tree
+  in one company-scoped immutable snapshot. Selected entrypoints become library skills;
+  other skills remain supporting files. The root `paperclip.skills.json` may declare
+  version 1, default `skills` paths and `requirements` text. Invalid manifests, unsupported
+  entries, invalid skill entrypoints or blocked content reject the entire repository.
+  Limits are 9,990 files, 1 MiB per file and 61 MiB total. Directory mode remains the default.
+  The dialog exposes included repository files and setup requirements, and blocks invalid
+  selected imports rather than silently skipping them.
+- Each repository-backed version references its snapshot and original entrypoint path.
+  Runtime materialization adds a discovery wrapper and preserves the original tree under
+  `.paperclip-repository/`, including binaries, modes and credits. Original instructions
+  are unchanged. `agents/openai.yaml` discovery policy is retained beside the wrapper.
+  Existing adapters carry self-contained copies, so multiple entrypoints may duplicate
+  runtime bytes. Shared-file changes version all selected skills; pinned runs remain
+  on their snapshot. Importing does not install dependencies or configure host tools.
 - Stage and audit complete packages before publishing. Scripts are allowed through
   the existing content audit and never run on import. Persist binary bytes and executable
   flags in immutable version inventories (legacy entries default to UTF-8/non-executable).

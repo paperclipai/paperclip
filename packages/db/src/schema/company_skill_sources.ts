@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
-import type { SkillPackageInspection } from '@paperclipai/shared';
+import type { SkillPackageInspection, SkillRepositoryPackage } from '@paperclipai/shared';
 import { companies } from './companies.js';
 import { companySkills } from './company_skills.js';
 import { toolConnections } from './tool_access.js';
@@ -12,6 +12,8 @@ export const companySkillSources = pgTable('company_skill_sources', {
   fullName: text('full_name').notNull(),
   trackingRef: text('tracking_ref').notNull(),
   connectionId: uuid('connection_id').references(() => toolConnections.id, { onDelete: 'set null' }),
+  packageMode: text('package_mode').$type<'skills' | 'repository'>().notNull().default('skills'),
+  repositoryPackage: jsonb('repository_package').$type<SkillRepositoryPackage>(),
   excludedFolders: jsonb('excluded_folders').$type<string[]>().notNull().default([]),
   enabled: boolean('enabled').notNull().default(true),
   revision: integer('revision').notNull().default(0),
