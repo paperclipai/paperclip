@@ -129,7 +129,6 @@ it("does not trust editable agent metadata as an invitation ownership receipt", 
   expect((await service.create(f.companyId, f.userId)).agent.id).not.toBe(spoof!.id);
 });
 
-
 it("reports connection setup authority separately from compatibility status", async () => {
   const f = await fixture();
   const invite = await dotInvitationService(db).create(f.companyId, f.userId);
