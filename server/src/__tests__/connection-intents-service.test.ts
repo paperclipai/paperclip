@@ -40,6 +40,7 @@ import { materializeNativeInteractionResponses } from "../services/native-runtim
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -198,6 +199,29 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("responsible-user");
     expect(serialized).not.toContain(claims.sub);
+  });
+
+  it("discovers GitHub review bots independently from chat connectors", async () => {
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    const service = connectionIntentService(db);
+    try {
+      await settings.updateExperimental({ enableChatConnectors: false, enableGitHubReviewBots: true });
+      expect((await service.search(claims, "github")).results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ service: "github-code-review-bot" }),
+        expect.objectContaining({ service: "github" }),
+      ]));
+      expect((await service.search(claims, "slack")).results.some(item =>
+        item.methods.some(method => method.purpose === "channel"))).toBe(false);
+      await settings.updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: false });
+      expect((await service.search(claims, "github")).results.some(item =>
+        item.service === "github-code-review-bot")).toBe(false);
+    } finally {
+      await settings.updateExperimental({
+        enableChatConnectors: previous.enableChatConnectors,
+        enableGitHubReviewBots: previous.enableGitHubReviewBots,
+      });
+    }
   });
 
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {

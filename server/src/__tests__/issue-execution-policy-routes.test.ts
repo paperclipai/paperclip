@@ -272,6 +272,34 @@ describe("issue execution policy routes", () => {
     await loadAppModules();
   });
 
+  it.each([
+    { status: "done" },
+    { status: "cancelled" },
+    { assigneeAgentId: "33333333-3333-4333-8333-333333333333" },
+    { assigneeUserId: "operator" },
+    { interrupt: true },
+    { comment: "Continue now" },
+  ])("rejects mixed snapshot-guarded updates before execution side effects: %j", async (controlFields) => {
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ expectedExecutionPolicy: null, executionPolicy: null, ...controlFields });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("policy-only");
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockRunnerGoalService.act).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a snapshot without a policy update", async () => {
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ expectedExecutionPolicy: null });
+    expect(res.status).toBe(422);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

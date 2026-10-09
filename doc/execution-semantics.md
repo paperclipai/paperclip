@@ -1487,6 +1487,19 @@ Paperclip submits saved input through normal task admission, once, with the
 original user's authority. Pauses, task ownership, budgets, approvals, and
 execution recovery holds still apply. Unconfirmed cleanup does not start work.
 
+A Stop from a bound Slack session records the verified user's identity, just as
+a board Stop does. Native cancellation can then recognize the acknowledged
+operator Stop instead of creating an execution recovery hold. An AI login request
+addressed to another user does not gate a fresh user turn or that run's completion.
+The request remains pending and grants no access. Requests for the current user,
+requests without a known addressee or responsible user, tool permissions, and
+approvals retain their gates.
+
+For a cancelled native run with an execution recovery hold, an undelivered user
+message posted after the run finished can authorize a fresh turn through the
+same continuation checks as a new message. A message from before the Stop cannot
+authorize that continuation by itself. Previously delivered messages stay excluded.
+
 The active session advertises steering only when its driver supports it. A
 transport method that rejects steering does not grant that capability. The
 queued-message controller remains mounted across an empty queue, preserving

@@ -15,6 +15,7 @@ import {
   chatEndpointResources,
   chatEndpoints,
   chatExternalPrincipals,
+  chatGitHubConfigurations,
   chatIdentityLinks,
   chatMessageLinks,
   chatPublications,
@@ -65,7 +66,7 @@ import { questionResponseDeliveryValues } from "../question-response-delivery.js
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { materializeExternalChatQuestionResponseInput } from "./external-chat-question-response-input.js";
 import * as nativeInteractionBridge from "./native-interaction-bridge.js";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import { defaultGitHubReviewPolicy, type AskUserQuestionsInteraction } from "@paperclipai/shared";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
@@ -3837,6 +3838,24 @@ describe("native external-chat response wait", () => {
       const fixture = await seedWaitTurn(
         provider as Parameters<typeof seedWaitTurn>[0],
       );
+      if (provider === "github") {
+        // Only upgraded GitHub bots keep the selected final internal. Legacy
+        // connection fixtures retain their automatic presentation behavior.
+        await db.insert(chatGitHubConfigurations).values({
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          configuration: {
+            version: 1,
+            toolsEnabled: true,
+            responsibleUserId: fixture.userId,
+            memberAccess: "all_linked",
+            people: [],
+            defaults: defaultGitHubReviewPolicy(),
+            repositories: {},
+          },
+          updatedByUserId: fixture.userId,
+        });
+      }
       await placeWaitTurnInSetupTest(fixture, { generation });
 
       await expect(
@@ -3866,9 +3885,11 @@ describe("native external-chat response wait", () => {
         .select({ resultJson: heartbeatRuns.resultJson })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, fixture.runId));
+      const authorizationReason = provider === "github"
+        ? "internal_agent_write" : "allow_chat_run_presentation";
       await expect(
         resolveChatRunPresentationAuthorizationReason(db, fixture),
-      ).resolves.toBe("allow_chat_run_presentation");
+      ).resolves.toBe(authorizationReason);
       const response = resolveHeartbeatRunResponse({
         resultJson: finalizedRun!.resultJson,
         preferFinalResponseOverExistingComment: true,
@@ -3884,14 +3905,14 @@ describe("native external-chat response wait", () => {
         fixture.issueId,
         response.text!,
         { agentId: fixture.agentId, runId: fixture.runId },
-        { authorizationReason: "allow_chat_run_presentation" },
+        { authorizationReason },
       );
       await expect(
         db
           .select()
           .from(chatPublications)
           .where(eq(chatPublications.commentId, comment.id)),
-      ).resolves.toEqual([
+      ).resolves.toEqual(provider === "github" ? [] : [
         expect.objectContaining({
           conversationId: fixture.conversationId,
           endpointId: fixture.endpointId,

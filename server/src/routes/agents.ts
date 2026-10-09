@@ -6614,7 +6614,8 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(runs.map(run => serializeRunListRow(req, run)))));
+    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(runs.map(run => serializeRunListRow(req, run))),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -6756,7 +6757,7 @@ export function agentRoutes(
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    })))));
+    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   function readHeartbeatRunId(req: Request): string {
@@ -6783,6 +6784,7 @@ export function agentRoutes(
         { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null,
     ));
   });
 
@@ -6816,7 +6818,8 @@ export function agentRoutes(
       });
     }
 
-    res.json(run);
+    res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,
+      getActorInfo(req).actorId) : null);
   });
 
   router.post(

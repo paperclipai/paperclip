@@ -13,6 +13,7 @@ import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironment
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
+  PluginEnvironmentAcquisitionDiagnostic,
   PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
@@ -953,6 +954,7 @@ async function createSandbox(
   options: {
     purpose?: string;
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
+    onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateRuntimeResourceRequest(config);
@@ -986,6 +988,8 @@ async function createSandbox(
       timeout: toTimeoutSeconds(config.timeoutMs),
     });
   } catch (createError) {
+    // Observe the create failure before compensating deletion can stall or fail.
+    const diagnostic = options.onCreateFailure?.();
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
@@ -993,7 +997,7 @@ async function createSandbox(
       await destroyFailedCreation(config, cleanup);
     } catch (cleanupError) {
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup);
+        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }
@@ -2406,17 +2410,30 @@ const plugin = definePlugin({
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
     const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
-    const deadline = Date.now() + budgetMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + budgetMs;
     let expired = false;
-    let phase = "create";
+    let phase: PluginEnvironmentAcquisitionDiagnostic["phase"] = "create";
+    let cleanupInProgress = false;
+    let firstFailure: PluginEnvironmentAcquisitionDiagnostic | undefined;
+    const observeFailure = (): PluginEnvironmentAcquisitionDiagnostic => {
+      // Cleanup may consume the rest of the budget. Keep the original failed
+      // step and time, rather than attributing that failure to its cleanup.
+      return firstFailure ??= {
+        phase,
+        elapsedMs: Math.max(0, Math.min(604_800_000, Date.now() - startedAt)),
+        budgetMs,
+      };
+    };
     let cleanup: PluginEnvironmentCreationCleanup | undefined;
     const timeoutFailure = () => {
+      const diagnostic = observeFailure();
       expired = true;
-      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${phase}`);
+      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${cleanupInProgress ? "cleanup" : phase}`);
       return cleanup
         ? new PluginEnvironmentCreationCleanupError([cause],
             "Daytona lease acquisition timed out; allocation cleanup is pending",
-            { ...cleanup, labels: { ...cleanup.labels } })
+            { ...cleanup, labels: { ...cleanup.labels } }, diagnostic)
         : cause;
     };
     const assertActive = () => {
@@ -2425,6 +2442,7 @@ const plugin = definePlugin({
     const acquire = async (): Promise<PluginEnvironmentLease> => {
       const sandbox = await createSandbox(params, config, {
         onCreateAttempt: (attempt) => { cleanup = attempt; },
+        onCreateFailure: observeFailure,
       });
       try {
         assertActive();
@@ -2487,17 +2505,18 @@ const plugin = definePlugin({
           }),
         };
       } catch (error) {
+        const diagnostic = observeFailure();
         // After timeout the host owns the durable cleanup record. A late SDK
         // completion must not admit this lease or start another setup phase.
         if (!expired) {
-          phase = "cleanup";
+          cleanupInProgress = true;
           try {
             await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())));
           } catch (cleanupError) {
             if (cleanup) {
               throw new PluginEnvironmentCreationCleanupError([error, cleanupError],
                 "Daytona lease setup failed; allocation cleanup is pending",
-                { ...cleanup, labels: { ...cleanup.labels } });
+                { ...cleanup, labels: { ...cleanup.labels } }, diagnostic);
             }
             throw error;
           }

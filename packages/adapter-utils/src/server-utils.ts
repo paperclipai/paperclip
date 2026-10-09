@@ -2391,6 +2391,11 @@ function renderPaperclipWakePromptBody(
             ]),
         "The harness owns task state and persists your final assistant response. If the runtime offers a semantic completion operation, emit exactly one semantic completion and do not duplicate that response in a Paperclip comment or status update.",
         "The semantic completion summary is the user-visible final answer. Include every requested answer, exact value, description, and any actionable file-access or delivery limitation there; a statement that you read, checked, or prepared something is not a substitute. Private progress commentary is not delivered as the final answer.",
+        ...(normalized.externalChatProvider === "github"
+          ? [
+              "GitHub publication uses the task-scoped bot tools when they are available. Paperclip creates one working comment for this request. You may and should periodically edit that same comment with update_comment during longer work, reporting brief, factual progress or blockers before the final result. Use a distinct stable idempotency key for each update and reuse it for retries. Publish the final answer with comment, or a requested review with begin_review and submit_review; these replace the same working comment. This is the provider reply, not a Paperclip progress or completion comment. Your semantic completion remains internal to Paperclip and does not post another GitHub reply. Never substitute personal credentials or choose another comment, connection, or repository.",
+            ]
+          : []),
         "In a normal successful answer, omit routine file-preparation, unconfirmed-delivery, and waiting-for-next-message status; end after the requested content or a neutral file label. Report a genuine failure or required user action plainly, without claiming a delivery that has not been confirmed.",
         ...(externalChatQuestionResponseTurn
           ? [

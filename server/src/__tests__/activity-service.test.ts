@@ -254,6 +254,7 @@ describeEmbeddedPostgres("activity service", () => {
       },
       resultJson: {
         conversationReset: true,
+        configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main", fetchError: "private diagnostic" },
         billing_type: "metered",
         total_cost_usd: 0.42,
         stopReason: "timeout",
@@ -295,6 +296,7 @@ describeEmbeddedPostgres("activity service", () => {
     });
     expect(runs[0]?.resultJson).toEqual({
       conversationReset: true,
+      configurationIncomplete: { reason: "workspace_base_ref_unresolved" },
       billingType: "metered",
       billing_type: "metered",
       costUsd: 0.42,

@@ -660,17 +660,19 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     // The operator retries the same remote branch under two spellings. Both map
     // to the canonical `origin/fix/foo` identity, so recovery must not reset the
-    // attempt count or post a second notice.
+    // attempt count. Each failed run still needs its own actionable notice.
+    const firstRun = makeRun("fix/foo", "origin/fix/foo");
+    const secondRun = makeRun("origin/fix/foo", "origin/fix/foo");
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
       previousStatus: "in_progress",
-      latestRun: makeRun("fix/foo", "origin/fix/foo"),
+      latestRun: firstRun,
       recoveryCause: "configuration_incomplete",
     });
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
       previousStatus: "in_progress",
-      latestRun: makeRun("origin/fix/foo", "origin/fix/foo"),
+      latestRun: secondRun,
       recoveryCause: "configuration_incomplete",
     });
 
@@ -689,7 +691,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       `source_scoped_recovery:${sourceIssue.companyId}:${sourceIssue.id}:configuration_incomplete:workspace_base_ref:origin/fix/foo`,
     );
 
-    // The operator gets one notice, bound to the one action.
+    // Each run gets one notice bound to the same action; reconciling the
+    // latest run again must not duplicate its notice.
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue, previousStatus: "in_progress", latestRun: secondRun,
+      recoveryCause: "configuration_incomplete",
+    });
     const notices = await db
       .select({ metadata: issueComments.metadata })
       .from(issueComments)
@@ -703,7 +710,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       notices.filter((row) =>
         noticeMetadataReferencesRecoveryAction(row.metadata, actions[0]!.id),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
+    expect(notices.map((row) => row.metadata?.sourceRunId).sort()).toEqual([firstRun.id, secondRun.id].sort());
   });
 
   it("gives a distinct recovery identity and a new operator notice when the unresolved base ref changes", async () => {

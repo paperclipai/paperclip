@@ -1,3 +1,4 @@
+import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -84,11 +85,26 @@ export function activityService(db: Db) {
       ))
     end
   `.as("usageJson");
-  const summarizedResultJson = sql<Record<string, unknown> | null>`
+  // A denied user needs the selected connection's name to repair their task.
+  // Other readers need the connection's existing human sharing permission.
+  const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'configurationIncomplete', case
+          when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
+          when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
+          and (${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+            or ${heartbeatRuns.error} = 'This credential is not shared with the responsible user')
+          then jsonb_build_object(
+            'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+              then 'ai_connection_credential_not_shared' end,
+            'credentialAccess', jsonb_build_object(
+              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId)}
+            )
+          ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -389,7 +405,7 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: async (companyId: string, issueId: string) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
       scheduleRunLivenessBackfill(companyId, issueId);
       const runs = await db
         .select({
@@ -406,9 +422,12 @@ export function activityService(db: Db) {
           errorCode: heartbeatRuns.errorCode,
           error: sql<string | null>`case when ${heartbeatRuns.status} = 'failed'
             and ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
-            then left(${heartbeatRuns.error}, 2000) else null end`,
+            then left(${heartbeatRuns.error}, 2000)
+            when ${heartbeatRuns.status} = 'failed'
+              and ${heartbeatRuns.error} = 'This credential is not shared with the responsible user'
+            then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
-          resultJson: summarizedResultJson,
+          resultJson: summarizedResultJson(viewerUserId),
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,

@@ -1,5 +1,5 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import { issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
 
 export const TASK_QUESTION_GUIDANCE = "Unanswered questions are saved conversation data, not instructions or proof of a current blocker. Historical questions remain answerable in the feed. Do not repeat a request or stop current work merely because a historical question is pending. Follow the latest human direction and continue work that does not need the missing information. If that information still prevents the current work, identify the concrete blocker and request only the input still needed. Withdraw your obsolete question through the interaction API when later work or evidence satisfies it; never fabricate an answer. Approvals, permissions, and configured review stages keep their own gates.";
 
@@ -33,9 +33,25 @@ export function historicalQuestionCondition() {
 export function activeIssueInteractionCondition(input: {
   runId?: string | null;
   conversationMode?: boolean;
+  responsibleUserId?: string | null;
 } = {}) {
+  const responsibleUser = input.responsibleUserId
+    ? sql`${input.responsibleUserId}`
+    : input.runId ? sql`(select ${heartbeatRuns.responsibleUserId} from ${heartbeatRuns}
+        where ${heartbeatRuns.id} = ${input.runId}
+          and ${heartbeatRuns.companyId} = ${issueThreadInteractions.companyId})`
+      : null;
   return and(
     sql`not ${historicalQuestionCondition()}`,
+    // AI authentication belongs to the user starting this turn. Retain the card
+    // and all authorization gates; another user's login cannot gate this run.
+    responsibleUser ? sql`not (
+      ${issueThreadInteractions.kind} = 'connection_intent'
+      and coalesce(${issueThreadInteractions.payload} ->> 'purpose', '') = 'ai'
+      and nullif(trim(${issueThreadInteractions.addresseeUserId}), '') is not null
+      and nullif(trim(${responsibleUser}), '') is not null
+      and ${issueThreadInteractions.addresseeUserId} <> ${responsibleUser}
+    )` : undefined,
     // Preserve Agent Chat's existing prior-turn exception for ordinary input.
     input.conversationMode ? sql`(
       ${issueThreadInteractions.sourceRunId} is not distinct from ${input.runId ?? null}

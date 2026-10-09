@@ -1150,6 +1150,9 @@ describe("renderPaperclipWakePrompt", () => {
       expect(prompt).toContain("exactly one semantic completion");
       expect(prompt).toContain("summary is the user-visible final answer");
       expect(prompt).toContain("Private progress commentary is not delivered");
+      expect(prompt).toContain("periodically edit that same comment with update_comment");
+      expect(prompt).toContain("semantic completion remains internal to Paperclip");
+      expect(prompt).toContain("do not post progress or completion comments");
       expect(prompt).toContain("any actionable file-access or delivery limitation");
       expect(prompt).toContain(
         "Keep wait and review dispositions in the semantic control fields",

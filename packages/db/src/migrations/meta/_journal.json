@@ -2248,6 +2248,13 @@
       "when": 1791572660423,
       "tag": "0322_reflective_kree",
       "breakpoints": true
+    },
+    {
+      "idx": 323,
+      "version": "7",
+      "when": 1791578748368,
+      "tag": "0323_petite_shockwave",
+      "breakpoints": true
     }
   ]
 }

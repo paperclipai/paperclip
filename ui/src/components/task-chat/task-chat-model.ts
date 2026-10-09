@@ -107,6 +107,10 @@ export interface TaskChatMessageItem {
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  /** Human identity comes from the company directory, matched by stored user ID. */
+  authorUserId?: string | null;
+  authorAvatarUrl?: string | null;
+  isCurrentUser?: boolean;
   text: string;
   /** Runner-authored output channel. Legacy adapters leave this unset. */
   channel?: "progress" | "final" | "unknown";
@@ -257,6 +261,13 @@ export interface TaskChatMarkerItem {
   createdAtIso?: string;
   runHref?: string;
   planHref?: string;
+  /** An actionable credential denial is always expanded in the task conversation. */
+  credentialAccess?: {
+    agentName: string;
+    credentialName?: string;
+    deniedUser: string;
+    settingsHref: string;
+  };
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */
