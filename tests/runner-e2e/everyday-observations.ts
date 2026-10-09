@@ -445,7 +445,7 @@ export function storyHasDurableAgentReviewContinuation(
   );
 }
 
-/** An executed approval may enqueue its wake just after run finalization.
+/** An executed approval or recorded rejection may enqueue its wake just after run finalization.
  * Wait within the original deadline only for this task/run's recorded response.
  * Once a follow-up run has consumed it, a new blocker is a real failure.
  */
@@ -456,16 +456,18 @@ export function storyHasDurableServiceContinuation(issues: StoryIssue[], parentI
     const source = runs.find(run => run.id === interaction.sourceRunId);
     const action = interaction.payload?.toolAction as Record<string, unknown> | undefined;
     const result = interaction.result?.toolAction as Record<string, unknown> | undefined;
+    const resolved = (interaction.status === "accepted" && interaction.result?.outcome === "accepted" && result?.status === "executed") ||
+      (interaction.status === "rejected" && interaction.result?.outcome === "rejected" && result === undefined);
     if (interaction.issueId !== parentId || interaction.createdByAgentId !== agentId ||
         interaction.kind !== "request_confirmation" || interaction.continuationPolicy !== "wake_assignee" ||
-        interaction.status !== "accepted" || interaction.result?.outcome !== "accepted" ||
-        action?.version !== 1 || typeof action.actionRequestId !== "string" || result?.status !== "executed" ||
-        source?.agentId !== agentId || source.companyId !== issue.companyId || source.status !== "succeeded" ||
-        !(Date.parse(source.finishedAt ?? "") >= Date.parse(interaction.resolvedAt ?? ""))) return false;
+        !resolved ||
+        action?.version !== 1 || typeof action.actionRequestId !== "string" || !action.actionRequestId.trim() ||
+        source?.agentId !== agentId || source.companyId !== issue.companyId || source.nativeIssueId !== parentId || source.status !== "succeeded" ||
+        (!Number.isFinite(Date.parse(source.finishedAt ?? "")) || !Number.isFinite(Date.parse(interaction.resolvedAt ?? "")))) return false;
     return !runs.some(run => {
       const input = run.runnerProfileJson?.nativeExecutionInput as
         { interactionResponses?: Array<{ interactionId?: string }> } | undefined;
-      return run.id !== source.id && run.agentId === agentId &&
+      return run.id !== source.id && run.agentId === agentId && run.companyId === issue.companyId &&
         input?.interactionResponses?.some(response => response.interactionId === interaction.id);
     });
   }) ?? false;

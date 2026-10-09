@@ -8,7 +8,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { McpConnectPage, McpDevicePage } from "./McpConnect";
 
-const route = vi.hoisted(() => ({ id: "request-one", companyId: null as string | null, unavailable: false, canWrite: true, requestedWrite: true, requestedConfigure: false, clientName: "Assistant", clientOrigin: null as string | null, setupUrl: "https://my.paperclip.app/orgs/new", reverseCompanies: false, hideFirst: false }));
+const route = vi.hoisted(() => ({ id: "request-one", companyId: null as string | null, unavailable: false, canWrite: true, requestedWrite: true, requestedConfigure: false, agentConnection: false, requiresSignIn: false, clientName: "Assistant", clientOrigin: null as string | null, setupUrl: "https://my.paperclip.app/orgs/new", reverseCompanies: false, hideFirst: false }));
 vi.mock("@/lib/router", () => ({
   useParams: () => ({ id: route.id }),
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -19,7 +19,7 @@ vi.mock("@/components/CompanyPatternIcon", () => ({
 vi.mock("../api/client", () => ({ api: {
   get: vi.fn(async () => ({
     id: route.id, clientName: route.clientName, clientOrigin: route.clientOrigin, redirectOrigin: "https://assistant.example.test",
-    requestedWrite: route.requestedWrite, requestedConfigure: route.requestedConfigure, offlineAccess: true, requiresSignIn: false, requestedCompanyId: route.companyId,
+    requestedWrite: route.requestedWrite, requestedConfigure: route.requestedConfigure, agentConnection: route.agentConnection, offlineAccess: true, requiresSignIn: route.requiresSignIn, requestedCompanyId: route.companyId,
     companies: route.unavailable ? [] : [
       { id: route.companyId ?? "company-one", name: "Acme Research", logoUrl: "/api/assets/acme-logo/content", canWrite: route.canWrite },
       ...(!route.companyId ? [{ id: "company-two", name: "Design Partners", logoUrl: null, canWrite: true }] : []),
@@ -29,16 +29,16 @@ vi.mock("../api/client", () => ({ api: {
 } }));
 
 beforeEach(() => {
-  Object.assign(route, { id: "request-one", companyId: null, unavailable: false, canWrite: true, requestedWrite: true, requestedConfigure: false, clientName: "Assistant", clientOrigin: null, setupUrl: "https://my.paperclip.app/orgs/new", reverseCompanies: false, hideFirst: false });
+  Object.assign(route, { id: "request-one", companyId: null, unavailable: false, canWrite: true, requestedWrite: true, requestedConfigure: false, agentConnection: false, requiresSignIn: false, clientName: "Assistant", clientOrigin: null, setupUrl: "https://my.paperclip.app/orgs/new", reverseCompanies: false, hideFirst: false });
   vi.clearAllMocks();
 });
 
-function setup(device = false) {
+function setup(device = false, agentPairingOnly = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  const render = () => flushSync(() => root.render(<QueryClientProvider client={client}>{device ? <McpDevicePage initialCode="MIST-YPED" /> : <McpConnectPage />}</QueryClientProvider>));
+  const render = () => flushSync(() => root.render(<QueryClientProvider client={client}>{device ? <McpDevicePage initialCode="MIST-YPED" /> : <McpConnectPage agentPairingOnly={agentPairingOnly} />}</QueryClientProvider>));
   render();
   return {
     client, container, render,
@@ -58,6 +58,69 @@ it("lets a person correct an invalid device code without reloading", async () =>
     expect(page.container.querySelector<HTMLInputElement>("#device-code")?.value).toBe("MIST-YPED");
     expect(page.container.querySelector("form")).not.toBeNull();
     expect(api.post).not.toHaveBeenCalled();
+  } finally { page.cleanup(); }
+});
+
+it.each([false, true])("lets Dot use the operator pairing capability without signing into a board account (dedicated=%s)", async dedicated => {
+  Object.assign(route, { agentConnection: true, requiresSignIn: true });
+  vi.mocked(api.post).mockImplementationOnce(async () => ({ company: { id: "company-one", name: "Dot Test Drive" }, agent: { id: "agent-one", name: "Dot" }, permissions: "Assigned work only", accessDuration: "Ongoing until revoked", pairingExpiresAt: new Date(Date.now() + 60000).toISOString() }) as never);
+  const page = setup(false, dedicated);
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector("#dot-pairing-code")).not.toBeNull());
+    const input = page.container.querySelector<HTMLInputElement>("#dot-pairing-code")!;
+    expect(input.type).toBe("password");
+    const connect = Array.from(page.container.querySelectorAll("button")).find(button => button.textContent === "Connect Dot with pairing code")!;
+    expect(connect.disabled).toBe(true);
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "x".repeat(32));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(page.container.textContent).toContain("Dot Test Drive"));
+    expect(page.container.textContent).toContain("Assigned work only");
+    expect(page.container.textContent).toContain("Ongoing until revoked");
+    expect(connect.disabled).toBe(false);
+    flushSync(() => connect.click());
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(`${dedicated ? "/dot-mcp" : "/mcp"}/requests/request-one/dot-pairing`, { pairingCode: "x".repeat(32) }));
+  } finally { page.cleanup(); }
+});
+
+it("keeps approval disabled while replacing a code and ignores an older preview response", async () => {
+  Object.assign(route, { agentConnection: true, requiresSignIn: true });
+  let resolveOld!: (value: unknown) => void;
+  let resolveCurrent!: (value: unknown) => void;
+  vi.mocked(api.post).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }) as never)
+    .mockImplementationOnce(() => new Promise(resolve => { resolveCurrent = resolve; }) as never);
+  const page = setup();
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector("#dot-pairing-code")).not.toBeNull());
+    const input = page.container.querySelector<HTMLInputElement>("#dot-pairing-code")!;
+    const connect = Array.from(page.container.querySelectorAll("button")).find(button => button.textContent === "Connect Dot with pairing code")!;
+    const enter = (value: string) => flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    enter("x".repeat(32));
+    await vi.waitFor(() => expect(resolveOld).toBeTypeOf("function"));
+    enter("y".repeat(32));
+    expect(connect.disabled).toBe(true);
+    await vi.waitFor(() => expect(resolveCurrent).toBeTypeOf("function"));
+    resolveCurrent({ company: { id: "current", name: "Current company" }, agent: { id: "agent", name: "Dot" }, permissions: "Assigned work", accessDuration: "Until revoked" });
+    await vi.waitFor(() => expect(connect.disabled).toBe(false));
+    resolveOld({ company: { id: "old", name: "Old company" }, agent: { id: "other", name: "Other agent" }, permissions: "Other work", accessDuration: "Until revoked" });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(page.container.textContent).toContain("Current company");
+    expect(page.container.textContent).not.toContain("Old company");
+    enter("");
+    expect(connect.disabled).toBe(true);
+    expect(page.container.textContent).not.toContain("Current company");
+  } finally { page.cleanup(); }
+});
+
+it("does not offer Dot pairing-code approval on a personal connection", async () => {
+  const page = setup();
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector("h1")).not.toBeNull());
+    expect(page.container.querySelector("#dot-pairing-code")).toBeNull();
   } finally { page.cleanup(); }
 });
 
@@ -179,6 +242,25 @@ it("denies without granting default work or configuration access", async () => {
     await vi.waitFor(() => expect(page.checkbox()?.getAttribute("aria-checked")).toBe("true"));
     flushSync(() => Array.from(page.container.querySelectorAll("button")).find(button => button.textContent === "Cancel")!.click());
     await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/mcp/requests/request-one/consent", { decision: "deny", companyId: "company-one", allowWrites: false, allowConfiguration: false }));
+  } finally { page.cleanup(); }
+});
+
+it.each([false, true])("explains Dot agent consent and requires an operator in both browser and device flows (device=%s)", async device => {
+  Object.assign(route, { companyId: "company-one", agentConnection: true, canWrite: false });
+  const page = setup(device);
+  const connect = () => Array.from(page.container.querySelectorAll("button")).find(button => button.textContent === "Connect Dot agent")!;
+  try {
+    await vi.waitFor(() => expect(page.container.textContent).toContain("Connect Dot as a Paperclip agent"));
+    expect(page.container.textContent).not.toContain("Read all of your Paperclip data");
+    expect(page.checkbox()).toBeNull();
+    expect(connect().disabled).toBe(true);
+    route.canWrite = true;
+    await page.client.invalidateQueries({ queryKey: [device ? "mcp-device" : "mcp-request", device ? "MIST-YPED" : route.id] });
+    await vi.waitFor(() => expect(connect().disabled).toBe(false));
+    flushSync(() => connect().click());
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(device ? "/mcp/device/consent" : "/mcp/requests/request-one/consent", {
+      decision: "approve", companyId: "company-one", allowWrites: false, allowConfiguration: false, ...(device ? { userCode: "MIST-YPED" } : {}),
+    }));
   } finally { page.cleanup(); }
 });
 

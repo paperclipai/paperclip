@@ -27,6 +27,11 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
     throw new Error("native_runtime_context_entry_outside_bundle");
   }
   const entry = readFileSync(entryPath, "utf8");
+  if (input.provider.kind === "openai_dot") {
+    return [input.runtimeContext.prompt.text, entry.trim(),
+      "This provider has no mounted workspace. Use Paperclip semantic tools for task coordination and write_document for durable text deliverables. Read pinned skills with list_assigned_skills and read_assigned_skill. Assigned app tools run through the Paperclip MCP gateway with normal permissions and approvals. If workspace tools are advertised, use them for files and sandboxed commands, then register_deliverable for requested downloadable files. Use get_identity and list_people to discover the responsible person and assignees. Read the current catalog before concluding a capability is unavailable.",
+      `Assigned skills: ${input.runtimeContext.skills.map(skill => skill.runtimeName).join(", ") || "none"}.`].join("\n\n");
+  }
   return composeNativeSystemInstructions(input.runtimeContext, entry);
 }
 

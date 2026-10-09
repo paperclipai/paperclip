@@ -1,11 +1,13 @@
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readRunCancellation } from "./run-cancellation.js";
+import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { MANAGED_GIT_WORKTREE_REASON_CODES, PERSISTED_WORKSPACE_SOURCE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Context = Record<string, string | number | boolean>;
@@ -146,6 +148,31 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  const workspaceValidation = read(result, "workspaceValidation");
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "git_worktree_not_reusable") {
+    execution.workspaceValidationReason = "git_worktree_not_reusable";
+    const reasonCode = MANAGED_GIT_WORKTREE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
+    const diagnostic = reasonCode === "git_inspection_failed"
+      ? readManagedGitInspectionDiagnostic(read(workspaceValidation, "inspectionDiagnostic")) : null;
+    if (diagnostic) {
+      execution.workspaceValidationInspectionCommand = diagnostic.command;
+      execution.workspaceValidationInspectionFailure = diagnostic.failure;
+      if (diagnostic.errorCode) execution.workspaceValidationInspectionErrorCode = diagnostic.errorCode;
+      if (diagnostic.exitCode !== undefined) execution.workspaceValidationInspectionExitCode = diagnostic.exitCode;
+    }
+  }
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "persisted_workspace_source_conflict") {
+    execution.workspaceValidationReason = "persisted_workspace_source_conflict";
+    const reasonCode = PERSISTED_WORKSPACE_SOURCE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
+  }
+  if (run.errorCode === "process_lost") {
+    const diagnostic = readProcessLossDiagnostic(read(result, "processLossDiagnostic"));
+    for (const [field, value] of Object.entries(diagnostic)) {
+      execution[`processLoss${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+    }
+  }
   const cancellation = readRunCancellation(result);
   if (cancellation) {
     execution.cancellationSource = cancellation.source;
@@ -176,6 +203,9 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       if (diagnostic.step) execution.workspaceRestoreStep = diagnostic.step;
       if (diagnostic.httpStatus !== undefined) execution.workspaceRestoreHttpStatus = diagnostic.httpStatus;
       if (diagnostic.exitCode !== undefined) execution.workspaceRestoreExitCode = diagnostic.exitCode;
+      if (diagnostic.transferStep) execution.workspaceRestoreTransferStep = diagnostic.transferStep;
+      if (diagnostic.transferFailureKind) execution.workspaceRestoreTransferFailureKind = diagnostic.transferFailureKind;
+      if (diagnostic.rpcCode !== undefined) execution.workspaceRestoreRpcCode = diagnostic.rpcCode;
       if (diagnostic.gitCommand) execution.workspaceRestoreGitCommand = diagnostic.gitCommand;
       if (diagnostic.gitFailureKind) execution.workspaceRestoreGitFailureKind = diagnostic.gitFailureKind;
     }

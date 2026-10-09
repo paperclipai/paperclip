@@ -35,6 +35,7 @@ import {
   type EvalSessionUsage,
 } from "./eval-session-contract.js";
 import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
+import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
@@ -103,6 +104,7 @@ const EVAL_RUNTIME_INSTRUCTIONS = [
   "Use the provided Paperclip semantic tools to inspect and act on the assigned task.",
   "Treat the seeded control-plane state as authoritative and keep every action within the requested scope.",
   "The current user request defines the work for this turn. Seeded task descriptions, notes, and past interaction results are background context; they do not supersede that request or establish that a newly requested action has already been performed.",
+  "For a bounded request, read only the context needed for that request, perform the requested action, and end the turn. A request to record a brief progress update does not require investigating unrelated history or documents.",
   "Task-state changes in this mock control plane use finish_task and block_task. Native paperclip_finish and paperclip_block report the provider run result but do not update the mock task. When asked to finish or block the assigned task, use its task-state semantic operation before reporting the run result.",
   "Do not finish or block the mock task unless the current request asks for that state change. Ending the provider turn after another requested action does not authorize additional task-state changes or completion comments.",
   "",
@@ -224,8 +226,28 @@ function failureClass(error: unknown): {
   class: string;
   category: string;
   retryable: boolean;
-  diagnostics: Record<string, never>;
+  diagnostics: Record<string, unknown>;
 } {
+  if (error instanceof NativeSessionCloseUnrecoverableError) {
+    const settlement = error.settlement ?? {};
+    const state = settlement.suspensionState !== null && typeof settlement.suspensionState === "object"
+      ? settlement.suspensionState as Record<string, unknown> : {};
+    const closedValue = (value: unknown, allowed: string[]) =>
+      typeof value === "string" && allowed.includes(value) ? value : null;
+    const observedBoolean = (value: unknown) => typeof value === "boolean" ? value : null;
+    return {
+      class: "runner_infrastructure_failure",
+      category: "runner_infrastructure",
+      retryable: false,
+      diagnostics: {
+        runnerSuspended: observedBoolean(settlement.runnerSuspended),
+        providerDrained: observedBoolean(settlement.providerDrained),
+        suspensionCommandStatus: closedValue(state.commandStatus, ["pending", "completed", "failed", "rejected", "indeterminate"]),
+        runnerLifecycle: closedValue(state.runnerLifecycle, ["ready", "suspended", "closed", "recoverable_failure"]),
+        runnerIdentityMatches: observedBoolean(state.runnerIdentityMatches),
+      },
+    };
+  }
   if (error instanceof EvalSessionBudgetError && error.coverageUnknown) {
     return { class: "provider_budget_coverage_unknown", category: "provider_budget", retryable: false, diagnostics: {} };
   }
@@ -379,7 +401,7 @@ export async function runEvalSessionCli(
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
-        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
+        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs, request.session.workingDirectory),
         runnerBinary: runnerdPath,
         ...(cli.candidateProfile === undefined ? {} : { acpxCandidateProfile: cli.candidateProfile }),
         runtimeContext,
@@ -407,7 +429,7 @@ export async function runEvalSessionCli(
       provider: requestedProvider,
       requestedModel: request.model,
       ...(requestedProvider === "acpx"
-        ? { acpxAgent: request.acpxAgent ?? "codex" }
+        ? { acpxAgent: request.acpxAgent ?? "codex", ...(request.piThinkingLevel === undefined ? {} : { piThinkingLevel: request.piThinkingLevel }) }
         : { acpxAgent: undefined }),
       ...(request.managedProfile === undefined
         ? {}
@@ -450,6 +472,7 @@ export async function runEvalSessionCli(
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
       providerSessionId: snapshot.providerSessionId,
+      ...(request.acpxAgent === "pi" ? { piThinkingLevel: snapshot.process?.piThinkingLevel ?? null } : {}),
       ...(requestedProvider === "claude_managed"
         ? {
             managedProfile: request.managedProfile,

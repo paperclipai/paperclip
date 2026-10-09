@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ComponentProps } from "react";
+import { act, useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -59,6 +59,50 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each([false, true])("keeps the trigger stable until the picker closes (mobile: %s)", async (mobile) => {
+    function ControlledPicker() {
+      const [settings, setSettings] = useState({ model: "gpt-6-sol", effort: "high", fast: false });
+      return <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
+        options={options} agents={agents} settings={settings} onSettingsChange={(next) => setSettings(next! as typeof settings)}
+        onAssigneeChange={vi.fn()} mobile={mobile} modelOptionsOverride={[{ id: "gpt-6-sol", label: "GPT-6 Sol" }, { id: "gpt-6-astra", label: "GPT-6 Astra" }]} />;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient();
+    flushSync(() => root!.render(<QueryClientProvider client={queryClient}><ControlledPicker /></QueryClientProvider>));
+    const label = () => container!.querySelector('[data-testid="task-chat-composer-model-label"]')!.textContent;
+    expect(label()).toBe("GPT-6 Sol");
+    await click("Select model and effort");
+    expect(label()).toBe("Select model");
+    const range = document.querySelector<HTMLInputElement>('input[aria-label="Effort"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(range, "1");
+      range.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(range.getAttribute("aria-valuetext")).toBe("Low");
+    expect(label()).toBe("Select model");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')!.textContent).not.toContain("Low");
+    await click("Choose assignee");
+    expect(label()).toBe("Select model");
+    await click("Clippy");
+    expect(label()).toBe("GPT-6 Sol");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')!.textContent).toContain("Low");
+    await click("Select model and effort");
+    await click("Choose exact model");
+    await click("GPT-6 Astra");
+    expect(label()).toBe("Select model");
+    if (mobile) await click("Close picker");
+    else {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(label()).toBe("GPT-6 Astra");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')!.textContent).toContain("Low");
+  });
+
   it.each([
     { mobile: false, view: "settings" as const },
     { mobile: false, view: "models" as const },

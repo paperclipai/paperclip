@@ -576,12 +576,15 @@ export const resolveIssueRecoveryActionSchema = z
       .optional(),
     actionId: z.string().guid().optional(),
     outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-    sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
+    sourceIssueStatus: z.enum(ISSUE_STATUSES),
     resolutionNote: multilineTextSchema.optional().nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (value.outcome === "restored") {
+      // A retained-source repair records evidence without changing task state.
+      // The route verifies the exact server-owned source and unchanged status.
+      if (value.executionReconciliation?.workspaceRepairEvidence) return;
       if (
         value.sourceIssueStatus !== "todo" &&
         value.sourceIssueStatus !== "done" &&
@@ -1283,6 +1286,7 @@ const paperclipQuestionSchema = z
     helpText: z.string().max(4000).optional(),
     required: z.boolean(),
     answerMode: z.enum(["single_select", "multi_select", "text"]),
+    initialText: z.string().refine(value => value.length <= 200000 && Array.from(value).length <= 100000, "initial text exceeds 100000 Unicode code points").optional(),
     options: z.array(paperclipQuestionOptionSchema).max(128).optional(),
     customAnswer: z
       .object({
@@ -1303,6 +1307,9 @@ const paperclipQuestionSchema = z
       .optional(),
   })
   .superRefine((value, ctx) => {
+    if (value.initialText !== undefined && value.answerMode !== "text") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "only text questions can define initial text", path: ["initialText"] });
+    }
     if (
       value.answerMode === "text" &&
       value.options &&
@@ -1453,8 +1460,9 @@ export const askUserQuestionsPayloadSchema = z
 export const askUserQuestionsAnswerSchema = z.object({
   questionId: z.string().trim().min(1).max(160),
   optionIds: z.array(z.string().trim().min(1).max(160)).max(129),
-  otherText: multilineTextSchema
-    .pipe(z.string().trim().max(100000))
+  // The persisted question determines whether this is exact editor text or a
+  // legacy custom answer; normalize only after that trusted context is known.
+  otherText: z.string().max(100000)
     .nullable()
     .optional(),
 });

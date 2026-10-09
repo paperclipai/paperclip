@@ -1,7 +1,10 @@
 # Runner API escape hatch
 
 `search_api` and `call_api` extend the native runner when an available dedicated
-operation cannot express the requested work. Existing tools remain preferred;
+operation cannot express the requested work. Use `set_task_monitor` to schedule or clear a one-shot task check; after confirming
+the receipt, finish with `yielded` and `continuation.kind: "monitor"` to await that
+task’s timer. `call_api` still rejects monitor/execution-policy lifecycle writes.
+Existing tools remain preferred;
 agents do not have to search before using them. Only two tool definitions are
 advertised. The API catalog is returned on demand, never injected into the
 initial prompt.

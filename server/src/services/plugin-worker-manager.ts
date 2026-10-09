@@ -20,6 +20,7 @@
 
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { beginIdleTrackedWork, readTaskDrain, trackIdleWork } from "./task-admission.js";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
@@ -676,6 +677,8 @@ interface ExecuteLogRoute {
  * with exponential backoff automatically when `autoRestart` is enabled.
  */
 export interface PluginWorkerHandle {
+  prepareIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<"none" | "present" | "unknown">;
+  releaseIdleSleep?(): void;
   /** The plugin ID this worker serves. */
   readonly pluginId: string;
 
@@ -793,6 +796,10 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
+    backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
+  }>;
+  releaseIdleSleep?(): void;
   /**
    * Register and start a worker for a plugin.
    *
@@ -888,6 +895,30 @@ export function createPluginWorkerHandle(
 
   // Pending RPC requests awaiting a response
   const pendingRequests = new Map<string | number, PendingRequest>();
+  // Unlike RPC promises, these survive timeouts. A late response is the
+  // completion receipt. A worker crash cannot manufacture one.
+  const unsettledCalls = new Map<string | number, () => void>();
+  let activeHostHandlers = 0;
+  let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
+
+  function releaseIdleSleep(): void {
+    const prior = idleHold;
+    idleHold = null;
+    if (prior && childProcess?.stdin?.writable) {
+      try {
+        sendMessage({ jsonrpc: JSONRPC_VERSION, method: "releaseIdleSleep", params: { ownerId: prior.ownerId } });
+      } catch { /* Worker-side expiry still bounds a lost release. */ }
+    }
+  }
+
+  function idleSleepHeld(): boolean {
+    if (!idleHold) return false;
+    const drain = readTaskDrain(new Date());
+    if (drain?.ownerId !== idleHold.ownerId || drain.expiresAt?.getTime() !== idleHold.expiresAt) {
+      releaseIdleSleep();
+    }
+    return idleHold !== null;
+  }
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
@@ -1020,6 +1051,8 @@ export function createPluginWorkerHandle(
   function setStatus(newStatus: WorkerStatus): void {
     const prev = status;
     if (prev === newStatus) return;
+    const done = beginIdleTrackedWork();
+    done();
     status = newStatus;
     log.debug({ from: prev, to: newStatus }, "worker status change");
     emitter.emit("status", { pluginId, status: newStatus, previousStatus: prev });
@@ -1093,6 +1126,8 @@ export function createPluginWorkerHandle(
       return;
     }
 
+    unsettledCalls.get(id)?.();
+    unsettledCalls.delete(id);
     const pending = pendingRequests.get(id);
     if (!pending) {
       log.warn({ id }, "received response for unknown request id");
@@ -2695,6 +2730,23 @@ export function createPluginWorkerHandle(
    * Handle a JSON-RPC request from the worker (worker→host call).
    */
   async function handleWorkerRequest(request: JsonRpcRequest): Promise<void> {
+    const done = beginIdleTrackedWork();
+    activeHostHandlers++;
+    try {
+      // A queued notification may already be running in the worker while its
+      // prepare request is in flight. Let its writes finish until that worker
+      // has positively acknowledged that all accepted handlers have drained.
+      if (idleSleepHeld() && idleHold?.ready) {
+        try {
+          sendMessage(createErrorResponse(request.id, PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE, "Plugin is held for idle sleep"));
+        } catch { /* Worker may have exited after sending its request. */ }
+        return;
+      }
+      await dispatchWorkerRequest(request);
+    } finally { activeHostHandlers--; done(); }
+  }
+
+  async function dispatchWorkerRequest(request: JsonRpcRequest): Promise<void> {
     const method = request.method as WorkerToHostMethodName;
     const handler = options.hostHandlers[method] as
       | ((params: unknown, context?: WorkerHostCallContext) => Promise<unknown>)
@@ -3072,6 +3124,12 @@ export function createPluginWorkerHandle(
     backoffTimer = setTimeout(async () => {
       backoffTimer = null;
       nextRestartAt = null;
+      // A temporary idle hold must not consume the crash-recovery attempt.
+      // Keep the bounded backoff until admission reopens.
+      if (readTaskDrain(new Date())?.ownerId) {
+        scheduleRestart();
+        return;
+      }
       try {
         await startInternal();
       } catch (err) {
@@ -3293,6 +3351,11 @@ export function createPluginWorkerHandle(
     executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+      const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
+      if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
+        reject(new Error("Plugin is held for idle sleep"));
+        return;
+      }
       if (!childProcess?.stdin?.writable) {
         reject(
           new Error(
@@ -3303,6 +3366,7 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
+      if (!idleControl) unsettledCalls.set(id, beginIdleTrackedWork());
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
@@ -3368,6 +3432,8 @@ export function createPluginWorkerHandle(
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
+        unsettledCalls.get(id)?.();
+        unsettledCalls.delete(id);
         clearInvocation(invocation);
         clearExecuteRoute(invocation?.id);
         reject(
@@ -3394,6 +3460,38 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   const handle: PluginWorkerHandle = {
+    releaseIdleSleep,
+    async prepareIdleSleep(hold) {
+      const drain = readTaskDrain(new Date());
+      if (drain?.ownerId !== hold.ownerId || drain.expiresAt?.getTime() !== hold.expiresAt ||
+          hold.expiresAt <= Date.now()) return "unknown";
+      // Clear a previous hold even when this idle worker received no ordinary
+      // call between two controller attempts.
+      idleSleepHeld();
+      if (status !== "running" || totalCrashes > 0) return "unknown";
+      if (!supportedMethods.includes("prepareIdleSleep")) return "present";
+      if (unsettledCalls.size || activeHostHandlers || loginPtyRoutesByHostRouteId.size ||
+          liveDuplexRoutes.size || openingDuplexRoutes.size || terminalDuplexRoutes.size) return "present";
+      if (idleHold && (idleHold.ownerId !== hold.ownerId || idleHold.expiresAt !== hold.expiresAt)) return "unknown";
+      const candidate = idleHold ??= { ...hold, ready: false };
+      try {
+        const result = await callInternal("prepareIdleSleep", hold, Math.min(5_000, hold.expiresAt - Date.now()));
+        if (!idleSleepHeld() || idleHold !== candidate || status !== "running" || unsettledCalls.size || activeHostHandlers ||
+            result.ownerId !== hold.ownerId || result.expiresAt !== hold.expiresAt) {
+          if (idleHold === candidate) releaseIdleSleep();
+          return "unknown";
+        }
+        if (result.backgroundWork === "none") {
+          candidate.ready = true;
+          return "none";
+        }
+        releaseIdleSleep();
+        return result.backgroundWork === "present" ? "present" : "unknown";
+      } catch {
+        if (idleHold === candidate) releaseIdleSleep();
+        return "unknown";
+      }
+    },
     get pluginId() {
       return pluginId;
     },
@@ -3459,6 +3557,7 @@ export function createPluginWorkerHandle(
 
     notify(method: string, params: unknown) {
       if (status !== "running") return;
+      if (idleSleepHeld()) throw new Error("Plugin is held for idle sleep");
       const invocationScope = deriveInvocationScope(method, params);
       // Notifications have no response to settle on, so the invocation scope
       // is GC'd by TTL. Call-path invocations are registered without a TTL and
@@ -3637,6 +3736,20 @@ export function createPluginWorkerManager(
   );
 
   return {
+    async inspectIdleSleep(hold) {
+      if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
+      const snapshot = [...workers.entries()];
+      const results = await Promise.all(snapshot.map(async ([, worker]) =>
+        worker.prepareIdleSleep ? worker.prepareIdleSleep(hold) : "unknown"));
+      if (startupLocks.size || snapshot.length !== workers.size || snapshot.some(([id, worker]) => workers.get(id) !== worker || worker.status !== "running")) {
+        return { backgroundWork: "unknown", pluginIds: [] };
+      }
+      const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";
+      return { backgroundWork, pluginIds: backgroundWork === "none" ? snapshot.map(([id]) => id) : [] };
+    },
+    releaseIdleSleep() {
+      for (const worker of workers.values()) worker.releaseIdleSleep?.();
+    },
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,
@@ -3690,7 +3803,7 @@ export function createPluginWorkerManager(
       log.info({ pluginId }, "starting plugin worker");
 
       // Set the lock before awaiting start() to prevent concurrent spawns
-      const startPromise = handle.start().then(() => handle).finally(() => {
+      const startPromise = trackIdleWork(handle.start()).then(() => handle).finally(() => {
         startupLocks.delete(pluginId);
       });
       startupLocks.set(pluginId, startPromise);
@@ -3706,7 +3819,7 @@ export function createPluginWorkerManager(
       }
 
       log.info({ pluginId }, "stopping plugin worker");
-      await handle.stop();
+      await trackIdleWork(handle.stop());
       workers.delete(pluginId);
     },
 

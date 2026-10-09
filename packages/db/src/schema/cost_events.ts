@@ -12,7 +12,9 @@ export const costEvents = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    agentId: uuid("agent_id").references(() => agents.id),
+    usageKind: text("usage_kind").notNull().default("agent"),
+    responsibleUserId: text("responsible_user_id"),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -36,6 +38,7 @@ export const costEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    usageKindCheck: check("cost_events_usage_kind_check", sql`${table.usageKind} = 'decision' or (${table.usageKind} = 'agent' and ${table.agentId} is not null)`),
     receiptUniqueIdx: uniqueIndex("cost_events_company_receipt_idx").on(table.companyId, table.idempotencyKey),
     providerRequestIdx: index("cost_events_provider_request_idx").on(table.companyId, table.biller, table.providerRequestId),
     nonnegativeAmounts: check("cost_events_nonnegative_amounts", sql`${table.costCents} >= 0 and ${table.inputTokens} >= 0 and ${table.cachedInputTokens} >= 0 and ${table.outputTokens} >= 0`),

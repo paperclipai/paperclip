@@ -1,3 +1,4 @@
+export { chatSlackRegistrations } from "./chat_slack_registrations.js";
 export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
 export { companyTransferRuns } from "./company_transfer_runs.js";
@@ -223,6 +224,7 @@ export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrows
 
 export * from "./company_skill_sources.js";
 export * from "./public_mcp.js";
+export * from "./dot_runner.js";
 
 
 export * from "./accounting.js";
@@ -233,3 +235,5 @@ export { agentCommentary } from "./agent_commentary.js";
 
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";
+export * from "./decision_models.js";
+export { userCompanyPreferences } from "./user_company_preferences.js";

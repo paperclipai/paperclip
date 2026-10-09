@@ -1,6 +1,6 @@
 import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS } from "./connection-guidance-cases.js";
-import { gradeConnectionGuidanceDecline } from "./connection-guidance-evidence.js";
+import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, explainsConnectionUnavailable, type ConnectionGuidanceDeclineInput } from "./connection-guidance-evidence.js";
 import { expect, type Page } from "@playwright/test";
 import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
@@ -68,6 +68,7 @@ export interface EverydayEvidence {
     connectionGuidanceBudgets?: { companyMonthlyCents: unknown; agentMonthlyCents: unknown };
   };
   documents?: Row[];
+  declineGradeEvidence?: { capturedAt: string; input: ConnectionGuidanceDeclineInput; checks: StoryCheck[] };
   checks: StoryCheck[];
   timeline: Array<{ at: string; action: string; detail?: unknown }>;
   issues: Array<StoryIssue & Row>;
@@ -301,6 +302,18 @@ export async function runEverydayFlow(input: Input) {
       commentIds: added.map((c) => c.id),
     });
   }
+  function declineInput(state: Pick<EverydayEvidence, "issues" | "runs">): ConnectionGuidanceDeclineInput | undefined {
+    if (execution.suite.id !== CONNECTION_GUIDANCE_SUITE ||
+      (caseId !== "service-decline" && caseId !== "connection-decline" && caseId !== "provider-decline")) return;
+    const issue = state.issues.find(i => i.id === parent?.id);
+    return {
+      caseId, decisionId: decisionId ?? "", decisions: issue?.interactions as any ?? [],
+      leadAgentId: fixtures.agent.id, issueId: parent?.id ?? "", replies: issue?.comments ?? [],
+      runs: state.runs, marker: (caseId === "provider-decline" ? "CONTACTS_" : "SERVICE_") + nonce,
+      // Readiness never grades these external observations. They are filled at the grading boundary below.
+      sameConnections: false,
+    };
+  }
   async function settled(expectedAgentReply?: string) {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
@@ -310,7 +323,7 @@ export async function runEverydayFlow(input: Input) {
           state.issues, parent?.id ?? "", fixtures.agent.id, state.runs,
           observableAgentIds(state),
         ) ?? (storyHasDurableServiceContinuation(state.issues, parent?.id ?? "", fixtures.agent.id, state.runs)
-          ? "task is Blocked without an active continuation after executed service approval" : undefined)),
+          ? "task is Blocked without an active continuation after resolved service approval" : undefined)),
       intervalMs: 1000,
       load: refresh,
       accept: (state) =>
@@ -324,6 +337,7 @@ export async function runEverydayFlow(input: Input) {
         state.runs.some(
           (r) => Date.parse(r.finishedAt ?? "") >= lastSubmissionAt,
         ) &&
+        (!declineInput(state) || hasConnectionGuidanceDeclineReply(declineInput(state)!)) &&
         (!expectedAgentReply ||
           storyHasAgentReply(
             state.issues.find((issue) => issue.id === parent?.id),
@@ -1175,15 +1189,17 @@ export async function runEverydayFlow(input: Input) {
     }
     if (execution.suite.id === CONNECTION_GUIDANCE_SUITE &&
       (caseId === "service-decline" || caseId === "connection-decline" || caseId === "provider-decline")) {
-      const issue = ev.issues.find(i => i.id === parent!.id)!;
       const state = await api.get<{ connections: Row[] }>("/api/companies/" + fixtures.company.id + "/tools/connections");
-      ev.checks.push(...gradeConnectionGuidanceDecline({
-        caseId, decisionId: decisionId!, decisions: issue.interactions as any,
-        leadAgentId: fixtures.agent.id, issueId: parent!.id, replies: issue.comments ?? [],
-        runs: ev.runs, calls: review?.invocationCount() ?? aggregatorFixture?.invocationCount(),
-        marker: (caseId === "provider-decline" ? "CONTACTS_" : "SERVICE_") + nonce,
+      const gradeInput = structuredClone({
+        ...declineInput(ev)!,
+        calls: review?.invocationCount() ?? aggregatorFixture?.invocationCount(),
         sameConnections: isDeepStrictEqual(state.connections.map(c => c.id).sort(), initialConnections.sort()),
-      }));
+      });
+      const checks = gradeConnectionGuidanceDecline(gradeInput);
+      // Keep the actual assertion input independent of the later final/cleanup refreshes.
+      ev.declineGradeEvidence = { capturedAt: new Date().toISOString(), input: gradeInput, checks: structuredClone(checks) };
+      await input.evidence("connection-guidance-decline-grade.json", ev.declineGradeEvidence);
+      ev.checks.push(...checks);
     }
     if (declining) {
       const issue = ev.issues.find((i) => i.id === parent!.id)!;
@@ -1204,9 +1220,7 @@ export async function runEverydayFlow(input: Input) {
       check(
         "decline-visible-explanation",
         replies.length > 0 &&
-          /declin|not now|could(?:n.t| not)|cannot|can.t|unable|not (?:connect|retriev)|without (?:access|connect)/i.test(
-            text,
-          ),
+          explainsConnectionUnavailable(text),
         "A new agent response explains the missing access after the saved decline.",
       );
       check(

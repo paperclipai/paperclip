@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "../../packages/shared/src/portability-hash.js";
 import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
 import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
-import { assertNativeRemoteRetirement, nativeRemoteDeniedSample, type NativeRemoteSnapshot } from "./native-remote-evidence.js";
+import { assertCopilotRemoteRetirement, copilotRemoteDeniedSample, type CopilotRemoteSnapshot } from "./copilot-protection-evidence.js";
+import { readCopilotToolEvidence } from "./copilot-evidence.js";
 import { readCursorToolEvidence } from "./cursor-native-evidence.js";
 import { bootstrapReadExecutionId, withoutProvenBootstrapReads, type BootstrapReadProof } from "./native-bootstrap-read-proof.js";
 
 type Row = Record<string, any>;
 export interface ActiveStopCaller { type: "board"; userId: "local-board"; source: "local_implicit" }
-export type ActiveStopProvider = "cursor";
+export type ActiveStopProvider = "cursor" | "copilot";
 export interface ActiveStopScope { provider: ActiveStopProvider; companyId: string; issueId: string; runId: string; target: string; commandSha256?: string }
 export interface ActiveStopPending {
   schema: "paperclip.e2e.native-active-stop-pending.v2";
@@ -61,7 +62,7 @@ const closures = new Set(["runtime_request.resolved", "runtime_request.cancelled
 function origin(events: readonly unknown[], scope: ActiveStopScope, bootstrap?: BootstrapReadProof) {
   fail([scope.companyId, scope.issueId, scope.runId, scope.target].every(id) && ["cursor", "copilot"].includes(scope.provider), "exact scope required");
   const rows = canonicalRows(events, scope);
-  const notices = readCursorToolEvidence(events, scope.runId);
+  const notices = scope.provider === "cursor" ? readCursorToolEvidence(events, scope.runId) : readCopilotToolEvidence(events, scope.runId);
   const requests = notices.filter(n => n.stage === "permission_requested");
   fail(requests.length === 1, "one native permission required");
   const notice = requests[0]!;
@@ -119,7 +120,7 @@ export function observeActiveStopPending(input: { events: readonly unknown[]; ru
   fail(isActiveStopCaller(input.caller) && uuid(input.cancellationRequestId) && run.id === scope.runId && run.companyId === scope.companyId && run.nativeIssueId === scope.issueId
     && run.status === "running" && run.runtimeMode === "native" && issue.id === scope.issueId && issue.companyId === scope.companyId && issue.status === "in_progress"
     && run.resultJson?.startupCancellation == null && run.resultJson?.nativeCancellation == null, "run is not fresh active work");
-  fail(!(readCursorToolEvidence(input.events, scope.runId)).some(n => n.stage === "permission_delivered"), "permission already answered");
+  fail(!(scope.provider === "cursor" ? readCursorToolEvidence(input.events, scope.runId) : readCopilotToolEvidence(input.events, scope.runId)).some(n => n.stage === "permission_delivered"), "permission already answered");
   fail(!proof.rows.some(x => terminals.has(x.event.eventType) || closures.has(x.event.eventType)), "request or provider already settled");
   fail(!proof.rows.some(x => x.event.eventType === "tool.execution.completed" && rec(x.event.payload).executionId === bootstrapReadExecutionId(proof.notice.toolCallId)), "operation already ended");
   return { schema: "paperclip.e2e.native-active-stop-pending.v2", scope, caller: input.caller, requestId: proof.notice.requestId!, toolCallId: proof.notice.toolCallId,
@@ -180,7 +181,7 @@ export function readActiveStopSettlement(input: { events: readonly unknown[]; ru
 export interface ActiveStopRemoteObservation {
   phase: "before-request" | "pending" | "owned-process-retirement";
   source: "live-snapshot" | "retirement-seal";
-  snapshot: NativeRemoteSnapshot;
+  snapshot: CopilotRemoteSnapshot;
 }
 
 /** A per-turn Daytona observer seals itself when the owned tree retires. The
@@ -192,10 +193,10 @@ export function readActiveStopRemoteRetirement(input: {
   fail(observations.length === 3
     && observations.map(o => `${o.phase}:${o.source}`).join(",") === "before-request:live-snapshot,pending:live-snapshot,owned-process-retirement:retirement-seal",
   "remote seal cannot stand in for a fresh causal sample");
-  const [baseline, pending, terminal] = observations.map(o => o.snapshot) as [NativeRemoteSnapshot, NativeRemoteSnapshot, NativeRemoteSnapshot];
+  const [baseline, pending, terminal] = observations.map(o => o.snapshot) as [CopilotRemoteSnapshot, CopilotRemoteSnapshot, CopilotRemoteSnapshot];
   fail(baseline.binding.companyId === input.scope.companyId && baseline.binding.runId === input.scope.runId, "remote observation belongs to another run");
   for (const snapshot of [baseline, pending, terminal]) {
-    fail(!nativeRemoteDeniedSample(snapshot, baseline, input.scope.target, "pending").exists, "remote target changed");
+    fail(!copilotRemoteDeniedSample(snapshot, baseline, input.scope.target, "pending").exists, "remote target changed");
   }
   fail(BigInt(baseline.observedMonotonicNs) < BigInt(pending.observedMonotonicNs)
     && BigInt(pending.observedMonotonicNs) < BigInt(terminal.observedMonotonicNs), "remote observation reused or out of order");
@@ -203,8 +204,8 @@ export function readActiveStopRemoteRetirement(input: {
     && baseline.processes.captured && pending.processes.captured
     && baseline.processes.live.includes(baseline.processes.root?.pid ?? -1)
     && pending.processes.live.includes(pending.processes.root?.pid ?? -1), "remote pending lifetime unproven");
-  assertNativeRemoteRetirement(terminal, baseline);
-  assertNativeRemoteRetirement(terminal, pending);
+  assertCopilotRemoteRetirement(terminal, baseline);
+  assertCopilotRemoteRetirement(terminal, pending);
   for (const snapshot of [baseline, pending]) {
     fail(snapshot.processes.journal.every(p => terminal.processes.journal.some(q =>
       p.pid === q.pid && p.startTicks === q.startTicks && p.bootId === q.bootId)), "remote descendant journal lost");

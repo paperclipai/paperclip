@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
-import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, createRemoteTargetWatch, isRemoteRunRoot, parseRemoteProcStat, remoteNativeFixtureDiagnostics, type RemoteNativeFixtureOptions, type RemoteNativeSnapshot } from "./remote-native-fixtures.js";
+import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, validatePiProviderDeathReceipt, createRemoteTargetWatch, isRemoteRunRoot, parseRemoteProcStat, remoteProcEntryDisappeared, remoteNativeFixtureDiagnostics, remoteNativeIncompleteTerminalEvidence, type RemoteNativeFixtureOptions, type RemoteNativeSnapshot } from "./remote-native-fixtures.js";
 
+import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
 import { createRemoteNativeBootstrap } from "./remote-native-bootstrap.js";
 
 const hash = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
@@ -51,6 +52,19 @@ function harness() {
   return { options, current, labels, calls, executeCommand, apiGet, get, resolveTerminal, rejectTerminal,
     setLease(value: Record<string, unknown>) { lease = value; }, lease: () => lease, override(fn: typeof override) { override = fn; } };
 }
+
+describe("remote process exit during proc reads", () => {
+  it.each(["ENOENT", "ESRCH"])("accepts confirmed %s process absence", code => {
+    const confirm = vi.fn();
+    expect(remoteProcEntryDisappeared({ code }, confirm)).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(remoteProcEntryDisappeared({ code: "EIO" }, () => { throw { code }; })).toBe(true);
+  });
+  it.each(["EIO", "EACCES", undefined])("rejects an unreadable existing process (%s)", code => {
+    expect(remoteProcEntryDisappeared({ code }, () => ({ isDirectory: () => true }))).toBe(false);
+    expect(remoteProcEntryDisappeared({ code }, () => { throw { code: "EACCES" }; })).toBe(false);
+  });
+});
 
 describe("remote native lease admission", () => {
   it.each(["companyId", "environmentId", "heartbeatRunId", "providerLeaseId", "provider", "status"])("rejects wrong %s before executing any remote command", async key => {
@@ -232,19 +246,63 @@ describe("remote native lease admission", () => {
     if (type === "bad-file") end.targets["result.txt"] = { ...end.targets["result.txt"], absent: false, sha256: hash("missing") };
     h.resolveTerminal(end); await expect(f.finish()).rejects.toThrow();
   });
-  it("reports only closed terminal failure reasons without weakening retirement proof", async () => {
+  it("retains a validated incomplete terminal receipt without raw file or RPC content", async () => {
     const h = harness(), f = await bindRemoteNativeFixture(h.options);
     await f.publishAction("action.txt", "task");
-    const end = { ...structuredClone(h.current), complete: false,
-      processes: { ...h.current.processes, live: [] }, files: {},
-      failureCodes: ["process_pid_reused", "secret-provider-payload", "process_pid_reused", { arbitrary: "payload" }] };
+    const end = { ...structuredClone(h.current), complete: false, watcher: { ...h.current.watcher, complete: false },
+      processes: { ...h.current.processes, live: [] }, files: { "private.txt": "PRIVATE RPC CONTENT" }, untrustedDump: "PRIVATE RPC CONTENT" };
     h.resolveTerminal(end);
     const error = await f.finish().catch(error => error);
-    expect(error.message).toContain("terminal_evidence_incomplete:published=true,complete=false");
-    expect(error.message).toContain(":process_pid_reused");
-    expect(error.message).not.toContain("secret-provider-payload");
-    expect(error.message).not.toContain("arbitrary");
-    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "wait", code: "terminal_evidence_incomplete" }]);
+    expect(error.message).toBe("remote_native_fixture:terminal_evidence_incomplete");
+    const retained = remoteNativeIncompleteTerminalEvidence(error)!;
+    expect(retained.complete).toBe(false); expect(retained.watcher.complete).toBe(false);
+    expect(retained.processes.liveCount).toBe(0);
+    expect(retained.incompleteReasons).toEqual([]);
+    expect(JSON.stringify(retained)).not.toContain("PRIVATE RPC CONTENT");
+    retained.watcher.complete = true;
+    expect(remoteNativeIncompleteTerminalEvidence(error)!.watcher.complete).toBe(false);
+    expect(remoteNativeIncompleteTerminalEvidence(new Error("PRIVATE RPC CONTENT"))).toBeUndefined();
+  });
+  it("retains only closed incompleteness reasons and rejects raw diagnostics", async () => {
+    const h = harness(), f = await bindRemoteNativeFixture(h.options); await f.publishAction("action.txt", "task");
+    h.resolveTerminal({ ...structuredClone(h.current), complete: false, incompleteReasons: ["unwatched_directory"],
+      processes: { ...h.current.processes, live: [] }, files: {} });
+    const error = await f.finish().catch(error => error);
+    expect(remoteNativeIncompleteTerminalEvidence(error)?.incompleteReasons).toEqual(["unwatched_directory"]);
+    await f.close();
+    const bad = harness(), other = await bindRemoteNativeFixture(bad.options); await other.publishAction("action.txt", "task");
+    bad.resolveTerminal({ ...structuredClone(bad.current), complete: false, incompleteReasons: ["PRIVATE RAW PATH"],
+      processes: { ...bad.current.processes, live: [] }, files: {} });
+    const rejected = await other.finish().catch(error => error);
+    expect(rejected.message).toContain("incomplete_reasons_shape");
+    expect(remoteNativeIncompleteTerminalEvidence(rejected)).toBeUndefined();
+    await other.close();
+  });
+  it("keeps incomplete evidence failed while closing a retired observer after public lease deletion", async () => {
+    const h = harness(), f = await bindRemoteNativeFixture(h.options);
+    await f.publishAction("action.txt", "task");
+    h.resolveTerminal({ ...structuredClone(h.current), complete: false, incompleteReasons: ["unwatched_directory"],
+      watcher: { ...h.current.watcher, complete: false }, processes: { ...h.current.processes, live: [] }, files: {} });
+    await expect(f.finish()).rejects.toThrow("terminal_evidence_incomplete");
+    h.setLease({ ...h.lease(), status: "released", releasedAt: "2026-10-06T01:00:00Z" });
+    const before = h.calls.length;
+    await expect(f.close()).resolves.toBeUndefined();
+    expect(h.calls).toHaveLength(before);
+    await expect(f.finish()).rejects.toThrow("terminal_evidence_incomplete");
+    await expect(f.readFile("result.txt")).rejects.toThrow("unregistered_read");
+  });
+  it.each(["live", "missing-root", "invalid-shape", "unknown-cause", "reused-process", "attached-live"])("does not treat %s evidence as retired cleanup", async kind => {
+    const h = harness(), f = await bindRemoteNativeFixture(h.options);
+    await f.publishAction("action.txt", "task");
+    const end: any = { ...structuredClone(h.current), complete: false, processes: { ...h.current.processes, live: [] }, files: {} };
+    if (kind === "live") end.processes.live = [21];
+    if (kind === "missing-root") end.processes = { captured: false, root: null, journal: [], live: [] };
+    if (kind === "invalid-shape") end.observedAtMs = "invalid";
+    if (kind === "reused-process") end.incompleteReasons = ["process_identity_reused"];
+    if (kind === "attached-live") end.incompleteReasons = ["attached_process_live"];
+    h.resolveTerminal(end); await expect(f.finish()).rejects.toThrow();
+    h.setLease({ ...h.lease(), status: "released", releasedAt: "2026-10-06T01:00:00Z" });
+    await expect(f.close()).rejects.toThrow("lease_scope");
   });
   it("keeps a fixture-owned cross-root sentinel distinct from workspace targets", async () => {
     const h = harness(); h.options.crossRoot = { initialText: "outside sentinel" };
@@ -334,7 +392,7 @@ describe("cell deadline and cleanup bounds", () => {
 });
 
 describe("independent filesystem and process observations", () => {
-  it.skipIf(process.platform !== "linux")("retains transient create/delete events and detects same-path parent replacement", async () => {
+  it("retains transient create/delete events and detects same-path parent replacement", async () => {
     const dir = await mkdtemp(join(tmpdir(), "remote-watch-")); const watcher = createRemoteTargetWatch(dir, "denied.txt");
     try {
       await writeFile(join(dir, "denied.txt"), "forbidden"); await rm(join(dir, "denied.txt"));
@@ -378,7 +436,7 @@ describe("actual generated observer state machine", () => {
     const handlers: Array<(socket: any) => void> = [], children: any[] = [];
     const missing = () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); };
     const fds = new Map<number, string>(); let nextFd = 50, runtimeInode = 4n;
-    const symbolicLinks = new Set<string>();
+    const symbolicLinks = new Set<string>(), directoryInodes = new Map<string, bigint>();
     const directories = new Set(["/tmp", "/workspace", "/workspace/.paperclip-runtime", "/workspace/.paperclip-runtime/paperclip-runner", "/workspace/.paperclip-runtime/paperclip-runner/sessions"]);
     if (!deferStartup) directories.add(config.root);
     const listeners = new Map<string, (socket: any) => void>();
@@ -402,10 +460,10 @@ describe("actual generated observer state machine", () => {
       lstatSync(path: string) {
         const directory = directories.has(path);
         if (!directory && !files.has(path) && !symbolicLinks.has(path)) return missing();
-        return { dev: 1n, ino: path === config.root ? 2n : path === "/workspace/.paperclip-runtime/paperclip-runner" ? runtimeInode : 3n, mtimeNs: 4n, ctimeNs: 5n, isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => symbolicLinks.has(path), size: files.get(path)?.length ?? 0 };
+        return { dev: 1n, ino: directoryInodes.get(path) ?? (path === config.root ? 2n : path === "/workspace/.paperclip-runtime/paperclip-runner" ? runtimeInode : 3n), mtimeNs: 4n, ctimeNs: 5n, isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => symbolicLinks.has(path), size: files.get(path)?.length ?? 0 };
       },
       realpathSync: (path: string) => path,
-      readdirSync(path: string) { if (path === "/proc") return [...proc.keys()].map(String); if (path === "/workspace") return [".paperclip-runtime", ...[...files.keys(), ...symbolicLinks].filter(p => p.startsWith("/workspace/") && !p.slice(11).includes("/")).map(p => p.slice(11))]; if (path === "/workspace/.paperclip-runtime") return ["reusable-sandbox-lease.json", "paperclip-runner", ...[...files.keys()].filter(p => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/") && !p.endsWith("reusable-sandbox-lease.json")).map(p => p.slice(path.length + 1))]; if (path.startsWith("/workspace/.paperclip-runtime/paperclip-runner")) throw new Error("excluded runtime must not be traversed"); return []; },
+      readdirSync(path: string) { if (path === "/proc") return [...proc.keys()].map(String); if (path.startsWith("/workspace/.paperclip-runtime/paperclip-runner")) throw new Error("excluded runtime must not be traversed"); return [...new Set([...files.keys(), ...directories, ...symbolicLinks].filter(p => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/")).map(p => p.slice(path.length + 1)))]; },
       watch(path: string, options: unknown, callback?: (_kind: string, name: string | null) => void) {
         const entry = { path, callback: (callback ?? options) as (_kind: string, name: string | null) => void, closed: false }; watches.push(entry);
         return Object.assign(new EventEmitter(), { close: () => { entry.closed = true; } });
@@ -432,8 +490,9 @@ describe("actual generated observer state machine", () => {
       close: vi.fn(() => listeners.clear()),
     };
     const net = { createServer(fn: (socket: any) => void) { handlers.push(fn); return server; } };
+    const faultSpawn = vi.fn(() => ({ status: 0, stdout: JSON.stringify(piFaultReceipt()) }));
     const context = {
-      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
+      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
       process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn() },
       Buffer, __filename: `${config.root}/observer.cjs`,
       setInterval(fn: () => void) { intervals.push(fn); return 1; }, clearInterval: vi.fn(),
@@ -445,8 +504,56 @@ describe("actual generated observer state machine", () => {
       const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
       handlers[0]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ op, nonce: config.nonce, ...args }) + "\n")); return replies;
     }
-    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, symbolicLinks, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
+    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, directoryInodes, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
   }
+  it("keeps existing watched directory notifications complete without losing nested mutations", async () => {
+    const o = await observerHarness(true);
+    o.directories.add(o.config.root); o.files.set(`${o.config.root}/observer.cjs`, Buffer.from(o.install.request.source));
+    o.directories.add("/workspace/existing");
+    new Script(o.install.request.source).runInNewContext(o.context);
+    // Linux emits a parent notification when chmod changes a child's directory
+    // attributes. Its inode and registered recursive watch remain unchanged.
+    for (const w of o.watches) if (w.path === "/workspace") w.callback("change", "existing");
+    expect(o.request("snapshot")[0].result.complete).toBe(true);
+    o.fs.writeFileSync("/workspace/existing/transient.txt", "changed", { flag: "wx" });
+    o.files.delete("/workspace/existing/transient.txt");
+    o.watches.find(w => w.path === "/workspace/existing")!.callback("rename", "transient.txt");
+    const final = o.request("snapshot")[0].result;
+    expect(final.complete).toBe(true); expect(final.watcher.workspaceMutationCount).toBe(3);
+    expect(final.workspace["existing/transient.txt"]).toBeUndefined();
+  });
+  it.each(["new", "replacement", "symlink", "unknown"])("rejects %s directory notifications", async variant => {
+    const o = await observerHarness(true);
+    o.directories.add(o.config.root); o.files.set(`${o.config.root}/observer.cjs`, Buffer.from(o.install.request.source));
+    if (variant !== "new") o.directories.add("/workspace/existing");
+    new Script(o.install.request.source).runInNewContext(o.context);
+    if (variant === "new") o.directories.add("/workspace/existing");
+    if (variant === "replacement") o.directoryInodes.set("/workspace/existing", 999n);
+    if (variant === "symlink") o.symbolicLinks.add("/workspace/existing");
+    for (const w of o.watches) if (w.path === "/workspace") w.callback("change", variant === "unknown" ? null : "existing");
+    const reply = o.request("snapshot")[0];
+    expect(reply.ok && reply.result.complete).toBe(false);
+  });
+  it("executes the actual observer fault phase once with a closed environment and exact identity", async () => {
+    for (const published of [false, true]) {
+      const rejected = await observerHarness();
+      if (published) rejected.request("publish", { path: "action.txt", text: "ask native input" });
+      expect(rejected.request("pi-provider-death", { runtimeEnvironmentLeaseId: published ? "foreign" : "workspace-id" })[0].ok).toBe(false);
+      expect(rejected.faultSpawn).not.toHaveBeenCalled();
+    }
+    const o = await observerHarness();
+    expect(o.request("snapshot")[0].ok).toBe(true);
+    expect(o.request("publish", { path: "action.txt", text: "ask native input" })[0].ok).toBe(true);
+    expect(o.request("pi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id" })[0]).toEqual({ ok: true, result: piFaultReceipt() });
+    expect(o.faultSpawn).toHaveBeenCalledTimes(1);
+    const [program, args, options] = o.faultSpawn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    expect(program).toBe("/usr/bin/python3"); expect(args.slice(0, 2)).toEqual(["-I", "-c"]);
+    expect(args[2]).toContain("signal.pidfd_send_signal");
+    expect(JSON.parse(Buffer.from(args[3]!, "base64").toString())).toEqual({ root, binding, runtimeEnvironmentLeaseId: "workspace-id", runnerdSha256: hash("runnerd"), closureSha256: PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"] });
+    expect(options).toMatchObject({ env: { PATH: "/usr/bin:/bin" }, timeout: 8000, maxBuffer: 32768 });
+    expect(o.request("pi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id" })[0].ok).toBe(false);
+    expect(o.faultSpawn).toHaveBeenCalledTimes(1);
+  });
   async function generatedRpc(o: Awaited<ReturnType<typeof observerHarness>>, request: Record<string, unknown>, mutateSource = (source: string) => source) {
     const quoted = o.install.command.match(/ -e (.+) '[A-Za-z0-9+/=]+'$/su)![1]!;
     const source = quoted.slice(1, -1).replaceAll("'\\''", "'");
@@ -689,7 +796,7 @@ describe("actual generated observer state machine", () => {
     const o = await observerHarness(); o.request("snapshot"); const wait = o.request("wait");
     o.proc.set(21, { ppid: 1, group: 99, ticks: "999", argv: ["/unrelated"] }); o.intervals[0]!(); o.timers.find(t => t.ms === 100)!.fn();
     expect(wait[0].result.complete).toBe(false); expect(wait[0].result.processes.root.startTicks).toBe("100");
-    expect(wait[0].result.failureCodes).toContain("process_pid_reused");
+    expect(wait[0].result.incompleteReasons).toContain("process_identity_reused");
   });
   it("counts transient workspace create/delete and rejects changed setup-file bytes", async () => {
     const o = await observerHarness(); o.request("snapshot");
@@ -705,5 +812,43 @@ describe("actual generated observer state machine", () => {
     o.proc.set(22, { ...p, group: 22, ticks: "200" }); expect(o.request("snapshot")[0].result.complete).toBe(false);
     const other = await observerHarness(); other.proc.get(21)!.argv[4] = "bad value with spaces";
     expect(other.request("snapshot")[0].ok).toBe(false);
+  });
+});
+
+function piFaultReceipt() {
+  const parent = { pid: 22, ppid: 21, startTicks: "101", bootId }, target = { pid: 23, ppid: 22, startTicks: "102", bootId };
+  return { schema: "paperclip.e2e.pi-provider-death.v1", binding, runtimeEnvironmentLeaseId: "workspace-id", target, ancestry: [target, parent, root],
+    nodeSha256: hash("node"), entrypointSha256: hash("entry"), closureSha256: PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"],
+    entrypointAttribution: "pinned_wrapper_parent", originalChildArgvAvailable: false, observedChildTitle: "pi", signalled: true, signal: "SIGKILL", targetKind: "pi_native_child", workerSignalled: false };
+}
+describe("exact Pi-child fault capability", () => {
+  it("validates ancestry and honest parent-attested entrypoint identity", () => {
+    const receipt = piFaultReceipt();
+    expect(validatePiProviderDeathReceipt(receipt, binding, root, "workspace-id")).toEqual(receipt);
+    for (const patch of [{ workerSignalled: true }, { target: root }, { originalChildArgvAvailable: true }, { entrypointAttribution: "process_title" },
+      { binding: { ...binding, runId: "foreign" } }, { runtimeEnvironmentLeaseId: "foreign" }, { closureSha256: "0".repeat(64) },
+      { ancestry: [receipt.target, { ...receipt.ancestry[1], startTicks: "" }, root] }, { ancestry: [receipt.target, root] },
+      { ancestry: [receipt.target, { ...receipt.ancestry[1], ppid: 999 }, root] }, { ancestry: [receipt.target, receipt.ancestry[1], { ...root, startTicks: "999" }] }]) {
+      expect(() => validatePiProviderDeathReceipt({ ...receipt, ...patch }, binding, root, "workspace-id")).toThrow();
+    }
+  });
+  it("requires published action and consumes the one-shot capability even on RPC failure", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    await fixture.publishAction("action.txt", "Ask the native question");
+    h.override(request => request.op === "pi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, error: "pi_provider_identity_or_signal_failed" }) } : undefined);
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
+    await fixture.close();
+  });
+  it("returns only the exact reviewed fault receipt and never signals the worker", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await fixture.publishAction("action.txt", "Ask the native question");
+    h.override(request => request.op === "pi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: piFaultReceipt() }) } : undefined);
+    expect(await fixture.terminatePiProvider!("workspace-id")).toEqual(piFaultReceipt());
+    await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
+    await fixture.close();
   });
 });

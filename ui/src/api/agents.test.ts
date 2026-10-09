@@ -34,3 +34,10 @@ describe("agentsApi.retryFailedRun", () => {
       .rejects.toThrow("Task execution is paused.");
   });
 });
+
+it("retries lifecycle work through the company-scoped agent route", async () => {
+  const result = { id: "agent-1", lifecycleState: "preparing" };
+  const post = vi.spyOn(api, "post").mockResolvedValue(result);
+  await expect(agentsApi.retryLifecycle("agent-1", "company-1")).resolves.toEqual(result);
+  expect(post).toHaveBeenCalledWith("/agents/agent-1/lifecycle/retry?companyId=company-1", {});
+});

@@ -570,6 +570,9 @@ export function rebindNativeSessionCheckpoint(input: {
     activeTurnId: null,
     terminalTurns: [],
     pendingRuntimeRequests: [],
+    // Settlement evidence belongs to the prior heartbeat run, even when the
+    // provider session is reused for the user's response.
+    governedWait: undefined,
     providerRecoveryPolicy,
   };
 }

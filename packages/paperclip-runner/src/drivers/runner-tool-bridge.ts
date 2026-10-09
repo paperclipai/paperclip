@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { appendSemanticToolReceipt, semanticCanonicalJson as canonicalJson, semanticInputSha256, type SemanticToolReceipt } from "./semantic-tool-receipt.js";
 import {
   createServer,
   type IncomingMessage,
@@ -28,6 +29,9 @@ export interface RunnerToolCall {
   callId: string;
   arguments: unknown;
   signal: AbortSignal;
+  /** Internal, invocation-owned evidence. Snapshot before forwarding; commit only
+   * after that exact normalized input is forwarded. Never supplied by the model. */
+  captureNormalizedInput?: (input: unknown) => (() => void);
 }
 
 export interface RunnerToolBridgeOptions {
@@ -35,6 +39,8 @@ export interface RunnerToolBridgeOptions {
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler(call: RunnerToolCall): Promise<unknown>;
+  /** Copilot-only opt-in; capture the active invocation scope before dispatch. */
+  captureSemanticReceipt?: () => ((receipt: SemanticToolReceipt) => void) | undefined;
   timeoutMs?: number;
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
@@ -60,6 +66,7 @@ interface RunnerToolTextContent {
 }
 
 interface RunnerToolCallResult {
+  isError?: boolean;
   content: RunnerToolTextContent[];
 }
 
@@ -123,6 +130,7 @@ export async function startRunnerToolBridge(
     calls,
     controllers,
     handler: options.handler,
+    captureSemanticReceipt: options.captureSemanticReceipt,
     timeoutMs: positiveBoundedInteger(
       options.timeoutMs,
       DEFAULT_TIMEOUT_MS,
@@ -192,6 +200,7 @@ async function handleRequest(
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
     handler: RunnerToolBridgeOptions["handler"];
+    captureSemanticReceipt: RunnerToolBridgeOptions["captureSemanticReceipt"];
     timeoutMs: number;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
@@ -321,6 +330,38 @@ async function handleRequest(
     }
   }
   const controller = existing === undefined ? new AbortController() : undefined;
+  let observeReceipt: ((receipt: SemanticToolReceipt) => void) | undefined;
+  if (!existing) { try { observeReceipt = context.captureSemanticReceipt?.(); } catch { /* Optional evidence cannot prevent dispatch. */ } }
+  let receiptSealed = false;
+  let normalizationCaptured = false;
+  let normalizationInvalid = false;
+  let normalizedInputSha256: string | null = null;
+  const captureNormalizedInput = (input: unknown): (() => void) => {
+    if (receiptSealed || controller?.signal.aborted) return () => {};
+    if (normalizationCaptured) { normalizationInvalid = true; return () => {}; }
+    normalizationCaptured = true;
+    let digest: string;
+    try {
+      if (!isRecord(input) || Buffer.byteLength(JSON.stringify(input)) > context.maxBodyBytes) throw new Error("Invalid normalized input");
+      digest = semanticInputSha256(input);
+    } catch { normalizationInvalid = true; return () => {}; }
+    let committed = false;
+    return () => {
+      if (receiptSealed || controller?.signal.aborted) return;
+      if (committed) { normalizationInvalid = true; return; }
+      committed = true;
+      if (!normalizationInvalid) normalizedInputSha256 = digest;
+    };
+  };
+  const withReceipt = (result: RunnerToolCallResult): RunnerToolCallResult => {
+    receiptSealed = true;
+    if (!context.captureSemanticReceipt) return result;
+    try {
+      const bound = appendSemanticToolReceipt({ tool, callId, arguments: args, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
+      try { observeReceipt?.(bound.receipt); } catch { /* Evidence cannot change the tool outcome. */ }
+      return bound.result;
+    } catch { return result; }
+  };
   const execution: Promise<RunnerToolCallResult> =
     existing?.promise ??
     withCancellationAndTimeout(
@@ -331,6 +372,8 @@ async function handleRequest(
             callId,
             arguments: structuredClone(args),
             signal: controller!.signal,
+            ...(context.captureSemanticReceipt && (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME)
+              ? { captureNormalizedInput } : {}),
           }),
         )
         .then((result) => successfulToolResult(tool, callId, result)),
@@ -338,7 +381,10 @@ async function handleRequest(
       context.privateToolNames.has(tool)
         ? context.privateToolTimeoutMs
         : context.timeoutMs,
-    );
+    ).then(withReceipt, error => {
+      if (!context.captureSemanticReceipt) throw error;
+      return withReceipt({ isError: true, content: [{ type: "text", text: safeError(error) }] });
+    });
   if (!existing) {
     context.calls.set(callKey, { fingerprint, promise: execution });
     context.controllers.set(callKey, controller!);
@@ -813,16 +859,6 @@ function taggedObjectType(value: object): string {
     : "Object";
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
-}
 
 function isJsonContentType(value: string | undefined): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";

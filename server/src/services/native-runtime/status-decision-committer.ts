@@ -1,3 +1,4 @@
+import { eligibleIssueMonitorWait } from "../issue-monitors.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -732,15 +733,13 @@ async function materializeDecisionEffect(input: {
           },
         };
     }
+    if (effect.continuationKind === "monitor") throw new Error("Monitor delivery belongs to the issue monitor scheduler");
     const wakeId = await enqueueWake({
       tx: input.tx,
       companyId: input.companyId,
       issueId: input.issue.id,
       agentId: effect.agentId,
-      reason:
-        effect.continuationKind === "monitor"
-          ? "monitor_due"
-          : "issue_status_changed",
+      reason: "issue_status_changed",
       idempotencyKey: `native-status:${input.decisionId}:continuation`,
       payload: {
         nativeDecisionId: input.decisionId,
@@ -1556,6 +1555,7 @@ export async function commitNativeStatusDecision(input: {
   supersedesCommittedDecisionId?: string;
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
   requirePlanWaitSource?: NativePlanWaitSource;
+  requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1645,6 +1645,15 @@ export async function commitNativeStatusDecision(input: {
       issue.lastStatusDecisionId !== input.priorDecisionId
     ) {
       throw new NativeStatusRaceError();
+    }
+    if (reasonCode === "scheduled_monitor_waiting") {
+      const expected = input.requireMonitorWait;
+      if (!expected || issue.workMode !== "standard" || issue.executionRunId !== input.runId ||
+          input.decision.statusAction !== "preserve" || input.decision.effects.length !== 1 ||
+          input.decision.effects[0]?.kind !== "release_checkout" ||
+          eligibleIssueMonitorWait(issue, expected.agentId) !== expected.nextCheckAt) {
+        throw new NativeStatusRaceError();
+      }
     }
     // Recheck under the parent status lock: a child can finish between the
     // finalizer's read and this commit. Re-arbitrate instead of discarding its wake.

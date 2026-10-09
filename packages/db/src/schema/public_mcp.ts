@@ -1,6 +1,8 @@
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authUsers } from "./auth.js";
 import { companies } from "./companies.js";
+import { agents } from "./agents.js";
 
 // OAuth client/request metadata is instance-level authentication infrastructure.
 // Authority and mutation receipts are always scoped to a company and a user.
@@ -27,6 +29,8 @@ export const mcpOauthGrants = pgTable("mcp_oauth_grants", {
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
   clientId: text("client_id").notNull().references(() => mcpOauthClients.id, { onDelete: "cascade" }),
   resource: text("resource").notNull(),
+  purpose: text("purpose").$type<"personal" | "agent">().notNull().default("personal"),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
   scopes: jsonb("scopes").$type<string[]>().notNull(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -61,7 +65,8 @@ export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
   tokenHash: text("token_hash").notNull(),
   kind: text("kind").$type<"access" | "refresh">().notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  // Null only for renewable agent connection refresh tokens; access tokens expire.
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_oauth_tokens_hash_uq").on(t.tokenHash),
@@ -112,7 +117,8 @@ export const mcpEventSubscriptions = pgTable("mcp_event_subscriptions", {
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   grantId: uuid("grant_id").notNull().references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  taskId: uuid("task_id").notNull(),
+  taskId: uuid("task_id"),
+  bindingId: uuid("binding_id"),
   arguments: jsonb("arguments").$type<Record<string, unknown>>().notNull(),
   // URL, signing keys and optional Cloud authority, encrypted with the instance secret provider.
   deliveryMaterial: jsonb("delivery_material").$type<Record<string, unknown>>().notNull(),
@@ -121,7 +127,11 @@ export const mcpEventSubscriptions = pgTable("mcp_event_subscriptions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   stoppedAt: timestamp("stopped_at", { withTimezone: true }),
   scannedAt: timestamp("scanned_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("mcp_event_subscriptions_expiry_idx").on(t.expiresAt), index("mcp_event_subscriptions_company_idx").on(t.companyId)]);
+}, (t) => [
+  check("mcp_subscription_resource_check", sql`(${t.taskId} IS NOT NULL AND ${t.bindingId} IS NULL) OR (${t.taskId} IS NULL AND ${t.bindingId} IS NOT NULL)`),
+  index("mcp_event_subscriptions_expiry_idx").on(t.expiresAt),
+  index("mcp_event_subscriptions_company_idx").on(t.companyId),
+]);
 
 // Short-lived admission leases bound remote verification across replicas. Finished
 // attempts remain until expiry so failed callbacks cannot bypass rate limits.
@@ -143,7 +153,8 @@ export const mcpEventAdmissions = pgTable("mcp_event_admissions", {
 export const mcpEventDeliveries = pgTable("mcp_event_deliveries", {
   id: uuid("id").primaryKey().defaultRandom(),
   subscriptionId: text("subscription_id").notNull().references(() => mcpEventSubscriptions.id, { onDelete: "cascade" }),
-  activityId: uuid("activity_id").notNull(),
+  activityId: uuid("activity_id"),
+  mailboxItemId: integer("mailbox_item_id"),
   event: jsonb("event").$type<Record<string, unknown>>().notNull(),
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
@@ -151,6 +162,8 @@ export const mcpEventDeliveries = pgTable("mcp_event_deliveries", {
   // Category/status only; never a URL, secret or response body.
   outcome: text("outcome"),
 }, (t) => [
+  check("mcp_delivery_source_check", sql`(${t.activityId} IS NOT NULL AND ${t.mailboxItemId} IS NULL) OR (${t.activityId} IS NULL AND ${t.mailboxItemId} IS NOT NULL)`),
+  uniqueIndex("mcp_event_deliveries_mailbox_uq").on(t.subscriptionId, t.mailboxItemId),
   uniqueIndex("mcp_event_deliveries_activity_uq").on(t.subscriptionId, t.activityId),
   index("mcp_event_deliveries_due_idx").on(t.nextAttemptAt),
 ]);

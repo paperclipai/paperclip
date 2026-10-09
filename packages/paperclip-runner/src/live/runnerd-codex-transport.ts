@@ -1,10 +1,16 @@
+import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
+import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
+import { configuredEnvironment } from "../configured-environment.js";
 import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
+import { resolveCodexCommand } from "../drivers/codex/codex-command.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
+import { readLinuxProcessStartedAt } from "./linux-process-start.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -97,7 +103,7 @@ function readLocalProcessStartedAt(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
     if (process.platform === "linux") {
-      return new Date(statSync(`/proc/${pid}`).ctimeMs).toISOString();
+      return readLinuxProcessStartedAt(pid);
     }
     if (
       ["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(
@@ -577,7 +583,9 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
         (typeof value !== "string" || value.length === 0),
     ) ||
     (state.ambiguousTurnStartPending !== undefined &&
-      typeof state.ambiguousTurnStartPending !== "boolean")
+      typeof state.ambiguousTurnStartPending !== "boolean") ||
+    (state.providerExitUnconfirmed !== undefined &&
+      typeof state.providerExitUnconfirmed !== "boolean")
   )
     throw new Error("Provider drain state is malformed.");
   const pending = Array.isArray(state.pendingEvents)
@@ -594,7 +602,8 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
     pendingEventCount: pending + queued,
     activeProviderTurnId,
     providerSettled:
-      activeProviderTurnId === null && state.ambiguousTurnStartPending !== true,
+      activeProviderTurnId === null && state.ambiguousTurnStartPending !== true
+      && state.providerExitUnconfirmed !== true,
   };
 }
 
@@ -831,6 +840,14 @@ async function awaitRunnerSuspensionBarrier(input: {
   return false;
 }
 
+function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions, "provider" | "acpxAgent" | "closeGraceMs">): number {
+  // Idle Pi retirement may consume its five-second RPC stop window. Keep a
+  // separate five-second drain round trip and the bounded suspension reserve.
+  // Explicit caller deadlines remain authoritative; all settlement proofs stay
+  // mandatory even when the provider already completed its task.
+  return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 15_000 : 10_000);
+}
+
 function runnerCloseDeadlines(
   startedAtMs: number,
   graceMs: number,
@@ -921,8 +938,12 @@ export function bridgedAcpxPermissionParams(
   turnId: string,
 ): Record<string, unknown> | null {
   const request = record(record(record(event.envelope.payload).payload).request);
-  if (event.eventType !== "runtime_request.created"
-    || request.type !== "permission" || request.requestKind !== "permission_approval"
+  if (event.eventType !== "runtime_request.created") return null;
+  return acpxPermissionRequestParams(request, threadId, turnId);
+}
+
+function acpxPermissionRequestParams(request: Record<string, unknown>, threadId: string, turnId: string): Record<string, unknown> | null {
+  if (request.type !== "permission" || request.requestKind !== "permission_approval"
     || record(request.origin).method !== "session/request_permission") return null;
   const toolCallId = record(request.details).toolCallId;
   // Match the permission adapter's 240-character bound. Never truncate, trim,
@@ -939,6 +960,36 @@ export function bridgedAcpxPermissionParams(
     origin: record(request.origin),
     ...(validToolCallId ? { toolCallId } : {}),
   };
+}
+
+/** Rehydrate only the pending ledger attested by the same live ACP session. */
+export function liveAcpxRuntimeRequests(snapshot: Record<string, unknown>, threadId: string, turnId: string, durableTurnId: string): CodexRpcServerRequest[] {
+  if (snapshot.runtimeRequestsLive !== true || snapshot.provider !== "acpx"
+    || snapshot.driverSessionId !== threadId || snapshot.activeProviderTurnId !== turnId
+    || snapshot.runtimeRequestTurnId !== durableTurnId || !durableTurnId
+    || !turnId || !Array.isArray(snapshot.pendingRuntimeRequests)
+    || snapshot.pendingRuntimeRequests.length > 1024) {
+    throw new Error("ACPX pending request snapshot binding is invalid");
+  }
+  const ids = new Set<string>();
+  return snapshot.pendingRuntimeRequests.map(value => {
+    const request = record(value), origin = record(request.origin);
+    const id = request.requestId, method = origin.method;
+    if (typeof id !== "string" || !id || id.length > 160 || ids.has(id)
+      || request.schema !== "paperclip.runtime_request.v2" || request.status !== "pending"
+      || request.turnId !== durableTurnId || typeof method !== "string") {
+      throw new Error("ACPX pending request snapshot request is invalid");
+    }
+    ids.add(id);
+    const permission = request.type === "permission" && request.requestKind === "permission_approval"
+      && method === "session/request_permission";
+    const params = permission
+      ? acpxPermissionRequestParams(request, threadId, turnId)
+      : request.type === "input" && request.requestKind === "runtime" && isAcpxCanonicalInputMethod(method)
+        ? bridgedCodexQuestionParams(request, method, threadId, turnId) : null;
+    if (!params) throw new Error("ACPX pending request snapshot form is invalid");
+    return { id, method, params };
+  });
 }
 
 export function bridgedCodexQuestionParams(
@@ -1136,6 +1187,8 @@ export interface CapabilityRunnerdProcessEvidence {
   agentPid: number | null;
   agentProcessStartedAt: string | null;
   providerDriver: string | null;
+  /** Effective native mode, populated only from the admitted Pi identity. */
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   providerVersion: string | null;
   acpxAgent: QualifiedAcpxAgent | null;
   agentServerVersion: string | null;
@@ -1159,6 +1212,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   acpxCandidateProfile?: "pi" | "cursor" | "copilot";
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxMode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
   /** SHA-256 verified by the provider-pack authority before runner startup. */
@@ -3129,6 +3183,14 @@ function opencodeRunnerLaunchProfile(
   };
 }
 
+function resolveRunnerOpenCodeExecutable(options: RunnerdCodexTransportOptions): string {
+  if (options.opencodeCommand !== undefined) return options.opencodeCommand;
+  if (options.runnerFilesystemRoot) {
+    throw new Error("runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack");
+  }
+  return resolvePinnedOpenCodeCommand();
+}
+
 function authorizedToolSet(
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
@@ -3339,14 +3401,14 @@ function createSanitizedOpenCodeRunnerEnvironment(
     delete candidate[key];
     if (source?.[key] !== undefined) candidate[key] = source[key];
   }
-  return Object.fromEntries(
+  return { ...configuredEnvironment(source), ...Object.fromEntries(
     Object.entries(candidate).filter(
       ([key, value]) =>
         typeof value === "string" &&
         (OPEN_CODE_RUNNER_ENVIRONMENT_KEYS.has(key) ||
           /^LC_[A-Z0-9_]{1,32}$/.test(key)),
     ),
-  );
+  ) };
 }
 
 export function resolveSourceCodexHome(
@@ -3520,9 +3582,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
   #pendingTraceRehydrations: PendingTraceRehydration[] = [];
   #pendingDriverTraceInterpretations: PendingDriverTraceInterpretation[] = [];
+  #restoredRuntimeRequests: CodexRpcServerRequest[] = [];
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string; permission?: boolean }>();
 
   constructor(readonly options: CapabilityRunnerdCodexTransportOptions) {
+    resolvePiThinkingLevel(options.provider === "acpx" ? options.acpxAgent ?? "codex" : "", options.piThinkingLevel);
     if (options.acpxMode !== undefined && options.provider !== "acpx") {
       throw new Error("acpxMode requires the ACPX provider");
     }
@@ -3531,7 +3595,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_adopted_runner_state_directory_required");
     }
     if (options.provider === "acpx" && options.acpxAgent !== undefined
-      && ["pi", "copilot"].includes(options.acpxAgent)
+      && ACPX_CAPABILITY_PROFILES[options.acpxAgent].qualification === "pending"
       && options.acpxCandidateProfile !== options.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
@@ -3720,7 +3784,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // than reading its filesystem. This both supports remote process owners
       // and proves any identity restored after PRP event compaction before the
       // checkpoint-backed thread is exposed to the driver.
-      const snapshot = await this.#commandResult("session.snapshot", {});
+      const restoreRuntimeRequests = this.#recoveryTurnBindingPending
+        && this.options.adoptExistingRunner !== undefined && this.options.provider === "acpx";
+      const snapshot = await this.#commandResult("session.snapshot", restoreRuntimeRequests
+        ? { includePendingRuntimeRequests: true } : {});
       this.#confirmCheckpointProviderIdentity(
         snapshot,
         "authenticated session.snapshot",
@@ -3778,6 +3845,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   : terminal.eventType === "turn.cancelled"
                     ? "cancelled"
                     : "failed",
+          });
+        }
+      }
+      if (restoreRuntimeRequests && activeProviderTurnId !== null) {
+        this.#restoredRuntimeRequests = liveAcpxRuntimeRequests(snapshot, this.#threadId, activeProviderTurnId, this.#durableTurnId);
+        for (const request of this.#restoredRuntimeRequests) {
+          this.#bridgedRuntimeInputs.set(String(request.id), {
+            durableTurnId: this.#durableTurnId,
+            permission: request.method === "session/request_permission",
           });
         }
       }
@@ -3876,6 +3952,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   notifications(): AsyncIterable<CodexRpcNotification> {
     return this.#queue;
+  }
+
+  takeRestoredRuntimeRequests(): CodexRpcServerRequest[] {
+    this.#throwIfFailed();
+    const requests = this.#restoredRuntimeRequests;
+    this.#restoredRuntimeRequests = [];
+    return requests.filter(request => this.#bridgedRuntimeInputs.has(String(request.id))
+      && request.params.threadId === this.#threadId && request.params.turnId === this.#turnId);
   }
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
@@ -3997,7 +4081,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         paperclipNextAuthority: { identity: desired, connection },
       };
       core.queueCommand("run.attach", payload, commandId, true);
-      await this.#waitCommand("run.attach", commandId);
+      // ACPX run attachment checkpoints the old sidecar and starts a fresh
+      // provider process. Pi must use the same absolute cold-admission budget
+      // as startup/recovery even though its Runner authority remains warm.
+      // Other providers retain the ordinary command bound.
+      await this.#waitCommand(
+        "run.attach",
+        commandId,
+        this.#coldAdmissionDeadline(),
+        true,
+      );
       const attached = core.getCommand(commandId);
       if (attached?.status !== "completed") {
         throw new Error("native_runner_prp_run_rotation_failed");
@@ -4185,7 +4278,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  async #stopActiveProviderTurnBeforeSuspend(deadline: number): Promise<void> {
+  async #stopProviderBeforeSuspend(deadline: number): Promise<void> {
     const state = this.#providerDrainState();
     const core = this.#core;
     const inferredActiveProviderTurnId =
@@ -4198,9 +4291,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       state !== null && state !== "unreadable"
         ? state.activeProviderTurnId
         : inferredActiveProviderTurnId;
+    // Pi's idle RPC close can consume the entire suspension reserve. Retire
+    // its already-settled process during preparation instead. Native turn.stop
+    // independently checks the idle ledger and inherited lifetime fence;
+    // drain and runner.suspend still prove exact durable settlement afterward.
+    const stopIdlePi = this.options.provider === "acpx"
+      && this.options.acpxAgent === "pi"
+      && state !== "unreadable"
+      && (state === null || (state.activeProviderTurnId === null && state.providerSettled));
     if (
       state === "unreadable" ||
-      activeProviderTurnId === null ||
+      (activeProviderTurnId === null && !stopIdlePi) ||
       core === null
     ) {
       return;
@@ -4219,7 +4320,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       );
       if (command?.status === "completed") {
         this.#diagnostic(
-          `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
+          activeProviderTurnId === null
+            ? "stopped idle Pi provider before runner suspension"
+            : `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
         return;
       }
@@ -4326,6 +4429,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let runnerSuspended = false;
     let providerDrained = false;
     let suspensionRequired = false;
+    let lastSuspensionState: Record<string, unknown> | null = null;
+    let suspensionState: {
+      commandStatus: string | null;
+      runnerLifecycle: string | null;
+      runnerIdentityMatches: boolean | null;
+    } | null = null;
     if (
       this.#core !== null &&
       (this.#handle !== null || adoptedRunner !== undefined) &&
@@ -4337,7 +4446,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // fresh run authority never inherits the prior run's pending events.
       const { preparationDeadline, closeDeadline } = runnerCloseDeadlines(
         Date.now(),
-        this.options.closeGraceMs ?? 10_000,
+        runnerCloseGraceMs(this.options),
       );
       if (!(await this.#runnerHasExited())) {
         // Let an already-admitted tool result reach its original provider
@@ -4356,7 +4465,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // trip may need to carry. Give both cases the same budget so a
         // slow-but-idle runner is not held to a tighter deadline than a
         // runner that just stopped a turn.
-        await this.#stopActiveProviderTurnBeforeSuspend(preparationDeadline);
+        await this.#stopProviderBeforeSuspend(preparationDeadline);
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
           Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
         );
@@ -4372,6 +4481,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         },
         readRunnerState: async () => {
           const state = await this.#readDurableRunnerState();
+          lastSuspensionState = state;
           assertSuspendedRunnerState(state, this.#core!.store.state.identity);
           return state;
         },
@@ -4380,6 +4490,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         deadline: closeDeadline,
       });
       if (!runnerSuspended) {
+        const command = [...this.#core.store.state.commands].reverse().find(
+          (candidate) => candidate.type === "runner.suspend",
+        );
+        // Reuse the barrier's last observation. Diagnostic reads must not
+        // extend the close deadline or depend on a now-unreachable remote root.
+        const state = lastSuspensionState as Record<string, unknown> | null;
+        suspensionState = {
+          commandStatus: command?.status ?? null,
+          runnerLifecycle: state !== null && [
+            "ready", "suspended", "closed", "recoverable_failure",
+          ].includes(String(state.lifecycle)) ? String(state.lifecycle) : null,
+          runnerIdentityMatches: state === null ? null
+            : state.schema === "paperclip.runner.durable.state.v1"
+              && recoveryIdentityMatches(state, this.#core.store.state.identity),
+        };
         this.#diagnostic(
           "runner did not prove durable suspension before checkpoint",
         );
@@ -4490,6 +4615,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const settlement = {
         runnerSuspended,
         providerDrained,
+        suspensionState,
         semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
         finalProviderState,
       };
@@ -4557,6 +4683,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const provider = this.options.provider ?? "codex";
     const sourceRuntimeContext = this.options.runtimeContext ?? null;
+    if (provider === "codex" && this.options.runnerFilesystemRoot && !this.options.codexCommand) {
+      throw new Error("runner_remote_provider_artifact_incompatible: remote Codex omitted its qualified guest executable; verify the selected environment's Codex artifacts");
+    }
     const runtimeContext =
       this.options.runnerRuntimeContext ?? sourceRuntimeContext;
     const localRuntimeContextPath = resolve(this.#root, "runtime-context.json");
@@ -4606,10 +4735,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
+    const effectiveCodexCommand = provider === "codex"
+      ? this.options.codexCommand ?? resolveCodexCommand(undefined, this.options.environment, String(params.cwd ?? tmpdir()))
+      : undefined;
     const opencodeExecutable =
       provider === "opencode"
-        ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        ? resolveRunnerOpenCodeExecutable(this.options)
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -4634,9 +4765,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ) {
       const providerPaths = [
         ["provider Node", providerNodeCommand],
-        ["OpenCode proxy", opencodeProxyPath],
-        ["ACPX sidecar", acpxSidecarPath],
-        ["OpenCode executable", opencodeExecutable ?? "opencode"],
+        ...(provider === "opencode"
+          ? [["OpenCode proxy", opencodeProxyPath], ["OpenCode executable", opencodeExecutable!]] as const
+          : [["ACPX sidecar", acpxSidecarPath]] as const),
       ] as const;
       for (const [label, candidate] of providerPaths) {
         if (
@@ -4749,6 +4880,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               instructions: baseInstructions,
               providerPolicy: { readOnly: params.permissions === "paperclip-runner-workspace-read-only" },
               ...(selectedAcpxMode === undefined ? {} : { mode: selectedAcpxMode }),
+              ...(acpxProfile!.agent === "pi" ? { piThinkingLevel: this.options.piThinkingLevel } : {}),
               permissionMode: resolveRunnerdAcpxPermissionMode(
                 this.options.acpxPermissionMode,
               ),
@@ -4810,7 +4942,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   command:
                     provider === "opencode"
                       ? providerNodeCommand
-                      : (this.options.codexCommand ?? "codex"),
+                      : effectiveCodexCommand!,
                   args:
                     provider === "opencode"
                       ? [opencodeProxyPath]
@@ -4818,7 +4950,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                         createRunnerdCodexAppServerArgs({
                           environment: this.options.environment,
                           codexHome,
-                          codexCommand: this.options.codexCommand,
+                          codexCommand: effectiveCodexCommand,
                           instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
@@ -4885,6 +5017,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#controlPlaneCheckpoint = registration.checkpoint ?? null;
       this.#controlPlaneRelease = registration.release;
     }
+    const admissionDeadline = this.#coldAdmissionDeadline();
     const handle = spawnRunner({
       connection: registration?.connection ?? {
         mode: "connect",
@@ -4939,9 +5072,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
-    await this.#waitCommand("run.prepare");
-    await this.#waitCommand("session.open");
-    await this.#waitForProviderIdentity();
+    await this.#waitCommand("run.prepare", undefined, undefined, true);
+    await this.#waitCommand("session.open", undefined, admissionDeadline, true);
+    await this.#waitForProviderIdentity(undefined, admissionDeadline);
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");
     return this.#openedThreadResponse(params);
@@ -5233,8 +5366,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.options.providerNodeCommand ?? process.execPath;
     const opencodeExecutable =
       provider === "opencode"
-        ? (this.options.opencodeCommand ??
-          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        ? resolveRunnerOpenCodeExecutable(this.options)
         : null;
     const runnerAcpxLaunchProfile =
       provider === "acpx"
@@ -5296,12 +5428,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (provider === "codex") {
         // These controller-owned, token-free paths belong to the new run.
         // Keep the durable provider profile and thread identity unchanged.
+        const recordedCommand = record(runAttachTemplate.provider).command;
         runAttachTemplate.runtimeLaunchArgs =
           this.options.codexArgs ??
           createRunnerdCodexAppServerArgs({
             environment: this.options.environment,
             codexHome,
-            codexCommand: this.options.codexCommand,
+            codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
@@ -5505,6 +5638,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (warmRecovery) {
       await this.options.authorizeWarmTransitionRecovery?.("before_spawn");
     }
+    // A replacement executor restores its cold provider before acknowledging recovery.
+    const admissionDeadline = this.#coldAdmissionDeadline(adoptedRunner === undefined);
     const handle = adoptedRunner
       ? null
       : spawnRunner({
@@ -5603,11 +5738,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         registration?.ready,
       );
     }
+    // Only a replacement executor can be restoring a cold Pi process. Share
+    // one deadline across every recovery barrier; live adoption stays at 30 s.
     if (runAttachment) {
-      await this.#waitCommand("run.attach", runAttachment.commandId);
+      await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
     }
     if (recoveryProbeCommandId !== null) {
-      await this.#waitCommand("runner.drain", recoveryProbeCommandId);
+      await this.#waitCommand("runner.drain", recoveryProbeCommandId, admissionDeadline, true);
       if (this.#checkpointProviderIdentityExpectation !== null) {
         // A replacement runner can restore the exact provider while its fresh
         // session.resumed event is compacted or delayed behind the completed
@@ -5615,7 +5752,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // waiting only on the bounded event replay. The authenticated command
         // result is still checked against the exact database checkpoint, so a
         // missing or changed provider identity continues to fail closed.
-        const snapshot = await this.#commandResult("session.snapshot", {});
+        const snapshot = await this.#commandResult("session.snapshot", {}, admissionDeadline, true);
         this.#confirmCheckpointProviderIdentity(
           snapshot,
           "authenticated recovery session.snapshot",
@@ -5633,6 +5770,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         !this.#checkpointProviderIdentityConfirmed
         ? "session.resumed"
         : undefined,
+      admissionDeadline,
     );
     this.#startupComplete = true;
     this.#diagnostic(
@@ -5900,12 +6038,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     type: string,
     payload: Record<string, unknown>,
     deadline?: number,
+    abortOnClose = false,
   ): Promise<Record<string, unknown>> {
     const core = this.#core;
     if (core === null) throw new Error("PRP provider thread is not started");
     const commandId = `command_lab_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(type, payload, commandId, true);
-    await this.#waitCommand(type, commandId, deadline);
+    await this.#waitCommand(type, commandId, deadline, abortOnClose);
     const command = core.getCommand(commandId);
     if (command?.status !== "completed" || command.type !== type) {
       throw new Error(`PRP command ${type} omitted its durable result`);
@@ -5960,12 +6099,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return result;
   }
 
+  #coldAdmissionDeadline(coldProcess = true): number | undefined {
+    const timeout = coldAdmissionTimeoutMs(this.options.provider, this.options.acpxAgent, coldProcess);
+    // Preserve the existing independent waits for other providers and live adoption.
+    return timeout === 60_000 ? Date.now() + timeout : undefined;
+  }
+
   async #waitForProviderIdentity(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
+    deadline = Date.now() + 30_000,
   ): Promise<void> {
-    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       this.#throwIfFailed();
+      if (this.#closed) throw new Error("runnerd transport closed during provider startup");
       this.#pumpEvents();
       if (
         this.#threadId.length > 0 &&
@@ -5987,28 +6133,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     type: string,
     commandId?: string,
     deadline = Date.now() + 30_000,
+    abortOnClose = false,
   ): Promise<void> {
-    while (Date.now() < deadline) {
-      this.#throwIfFailed();
-      const command =
-        commandId === undefined
-          ? this.#core?.store.state.commands.find(
-              (candidate) => candidate.type === type,
-            )
-          : this.#core?.getCommand(commandId);
-      if (command?.status === "completed") return;
-      if (command !== undefined && command.status !== "pending") {
-        throw new Error(
-          `PRP command ${type} ${command.status}: ${JSON.stringify(command.result)}`,
-        );
-      }
-      if (await this.#runnerHasExited())
-        throw new Error(`runnerd exited while waiting for ${type}`);
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-    }
-    throw new Error(
-      `${this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode}: PRP command ${type} timed out`,
-    );
+    await waitForRunnerCommand({
+      type,
+      deadline,
+      abortOnClose,
+      isClosed: () => this.#closed,
+      throwIfFailed: () => this.#throwIfFailed(),
+      command: () => commandId === undefined
+        ? this.#core?.store.state.commands.find((candidate) => candidate.type === type)
+        : this.#core?.getCommand(commandId),
+      runnerHasExited: () => this.#runnerHasExited(),
+      failureCode: () => this.#startupComplete ? "provider_transport_failed" : this.#startupFailureCode,
+    });
   }
 
 
@@ -6418,6 +6556,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (descriptor.turnControls !== undefined && descriptor.agent !== (this.options.acpxAgent ?? "codex")) {
         throw new Error("ACPX capability identity differs from the admitted profile");
       }
+      const piThinkingLevel = admittedPiThinkingLevel(this.options.acpxAgent ?? "codex", this.options.piThinkingLevel, descriptor, providerIdentity);
+      if (piThinkingLevel !== undefined) this.#evidence.piThinkingLevel = piThinkingLevel;
       this.#turnControls = parseAcpxTurnControlCapabilities(descriptor.turnControls, descriptor.agent);
     }
     if (pid !== null) {
@@ -6907,6 +7047,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   acpxProviderPackageAuthority,
   acpxRunnerLaunchProfile,
   resolveBuildOwnedCliArtifact,
+  resolveRunnerOpenCodeExecutable,
   maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
@@ -6923,6 +7064,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
   runnerCloseDeadlines,
+  runnerCloseGraceMs,
   rotatedRunAttachPayload,
   rotateExternalAuthorityEpoch,
   turnStartCommandResultValid,
@@ -6955,4 +7097,38 @@ export function resolveRunnerdCodexSkillInputs(
       path: resolve(codexHome, "skills", assigned.runtimeName, "SKILL.md"),
     };
   });
+}
+
+/** Controller admission budget; ordinary command and turn deadlines are independent. */
+export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
+  return coldProcess && provider === "acpx" && agent === "pi" ? 60_000 : 30_000;
+}
+
+/** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
+export async function waitForRunnerCommand(input: {
+  type: string;
+  deadline: number;
+  abortOnClose: boolean;
+  isClosed: () => boolean;
+  throwIfFailed: () => void;
+  command: () => { status: string; result?: unknown } | undefined;
+  runnerHasExited: () => Promise<boolean>;
+  failureCode: () => string;
+}): Promise<void> {
+  while (Date.now() < input.deadline) {
+    input.throwIfFailed();
+    if (input.abortOnClose && input.isClosed()) {
+      throw new Error(`runnerd transport closed while waiting for ${input.type}`);
+    }
+    const command = input.command();
+    if (command?.status === "completed") return;
+    if (command !== undefined && command.status !== "pending") {
+      throw new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(command.result)}`);
+    }
+    if (await input.runnerHasExited()) {
+      throw new Error(`runnerd exited while waiting for ${input.type}`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error(`${input.failureCode()}: PRP command ${input.type} timed out`);
 }

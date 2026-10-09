@@ -1,3 +1,5 @@
+import { AnimatedDialogContent } from "@/components/AnimatedDialogContent";
+import { ExternalAgentPresetPicker, DotConnectionChecks } from "@/components/new-agent/ExternalAgentInviteContent";
 import { AgentMailApiKeyField } from "@/features/connections/AgentMailApiKeyField";
 import { TaskBrowserFooter } from "@/components/task-side-panel/TaskBrowserFooter";
 import { TaskBrowserActivity } from "@/components/task-side-panel/TaskBrowserActivity";
@@ -172,6 +174,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
@@ -384,7 +387,7 @@ function EnvironmentVariablesEditorShowcase() {
     NODE_ENV: { type: "plain", value: "production" },
     GH_TOKEN: { type: "secret_ref", secretId: "dg-github", version: "latest" },
     DB_URL: { type: "secret_ref", secretId: "dg-db", version: 3 },
-    STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
+    STRIPE_API_KEY: { type: "plain", value: "demo-value-not-a-credential" },
   });
   return (
     <div className="max-w-(--sz-640px) rounded-md border border-border p-4">
@@ -892,6 +895,19 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+
+        <SubSection title="LockedIssueChip">
+          <p className="text-xs text-muted-foreground">
+            Existence-only reference to a private task shown from a surface the viewer can see
+            (a blocker edge, a mention). Mono id + lock, dashed muted border,{" "}
+            <strong>no title, never a link</strong>. Falls back to &quot;Private&quot; when even the
+            identifier is withheld.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <LockedIssueChip identifier="PAP-1234" />
+            <LockedIssueChip identifier={null} />
           </div>
         </SubSection>
       </Section>
@@ -2288,9 +2304,20 @@ export function DesignGuide() {
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
       </Section>
 
+      <Section title="External agent invitation">
+        <p className="text-sm text-muted-foreground">Match the harness picker with provider cards. Connection checks reflect confirmed server evidence. AnimatedDialogContent resizes to its content using motion tokens and respects reduced motion.</p>
+        <ExternalAgentPresetPicker onSelect={() => {}} />
+        <DotConnectionChecks state={{ phase: "testing" }} />
+        <Dialog><DialogTrigger asChild><Button variant="outline">Preview invitation modal</Button></DialogTrigger>
+          <AnimatedDialogContent><div className="space-y-4 p-6"><DialogTitle>Invite an external agent</DialogTitle><DialogDescription>Choose an agent you already use.</DialogDescription><ExternalAgentPresetPicker onSelect={() => {}} /></div></AnimatedDialogContent>
+        </Dialog>
+      </Section>
+
       <Section title="Browser setup prompt">
         <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
         <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
+        <p className="text-sm text-muted-foreground">For a named recipient, pass the optional agent name and logo. The same copy feedback, preview, and manual clipboard recovery apply.</p>
+        <SetupPrompt prompt="Design guide example for Dot. No live pairing code." label="Copy setup prompt" title="Connect your Dot" agent={{ name: "Dot", src: "/brands/adapters/openai-dot.svg" }} />
       </Section>
 
       <Section title="Connection Intent">

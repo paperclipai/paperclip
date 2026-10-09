@@ -1,3 +1,5 @@
+import { slackRegistrationSchema, slackSetupActionSchema } from "@paperclipai/shared";
+import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
 import {
   Router,
   type Request as ExpressRequest,
@@ -171,6 +173,49 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.get("/chat-endpoints/:endpointId", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await service.get(endpointId(req)));
+  });
+
+  const slackActor = (req: ExpressRequest) => {
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    if (actor.actorType !== "user") throw forbidden("A board session is required");
+    return { userId: actor.actorId, sessionId: actor.sessionId,
+      bypassPermissionCheck: req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true };
+  };
+  router.post("/chat-endpoints/:endpointId/slack/registration", validate(slackRegistrationSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    await service.slackRegistration.create(endpointId(req), slackActor(req), req.body);
+    res.json(await service.get(endpointId(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/slack/install", validate(slackSetupActionSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.slackRegistration.install(endpointId(req), slackActor(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/slack/resume", validate(slackSetupActionSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    await service.slackRegistration.resume(endpointId(req), slackActor(req));
+    res.json(await service.get(endpointId(req)));
+  });
+  router.get("/chat-slack/oauth/callback", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.set("Referrer-Policy", "no-referrer");
+    const actor = slackActor(req);
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const expiredReturn = await service.slackRegistration.expiredReturn(state, actor);
+    if (expiredReturn) { res.redirect(303, expiredReturn); return; }
+    const pending = await service.slackRegistration.pending(state, actor);
+    await assertConnectionManager(req, pending.row.companyId);
+    if (req.get("accept")?.includes("text/html") && isCrossSiteOAuthCallbackNavigation(req)) {
+      res.type("html").send(oauthCallbackInterstitialHtml());
+      return;
+    }
+    const endpoint = await service.slackRegistration.complete(state,
+      typeof req.query.code === "string" ? req.query.code : null,
+      typeof req.query.error === "string" ? req.query.error : null, actor);
+    res.redirect(303, await service.slackRegistration.returnPath(endpoint));
   });
 
   const githubUser = (req: ExpressRequest) => {

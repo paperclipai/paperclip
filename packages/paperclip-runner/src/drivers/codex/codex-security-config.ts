@@ -1,6 +1,8 @@
-import { resolve, isAbsolute, join, dirname, delimiter } from "node:path";
-import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
+import { configuredEnvironmentKeys } from "../../configured-environment.js";
+import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { QUALIFIED_ACPX_PROFILES } from "../acpx/qualified-profiles.js";
 
 import {
   githubCredentialEnvironmentKeys,
@@ -53,8 +55,12 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
     // The npm entrypoint launches the platform package's native executable,
     // which Codex invokes again inside bwrap when starting each shell command.
     const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
-    if (manifest.optionalDependencies?.[platformPackage]) {
-      const platformManifest = createRequire(manifestPath).resolve(`${platformPackage}/package.json`);
+    const normalizedPlatformManifest = manifest.optionalDependencies === undefined
+      ? normalizedCodexPlatformManifest(manifestPath, platformPackage)
+      : undefined;
+    if (manifest.optionalDependencies?.[platformPackage] || normalizedPlatformManifest) {
+      const platformManifest = normalizedPlatformManifest
+        ?? createRequire(manifestPath).resolve(`${platformPackage}/package.json`);
       const packageRoot = realpathSync(dirname(platformManifest));
       const vendor = realpathSync(resolve(packageRoot, "vendor"));
       if (vendor.startsWith(`${packageRoot}/`)) add(vendor);
@@ -65,6 +71,79 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
     }
   } catch { /* Standalone executable installations need no npm resources. */ }
   return [...roots];
+}
+
+/** The published server, rather than its bundled JS wrapper, declares npm's host package. */
+function normalizedCodexPlatformManifest(runtimeManifest: string, platformPackage: string): string | undefined {
+  const profile = QUALIFIED_ACPX_PROFILES.codex;
+  const runtime = readCodexPackageManifest(runtimeManifest);
+  if (runtime.name !== profile.agentRuntimePackage || runtime.optionalDependencies !== undefined) return undefined;
+  for (let root = dirname(dirname(runtimeManifest)), depth = 0; depth < 24; depth += 1) {
+    const serverManifest = resolve(root, "package.json");
+    if (existsSync(serverManifest)) {
+      const server = readCodexPackageManifest(serverManifest);
+      if (server.name === "@paperclipai/server") {
+        const bridgeDeclaration = server.dependencies?.[profile.agentServerPackage];
+        const platformDeclaration = server.optionalDependencies?.[platformPackage];
+        const declarationPrefix = `npm:${profile.agentRuntimePackage}@`;
+        const declarationSuffix = `-${process.platform}-${process.arch}`;
+        if (typeof bridgeDeclaration !== "string" || !bridgeDeclaration.trim()
+          || typeof platformDeclaration !== "string" || !platformDeclaration.startsWith(declarationPrefix)
+          || !platformDeclaration.endsWith(declarationSuffix)
+          || !/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(platformDeclaration.slice(declarationPrefix.length, -declarationSuffix.length))
+          || !codexPathInside(resolve(root, "node_modules"), runtimeManifest)) return undefined;
+        const bridgeManifest = createRequire(serverManifest).resolve(`${profile.agentServerPackage}/package.json`);
+        if (!codexPathInside(resolve(root, "node_modules"), bridgeManifest)
+          || realpathSync(bridgeManifest) !== bridgeManifest) return undefined;
+        const bridge = readCodexPackageManifest(bridgeManifest);
+        if (bridge.name !== profile.agentServerPackage
+          || createRequire(bridgeManifest).resolve(`${profile.agentRuntimePackage}/package.json`) !== runtimeManifest) return undefined;
+        const runtimeSelection = createRequire(runtimeManifest).resolve(`${platformPackage}/package.json`);
+        const selected = createRequire(serverManifest).resolve(`${platformPackage}/package.json`);
+        if (runtimeSelection !== selected || realpathSync(selected) !== selected) return undefined;
+        const slot = (createRequire(serverManifest).resolve.paths(platformPackage) ?? []).some(directory => {
+          try {
+            return (dirname(directory) === root || codexPathInside(dirname(directory), root))
+              && realpathSync(directory) === directory
+              && selected === resolve(directory, platformPackage, "package.json")
+              && realpathSync(dirname(selected)) === dirname(selected);
+          } catch { return false; }
+        });
+        if (!slot) return undefined;
+        const native = readCodexPackageManifest(selected);
+        if ((native.name !== platformPackage && native.name !== profile.agentRuntimePackage)
+          || !Array.isArray(native.os) || !native.os.includes(process.platform)
+          || !Array.isArray(native.cpu) || !native.cpu.includes(process.arch)) return undefined;
+        return selected;
+      }
+    }
+    const parent = dirname(root);
+    if (parent === root) break;
+    root = parent;
+  }
+  return undefined;
+}
+
+function codexPathInside(root: string, path: string): boolean {
+  const value = relative(root, path);
+  return value !== "" && value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value);
+}
+
+function readCodexPackageManifest(path: string): Record<string, unknown> & {
+  dependencies?: Record<string, unknown>;
+  optionalDependencies?: Record<string, unknown>;
+} {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size < 1n || before.size > 256n * 1024n) throw new Error("Unsafe Codex package manifest");
+    const bytes = readFileSync(descriptor), after = fstatSync(descriptor, { bigint: true });
+    if (bytes.length !== Number(before.size) || before.dev !== after.dev || before.ino !== after.ino
+      || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new Error("Codex package manifest changed during lookup");
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Codex package manifest");
+    return value as ReturnType<typeof readCodexPackageManifest>;
+  } finally { closeSync(descriptor); }
 }
 
 export const CODEX_SKILLLESS_PERMISSION_PROFILE =
@@ -167,23 +246,28 @@ function tomlString(value: string): string {
 }
 
 export function createIsolatedCodexAppServerArgs(
-  source: NodeJS.ProcessEnv = process.env,
+  source: NodeJS.ProcessEnv | undefined = undefined,
   readOnlyRoots: string[] = [],
   /** Server-registered run copy, never an environment/config-supplied root. */
   instructionWorkingCopyRoot?: string,
 ): string[] {
+  const explicitSource = source;
+  source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = [
     ...githubCredentialEnvironmentKeys(source),
+    ...configuredEnvironmentKeys(explicitSource),
     ...["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"].filter(key => source[key] !== undefined),
   ];
   const hasProjectedEnvironment = inheritedGitHubKeys.length > 0;
   // Codex filters the configured `set` values through include_only as well.
   // Retain the explicit command PATH/HOME/locale settings, not ambient secrets.
   const commandEnvironment = codexCommandEnvironment(source);
+  // Selected task values are inherited, never serialized into configuration argv.
+  for (const key of configuredEnvironmentKeys(explicitSource)) delete commandEnvironment[key];
   if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) commandEnvironment.AGENT_HOME = instructionWorkingCopyRoot;
   const shellEnvironmentKeys = [...new Set([...inheritedGitHubKeys, ...Object.keys(commandEnvironment)])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];

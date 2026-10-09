@@ -2,7 +2,7 @@ import { exactCentsSchema, pricingProvenanceSchema } from "../accounting.js";
 import { z } from "zod";
 import { BILLING_TYPES, COST_STATUSES } from "../constants.js";
 
-export const createCostEventSchema = z.object({
+const costEventFields = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).optional().nullable(),
   agentId: z.string().guid(),
   issueId: z.string().guid().optional().nullable(),
@@ -22,10 +22,19 @@ export const createCostEventSchema = z.object({
   providerRequestId: z.string().min(1).max(250).nullable().optional(),
   pricingProvenance: pricingProvenanceSchema.nullable().optional(),
   occurredAt: z.string().datetime(),
-}).transform((value) => ({
+});
+
+export const createCostEventSchema = costEventFields.transform((value) => ({
   ...value,
   biller: value.biller ?? value.provider,
 }));
+
+/** Internal service receipts; the public reporting endpoint retains its required agent. */
+export const createServiceCostEventSchema = costEventFields.extend({
+  agentId: z.string().uuid().nullable(),
+  usageKind: z.literal("decision"),
+  responsibleUserId: z.string().nullable(),
+}).transform(value => ({ ...value, biller: value.biller ?? value.provider }));
 
 export type CreateCostEvent = z.input<typeof createCostEventSchema>;
 

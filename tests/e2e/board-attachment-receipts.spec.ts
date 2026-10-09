@@ -27,6 +27,13 @@ async function body<T>(
 }
 
 async function setup(page: Page, request: APIRequestContext, classic: boolean) {
+  // Announcements can appear after navigation or reload and cover the classic
+  // composer's attachment button. Dismiss through the same UI as a Board user.
+  await page.addLocatorHandler(
+    page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
+      .getByRole("button", { name: "Dismiss announcement", exact: true }),
+    async (dismiss) => { await dismiss.click(); },
+  );
   const company = await body<{ id: string; issuePrefix: string }>(
     await request.post("/api/companies", {
       data: { name: `Board receipt browser ${randomUUID()}` },

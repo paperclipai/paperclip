@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { logger } from "../middleware/logger.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -3925,15 +3926,9 @@ export function companySkillService(db: Db) {
             ? { key: forkKey, versionId: null }
             : entry
         );
-        const updated = await tx
-          .update(agentsTable)
-          .set({
-            adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
-            updatedAt: new Date(),
-          })
-          .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
-          .returning({ id: agentsTable.id })
-          .then((rows) => rows[0] ?? null);
+        const updated = await updateAgentConfigurationInTransaction(tx as unknown as Db, item.agentId, {
+          adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+        }, { allowPendingApprovalConfigUpdate: true });
         if (!updated) throw notFound(`Agent not found for skill reassignment: ${item.agentId}`);
       }
     });
@@ -4196,13 +4191,9 @@ export function companySkillService(db: Db) {
                 entry.key === previousKey
                   ? { key: newKey, versionId: entry.versionId ?? null }
                   : entry);
-              await tx
-                .update(agentsTable)
-                .set({
-                  adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
-                  updatedAt: new Date(),
-                })
-                .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)));
+              await updateAgentConfigurationInTransaction(tx as unknown as Db, item.agentId, {
+                adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+              }, { allowPendingApprovalConfigUpdate: true });
             }
           } catch (error) {
             // Restore while the name locks are still held.

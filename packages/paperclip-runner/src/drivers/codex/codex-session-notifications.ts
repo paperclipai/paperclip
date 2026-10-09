@@ -331,12 +331,12 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     if (
       notification.method === "item/completed"
       && text(params.kind) === "steering_acknowledgement"
-      && Object.keys(item).length === 0
     ) {
       // runnerd persists its own command acknowledgement as a canonical PRP
       // item. The request() call is already the authoritative acknowledgement
       // and steer() emits the user-visible item with the active turn binding.
-      // Do not reinterpret this transport-level echo as an unbound Codex item.
+      // Rehydration adds an item object to this transport echo; it still must
+      // not become a second acknowledgement beside the correlation-bound item.
       return;
     }
     if (notification.method === "paperclip/runResult") {

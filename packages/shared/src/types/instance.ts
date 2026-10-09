@@ -75,6 +75,8 @@ export interface InstanceExperimentalSettings {
   enableGitHubReviewBots: boolean;
   /** Allow person-authorized assistant tools and task event delivery. */
   enablePublicMcp: boolean;
+  /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
+  enableOpenAiDot: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */

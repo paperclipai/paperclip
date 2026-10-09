@@ -1,3 +1,4 @@
+import { eligibleIssueMonitorWait } from "../issue-monitors.js";
 import { activeIssueInteractionCondition, ordinaryQuestionCondition } from "../issue-question-context.js";
 import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -64,6 +65,7 @@ export async function nativeCompletionFeedback(
   if (!issue) throw new Error("Completion task no longer exists.");
   const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
   if (reviewContext) {
+    if (result.continuation?.kind === "monitor") throw new Error("Review-only runs cannot yield to a task monitor; resolve the assigned review or report its blocker.");
     const review = await getNativeReviewAssignment(db, {
       companyId: run.companyId, issueId: issue.id, agentId: run.agentId,
       contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
@@ -95,6 +97,12 @@ export async function nativeCompletionFeedback(
       throw new Error(`completionClaim.criteria must contain exactly these criterion IDs, once each: ${JSON.stringify(expected)}. Keep contractRevision ${JSON.stringify(current.revision)} and correct the report without repeating completed work.`);
     }
 
+  }
+  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
+    if (issue.workMode !== "standard" || issue.executionRunId !== run.id ||
+        !eligibleIssueMonitorWait(issue, run.agentId)) {
+      throw new Error("A monitor wait requires a persisted, eligible monitor on this task. Call set_task_monitor for the current task, confirm its schedule, then report yielded with continuation.kind monitor.");
+    }
   }
   const signals = normalizePrpResultSignals(result);
   if (
@@ -168,21 +176,31 @@ export async function nativeCompletionFeedback(
       .limit(1)
       .then((rows) => rows[0]),
   ]);
-  // A response wake for this run's tool action already has a durable approval
-  // surface. Reject a repeated approval request before it becomes a new review.
-  // General evidence can also cite completed actions while waiting on something
-  // else, so a resolved card alone is not a stale wait target.
-  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "response_wake") {
-    const referencedIds = result.evidence.flatMap(({ ref }) => {
-      const match = typeof ref === "string" ? /^interaction:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.exec(ref) : null;
-      return match ? [match[1]!] : [];
-    });
-    const referenced = referencedIds.length ? await db.select().from(issueThreadInteractions).where(and(
+  // Match an existing action by its exact durable identity, regardless of how
+  // the provider labels its final disposition. A summary can cite the invocation
+  // ID instead of an interaction evidence ref; prose similarity is not identity.
+  if (signals.actionableAttentionRequests.some(request => request.kind === "approval" && request.ownerClass === "human")) {
+    const approvalTarget = {
+      summary: result.summary,
+      attentionRequests: signals.actionableAttentionRequests.filter(request => request.kind === "approval" && request.ownerClass === "human"),
+      blocker: result.blocker,
+      // An unmet criterion can name the action still being requested. Completed
+      // evidence elsewhere in the report is not authority to suppress a review.
+      unmetCriteria: result.completionClaim.criteria.filter(criterion => criterion.status !== "satisfied"),
+      continuation: result.continuation,
+      // The existing response-wake contract also names its card through evidence.
+      evidence: result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "response_wake" ? result.evidence : [],
+    };
+    const referencedIds = new Set(JSON.stringify(approvalTarget).match(/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/gi)?.map(id => id.toLowerCase()) ?? []);
+    const cards = referencedIds.size ? await db.select().from(issueThreadInteractions).where(and(
       eq(issueThreadInteractions.companyId, run.companyId), eq(issueThreadInteractions.issueId, issue.id),
       eq(issueThreadInteractions.sourceRunId, run.id), eq(issueThreadInteractions.createdByAgentId, run.agentId),
       eq(issueThreadInteractions.kind, "request_confirmation"), eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
-      inArray(issueThreadInteractions.id, referencedIds),
     )) : [];
+    const referenced = cards.filter(card => {
+      const action = record(record(card.payload).toolAction);
+      return [card.id, action.actionRequestId, action.invocationId].some(id => typeof id === "string" && referencedIds.has(id.toLowerCase()));
+    });
     for (const card of referenced) {
       const action = record(record(card.payload).toolAction);
       if (action.version !== 1 || typeof action.actionRequestId !== "string") continue;
@@ -214,6 +232,9 @@ export async function nativeCompletionFeedback(
   const readiness = await issueService(db).getDependencyReadiness(issue.id, db);
   if (readiness.unresolvedBlockerCount > 0) {
     return `Completion report accepted; this task still has unresolved dependencies. Explain the blockers on [this task](/issues/${issue.identifier ?? issue.id}); do not say the task is done.`;
+  }
+  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
+    return `Monitor wait accepted. The task remains active and Paperclip will wake its assignee at or after ${issue.monitorNextCheckAt!.toISOString()} with issue_monitor_due. End this turn; do not poll or mark the task done.`;
   }
   if (
     !isConversation(issue) &&

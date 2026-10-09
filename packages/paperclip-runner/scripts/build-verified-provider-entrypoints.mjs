@@ -106,7 +106,35 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
     }
     results.push({ entrypoint, result, verifiedResult });
   }
+  await bundlePiProvisioner({ write });
   return results;
+}
+
+/** Explicit setup tooling; no provider payload is included in the npm tarball. */
+export async function bundlePiProvisioner({ write = true, outputRoot = resolve(packageRoot, "dist/cli") } = {}) {
+  const entrypoint = { name: "provision-pi", source: resolve(packageRoot, "scripts/provision-pi.mjs") };
+  const result = await build({
+    entryPoints: [entrypoint.source], outfile: resolve(outputRoot, "provision-pi.cjs"),
+    bundle: true, platform: "node", format: "cjs", target: "node24", packages: "bundle",
+    splitting: false, sourcemap: false, legalComments: "none", metafile: true,
+    treeShaking: true, write, logLevel: "silent",
+    banner: { js: 'const __paperclipVerifiedEntrypointUrl = require("node:url").pathToFileURL(__filename).href;' },
+    define: { "import.meta.dirname": "__dirname", "import.meta.url": "__paperclipVerifiedEntrypointUrl" },
+  });
+  assertSelfContainedBundle(entrypoint, result);
+  if (write) {
+    const inputs = resolve(outputRoot, "pi-provision-inputs");
+    await mkdir(inputs, { recursive: true });
+    for (const [source, name] of [
+      ["scripts/pi-distribution/package.json", "package.json"],
+      ["scripts/pi-distribution/package-lock.json", "package-lock.json"],
+      ["../../patches/pi-acp@0.0.33.patch", "pi-acp.patch"],
+      ["../../patches/brace-expansion@5.0.9.patch", "brace-expansion.patch"],
+      ["src/drivers/acpx/pi-acp-runtime.ts", "pi-acp-runtime.ts"],
+      ["src/drivers/acpx/pi-runtime-extension.ts", "pi-runtime-extension.ts"],
+    ]) await cp(resolve(packageRoot, source), resolve(inputs, name));
+  }
+  return result;
 }
 
 const invokedPath = process.argv[1]

@@ -23,6 +23,7 @@ import {
 } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  decisionProviderForConnection,
   aiConnectionCatalogSlug,
   getAppStoreDefinition,
   aiConnectionMetadataSchema,
@@ -38,6 +39,7 @@ import {
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -265,15 +267,9 @@ export function aiConnectionService(db: Db) {
         input.acpxAgent,
       )
     )
-      throw unprocessable(
-        "Select an AI connection compatible with this harness and model",
-        { code: "ai_connection_incompatible" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select an AI connection compatible with this harness and model");
     if (binding.mode === "responsible_user" && !userId)
-      throw unprocessable(
-        "This run needs a responsible user to select an AI connection",
-        { code: "ai_connection_responsible_user_missing" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_responsible_user_missing", "This run needs a responsible user to select an AI connection");
     if (userId && !(await membership(companyId, userId)))
       throw forbidden("The responsible user is not an active company member");
     const defaultRow =
@@ -297,10 +293,7 @@ export function aiConnectionService(db: Db) {
         ? defaultRow?.grantId
         : binding.grantId;
     if (!grantId)
-      throw unprocessable(
-        "Connect an account and choose your personal default",
-        { code: "ai_connection_default_missing" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_default_missing", "Connect an account and choose your personal default");
     const row = (await rows(companyId)).find(
       (r) =>
         r.grant.id === grantId &&
@@ -308,9 +301,7 @@ export function aiConnectionService(db: Db) {
           r.connection.id === binding.connectionId),
     );
     if (!row)
-      throw unprocessable("The selected AI connection is unavailable", {
-        code: "ai_connection_missing",
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_missing", "The selected AI connection is unavailable");
     const { connection, grant } = row;
     const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
     if (
@@ -319,13 +310,9 @@ export function aiConnectionService(db: Db) {
       (binding.mode !== "responsible_user" && metadata.data.method !== binding.method) ||
       !isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent)
     )
-      throw unprocessable("The selected AI connection is incompatible", {
-        code: "ai_connection_incompatible",
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The selected AI connection is incompatible");
     if (aiSubscriptionNeedsIsolatedLogin(connection.config))
-      throw unprocessable("Reconnect this subscription with a separate sign-in to protect your existing terminal login.", {
-        code: "ai_connection_unavailable", connectionId: connection.id,
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect this subscription with a separate sign-in to protect your existing terminal login.", { connectionId: connection.id });
     if (
       grant.status !== "active" ||
       !connection.enabled ||
@@ -336,10 +323,7 @@ export function aiConnectionService(db: Db) {
           connection.config.aiLegacyAdoption === true
         ))
     )
-      throw unprocessable("Reconnect or validate the selected AI account", {
-        code: "ai_connection_unavailable",
-        connectionId: connection.id,
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect or validate the selected AI account", { connectionId: connection.id });
     if (
       grant.kind === "user" &&
       !(await membership(companyId, grant.subjectUserId))
@@ -365,8 +349,12 @@ export function aiConnectionService(db: Db) {
       ));
     // The existing human-access permission is authoritative for every binding,
     // including old explicit personal selections. Agent delegation cannot bypass it.
-    if (!canUseCredential(grant, userId, audience))
+    if (!canUseCredential(grant, userId, audience)) {
+      // Membership was checked above. A known user's sharing choice is an
+      // operator action; absent identity must remain an unclassified denial.
+      if (userId) throw aiConnectionCredentialNotSharedFailure();
       throw forbidden("This credential is not shared with the responsible user");
+    }
     const installs = await db
       .select()
       .from(toolConnectionInstalls)
@@ -407,7 +395,41 @@ export function aiConnectionService(db: Db) {
       } satisfies AiConnectionAttribution,
     };
   }
-  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0): Promise<string> {
+  /** Internal decision use has its own capability check, never a pretend CLI harness. */
+  async function selectDecision(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId?: string | null; sponsoredBackground?: boolean;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row || row.grant.kind !== "organization") throw unprocessable("Shared AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    const provider = metadata.success ? decisionProviderForConnection(metadata.data) : null;
+    if (!provider) throw unprocessable("Connection does not support decisions", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    // Only the decision service may sponsor background use; ordinary AI selection never bypasses an audience.
+    if (!input.sponsoredBackground) {
+      if (!(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+      const audience = await db.select().from(connectionGrantMembers).where(and(
+        eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+      ));
+      if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    } else if (input.userId || input.agentId) throw forbidden("Background sponsorship cannot replace caller permissions");
+    if (input.agentId) {
+      const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+        or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+      )).limit(1);
+      if (!install) throw forbidden("Connection is not permitted for this agent");
+    }
+    return { ...row, provider };
+  }
+  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.routing?.auth === "none") return "";
     const ref = row.grant.credentialSecretRefs.find(
@@ -432,12 +454,14 @@ export function aiConnectionService(db: Db) {
       });
     if (row.grant.kind === "user" && secret.scope !== "user")
       throw forbidden("Credential ownership mismatch");
+    if (row.grant.kind === "organization" && secret.scope !== "company") throw forbidden("Credential ownership mismatch");
     const context = {
       consumerType: "tool_connection" as const,
       consumerId: row.connection.id,
       configPath: ref.configPath,
       responsibleUserId: row.grant.subjectUserId,
       actorType: "system" as const,
+      ...audit,
     };
     let value: string;
     if (secret.scope === "user") {
@@ -469,7 +493,7 @@ export function aiConnectionService(db: Db) {
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });
-      return credential(row, retry + 1);
+      return credential(row, retry + 1, audit);
     }
     return value;
   }
@@ -1070,5 +1094,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, quotaAccounts, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, quotaAccounts, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

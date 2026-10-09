@@ -52,7 +52,11 @@ test("the runner pins every qualified ACPX production dependency", () => {
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.286");
-  assert.equal(runnerPackage.optionalDependencies, undefined);
+  assert.deepEqual(runnerPackage.optionalDependencies, {
+    "@github/copilot-darwin-arm64": "1.0.88",
+    "@github/copilot-darwin-x64": "1.0.88",
+    "@github/copilot-linux-x64": "1.0.88",
+  });
   assert.equal(runnerPackage.dependencies.node, undefined);
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
   assert.equal(

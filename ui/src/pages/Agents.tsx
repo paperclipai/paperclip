@@ -1,3 +1,4 @@
+import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
@@ -376,6 +377,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <EntityRow
         key={agent.id}
         title={agent.name}
+        titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
         titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
         titleTextClassName="truncate"
         subtitleClassName="truncate"

@@ -86,6 +86,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableApps: true,
     enableMcpAggregators: true,
     enablePublicMcp: false,
+    enableOpenAiDot: false,
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
@@ -267,6 +268,19 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enablePublicMcp: enabled });
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
       expect(Boolean(container.querySelector('a[href="/BUT/apps/assistant-connection"]'))).toBe(enabled);
+    }
+  });
+
+  it("names Dot prerequisites and saves its opt-in independently in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableOpenAiDot: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
     }
   });
 

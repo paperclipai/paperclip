@@ -211,6 +211,22 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+An unstarted legacy conversation retry waits on its existing `scheduled_retry`
+row while a previous execution still owns a process or environment lease. Each
+sweep moves the next check forward without creating another run or incrementing
+retry accounting. The wait survives a controller restart. A queued retry that
+encounters the same ownership hold returns to that scheduled state. Once
+ownership is released, normal promotion and dispatch gates still apply,
+including reassignment, cancellation, budget limits, and no-replay holds.
+The **Retry now** action returns `waiting` with the saved retry schedule while
+cleanup holds ownership. Its controls show the wait without claiming that a run
+started, and another click can check the gate again.
+
+Recovery instructions in a wake describe only an active or escalated recovery
+action. Resolving or cancelling that action removes its repair instructions from
+subsequent wakes, so the original worker can resume the task. This prompt change
+does not clear any persisted execution reconciliation hold.
+
 Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
 continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
@@ -501,6 +517,24 @@ Warm sandbox reuse must match the current host Git tip and branch as well as the
 file snapshot and saved stamp, including managed nested repositories. A history
 or branch mismatch restages the host before the next run begins.
 
+### Remote Codex model compatibility
+
+Fresh remote Codex Runner runs check the selected image CLI before saving the
+native execution input. If the CLI is in the supported app-server version window
+but below the selected model's verified minimum, preparation chooses the newest
+compatible older model of the same class (`sol`, `luna`, `astra`, or `terra`),
+then the stable Runner default. Each candidate is considered once; this selection
+does not replay a provider turn or consume a failure-retry attempt.
+
+The effective model is saved in the execution input before checkpoint selection,
+so launch, recovery, and usage accounting share that identity. The requested
+agent and task settings stay unchanged. A task warning and `runner.model_fallback`
+run-log event name both models and the image CLI version. An explicit remote
+Codex artifact or npm install pin retains precedence. Persisted executions are
+not rewritten, and unknown models, invalid CLI builds, and artifact failures keep
+their existing verification and recovery rules. Capacity and authentication
+failures do not trigger this startup substitution.
+
 ### Native provider model capacity
 
 A committed Codex `turn.failed` event with `codexErrorInfo: serverOverloaded`,
@@ -655,6 +689,21 @@ When an execution-policy review stage has a pending agent participant, the parti
 An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.
 
 Use a monitor when the current assignee owns a future check against an async system or external service. Examples include Greptile review loops, GitHub checks, Vercel deployments, or provider jobs where the agent should come back later and decide what happens next.
+
+Native runners in standard execution use `set_task_monitor({ taskId?, idempotencyKey, monitor })`. Omit `taskId` for the current task. An explicit target must be accessible, in the same company, assigned to the caller with no human assignee, and `in_progress` or `in_review`. Runtime-management permission still applies. Ask, planning, and review-only runs cannot use this tool. Generic `call_api` lifecycle restrictions remain in force.
+
+To wait for a check:
+
+1. Set a future `monitor.nextCheckAt` and short `monitor.notes` describing the check, with optional service context and bounds.
+2. Confirm the receipt's persisted task ID, monitor state, next-check time, and bounds.
+3. Call `paperclip_finish` with `reportedWorkDisposition: "yielded"` and `continuation: { kind: "monitor", summary, idempotencyKey }`. Report outstanding work honestly; the scheduled check may still block completion.
+4. End the run. Paperclip keeps the task active, releases execution ownership, and the one-shot scheduler later wakes it with `issue_monitor_due`. This does not enqueue an immediate continuation. On resume, `get_task_context.activeTask.monitor` includes the consumed monitor’s notes and attempt count.
+
+Only a valid persisted monitor on the current task authorizes that finish; scheduling another owned task does not. Authority is checked again under the final disposition lock. A timer that becomes due during an active native execution remains scheduled until execution releases it. Dispatch checks the current schedule, claim, status, and assignee so an older dispatch cannot clear a replacement monitor.
+
+The service name `AI provider quota` is reserved for server-owned recovery of legacy runs. Native task monitors reject it; use ordinary service context and notes when scheduling a provider-usage check.
+
+Use a new idempotency key to replace the schedule or clear it with `monitor: null`. Retrying the original call returns current monitor state without re-arming a consumed, replaced, or cleared timer. Monitor changes, audit activity, and mutation receipts are committed together, and unrelated execution/review policy is preserved. Legacy agents continue to use the issue API.
 
 Monitor policy lives under `executionPolicy.monitor` and includes:
 
@@ -1350,6 +1399,23 @@ execution finalizer cannot suspend or signal the durable runner: the next
 controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
+
+When a native turn creates a governed approval wait, its checkpoint retains the
+exact committed triggering event and yielded disposition before interrupting the
+provider. Shutdown gives these turns a shared, bounded 20-second window to finish
+settling their usage and terminal evidence before detaching. Recovery verifies
+the trigger against the retained event ledger and settles that same turn, even
+if the user has already answered the interaction. It replays retained accounting
+through the ordinary control-plane observers without starting another model turn.
+When a later heartbeat run reuses the provider session, it clears that prior
+run's wait marker along with its terminal, result and pending-request authority.
+Already-numbered cancellation acknowledgements and cancelled/expired runtime requests
+are retained during shutdown so recovery can replay a contiguous journal. They
+carry no permission to start work. Stream closure, stream failure or drain timeout
+after complete usage leaves the saved wait unfinalized until a provider terminal
+is retained; complete token counters alone cannot certify a stopped provider.
+A timeout, missing accounting, or an unproven provider terminal remains a failure;
+the saved wait does not certify successful provider execution.
 
 Before either shutdown path exits, idle warm sessions close through their
 normal suspend-and-checkpoint path. Remote sessions therefore leave verified

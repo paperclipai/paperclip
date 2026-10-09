@@ -11,6 +11,9 @@ import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { rememberComposerEffort } from "../lib/recent-composer-effort";
 import { NewIssueDialog } from "./NewIssueDialog";
 
+const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
+vi.mock("./primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => primaryState }));
+
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
   newIssueDefaults: {} as Record<string, unknown>,
@@ -49,6 +52,7 @@ const toastState = vi.hoisted(() => ({
 const navigateMock = vi.hoisted(() => vi.fn());
 
 const mockIssuesApi = vi.hoisted(() => ({
+  get: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
   upsertDocument: vi.fn(),
@@ -245,8 +249,12 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/toggle-switch", () => ({
-  ToggleSwitch: ({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) => (
-    <button type="button" aria-pressed={checked} onClick={onCheckedChange}>toggle</button>
+  ToggleSwitch: ({ checked, onCheckedChange, ...props }: {
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
+    "aria-label"?: string;
+  }) => (
+    <button type="button" aria-pressed={checked} onClick={() => onCheckedChange(!checked)} {...props}>toggle</button>
   ),
 }));
 
@@ -346,6 +354,8 @@ describe("NewIssueDialog", () => {
   let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    primaryState.primaryAgentId = null;
+    primaryState.loading = false;
     vi.useRealTimers();
     originalResizeObserver = globalThis.ResizeObserver;
     originalVisualViewportDescriptor = Object.getOwnPropertyDescriptor(window, "visualViewport");
@@ -368,6 +378,7 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "open" });
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
@@ -498,6 +509,23 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
     expect(container.textContent).not.toContain("@CEO");
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { recent: null, explicit: null, draft: null, primary: "worker", expected: "Worker" },
+    { recent: "ceo", explicit: null, draft: null, primary: "worker", expected: "CEO" },
+    { recent: "worker", explicit: "ceo", draft: null, primary: "worker", expected: "CEO" },
+    { recent: "worker", explicit: null, draft: "ceo", primary: "worker", expected: "CEO" },
+    { recent: null, explicit: null, draft: null, primary: "missing", expected: "CEO" },
+  ])("preserves task selection precedence ($recent, $explicit, $draft, $primary)", async ({ recent, explicit, draft, primary, expected }) => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    primaryState.primaryAgentId = primary;
+    if (recent) trackRecentAssignee(recent, "company-1");
+    if (explicit) dialogState.newIssueDefaults = { assigneeAgentId: explicit };
+    if (draft) localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     act(() => root.unmount());
   });
 
@@ -688,6 +716,128 @@ describe("NewIssueDialog", () => {
       }),
     );
 
+    act(() => root.unmount());
+  });
+
+  it("restores private visibility from a saved draft without a project", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
+    const { root } = renderDialog(container);
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('button[data-testid="composer-private-chip"]')!;
+    await waitForAssertion(() => expect(toggle).not.toBeNull());
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Create task")!;
+    await act(async () => submit.click());
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ title: "Private draft", visibility: "private" }));
+    act(() => root.unmount());
+  });
+
+  it("waits for parent access before offering privacy or creating a child", async () => {
+    let resolveParent!: (value: unknown) => void;
+    mockIssuesApi.get.mockReturnValue(new Promise(resolve => { resolveParent = resolve; }));
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    const submit = container.querySelector<HTMLButtonElement>('button[aria-label="Create sub-task"]')!;
+    expect(submit.disabled).toBe(true);
+    expect(container.textContent).toContain("Checking parent access");
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-add"]')!.click());
+    await flush();
+    expect(document.querySelector('[data-testid="composer-add-private"]')).toBeNull();
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    await act(async () => resolveParent({ id: "issue-1", visibility: "private" }));
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector<HTMLButtonElement>('[data-testid="composer-private-chip"]')?.disabled).toBe(true));
+    expect(submit.disabled).toBe(false);
+    act(() => root.unmount());
+  });
+
+  it("keeps submission blocked after a parent lookup error and lets the user retry", async () => {
+    mockIssuesApi.get.mockRejectedValueOnce(new Error("Unavailable")).mockResolvedValue({ id: "issue-1", visibility: "private" });
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => expect(container.textContent).toContain("Couldn't check parent access."));
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Create sub-task"]')?.disabled).toBe(true);
+    await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent === "Retry")!.click());
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector<HTMLButtonElement>('[data-testid="composer-private-chip"]')?.disabled).toBe(true));
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("locks inherited privacy and submits the child as private", async () => {
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "private", title: "Board briefing" });
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>('button[data-testid="composer-private-chip"]')!;
+    await waitForAssertion(() => expect(toggle).not.toBeNull());
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toBe("Subtask of private task Board briefing");
+    await typeTextareaValue(container.querySelector('textarea')!, "Private child draft");
+    // Saving this form must retain only the explicit toggle choice. A later
+    // standalone draft must not acquire a sticky private flag from its parent.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft")!).isPrivate).toBe(false);
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Create sub-task")!;
+    await act(async () => submit.click());
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ parentId: "issue-1", visibility: "private" }));
+    act(() => root.unmount());
+  });
+
+  it("names the private project inherited through an open parent", async () => {
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "open", title: "Board briefing", project: { id: "private-project", name: "Executive planning", visibility: "private" } });
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => {
+      const chip = container.querySelector<HTMLButtonElement>('[data-testid="composer-private-chip"]');
+      expect(chip?.disabled).toBe(true);
+      expect(chip?.title).toBe("In private project Executive planning");
+    });
+    act(() => root.unmount());
+  });
+
+  it("defaults a private task to the current user's personal private project", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "personal-project",
+        companyId: "company-1",
+        name: "My private tasks",
+        visibility: "private",
+        personalOwnerUserId: "user-1",
+        archivedAt: null,
+      },
+    ]);
+    dialogState.newIssueDefaults = { title: "Private scratch task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-add"]')!.click());
+    await flush();
+    const privateToggle = document.querySelector<HTMLButtonElement>('[data-testid="composer-add-private"]');
+    expect(privateToggle).not.toBeNull();
+    await act(async () => privateToggle!.click());
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Create task");
+    await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
+    await act(async () => submitButton!.click());
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Private scratch task",
+        visibility: "private",
+        projectId: "personal-project",
+      }),
+    );
     act(() => root.unmount());
   });
 

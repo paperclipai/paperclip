@@ -10,6 +10,8 @@ import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
+import { ApiError } from "../api/client";
+import { LockedIssueChip } from "./LockedIssueChip";
 import { agentsApi } from "../api/agents";
 import { getCachedIssueDetail } from "../lib/issueDetailCache";
 import { queryKeys } from "../lib/queryKeys";
@@ -145,7 +147,7 @@ function MarkdownIssueLink({
 }) {
   const queryClient = useQueryClient();
   const [engaged, setEngaged] = useState(false);
-  const { data } = useQuery({
+  const { data, error } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     // A transcript can mention dozens of tasks. Their full detail projections
     // are hover information, not prerequisites for reading this conversation.
@@ -153,17 +155,42 @@ function MarkdownIssueLink({
     placeholderData: getCachedIssueDetail(queryClient, issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
+    // A private issue 404s on direct fetch (indistinguishable from deleted, by
+    // design). Don't burn retries on it — settle straight to the locked chip.
+    retry: (failureCount, err) =>
+      !(err instanceof ApiError && err.status === 404) && failureCount < 3,
   });
+
+  // Mention of an issue this viewer can't read → existence-only locked chip
+  // (never a title or a link), matching the locked-stub treatment on edges.
+  if (error instanceof ApiError && error.status === 404) {
+    return <LockedIssueChip identifier={issuePathId} unavailable />;
+  }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
+  // Until the fetch settles we don't yet know whether this viewer can read the
+  // issue. Keep the mention a plain link (clickable, styled as today) but hold
+  // off mounting the IssueLinkQuicklook hover preview — a Radix Popover portal —
+  // until `data` confirms the issue is readable.
+  //   - Correctness (PAP-16070): a private mention 404s straight to the locked
+  //     chip. Mounting the quicklook popover during the loading `<Link>` only to
+  //     tear the portal down and swap in a plain `<span>` chip on the 404 is the
+  //     element churn that crashed the chat transcript's primary renderer (it
+  //     fell through to the safe fallback). Loading link → chip stays portal-free.
+  //   - Privacy: don't prefetch / hover-preview an issue of unconfirmed
+  //     readability. `data-mention-pending` marks the transient state for tests.
+  const pending = !data;
+
   return (
     <Link
       to={href}
       data-mention-kind="issue"
+      disableIssueQuicklook={pending}
+      data-mention-pending={pending ? "true" : undefined}
       onPointerEnter={() => setEngaged(true)}
       onFocus={() => setEngaged(true)}
       // Boxless inline mention: the unified status glyph + a regular-weight

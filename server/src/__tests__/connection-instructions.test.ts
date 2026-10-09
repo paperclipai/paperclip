@@ -147,7 +147,7 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     try {
       await writeFile(join(bundle, "AGENTS.md"), "Agent entry instructions.");
       parsed.instructions.bundle.rootPath = bundle;
-      expect(nativeSystemInstructions({ runtimeContext: parsed } as NativeExecutionInput)).toContain(paragraph);
+      expect(nativeSystemInstructions({ provider: { kind: "codex" }, runtimeContext: parsed } as NativeExecutionInput)).toContain(paragraph);
     } finally { await rm(bundle, { recursive: true, force: true }); }
     expect(() => parseNativeRuntimeContext({ ...runtimeContext, connectionInstructions: { ...snapshot, text: "forged" } })).toThrow();
     expect(parseNativeRuntimeContext(nativeRuntimeContextFixture()).connectionInstructions).toBeUndefined();

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,7 +30,8 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
 import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const testDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const embeddedPostgresSupport = testDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("reportRunFailure", () => {
@@ -41,8 +42,13 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   let inheritedEnv: NodeJS.ProcessEnv;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
-    db = createDb(tempDb.connectionString);
+    if (testDatabaseUrl) {
+      await applyPendingMigrations(testDatabaseUrl);
+      db = createDb(testDatabaseUrl);
+    } else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 20_000);
 
   beforeEach(() => {
@@ -66,6 +72,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   });
 
   afterAll(async () => {
+    if (testDatabaseUrl) await closeRegisteredClients(testDatabaseUrl);
     await tempDb?.cleanup();
   });
 
@@ -110,6 +117,342 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
 
+  const gitConnection = { schemaVersion: 1, provider: "git", operation: "clone", reason: "authentication_failed" };
+  const hermesConnection = { schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason: "connection_refused" };
+
+  function gitConnectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "setup_failed", executionStage: "preparing", exitCode: null, signal: null,
+      resultJson: { connectionFailure: gitConnection,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      ...overrides,
+    });
+  }
+
+  function hermesConnectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "hermes_gateway_connect_failed", executionStage: "executing", exitCode: 1, signal: null,
+      resultJson: { connectionFailure: hermesConnection }, ...overrides,
+    });
+  }
+
+  it("keeps a proven Git clone failure and its persisted task error unchanged", async () => {
+    await seedCompanyAndAgent();
+    const input = gitConnectionRun();
+    const [run] = await db.insert(heartbeatRuns).values(input).returning();
+    const before = structuredClone(run);
+    await reportRunFailure(db, run!, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+    expect(await db.select().from(heartbeatRuns)).toEqual([before]);
+  });
+
+  it("keeps an all-external Git materialization aggregate local even across different external causes", async () => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun({ errorCode: "workspace_validation_failed" });
+    run.resultJson!.workspaceValidation = { reason: "git_worktree_base_materialization_failed", materializationFailures: [
+      { connectionFailure: gitConnection },
+      { connectionFailure: { ...gitConnection, reason: "repository_unavailable" } },
+    ] };
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { status: "timed_out" }, { executionStage: "executing" }, { executionStage: null },
+    { errorCode: "adapter_failed" }, { exitCode: 1 }, { exitCode: 0 }, { signal: "SIGTERM" },
+    { resultJson: {} },
+    { resultJson: { connectionFailure: { ...gitConnection, schemaVersion: 2 }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+    { resultJson: { connectionFailure: hermesConnection, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+  ])("reports a Git marker without its matching setup outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, gitConnectionRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "execute"] as const)("reports Git failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, gitConnectionRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true },
+    { kind: "runtime", providerWorkStarted: false }])("reports Git failures without unstarted bootstrap proof: %j", async (recovery) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun();
+    run.resultJson!.executionRecovery = recovery;
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [], [null], [{ connectionFailure: gitConnection }, {}],
+    [{ connectionFailure: gitConnection }, { connectionFailure: hermesConnection }],
+    [{ connectionFailure: gitConnection }, { connectionFailure: { ...gitConnection, reason: "unknown" } }],
+    [{ connectionFailure: { ...gitConnection, reason: "repository_unavailable" } }],
+  ].map((failures) => ({ failures })))("reports mixed, malformed, or inconsistent Git materialization evidence: %j", async ({ failures }) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun({ errorCode: "workspace_validation_failed" });
+    run.resultJson!.workspaceValidation = { reason: "git_worktree_base_materialization_failed", materializationFailures: failures };
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { reason: "git_worktree_base_materialization_failed", materializationFailures: [{ connectionFailure: gitConnection }] },
+    { reason: "git_worktree_not_reusable" },
+  ])("does not use setup_failed to bypass separate workspace validation evidence: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun();
+    run.resultJson!.workspaceValidation = validation;
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["configuration", "endpoint_missing", "hermes_gateway_api_base_url_missing"],
+    ["configuration", "endpoint_invalid", "hermes_gateway_api_base_url_invalid"],
+    ["configuration", "insecure_transport", "hermes_gateway_plain_http_remote_denied"],
+    ["configuration", "credentials_missing", "hermes_gateway_api_key_missing"],
+    ["create_run", "authentication_failed", "hermes_gateway_auth_failed"],
+    ["create_run", "endpoint_not_found", "hermes_gateway_runs_unsupported"],
+    ["create_run", "rate_limited", "hermes_gateway_rate_limited"],
+    ["create_run", "remote_unavailable", "hermes_gateway_upstream_error"],
+    ...["connection_refused", "dns_failure", "network_unreachable", "connection_reset", "connection_timeout", "tls_failure"]
+      .flatMap((reason) => ["hermes_gateway_connect_failed", "hermes_gateway_protocol_error"].map((code) => ["create_run", reason, code])),
+  ])("keeps the matching Hermes %s/%s task error local", async (operation, reason, errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun({ errorCode, resultJson: { connectionFailure: { ...hermesConnection, operation, reason } } });
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([undefined, { kind: "bootstrap", providerWorkStarted: true }, { kind: "runtime", providerWorkStarted: true }])(
+    "does not infer remote nonacceptance from a classified Hermes connection failure: %j", async (recovery) => {
+      await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+      const input = hermesConnectionRun();
+      input.resultJson!.executionRecovery = recovery;
+      const [run] = await db.insert(heartbeatRuns).values(input).returning();
+      const before = structuredClone(run);
+      await reportRunFailure(db, run!);
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns)).toEqual([before]);
+    },
+  );
+
+  it.each([
+    { status: "timed_out" }, { status: "cancelled", startedAt: new Date(0) },
+    { exitCode: 0 }, { exitCode: null }, { signal: "SIGTERM" },
+    { errorCode: "hermes_gateway_timeout" }, { errorCode: "hermes_gateway_run_failed" },
+    { errorCode: "hermes_gateway_auth_failed" },
+    { resultJson: {} },
+    { resultJson: { connectionFailure: { ...hermesConnection, reason: "unknown" } } },
+    { resultJson: { connectionFailure: { ...hermesConnection, privateUrl: "https://private.example.test" } } },
+    { resultJson: { connectionFailure: gitConnection } },
+    { resultJson: { connectionFailure: { ...hermesConnection, operation: "configuration", reason: "credentials_missing" } } },
+  ])("reports an unproven or mismatched Hermes outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun(overrides);
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(run).toEqual(before);
+  });
+
+  it("keeps setup errors reportable even when they carry a matching Hermes marker", async () => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    await reportRunFailure(db, hermesConnectionRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each(["codex_local", "hermes_local"])("requires the actual database adapter, not a Hermes marker on %s", async (adapterType) => {
+    await seedCompanyAndAgent({ adapterType });
+    const run = hermesConnectionRun({ contextSnapshot: { adapterType: "hermes_gateway" } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ agentAdapter: adapterType }));
+  });
+
+  it.each(["missing", "other_company"])("does not suppress Hermes when its database agent is %s", async (kind) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun(kind === "missing" ? { agentId: randomUUID() } : { companyId: randomUUID() });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ agentAdapter: "unknown" }));
+  });
+
+  function aiSelectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "ai_connection_unavailable",
+          selectionFailure: "ai_connection_default_missing",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    "ai_connection_responsible_user_missing", "ai_connection_default_missing",
+    "ai_connection_missing", "ai_connection_incompatible", "ai_connection_unavailable",
+    "ai_connection_credential_not_shared",
+  ])("keeps the proven AI selection blocker local: %s", async (selectionFailure) => {
+    await seedCompanyAndAgent();
+    const run = aiSelectionRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+    const saved = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([undefined, null, {}, [], "", "database_error", "ai_connection_busy"])(
+    "reports AI connection wrappers without a known selection cause: %j", async (selectionFailure) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["resume", "provider_started", "outside_setup", "unmarked"] as const)(
+    "reports credential sharing denials without fresh pre-provider proof: %s", async (cause) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = "ai_connection_credential_not_shared";
+      run.error = "This credential is not shared with the responsible user";
+      if (cause === "resume") {
+        run.runtimeMode = "native";
+        run.runnerProfileJson = { nativeExecutionInput: {} };
+      }
+      if (cause === "provider_started") run.resultJson!.executionRecovery = { kind: "bootstrap", providerWorkStarted: true };
+      if (cause === "unmarked") delete (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure;
+      await reportRunFailure(db, run, { phase: cause === "outside_setup" ? "execute" : "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: {} } },
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { executionStage: null }, { exitCode: 1 }, { exitCode: 0 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "resume", providerWorkStarted: false } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap" } } },
+    { resultJson: { configurationIncomplete: { reason: "controller_environment_unsupported", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+  ])("reports AI configuration without pre-provider selection proof: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports AI selection failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function missingSecretRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_missing" }],
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    { bindingType: "secret_ref" },
+    { bindingType: "secret_ref", errorCode: "binding_missing" },
+    ...["binding_missing", "responsible_user_missing", "user_secret_missing", "secret_inactive", "user_secret_definition_inactive"]
+      .map((errorCode) => ({ bindingType: "user_secret_ref", errorCode })),
+  ])("keeps the known pre-dispatch secret blocker local: %j", async (binding) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).missingBindings = [binding];
+    const saved = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([
+    {},
+    { reason: "secret_binding_missing", missingBindings: [] },
+    { reason: "secret_binding_missing", missingBindings: [null] },
+    { reason: "secret_binding_missing", missingBindings: [{ errorCode: "user_secret_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "provider_error" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_definition_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "new_unknown_reason" }] },
+    { reason: "secret_binding_missing", missingBindings: [
+      { bindingType: "user_secret_ref", errorCode: "user_secret_missing" },
+      { bindingType: "secret_ref", errorCode: "provider_error" },
+    ] },
+    { reason: "ai_connection_unavailable" },
+  ])("reports ambiguous, unknown, and provider failures: %j", async (configurationIncomplete) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    run.resultJson!.configurationIncomplete = configurationIncomplete;
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" },
+    { errorCode: "setup_failed" },
+    { errorCode: "workspace_validation_failed" },
+    { errorCode: "adapter_failed" },
+    { executionStage: "executing" },
+    { executionStage: null },
+    { exitCode: 1 },
+    { exitCode: 0 },
+    { signal: "SIGTERM" },
+  ])("reports missing-secret text without a proven pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(overrides), { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports missing-secret failures without explicit bootstrap proof: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = missingSecretRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+
+      await reportRunFailure(db, run, { phase: "setup" });
+
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([undefined, "execute"] as const)("reports configuration failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(), { phase });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   it("captures once for the status failed", async () => {
     await seedCompanyAndAgent();
     const run = buildRun({ status: "failed" });
@@ -118,6 +461,79 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
+
+  function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "workspace_validation_failed",
+      executionStage: "preparing",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+          resolvedWorkspaceSource: "project_primary",
+          workspaceStrategyType: "git_worktree",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["isolated_workspace", "operator_branch"])("keeps proven local-path policy conflicts actionable locally: %s", async (mode) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    (run.resultJson!.workspaceValidation as Record<string, unknown>).requestedExecutionWorkspaceMode = mode;
+    const before = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { configurationReason: undefined },
+    { configurationReason: "unknown_reason" },
+    { reason: "git_worktree_base_materialization_failed" },
+    { reason: "git_worktree_not_reusable" },
+    { reason: "inherited_workspace_reuse_unavailable" },
+    { resolvedWorkspaceSource: "agent_home" },
+    { workspaceStrategyType: "project_primary" },
+    { requestedExecutionWorkspaceMode: "agent_default" },
+  ])("reports unproven and other workspace failures: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    Object.assign(run.resultJson!.workspaceValidation as object, validation);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { exitCode: 1 }, { signal: "SIGTERM" }, { resultJson: {} },
+    { resultJson: { workspaceValidation: { reason: "git_worktree_base_not_git_checkout", configurationReason: "local_path_requires_git_checkout" } } },
+  ])("reports workspace failures without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports local-path markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports local-path markers without affirmative unstarted-provider evidence: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = localPathConfigurationRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("captures once for the status timed_out", async () => {
     await seedCompanyAndAgent();

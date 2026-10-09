@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { chmod, copyFile, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
+import { constants } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmod, copyFile, link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,7 +13,7 @@ import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, rm: vi.fn(original.rm) };
+  return { ...original, open: vi.fn(original.open), rm: vi.fn(original.rm), mkdir: vi.fn(original.mkdir), chmod: vi.fn(original.chmod) };
 });
 
 const roots: string[] = [];
@@ -57,6 +59,22 @@ async function manyFileFixture(sizes: number[]) {
   await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
   return { declaration: { ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) }, entries };
 }
+async function directoryFixture() {
+  const declaration = await fixture();
+  const entries = await readNativeAcpxDistributionEntries(declaration);
+  for (let index = 0; index < 40; index++) {
+    const parent = `dir-${String(index).padStart(2, "0")}/nested`;
+    await mkdir(join(declaration.distributionRoot, parent), { recursive: true });
+    for (const name of ["a", "b"]) {
+      const path = `${parent}/${name}`; const bytes = Buffer.from(path);
+      await writeFile(join(declaration.distributionRoot, path), bytes, { mode: 0o600 });
+      entries.push({ path, sha256: hash(bytes), size: bytes.length, executable: false });
+    }
+  }
+  entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+  return { declaration: { ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) }, entries };
+}
 async function filePrototype(path: string): Promise<FileHandle> {
   const probe = await open(path, "r"); const prototype = Object.getPrototypeOf(probe) as FileHandle;
   await probe.close(); return prototype;
@@ -76,6 +94,39 @@ async function output(child: ChildProcess): Promise<{ text: string; error: strin
 }
 
 describe("native ACPX execution closure", () => {
+  it("reuses shared parent prefixes with exactly the original levels, insertion order and sorted batches", async () => {
+    const declaration = await fixture();
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    const deep = Array.from({ length: 36 }, (_, index) => `d${index}`).join("/");
+    const paths = ["plain", "a-/one", "a.b/two", "a/a", "a/b/a", "a/b/c/a", "a/b/c/b", "a/bb/a", "a/c/a", "a0/a", "space dir/@scope/pkg/a", "space dir/@scope/pkg/b", "日本/é/a", `${deep}/a`, `${deep}/b`, `${deep}/more/c`];
+    for (const path of paths) {
+      await mkdir(join(declaration.distributionRoot, dirname(path)), { recursive: true });
+      await writeFile(join(declaration.distributionRoot, path), path, { mode: 0o600 });
+      entries.push({ path, sha256: hash(path), size: Buffer.byteLength(path), executable: false });
+    }
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    const creatingStart = vi.mocked(mkdir).mock.calls.length;
+    const sealingStart = vi.mocked(chmod).mock.calls.length;
+    const created = await createNativeAcpxDistributionSnapshot({ ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) }, entries);
+    try {
+      const root = created.snapshot.roots[0]!;
+      const levels = new Map<number, Set<string>>();
+      const directories = new Set([dirname(root), root]);
+      // Frozen reference: the original repeated-prefix planner.
+      for (const entry of entries) {
+        const parts = entry.path.split("/");
+        for (let depth = 1; depth < parts.length; depth++) {
+          const path = join(root, ...parts.slice(0, depth));
+          const level = levels.get(depth) ?? new Set<string>();
+          level.add(path); levels.set(depth, level); directories.add(path);
+        }
+      }
+      const expectedCreation = [root, ...[...levels.keys()].sort((a, b) => a - b).flatMap(depth => [...levels.get(depth)!].sort())];
+      expect(vi.mocked(mkdir).mock.calls.slice(creatingStart)).toEqual(expectedCreation.map(path => [path, { mode: 0o700 }]));
+      expect(vi.mocked(chmod).mock.calls.slice(sealingStart)).toEqual([...directories].map(path => [path, 0o500]));
+      for (const path of directories) expect((await stat(path)).mode & 0o777).toBe(0o500);
+    } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
+  });
   it("rejects paths, ordering, oversized files and altered manifest pins", () => {
     const entry = { path: "runtime", sha256: "a".repeat(64), size: 10, executable: true };
     for (const entries of [[{ ...entry, path: "../escape" }], [{ ...entry, path: "/absolute" }], [entry, entry], [{ ...entry, size: 2 ** 40 }], [{ ...entry, unknown: 1 }]]) {
@@ -91,6 +142,66 @@ describe("native ACPX execution closure", () => {
     await symlink("closure.json", join(declaration.distributionRoot, "runtime"));
     await expect(installation.openCommand()).rejects.toThrow("symbolic link");
   });
+  it.each(["fifo", "directory", "hardlink", "symlink", "size", "mode"] as const)(
+    "rejects a %s swapped in immediately before open without reading it or leaking its descriptor", async kind => {
+      const declaration = await fixture();
+      const entries = await readNativeAcpxDistributionEntries(declaration);
+      const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      const source = await realpath(declaration.distributionRoot);
+      const path = join(source, "runtime");
+      const originalPath = join(source, "original");
+      const prototype = await filePrototype(path);
+      const read = vi.spyOn(prototype, "read");
+      let opened: FileHandle | undefined; let closed = false;
+      vi.mocked(open).mockImplementation(async (selected: any, flags: any, ...rest: any[]): Promise<any> => {
+        if (String(selected) !== path) return original.open(selected, flags, rest[0]);
+        expect(flags & constants.O_NOFOLLOW).not.toBe(0);
+        expect(flags & constants.O_NONBLOCK).not.toBe(0);
+        await rename(path, originalPath);
+        if (kind === "fifo") execFileSync("mkfifo", [path], { timeout: 2_000 });
+        else if (kind === "directory") await mkdir(path);
+        else if (kind === "hardlink") await link(originalPath, path);
+        else if (kind === "symlink") await symlink(originalPath, path);
+        else {
+          await copyFile(originalPath, path);
+          if (kind === "size") await writeFile(path, "short");
+          else await chmod(path, 0o600);
+        }
+        opened = await original.open(selected, flags, rest[0]);
+        const close = opened.close.bind(opened);
+        opened.close = async () => { await close(); closed = true; };
+        return opened;
+      });
+      let unexpected: Awaited<ReturnType<typeof createNativeAcpxDistributionSnapshot>> | undefined;
+      try {
+        const error = await createNativeAcpxDistributionSnapshot(declaration, entries).then(
+          value => { unexpected = value; return undefined; }, error => error);
+        expect(error).toBeInstanceOf(Error);
+        expect(read).not.toHaveBeenCalled();
+        if (kind === "symlink") expect(opened).toBeUndefined();
+        else { expect(opened).toBeDefined(); expect(closed).toBe(true); }
+      } finally {
+        vi.mocked(open).mockImplementation(original.open);
+        if (unexpected) { await unexpected.commandDirectory.close(); await unexpected.snapshot.close(); }
+      }
+    });
+  it("rejects a same-byte pathname replacement after reading the held descriptor", async () => {
+    const declaration = await fixture(); const entries = await readNativeAcpxDistributionEntries(declaration);
+    const path = join(declaration.distributionRoot, "runtime");
+    const prototype = await filePrototype(path); const originalRead = prototype.read;
+    let replaced = false;
+    vi.spyOn(prototype, "read").mockImplementation(async function (this: FileHandle, ...args: any[]): Promise<any> {
+      const result = await originalRead.apply(this, args as never);
+      if (!replaced) {
+        replaced = true;
+        await rename(path, path + ".original");
+        await copyFile(path + ".original", path);
+      }
+      return result;
+    });
+    await expect(createNativeAcpxDistributionSnapshot(declaration, entries)).rejects.toThrow("changed while read");
+    expect(replaced).toBe(true);
+  });
   it("launches only fixed arguments from a frozen snapshot after installed files change", async () => {
     const declaration = await fixture(); const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
     expect(() => lease.spawn(["--untrusted-override"])).toThrow("fixed profile arguments");
@@ -100,6 +211,109 @@ describe("native ACPX execution closure", () => {
     expect(() => lease.spawn()).toThrow("closed");
     await lease.close();
   });
+  it("waits for consumed native snapshot deletion before command retirement completes", async () => {
+    const declaration = await fixture();
+    const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+    const deleting = gate(), releaseDeletion = gate();
+    const originalRm = vi.mocked(rm).getMockImplementation()!;
+    let snapshotRoot = "";
+    vi.mocked(rm).mockImplementation(async (path, options) => {
+      if (String(path).includes("paperclip-acpx-native-")) {
+        snapshotRoot = String(path);
+        deleting.release();
+        await releaseDeletion.promise;
+      }
+      return originalRm(path, options);
+    });
+    let retired = false;
+    let closing: Promise<void> | undefined;
+    try {
+      expect((await output(lease.spawn())).code).toBe(0);
+      await deleting.promise;
+      closing = lease.close().then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(retired).toBe(false);
+    } finally {
+      releaseDeletion.release();
+      await closing;
+    }
+    await expect(stat(snapshotRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("retains spawned native bytes until the exact child exits", async () => {
+    const declaration = await fixture({ script: '#!/bin/sh\nprintf ready\nexec sleep 1000\n' });
+    const creatingStart = vi.mocked(mkdir).mock.calls.length;
+    const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+    const snapshotRoot = dirname(String(vi.mocked(mkdir).mock.calls[creatingStart]![0]));
+    const child = lease.spawn();
+    const exited = once(child, "close");
+    child.stderr!.resume();
+    let retired = false;
+    let closing: Promise<void> | undefined;
+    try {
+      await once(child.stdout!, "data");
+      closing = lease.close().then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(retired).toBe(false);
+      expect((await stat(snapshotRoot)).isDirectory()).toBe(true);
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
+      await closing;
+    }
+    await expect(stat(snapshotRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("reports exit-triggered native deletion failure and retries only its retained cleanup", async () => {
+    const declaration = await fixture();
+    const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+    const deleting = gate();
+    const originalRm = vi.mocked(rm).getMockImplementation()!;
+    let snapshotRoot = "", failed = false;
+    vi.mocked(rm).mockImplementation(async (path, options) => {
+      if (String(path).includes("paperclip-acpx-native-") && !failed) {
+        failed = true;
+        snapshotRoot = String(path);
+        deleting.release();
+        throw new Error("native snapshot deletion denied");
+      }
+      return originalRm(path, options);
+    });
+    expect((await output(lease.spawn())).code).toBe(0);
+    await deleting.promise;
+    await expect(lease.close()).rejects.toThrow("native snapshot deletion denied");
+    expect((await stat(snapshotRoot)).isDirectory()).toBe(true);
+    await lease.close();
+    await expect(stat(snapshotRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("bounds retirement of a surviving native child and retains bytes for cleanup retry", async () => {
+    const declaration = await fixture({ script: '#!/bin/sh\nprintf ready\nexec sleep 1000\n' });
+    const creatingStart = vi.mocked(mkdir).mock.calls.length;
+    const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+    const snapshotRoot = dirname(String(vi.mocked(mkdir).mock.calls[creatingStart]![0]));
+    const child = lease.spawn();
+    const exited = once(child, "close");
+    child.stderr!.resume();
+    let closing: Promise<void> | undefined;
+    try {
+      await once(child.stdout!, "data");
+      vi.useFakeTimers();
+      closing = lease.close();
+      const disposition = Promise.race([
+        closing.then(() => "closed", () => "failed"),
+        new Promise<string>(resolve => setTimeout(() => resolve("unbounded"), 11_000)),
+      ]);
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(await disposition).toBe("failed");
+      await expect(closing).rejects.toThrow("native snapshot retirement deadline");
+      expect((await stat(snapshotRoot)).isDirectory()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      child.kill("SIGTERM");
+      await exited;
+      await closing?.catch(() => undefined);
+      await lease.close();
+    }
+    await expect(stat(snapshotRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("gives packaged executables a fresh private extraction cache each launch", async () => {
     const declaration = { ...await fixture(), isolatedCacheEnvironmentName: "COPILOT_PKG_CACHE_HOME" as const };
     const install = await verifyNativeAcpxInstallation(declaration);
@@ -108,6 +322,32 @@ describe("native ACPX execution closure", () => {
     expect(first.text).toMatch(/^native:fixed:.*paperclip-acpx-native-.*\/state$/);
     expect(first.text).not.toBe(second.text);
   });
+  // Copy/hash the real Node closure and start its bootstrap + owned shim. These
+  // operations share the adjacent native-closure test's bounded allowance;
+  // Vitest's 5s default is not a provider startup or permission deadline.
+  it("loads the owned Copilot distribution through a guarded private shim and ignores ambient overrides", async () => {
+    const declaration = await fixture({ node: true });
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    await mkdir(join(declaration.distributionRoot, "distribution"));
+    const source = 'console.log(JSON.stringify({owned:__dirname,dist:process.env.COPILOT_CLI_DIST_DIR,version:process.env.COPILOT_CLI_VERSION??null,options:process.env.NODE_OPTIONS??null}));';
+    await writeFile(join(declaration.distributionRoot, "distribution/index.js"), source, { mode: 0o600 });
+    entries.push({ path: "distribution/index.js", sha256: hash(source), size: Buffer.byteLength(source), executable: false });
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+    const owned = { ...declaration, entrypoint: undefined, expectedClosureSha256: hash(JSON.stringify(entries)), copilotDistributionDirectory: "distribution", fixedArguments: ["-e", 'require(process.env.COPILOT_CLI_DIST_DIR+"/index.js")'] };
+    const installation = await verifyNativeAcpxInstallation(owned);
+    const lease = await installation.openCommand();
+    const result = await output(lease.spawn([], { env: { COPILOT_CLI_DIST_DIR: "/ambient/evil", COPILOT_CLI_VERSION: "99.0.0", NODE_OPTIONS: "--untrusted-option" } }));
+    expect(result.code, result.error).toBe(0);
+    const observed = JSON.parse(result.text);
+    expect(observed.owned).toMatch(/paperclip-acpx-native-.*\/distribution\/distribution$/);
+    expect(observed.dist).toBe(join(dirname(observed.owned), ".paperclip-copilot-entry"));
+    expect(observed.version).toBeNull(); expect(observed.options).toBeNull();
+    await lease.close();
+    await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "../ambient" })).rejects.toThrow("launch declaration");
+    await expect(readNativeAcpxDistributionEntries({ ...owned, copilotDistributionDirectory: "missing" })).rejects.toThrow("owned entrypoint");
+    await expect(readNativeAcpxDistributionEntries({ ...owned, entrypoint: "entry.cjs" })).rejects.toThrow("launch declaration");
+  }, 30_000);
   it("loads a pinned Node entrypoint while rejecting unqualified external modules", async () => {
     const declaration = await fixture({ node: true });
     const result = await output((await (await verifyNativeAcpxInstallation(declaration)).openCommand()).spawn());
@@ -117,8 +357,108 @@ describe("native ACPX execution closure", () => {
     const denied = await output((await (await verifyNativeAcpxInstallation(evil)).openCommand()).spawn());
     expect(denied.code).not.toBe(0); expect(denied.error).toContain("escaped its closed distribution");
   }, 30_000);
+  it.each([false, true])("runs real Node module hooks with interleaved formats and tamper=%s", async tamper => {
+    const script = tamper ? `
+      const fs = require("node:fs");
+      const { registerHooks } = require("node:module");
+      const { fileURLToPath } = require("node:url");
+      registerHooks({ resolve(specifier, context, next) {
+        const result = next(specifier, context);
+        if (result.url.endsWith("/value.mjs")) {
+          const path = fileURLToPath(result.url);
+          fs.chmodSync(path, 0o600);
+          fs.writeFileSync(path, 'console.log("tampered-code-executed");export default 99;');
+        }
+        return result;
+      }});
+      import("./value.mjs").then(() => { process.exitCode = 9; })
+        .catch(error => { console.error(error.message); process.exitCode = 17; });
+    ` : `
+      const resolved = require.resolve("./value.cjs");
+      require("node:fs");
+      const commonjs = require(resolved);
+      const json = require("./value.json");
+      import("./value.mjs").then(module => {
+        console.log(JSON.stringify([commonjs, json.value, module.default, require(resolved)]));
+      }).catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const declaration = await fixture({ node: true, script });
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    for (const [path, source] of Object.entries({
+      "value.cjs": "module.exports = 17;",
+      "value.json": '{"value":31}',
+      "value.mjs": "export default 23;",
+    })) {
+      await writeFile(join(declaration.distributionRoot, path), source, { mode: 0o600 });
+      entries.push({ path, sha256: hash(source), size: Buffer.byteLength(source), executable: false });
+    }
+    entries.sort((a, b) => a.path < b.path ? -1 : 1);
+    await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+    const lease = await (await verifyNativeAcpxInstallation({ ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) })).openCommand();
+    try {
+      const result = await output(lease.spawn());
+      if (tamper) {
+        expect(result.code, result.error).toBe(17);
+        expect(result.error).toContain("digest mismatch");
+        expect(result.text).not.toContain("tampered-code-executed");
+      } else {
+        expect(result.code, result.error).toBe(0);
+        expect(result.text).toBe("[17,31,23,17]\n");
+      }
+    } finally { await lease.close(); }
+  }, 30_000);
+  it("creates each private parent once and seals every directory before returning", async () => {
+    const { declaration, entries } = await directoryFixture();
+    const creatingStart = vi.mocked(mkdir).mock.calls.length;
+    const created = await createNativeAcpxDistributionSnapshot(declaration, entries);
+    try {
+      const root = created.snapshot.roots[0]!;
+      const calls = vi.mocked(mkdir).mock.calls.slice(creatingStart).map(([path]) => String(path)).filter(path => path.startsWith(root));
+      expect(calls).toHaveLength(81); expect(new Set(calls).size).toBe(81);
+      for (const path of calls) expect((await stat(path)).mode & 0o777).toBe(0o500);
+      for (const entry of entries) {
+        const path = join(root, entry.path);
+        expect(hash(await readFile(path))).toBe(entry.sha256);
+        expect((await stat(path)).mode & 0o777).toBe(entry.executable ? 0o500 : 0o400);
+      }
+    } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
+  });
+  it.each(["create", "seal"] as const)("bounds %s batches and drains failures before cleanup or further scheduling", async stage => {
+    const { declaration, entries } = await directoryFixture();
+    const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const hold = gate(); let started = 0; let active = 0; let peak = 0; let settled = false;
+    const removalStart = vi.mocked(rm).mock.calls.length;
+    const operation = async (path: any, mode: any) => {
+      const selected = stage === "create"
+        ? /paperclip-acpx-native-.*\/distribution\/dir-\d+$/.test(String(path))
+        : mode === 0o500;
+      if (!selected) return stage === "create" ? original.mkdir(path, mode) : original.chmod(path, mode);
+      const index = started++; active++; peak = Math.max(peak, active);
+      try {
+        if (index === 0) throw new Error(`fixture ${stage} failure`);
+        await hold.promise;
+        return stage === "create" ? await original.mkdir(path, mode) : await original.chmod(path, mode);
+      } finally { active--; }
+    };
+    if (stage === "create") vi.mocked(mkdir).mockImplementation(operation as typeof mkdir);
+    else vi.mocked(chmod).mockImplementation(operation as typeof chmod);
+    const creating = createNativeAcpxDistributionSnapshot(declaration, entries);
+    void creating.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(started).toBe(32));
+      expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(32); expect(settled).toBe(false);
+      expect(vi.mocked(rm).mock.calls.slice(removalStart).filter(([path]) => String(path).includes("paperclip-acpx-native-"))).toHaveLength(0);
+    } finally { hold.release(); }
+    try {
+      await expect(creating).rejects.toThrow(`fixture ${stage} failure`);
+      expect(active).toBe(0); expect(started).toBe(32);
+      const removed = vi.mocked(rm).mock.calls.slice(removalStart).map(([path]) => String(path)).filter(path => path.includes("paperclip-acpx-native-"));
+      expect(removed).toHaveLength(1);
+      await expect(stat(removed[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.mocked(mkdir).mockImplementation(original.mkdir); vi.mocked(chmod).mockImplementation(original.chmod); }
+  });
   it("copies concurrently within its descriptor bound and retains canonical manifest order", async () => {
-    const { declaration, entries } = await manyFileFixture(Array.from({ length: 12 }, (_, index) => 100 + index));
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 100 + index));
     const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
     const originalRead = prototype.read;
     const hold = gate(); const sizes: number[] = []; let active = 0; let peak = 0;
@@ -129,15 +469,36 @@ describe("native ACPX execution closure", () => {
     });
     const creating = createNativeAcpxDistributionSnapshot(declaration, entries);
     try {
-      await vi.waitFor(() => expect(sizes).toHaveLength(8));
-      expect(sizes.toSorted()).toEqual(Array.from({ length: 8 }, (_, index) => 100 + index));
+      await vi.waitFor(() => expect(sizes).toHaveLength(32));
+      expect(sizes.toSorted()).toEqual(Array.from({ length: 32 }, (_, index) => 100 + index));
     } finally { hold.release(); }
     const created = await creating;
     try {
-      expect(peak).toBe(8);
+      expect(peak).toBe(32);
       expect(Object.keys(created.snapshot.digests).slice(0, entries.length)).toEqual(entries.map(entry => join(created.snapshot.roots[0]!, entry.path)));
       for (const entry of entries) expect(hash(await readFile(join(created.snapshot.roots[0]!, entry.path)))).toBe(entry.sha256);
     } finally { await created.commandDirectory.close(); await created.snapshot.close(); }
+  });
+  it("uses released capacity while an earlier copy is still pending", async () => {
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 100 + index));
+    const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
+    const originalRead = prototype.read; const hold = gate(); let laterReached = false;
+    let active = 0; let peak = 0;
+    vi.spyOn(prototype, "read").mockImplementation(async function (this: FileHandle, ...args: any[]): Promise<any> {
+      active++; peak = Math.max(peak, active);
+      try {
+        if (args[0].length === 100) await hold.promise;
+        if (args[0].length === 139) laterReached = true;
+        return await originalRead.apply(this, args as never);
+      } finally { active--; }
+    });
+    const creating = createNativeAcpxDistributionSnapshot(declaration, entries);
+    let created: Awaited<typeof creating> | undefined;
+    try {
+      try { await vi.waitFor(() => expect(laterReached).toBe(true)); expect(active).toBeGreaterThan(0); expect(peak).toBeLessThanOrEqual(32); }
+      finally { hold.release(); created = await creating; }
+      expect(Object.keys(created.snapshot.digests).slice(0, entries.length)).toEqual(entries.map(entry => join(created!.snapshot.roots[0]!, entry.path)));
+    } finally { if (created) { await created.commandDirectory.close(); await created.snapshot.close(); } }
   });
   it("bounds simultaneous buffers and gives an oversized admitted file exclusive capacity", async () => {
     const mib = 1024 * 1024;
@@ -161,7 +522,7 @@ describe("native ACPX execution closure", () => {
     finally { await created.commandDirectory.close(); await created.snapshot.close(); }
   });
   it("drains every admitted copy before failed-snapshot cleanup and schedules no later batch", async () => {
-    const { declaration, entries } = await manyFileFixture(Array.from({ length: 10 }, (_, index) => 91 + index));
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 91 + index));
     await writeFile(join(declaration.distributionRoot, "file-00"), Buffer.alloc(91, 99));
     const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
     const originalRead = prototype.read;
@@ -174,7 +535,7 @@ describe("native ACPX execution closure", () => {
         this.close = async () => { await originalClose(); invalidClosed.release(); };
         await entered.promise;
       }
-      if (size === 92) { entered.release(); await hold.promise; }
+      if (size !== 91) { entered.release(); await hold.promise; }
       return originalRead.apply(this, args as never);
     });
     const creating = createNativeAcpxDistributionSnapshot(declaration, entries);
@@ -185,11 +546,41 @@ describe("native ACPX execution closure", () => {
       expect(settled).toBe(false);
     } finally { hold.release(); }
     await expect(creating).rejects.toThrow("digest mismatch: file-00");
-    expect(readSizes).not.toContain(99);
+    expect(readSizes).not.toContain(123);
     const removals = vi.mocked(rm).mock.calls.slice(removalStart).map(([path]) => String(path)).filter(path => /paperclip-acpx-native-/.test(path));
     expect(removals).toHaveLength(1);
     await new Promise<void>(resolve => setImmediate(resolve));
     await expect(stat(removals[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("aborts a pending native copy, drains admitted reads and removes its partial snapshot", async () => {
+    const { declaration, entries } = await manyFileFixture(Array.from({ length: 40 }, (_, index) => 91 + index));
+    const prototype = await filePrototype(join(declaration.distributionRoot, "runtime"));
+    const originalRead = prototype.read;
+    const entered = gate(); const hold = gate(); const controller = new AbortController();
+    const readSizes: number[] = []; const removalStart = vi.mocked(rm).mock.calls.length;
+    vi.spyOn(prototype, "read").mockImplementation(async function (this: FileHandle, ...args: any[]): Promise<any> {
+      readSizes.push(args[0].length); entered.release(); await hold.promise;
+      return originalRead.apply(this, args as never);
+    });
+    const creating = createNativeAcpxDistributionSnapshot(declaration, entries, controller.signal);
+    let settled = false; let unexpected: Awaited<typeof creating> | undefined;
+    void creating.then(value => { settled = true; unexpected = value; }, () => { settled = true; });
+    try {
+      await entered.promise;
+      controller.abort(new Error("owned command refresh cancelled"));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(vi.mocked(rm).mock.calls).toHaveLength(removalStart);
+      hold.release();
+      await expect(creating).rejects.toThrow("owned command refresh cancelled");
+      expect(readSizes).not.toContain(123);
+      const removals = vi.mocked(rm).mock.calls.slice(removalStart).map(([path]) => String(path)).filter(path => /paperclip-acpx-native-/.test(path));
+      expect(removals).toHaveLength(1);
+      await expect(stat(removals[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      hold.release(); await creating.catch(() => undefined);
+      if (unexpected) { await unexpected.commandDirectory.close(); await unexpected.snapshot.close(); }
+    }
   });
   it("rejects a source mutation while another file is being copied", async () => {
     const { declaration, entries } = await manyFileFixture([101, 102]);

@@ -30,11 +30,12 @@ import { boundedText, dynamicToolResponse, record, text } from "./codex-driver-v
 export async function handleServerRequest(
   state: CodexSessionState,
     request: CodexRpcServerRequest,
+    options: { restored?: true } = {},
   ): Promise<Record<string, unknown>> {
     const sourceSequenceBefore = state.sourceSequence;
     let rejected = false;
     try {
-      const response = await handleServerRequestBody(state, request);
+      const response = await handleServerRequestBody(state, request, options.restored === true);
       rejected = response.success === false;
       return response;
     } catch (error) {
@@ -80,6 +81,7 @@ export async function handleServerRequest(
 async function handleServerRequestBody(
   state: CodexSessionState,
     request: CodexRpcServerRequest,
+    restored: boolean,
   ): Promise<Record<string, unknown>> {
     if (request.method === "item/tool/call") {
       // Provider requests and turn/start responses have independent delivery
@@ -205,7 +207,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
             },
           ],
         };
@@ -308,7 +310,9 @@ async function handleServerRequestBody(
         method: request.method,
       },
     };
-    state.emit(
+    // Recovery rebinds an already durable callback. Its creation event is
+    // retained in the original run; emitting it again duplicates authority.
+    if (!restored) state.emit(
       "runtime_request.created",
       {
         request: runtimeRequestProtocolPayload(runtimeRequest),

@@ -487,6 +487,7 @@ Operational policy:
   - Attachment reads are company-scoped and expose stable path metadata: `contentPath`/`openPath` for inline-safe viewing and `downloadPath` for forced download.
   - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
   - Script-capable content such as HTML is always served as an attachment with `X-Content-Type-Options: nosniff` and a sandboxed, deny-by-default CSP; it is never rendered inline on the Paperclip origin.
+  - The board can fetch bounded HTML source for a rich preview in an opaque-origin iframe (`sandbox="allow-scripts"`, without `allow-same-origin`). A trusted CSP precedes artifact markup and blocks remote subresources, API connections, forms, and embeds. Rendered/raw icons sit beside Download. Workspace HTML previews return UTF-8 inside JSON under the existing text limits. See `doc/html-artifact-previews.md`.
   - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
 - Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
 - Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
@@ -541,6 +542,32 @@ Decision-desk triage uses company-scoped sidecars rather than adding queue field
 - `decision_retention` stores the attention source's last observed activity timestamp, monotonic version, Keep flag, and reversible archive provenance. Queue `retention_days` overrides use the shortest assigned queue threshold; otherwise the shelf threshold is 30 days.
 - `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
 - Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
+
+## 7.17 Personal primary agent (2026-10-07)
+
+`user_company_preferences` has a unique company/user key, nullable `primary_agent_id`,
+and sticky `primary_agent_initialized` flag. GET/PUT
+`/api/companies/:companyId/primary-agent/me` derives the human identity from auth,
+checks company access and agent visibility, rejects agent actors, and audits changes.
+PUT accepts an approved, non-terminated agent; choosing a previously left agent
+rejoins it under the existing membership rules. There is no explicit removal UI or
+nullable PUT. Leaving, termination, and deletion clear the reference without
+allowing a later creation to initialize it again. Pausing and errors retain it.
+
+Initialization runs in the human-attributed creation transaction, including
+onboarding, with uniqueness arbitrating concurrent creation. System provisioning
+and agent-authored hires cannot initialize a human preference. Migration backfill
+uses the earliest attributable human creation, preserving empty initialized state
+when the original is gone, terminated, or left; unknown ownership stays unset.
+
+The profile is the only setting surface. Replacing a primary requires the reviewed
+avatar-to-avatar confirmation. A first choice has no modal. Only the profile and
+roster show the accessible crown; the Agents sidebar pins the primary first without
+duplication. Tasks preserve explicit/draft assignments, then choose a recent
+eligible assignee, the eligible primary, or the existing fallback. Chat preserves
+a valid recent conversation, then opens the primary, then retains its chooser.
+Navigation alone does not create an execution. Failed preference mutations restore
+the previous state and offer retry. Preferences and caches are company/user scoped.
 
 ## 8. State Machines
 
@@ -1088,6 +1115,7 @@ Core authorization follows these rules:
 - A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
 - An agent targeting any user other than its resolved responsible user requires either a materialized target-user policy that permits that agent (`open` or matching `allowlist`) or an explicit `inbox:manage` grant. The implicit default-open policy for a missing row remains responsible-user-only, so it never becomes a blanket cross-user grant. Grants may be unscoped or constrained by `scope.userIds` and act as administrative overrides, including over a disabled target-user policy.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
+- Concurrent archives keep the newest archive time and its actor attribution. An earlier request must not undo an archive written by human completion while it waited. Unarchive removes that state so a later archive starts fresh.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
@@ -1526,6 +1554,20 @@ for contracts, recovery behavior, Storybook, and acceptance workflows.
   - emit high-priority activity event
 
 Board may override by raising budget or explicitly resuming agent.
+
+Native runs retain final usage receipts during a bounded accounting-only drain
+after a governed wait cancels provider work. This does not accept late messages,
+tool calls, or new completion proposals. Missing or incomplete receipts continue
+to block budget admission.
+A controller that detaches for server restart loses checkpoint and completion
+write authority. A closing event stream is not proof that the governed run
+finished; the replacement controller must adopt and settle the original run.
+
+Complete direct Anthropic API receipts for `claude-sonnet-5` can use a versioned
+list-price estimate when the provider supplies no run price. The receipt records
+the rates and assumptions. Aggregate cache writes use the one-hour rate because
+their TTL is unknown. Estimates are not invoices. Other models, billers, unknown
+billing types, and incomplete receipts remain unpriced.
 
 ## 13.3 Cost Event Ingestion
 
@@ -2012,6 +2054,13 @@ configuration, plugin packages and outstanding hosted release gates. The
 [delivery plan](plans/2026-09-30-paperclip-public-mcp-and-plugins.md) separates
 external agent participation and granted third-party tools into later releases.
 
+The experimental OpenAI Dot Runner provider uses a separate `/mcp/runner`
+agent OAuth resource. It reuses the public gateway's browser/device consent,
+client metadata verification and signed event delivery, but requires one-use
+agent pairing and normal run admission. Personal grants cannot authorize
+Runner operations. See [OpenAI Dot Runner](openai-dot-runner.md) for the
+self-hosted release boundary and remaining account qualification.
+
 ### Experimental AI connection routing
 
 Opt-in plugin routers may represent a pool as an AI runtime binding. Core keeps
@@ -2032,6 +2081,16 @@ remove stale instructions after edits or access revocation. See
 [Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
 UI conventions, custom adapter integration, and initial memory templates.
 
+### Remote Codex model compatibility
+
+Fresh remote Codex Runner preparation can replace a model whose verified CLI
+minimum exceeds the supported image CLI version. It selects a compatible older
+model in the same class, then the stable Runner default, and saves that effective
+model before checkpoint selection. A visible task warning and local run-log event
+record the substitution. This does not change agent settings, rewrite admitted
+executions, or bypass artifact, ownership, permission, and budget gates. See
+[remote Codex compatibility](execution-semantics.md#remote-codex-model-compatibility).
+
 ### Native provider capacity retry
 
 Committed, run-bound Codex `serverOverloaded` terminal failures display the model
@@ -2050,3 +2109,9 @@ as free-form text in the instance database. Legacy agents use the default
 in standard, ask, and planning modes. Submission never changes task disposition
 or routes feedback externally. See [Agent commentary](agent-commentary.md) for
 authentication, replay, document-sized limits, inspection, and deletion semantics.
+
+## Company decision-model service
+
+Company Settings → General can configure one shared API-key connection for optional internal decisions. V1 supports OpenAI Decisions and Jev through OpenRouter. Companies start unconfigured; background sponsorship defaults on when configured, while an explicit off setting persists. Human and agent calls retain current responsible-user, connection audience, resource, and agent installation checks. Only explicitly registered internal background features can use company sponsorship.
+
+The internal service provides local-only availability and bounded, reauthorized execution. It records metadata-only invocation history and independent fractional service charges in the existing cost ledger, applying company and applicable agent/project budgets under the accounting lock. Unknown dispatch charges retain reservations until audited resolution. Settings/testing require connection management permission; history uses existing cost visibility. See [decision-models.md](decision-models.md) for the contract, supported models, accounting, privacy, and endpoints.

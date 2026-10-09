@@ -76,29 +76,45 @@ const generalModeName = "general";
 const allModeName = "all";
 const generalServerGroupName = "general-server";
 const generalServerWithoutChatGroupName = "general-server-without-chat";
+const generalServerWithoutChatOrNativeRunnerGroupName = "general-server-without-chat-or-native-runner";
 const generalChatGroupName = "general-chat";
 const generalServerNativeRunnerGroupName = "general-server-native-runner";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
-// This suite rebuilds the Runner release binaries with cargo in beforeAll.
+// The first suite rebuilds the Runner release binaries with cargo in beforeAll.
 // Inside the PR workflow's plain server shards, which carry no Rust cache,
 // that build was a ~4m30s cold compile of every third-party crate on each run
 // (277s of a 291s shard vitest step, actions run 35246999382, 2026-09-17).
-const nativeRunnerSuite =
-  "server/src/services/native-runtime/native-codex-runner.integration.test.ts";
+const nativeRunnerSuites = [
+  "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+  "server/src/__tests__/dot-runner.test.ts",
+  // These process cases otherwise skip in server shards without Runner binaries.
+  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
+];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
 // Runner vitest shard runs the native-runner group instead, because those
-// lanes restore the shared release-runner-v1 Rust cache (see
+// lanes restore the shared release-runner-v2 Rust cache (see
 // packages/paperclip-runner/scripts/run-pr-vitest-lane.mjs). Every other
-// caller — local runs, release-verify.yml under the Release and Cloud
-// readiness workflows — keeps the suite in the server shards, so a renamed or
+// caller of the same group keeps the suite in the server shards, so a renamed or
 // unknown workflow degrades to today's slower-but-covered behavior rather
 // than dropping the suite.
 const prWorkflowName = "PR";
 const nativeRunnerSuiteRunsInRustCachedLane = process.env.GITHUB_WORKFLOW === prWorkflowName;
 const withoutChatExcludedSuites = nativeRunnerSuiteRunsInRustCachedLane
-  ? [chatSuite, nativeRunnerSuite]
+  ? [chatSuite, ...nativeRunnerSuites]
   : [chatSuite];
+// Release verification selects this explicit group and runs the omitted suites
+// in its cached Runner job. Local callers keep the complete default group.
+const generalServerGroups = [
+  generalServerGroupName,
+  generalServerWithoutChatGroupName,
+  generalServerWithoutChatOrNativeRunnerGroupName,
+];
+function excludedServerSuites(groupName) {
+  if (groupName === generalServerWithoutChatOrNativeRunnerGroupName) return [chatSuite, ...nativeRunnerSuites];
+  if (groupName === generalServerWithoutChatGroupName) return withoutChatExcludedSuites;
+  return [];
+}
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
 const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
@@ -107,6 +123,7 @@ const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, 
 const allowedGeneralGroupNames = [
   ...generalGroupNames,
   generalServerWithoutChatGroupName,
+  generalServerWithoutChatOrNativeRunnerGroupName,
   generalChatGroupName,
   generalServerNativeRunnerGroupName,
 ];
@@ -286,7 +303,7 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      ([generalServerGroupName, generalServerWithoutChatGroupName, generalChatGroupName, generalWorkspacesAGroupName].includes(group)));
+      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)));
   if (!shardAllowed && shardIndex !== null) {
     fail(
       "--shard-index/--shard-count are only valid with serialized mode or a shardable general server/chat/workspaces-a group.",
@@ -439,19 +456,14 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
   }
   if (groupName === generalServerNativeRunnerGroupName) {
     runVitest(
-      ["--project", "@paperclipai/server", ...serializedServerVitestArgs, nativeRunnerSuite],
+      ["--project", "@paperclipai/server", ...serializedServerVitestArgs, ...nativeRunnerSuites],
       "native runner vertical-slice suite",
     );
     return;
   }
-  if (groupName === generalServerGroupName || groupName === generalServerWithoutChatGroupName) {
-    // In the PR workflow the without-chat group also leaves the native-runner
-    // suite to the Rust-cached vitest lane; the full general-server group
-    // (local runs) keeps both.
-    const withoutChat = groupName === generalServerWithoutChatGroupName;
-    const files = withoutChat
-      ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
-      : generalServerTestFiles;
+  if (generalServerGroups.includes(groupName)) {
+    const excludedSuites = excludedServerSuites(groupName);
+    const files = generalServerTestFiles.filter((file) => !excludedSuites.includes(file));
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
         files,
@@ -479,10 +491,8 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     }
 
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
-    if (withoutChat) {
-      for (const suite of withoutChatExcludedSuites) {
-        excludeRouteArgs.push("--exclude", suite.replace(/^server\//, ""));
-      }
+    for (const suite of excludedSuites) {
+      excludeRouteArgs.push("--exclude", suite.replace(/^server\//, ""));
     }
     runVitest(
       [
@@ -578,14 +588,12 @@ if (options.dryRun) {
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
           options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
-            ? [nativeRunnerSuite]
+            ? nativeRunnerSuites
             : options.mode === generalModeName &&
-                [generalServerGroupName, generalServerWithoutChatGroupName].includes(options.group) &&
+                generalServerGroups.includes(options.group) &&
                 options.shardCount !== null
               ? selectGeneralServerShard(
-                  options.group === generalServerWithoutChatGroupName
-                    ? generalServerTestFiles.filter((file) => !withoutChatExcludedSuites.includes(file))
-                    : generalServerTestFiles,
+                  generalServerTestFiles.filter((file) => !excludedServerSuites(options.group).includes(file)),
                   options.shardIndex,
                   options.shardCount,
                   generalServerShardDurations,

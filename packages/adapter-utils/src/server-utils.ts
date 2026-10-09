@@ -2384,10 +2384,10 @@ function renderPaperclipWakePromptBody(
         ...(externalChatReaderTurn
           ? [
               "The inline comment batch is incomplete. Before answering, call `read_current_wake_comments` without a cursor, then pass each returned `nextCursor` until `complete` is true. That closed reader exposes only the exact comments accepted for this run. Attachment entries marked `metadata_only` are not readable bytes; state that limitation instead of inferring their contents.",
-              "After the complete read, answer every accepted comment in order. Make zero other Paperclip API calls: do not fetch broader task history, inbox, status, artifacts, workspace, or provider connections; do not post Paperclip progress or completion comments; do not write task status; and do not check out the issue again.",
+              "After the complete read, answer every accepted comment in order. For a text answer that does not require structured human input, use the supplied context. Make zero other Paperclip API calls: do not fetch broader task history, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
             ]
           : [
-              "For a self-contained text request, answer directly from the supplied task and wake context. Make zero Paperclip API calls: do not refetch the issue, inbox, status, artifacts, workspace, or provider connections; do not post Paperclip progress or completion comments; do not write task status; and do not check out the issue again.",
+              "For a self-contained text answer that does not require structured human input, answer directly from the supplied task and wake context. Make zero Paperclip API calls: do not refetch the issue, inbox, status, artifacts, workspace, or provider connections; do not post progress or completion comments; do not write task status; and do not check out the issue again.",
             ]),
         "The harness owns task state and persists your final assistant response. If the runtime offers a semantic completion operation, emit exactly one semantic completion and do not duplicate that response in a Paperclip comment or status update.",
         "The semantic completion summary is the user-visible final answer. Include every requested answer, exact value, description, and any actionable file-access or delivery limitation there; a statement that you read, checked, or prepared something is not a substitute. Private progress commentary is not delivered as the final answer.",
@@ -4268,6 +4268,9 @@ export function normalizePaperclipRunnerAdapterConfig(
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
   config = normalizeLegacyRunnerProvider(config);
+  if (config.provider === "openai_dot") {
+    return normalizePaperclipOperationalSkillPreference(adapterType, { lifecycleMode: "per_turn", ...config });
+  }
   const next: Record<string, unknown> = {
     provider: "codex",
     codexPermissionMode:

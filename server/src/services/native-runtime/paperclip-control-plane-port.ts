@@ -47,6 +47,7 @@ function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
     "paperclip.prp.event.v1",
     "paperclip.prp.event.v2",
+    "paperclip.prp.event.v3",
   ].includes(value.schema);
 }
 
@@ -80,6 +81,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #redactedDeltaBytes = 0;
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
+  readonly #assertControllerActive?: () => void;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
@@ -89,15 +91,23 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
+      /** Synchronous revocation fence for a controller handing off on restart. */
+      assertControllerActive?: () => void;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
+    this.#assertControllerActive = options.assertControllerActive;
     this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onDuplicateEvent = options.onDuplicateEvent;
+  }
+
+  #assertActive(options?: { signal: AbortSignal }): void {
+    this.#assertControllerActive?.();
+    options?.signal.throwIfAborted();
   }
 
   #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
@@ -112,6 +122,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
+    this.#assertControllerActive?.();
     const identity = input.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -134,6 +145,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!run || !this.#matchesPersistedBinding(run)) {
       throw new Error("native_open_run_not_authorized");
     }
+    this.#assertControllerActive?.();
     this.#sessionId = identity.sessionId;
   }
 
@@ -160,7 +172,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return structuredClone(snapshot as PersistedNativeSession);
   }
 
-  async checkpointSession(snapshot: PersistedNativeSession): Promise<void> {
+  async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
     snapshot = this.#identityRedactor.redact(snapshot);
     const identity = snapshot.identity;
     if (
@@ -174,6 +187,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
+      this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
       }
@@ -187,10 +201,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         nativePhaseUpdatedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
@@ -235,22 +251,30 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    const persisted = await appendHeartbeatRunEvent(this.#db, {
-      companyId: this.#binding.companyId,
-      runId: this.#binding.runId,
-      agentId: this.#binding.agentId,
-      eventType: event.eventType,
-      stream: "system",
-      level: event.eventType.includes("failed") ? "error" : "info",
-      payload: { prpEvent: event as unknown as Record<string, unknown> },
-      nativeSource: {
-        sourceInstanceId: event.sourceInstanceId,
-        sourceEventId: event.sourceEventId,
-        sourceSeq: event.sourceSeq,
-        protocolSchemaVersion: event.schemaVersion,
-        canonicalPayload: event as unknown as Record<string, unknown>,
-      },
+    const persisted = await this.#db.transaction(async tx => {
+      this.#assertActive(options);
+      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
+        companyId: this.#binding.companyId,
+        runId: this.#binding.runId,
+        agentId: this.#binding.agentId,
+        eventType: event.eventType,
+        stream: "system",
+        level: event.eventType.includes("failed") ? "error" : "info",
+        payload: { prpEvent: event as unknown as Record<string, unknown> },
+        nativeSource: {
+          sourceInstanceId: event.sourceInstanceId,
+          sourceEventId: event.sourceEventId,
+          sourceSeq: event.sourceSeq,
+          protocolSchemaVersion: event.schemaVersion,
+          canonicalPayload: event as unknown as Record<string, unknown>,
+        },
+      });
+      // The nested append has no publication side effects. Revocation rolls
+      // back its event and sequence allocation before the outer commit.
+      this.#assertActive(options);
+      return receipt;
     });
+    this.#assertActive(options);
     if (persisted.disposition === "committed") {
       publishChatPublicationCommitSignal({
         companyId: this.#binding.companyId,
@@ -305,7 +329,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return { events, highestContiguousSourceSeq: cursor };
   }
 
-  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {
+  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
     value = this.#identityRedactor.redact(value);
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
@@ -341,6 +366,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
+      this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_result_binding_mismatch");
       }
@@ -352,6 +378,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         .where(and(eq(nativeRunResults.runId, this.#binding.runId), or(...callerConditions)))
         .limit(1).then((rows) => rows[0] ?? null);
       if (existing) {
+        this.#assertActive(options);
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
         return;
       }
@@ -404,6 +431,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         },
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
     });
   }
 }

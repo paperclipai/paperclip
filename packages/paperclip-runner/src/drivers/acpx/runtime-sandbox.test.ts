@@ -1,3 +1,4 @@
+import { configuredEnvironmentProjection } from "../../configured-environment.js";
 import {
   chmod,
   lstat,
@@ -20,6 +21,7 @@ import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { createAcpxRecoveryBinding } from "./recovery-identity.js";
 import {
   prepareAcpxRuntimeSandbox,
+  refreshCopilotSystemInstructions,
   readAcpxRecoveryWorkspace,
 } from "./runtime-sandbox.js";
 
@@ -34,6 +36,22 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it.each([false, true])("allows selected task secrets in Codex shells (agent identity: %s)", async identity => {
+    const fixture = await sandboxFixture("codex");
+    const pages = { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "task-pages-secret", CUSTOM_TOKEN: "task-service-secret" };
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "codex", environment: {
+      PATH: process.env.PATH, OPENAI_API_KEY: "provider-secret", HOST_SECRET: "unselected-secret",
+      ...configuredEnvironmentProjection(pages), ...(identity ? { PAPERCLIP_AGENT_KEY_ID: "agent-key" } : {}),
+    } });
+    const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
+    const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))?.slice("include_only = ".length) ?? "[]");
+    expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
+    expect(keys).not.toContain("OPENAI_API_KEY");
+    expect(keys).not.toContain("HOST_SECRET");
+    expect(sandbox.launchEnvironment).toMatchObject(pages);
+    for (const value of Object.values(pages)) expect(config).not.toContain(value);
+  });
+
   it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
     const fixture = await sandboxFixture("grok");
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });
@@ -405,6 +423,38 @@ describe("ACPX runtime sandbox", () => {
   );
 });
 
+it("refreshes Copilot native instructions privately on every admission, including removal", async () => {
+  const fixture = await sandboxFixture("copilot");
+  const prepare = async (systemInstructions: string) => {
+    const sandbox = await prepareAcpxRuntimeSandbox({
+      binding: fixture.binding, agent: "copilot", providerPolicy: { readOnly: false, systemInstructions },
+    });
+    await refreshCopilotSystemInstructions(sandbox, systemInstructions);
+    return sandbox;
+  };
+  const first = await prepare("Original registered instructions.");
+  const path = join(first.agentHomeDirectory, "copilot-instructions.md");
+  expect(await readFile(path, "utf8")).toBe("Original registered instructions.\n");
+  await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "copilot",
+    providerPolicy: { readOnly: false, systemInstructions: "Contender must not write during preparation." } });
+  expect(await readFile(path, "utf8")).toBe("Original registered instructions.\n");
+  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  expect(first.protectedPaths).toContain(dirname(dirname(first.root)));
+  expect(path.startsWith(`${first.protectedPaths[0]}/`)).toBe(true);
+  const target = join(fixture.root, "unrelated-file");
+  await writeFile(target, "Do not overwrite.");
+  await rm(path);
+  await symlink(target, path);
+  await prepare("Current registered instructions.");
+  expect((await lstat(path)).isSymbolicLink()).toBe(false);
+  expect(await readFile(target, "utf8")).toBe("Do not overwrite.");
+  expect(await readFile(path, "utf8")).toBe("Current registered instructions.\n");
+  await prepare("");
+  expect(await readFile(path, "utf8")).toBe("\n");
+  await expect(prepare("x".repeat(32 * 1024 + 1))).rejects.toThrow("bounded size");
+  expect(await readFile(path, "utf8")).toBe("\n");
+});
+
 async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
@@ -425,6 +475,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     workingDirectory: workspace,
     profile: resolveQualifiedAcpxProfile(agent, models[agent]),
     requestedModel: models[agent],
+    ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}),
     permissionMode: "approve-reads",
   });
   return { root, binding };

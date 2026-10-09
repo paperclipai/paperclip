@@ -359,7 +359,8 @@ function previewKindForKnownContentType(contentType: string | null): WorkspaceFi
   if (contentType.startsWith("image/") && contentType !== "image/svg+xml") return "image";
   if (contentType.startsWith("video/")) return "video";
   if (contentType === "application/pdf") return "pdf";
-  if (contentType === "text/html") return "unsupported";
+  // HTML is returned as bounded UTF-8 in the JSON content response. The UI
+  // renders it only in its opaque-origin sandbox; downloads stay attachments.
   if (contentType === "image/svg+xml" || contentType.startsWith("text/")) return "text";
   return "unsupported";
 }

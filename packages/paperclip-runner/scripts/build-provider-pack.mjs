@@ -21,6 +21,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
+import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -101,21 +102,6 @@ function writePortableNodeShim(name, entrypoint) {
   chmodSync(shimPath, 0o755);
 }
 
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shimPath, 0o755);
-}
-
 try {
   const deployed = spawnSync(
     "pnpm",
@@ -181,7 +167,7 @@ try {
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: provider === "cursor" ? "qualified" : "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: (provider === "cursor" || provider === "pi") ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -204,11 +190,13 @@ try {
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
+    temporaryRoot,
     "claude",
     relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
+  writePortableExecutableShim(temporaryRoot, "node", "node/bin/node");
+  writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
+  writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
   writePortableNodeShim(
     "claude-agent-acp",

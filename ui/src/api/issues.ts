@@ -11,6 +11,10 @@ import type {
   FeedbackTrace,
   FeedbackVote,
   Issue,
+  IssueAccessGrant,
+  IssueAccessGrantSubjectType,
+  IssueVisibility,
+  IssuePrivacyConstraints,
   IssueChanges,
   IssueAttachment,
   IssueCostSummary,
@@ -589,8 +593,24 @@ export const issuesApi = {
       form,
     );
   },
-  deleteAttachment: (id: string) =>
-    api.delete<{ ok: true }>(`/attachments/${id}`),
+  deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
+  // --- Privacy / sharing (PAP-16066) -------------------------------------
+  // Enriched grants for the share sheet: implicit-by-source rows (assignment /
+  // project) plus explicit grants, each carrying subjectDisplayName / avatar /
+  // agentVisibility from the server enrichment pass.
+  privacyConstraints: (id: string) => api.get<IssuePrivacyConstraints>(`/issues/${id}/privacy-constraints`),
+  listAccessGrants: (id: string, options?: RequestOptions) =>
+    options
+      ? api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`, options)
+      : api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`),
+  createAccessGrant: (
+    id: string,
+    data: { subjectType: IssueAccessGrantSubjectType; subjectId: string },
+  ) => api.post<IssueAccessGrant>(`/issues/${id}/access-grants`, data),
+  revokeAccessGrant: (id: string, grantId: string) =>
+    api.post<IssueAccessGrant>(`/issues/${id}/access-grants/${grantId}/revoke`, {}),
+  setVisibility: (id: string, visibility: IssueVisibility) =>
+    api.patch<IssueUpdateResponse>(`/issues/${id}`, { visibility }),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),
   linkApproval: (id: string, approvalId: string) =>
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),

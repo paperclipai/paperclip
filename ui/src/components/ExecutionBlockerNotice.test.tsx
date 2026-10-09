@@ -99,6 +99,20 @@ describe("stopped task recovery notice", () => {
     expect(link.getAttribute("href")).toBe("/agents/agent/runs/failed-run");
     expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
   });
+  it("keeps workspace repair guidance and inspection without offering the legacy Retry fallback", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "repair", runId: "failed-run", agentId: "agent", cause: "legacy_execution_requires_reconciliation",
+        workspaceRepairRequired: true, canRetry: false, canContinue: false,
+        nextAction: "The original sandbox is retained. Recover the missing files and record workspace repair evidence.",
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).toContain("Recover the missing files");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("Inspect run");
+    expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
+  });
+
   it("retries the exact failed run and refreshes the task", async () => {
     vi.mocked(agentsApi.retryFailedRun).mockResolvedValue({} as never);
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());

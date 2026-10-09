@@ -1,3 +1,4 @@
+import { resolveAgentAppearance } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import {
   createContext,
@@ -37,7 +38,7 @@ import { authApi } from "../api/auth";
 import type { CompanyListResult } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { useCompany } from "./CompanyContext";
-import type { ToastInput } from "./ToastContext";
+import type { ToastActor, ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import {
@@ -186,9 +187,10 @@ function resolveActorLabel(
   }
   if (actorType === "system") return "System";
   if (actorType === "user" && actorId) {
-    return resolveUserName(queryClient, companyId, actorId) ?? "Board";
+    return resolveUserName(queryClient, companyId, actorId) ??
+      (actorId === "board" || actorId === "local-board" ? "Board" : `User ${shortId(actorId)}`);
   }
-  return "Someone";
+  return actorType === "plugin" ? "Plugin" : "Unknown actor";
 }
 
 interface IssueToastContext {
@@ -939,7 +941,21 @@ function buildActivityToast(
     entityId,
     details,
   );
-  const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const cachedAgent = actorType === "agent" && actorId
+    ? queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId))?.find((a) => a.id === actorId)
+      ?? queryClient.getQueryData<Agent>(queryKeys.agents.detail(actorId))
+    : undefined;
+  const cachedUser = actorType === "user" && actorId
+    ? queryClient.getQueryData<CompanyUserDirectoryResponse>(queryKeys.access.companyUserDirectory(companyId))
+      ?.users.find((u) => u.principalId === actorId)?.user
+    : undefined;
+  const toastActor: ToastActor | undefined = actorId && (actorType === "user" || actorType === "agent")
+    ? { type: actorType, id: actorId, name: actor,
+      image: payload.actorImage !== undefined ? readString(payload.actorImage) : cachedUser?.image,
+      appearance: actorType === "agent"
+        ? resolveAgentAppearance(payload.actorAppearance !== undefined ? payload.actorAppearance : cachedAgent?.appearance, actorId) : undefined }
+    : undefined;
   const isSelfActivity =
     (actorType === "user" &&
       !!currentActor.userId &&
@@ -951,6 +967,7 @@ function buildActivityToast(
 
   if (action === "issue.created") {
     return {
+      actor: toastActor,
       title: `${actor} created ${issue.ref}`,
       body: issue.title ? truncate(issue.title, 96) : undefined,
       tone: "success",
@@ -973,6 +990,7 @@ function buildActivityToast(
         ? truncate(issue.title, 96)
         : issue.label;
     return {
+      actor: toastActor,
       title: `${actor} updated ${issue.ref}`,
       body: truncate(body, 100),
       tone: "info",
@@ -1006,6 +1024,7 @@ function buildActivityToast(
         : reopenedLabel
       : (issue.title ?? undefined);
   return {
+    actor: toastActor,
     title,
     body: body ? truncate(body, 96) : undefined,
     tone: "info",
@@ -1280,7 +1299,11 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
-  if (action?.startsWith("resource_membership.")) {
+  if (action?.startsWith("primary_agent.") || action?.startsWith("agent.") || action?.startsWith("resource_membership.")) {
+    queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
+  }
+
+  if (action?.startsWith("resource_membership.") || action?.startsWith("primary_agent.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
       queryClient.invalidateQueries({
@@ -1834,6 +1857,7 @@ function closeSocketQuietly(
 }
 
 export const __liveUpdatesTestUtils = {
+  buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,
   buildRunStatusToast,
@@ -1879,7 +1903,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     retry: false,
   });
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserId = session?.user?.id ?? session?.session?.userId ??
+    (health?.deploymentMode === "local_trusted" ? "local-board" : null);
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;

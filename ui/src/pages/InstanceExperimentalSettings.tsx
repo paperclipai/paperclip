@@ -482,6 +482,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="OpenAI Dot"
+          description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
+          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          checked={experimentalQuery.data?.enableOpenAiDot === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableOpenAiDot"
+          managed={managedKeys.enableOpenAiDot}
+          ariaLabel="Toggle OpenAI Dot experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Paperclip Runner"
           description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
           checked={enableNativeRunner}

@@ -7,6 +7,12 @@ event needs no operator endpoint.
 
 ## Native PRP Run-Log Events
 
+Fresh remote Codex model substitution emits `runner.model_fallback` on the
+system stream with `warn` severity. Its payload contains `requestedModel`,
+`effectiveModel`, and `codexCliVersion`. It records a preparation choice before
+provider launch, not a failed turn or a retry. The same substitution appears as
+a system warning in the task conversation. It remains local run-log data.
+
 The hidden native coordinator writes each validated PRP event to the bound
 run's existing event stream before it acknowledges the runner. The row keeps
 the PRP `eventType`, source instance, source event ID, source sequence, protocol
@@ -280,6 +286,14 @@ warnings and errors remain visible.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
+An unstarted legacy conversation retry waiting for execution cleanup retains
+`resultJson.executionWait` with the issue, blocking run, and
+`execution_owner_active` cause. A local lifecycle event records the wait and the
+unchanged scheduled retry attempt once per blocking run. Repeated scheduler
+checks update the same retry row without repeating that event. Promotion removes
+this ownership-wait marker after cleanup; other execution holds retain their
+existing dispatch gates.
+
 If execution-continuation setup finds that a task no longer exists, is closed,
 or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
@@ -334,6 +348,12 @@ task emits its own diagnostic; nested repository failures are logged once by
 the enclosing workspace task. The original error and restore safety policy are
 unchanged. These lines stay in the instance run log and its configured durable
 storage, and are not new first-party telemetry events.
+
+Native sandbox `environmentSyncOut` errors preserve allowlisted error codes and
+bounded HTTP/exit statuses across worker RPC for this diagnostic line. The host
+revalidates the envelope and keeps the original failure and recovery policy.
+Provider messages, paths, response bodies, credentials, and arbitrary error data
+are not copied into the new envelope. Older workers can still report `unknown`.
 
 The optional `step` identifies the failed restore operation. For
 `phase=workspace` and `step=git_integration`, `gitCommand` identifies one fixed

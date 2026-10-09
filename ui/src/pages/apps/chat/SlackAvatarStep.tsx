@@ -1,11 +1,10 @@
-import { useId } from "react";
-import { ArrowRight, Check, ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { SetupWizardFooter } from "@/components/SetupWizard";
+import { useId, useState } from "react";
 import {
-  AgentAvatarDownload,
-  agentAvatarFilename,
-} from "@/components/AgentAvatarDownload";
+  Download,
+  ExternalLink,
+  Loader2,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 export interface SlackAvatarProps {
   agentName: string;
@@ -13,7 +12,7 @@ export interface SlackAvatarProps {
   avatarUrl: string;
 }
 
-/** Shared by Slack onboarding and its Settings page. Slack upload is manual. */
+/** Manual fallback shared by Slack onboarding and its Settings page. */
 export function SlackAvatarContent({
   agentName,
   appName,
@@ -21,7 +20,35 @@ export function SlackAvatarContent({
   compact = false,
 }: SlackAvatarProps & { compact?: boolean }) {
   const id = useId();
-  const filename = agentAvatarFilename(appName);
+  const filename = `${appName.replace(/[^a-zA-Z0-9_-]+/g, "-") || "agent"}-avatar.png`;
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(false);
+  const download = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError(false);
+    try {
+      const response = await fetch(avatarUrl);
+      if (
+        !response.ok ||
+        !response.headers.get("content-type")?.startsWith("image/png")
+      )
+        throw new Error("Avatar unavailable");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch {
+      setDownloadError(true);
+    } finally {
+      setDownloading(false);
+    }
+  };
   return (
     <div className="space-y-8">
       <section
@@ -46,7 +73,29 @@ export function SlackAvatarContent({
               PNG · 512 × 512 · Ready for Slack
             </p>
           </div>
-          <AgentAvatarDownload avatarUrl={avatarUrl} name={appName} />
+          <Button variant="outline" asChild>
+            <a
+              href={avatarUrl}
+              download={filename}
+              aria-disabled={downloading}
+              onClick={(event) => {
+                event.preventDefault();
+                void download();
+              }}
+            >
+              {downloading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Download className="size-4" />
+              )}
+              Download avatar
+            </a>
+          </Button>
+          {downloadError && (
+            <p role="alert" className="text-sm text-destructive">
+              Couldn’t download the avatar. Try downloading it again.
+            </p>
+          )}
         </div>
       </section>
 
@@ -103,53 +152,6 @@ export function SlackAvatarContent({
   );
 }
 
-export function SlackAvatarStep({
-  uploaded,
-  onUploaded,
-  onSkip,
-  onSaveExit,
-  ...props
-}: SlackAvatarProps & {
-  uploaded: boolean;
-  onUploaded: () => void;
-  onSkip: () => void;
-  onSaveExit: () => void;
-}) {
-  return (
-    <div className="space-y-8">
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">
-            Give {props.agentName} a face in Slack
-          </h1>
-          <span className="text-xs text-muted-foreground">Optional</span>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Use {props.agentName}’s avatar so your team recognizes the agent
-        </p>
-      </div>
-      <SlackAvatarContent {...props} />
-      {uploaded && (
-        <p
-          role="status"
-          className="flex items-center gap-2 rounded-lg bg-(--status-task-done)/10 p-3 text-sm"
-        >
-          <Check className="size-4 text-(--status-task-done)" />
-          You marked the avatar as uploaded in Slack.
-        </p>
-      )}
-      <SetupWizardFooter onSaveExit={onSaveExit}>
-        <Button variant="ghost" onClick={onSkip}>
-          Skip for now
-        </Button>
-        <Button onClick={onUploaded}>
-          {uploaded ? "Continue" : "I’ve uploaded the avatar"}
-          <ArrowRight className="size-4" />
-        </Button>
-      </SetupWizardFooter>
-    </div>
-  );
-}
 
 export function SlackAvatarSettings(props: SlackAvatarProps) {
   return (

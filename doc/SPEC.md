@@ -91,6 +91,13 @@ The Board sets Company-level budgets. The CEO can set budgets for Agents below t
 
 ## 2. Agent Model [DRAFT]
 
+A human's personal primary agent is a company-scoped navigation and assignment
+preference, independent of the org chart, roles, stars, and authority. First human
+creation initializes it automatically. Later explicit choices persist across
+devices; recent task/chat choices take precedence. The profile owns the setting
+and replacement confirmation. See the personal-primary addendum in
+`SPEC-implementation.md` for persistence and lifecycle rules.
+
 Every employee is an agent. Agents are the workforce.
 
 ### Cryptographic identity
@@ -489,6 +496,10 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
 
+Self-contained HTML reports can render in an opaque-origin sandbox. The report
+cannot access the board's cookies, storage, or DOM. Users can switch to the raw
+source beside Download, which returns the original file.
+
 Users may start a task with only a prompt. Paperclip uses a short prompt slice as
 its initial title and asks the assigned agent to name the task early. Explicit
 user titles are preserved, and naming does not change task execution state.
@@ -718,6 +729,12 @@ configuration, plugin packages and outstanding hosted release gates. The
 [delivery plan](plans/2026-09-30-paperclip-public-mcp-and-plugins.md) separates
 external agent participation and granted third-party tools into later releases.
 
+The experimental OpenAI Dot Runner provider uses a separate `/mcp/runner`
+agent OAuth resource. It reuses browser/device consent and signed event delivery
+while preserving agent pairing, normal run admission and task authority.
+Personal grants cannot authorize Runner operations. See
+[OpenAI Dot Runner](openai-dot-runner.md) for its supported release boundary.
+
 ### Experimental connection routing
 
 A virtual AI connection can rotate new task/agent allocations through an
@@ -733,3 +750,7 @@ as free-form text in the instance database. Legacy agents use the default
 in standard, ask, and planning modes. Submission never changes task disposition
 or routes feedback externally. See [Agent commentary](agent-commentary.md) for
 authentication, replay, document-sized limits, inspection, and deletion semantics.
+
+### Managed decision models
+
+A company may configure a shared decision model for optional Paperclip features. The instance owns credential resolution, authorization, budget admission, and attributable service charges. Company-sponsored background use is enabled by default during configuration; explicit opt-out persists. User and agent requests keep their own access boundaries and cannot become sponsored background requests after denial. Availability is a cheap local capability check, and metadata-only request history makes service usage inspectable. The implemented V1 contract is in [decision-models.md](decision-models.md).

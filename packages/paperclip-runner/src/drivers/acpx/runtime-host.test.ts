@@ -1,4 +1,10 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { createPiLaunchSpec } from "./pi-acp-runtime.js";
+import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { readNativeSemanticReceipt, type SemanticToolResult } from "../semantic-tool-receipt.js";
+import { validateAcpxRichEvent } from "./profile-extensions.js";
+import type { CanonicalProviderEvent } from "../../provider-events.js";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -736,6 +742,30 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
+  it("forwards semantic receipt capture through the real runtime host and authenticated bridge", async () => {
+    const fixture = await hostFixture();
+    const events: CanonicalProviderEvent[] = [];
+    const evidence = createCopilotToolEvidence({ sessionId: "backend-1", turnId: "turn-1", workingDirectory: fixture.options.workingDirectory,
+      active: () => true, emit: event => { validateAcpxRichEvent(event); events.push(JSON.parse(JSON.stringify(event))); } });
+    let bridge: AcpxRuntimePortOpenOptions["mcpServers"][number] | undefined;
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "copilot", model: "gpt-5.6-sol",
+      permissionMode: "deny-all", environment: { COPILOT_GITHUB_TOKEN: "fixture-not-a-real-credential" },
+      semanticTools: { tools: [{ name: "get_task_context", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+        handler: async () => ({ accepted: false }), captureSemanticReceipt: () => evidence.captureSemanticReceipt() },
+    }, fixture.dependencies({ openRuntime: async options => { bridge = options.mcpServers[0]; return runtimePort(); } }));
+    try {
+      const response = await fetch(bridge!.url, { method: "POST", headers: { Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_task_context", arguments: {} } }) });
+      const body = await response.json() as { result: SemanticToolResult };
+      const receipt = readNativeSemanticReceipt({ contents: body.result.content });
+      expect(receipt).not.toBeNull();
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({ category: "paperclip_semantic_tool_receipt_v2", provenance: { sessionId: "backend-1", turnId: "turn-1" },
+        details: expect.arrayContaining([{ name: "schema", value: "paperclip.semantic_tool_receipt.v2" }, { name: "normalizedInputSha256", value: "null" }, { name: "callIdentitySha256", value: receipt!.callIdentitySha256 }, { name: "resultSha256", value: receipt!.resultSha256 }]) });
+    } finally { await host.close({ reason: "receipt forwarding verified" }); }
+    await expect(fetch(bridge!.url)).rejects.toThrow();
+  });
+
   it("owns an authenticated semantic bridge without persisting its secret", async () => {
     const fixture = await hostFixture();
     const handler = vi.fn(async ({ tool }) => ({ tool, ok: true }));
@@ -840,13 +870,10 @@ describe("ACPX runtime host", () => {
       expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBe("Bound instructions");
       expect(JSON.parse(options.launchEnvironment.PAPERCLIP_PI_READ_ROOTS!)).toEqual([]);
       expect(options.permissionMode).toBe("approve-all");
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }) });
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", piThinkingLevel: "low" }) });
     });
-    const options = { ...fixture.options, agent: "pi" as const, model,
+    const options = { ...fixture.options, agent: "pi" as const, model, piThinkingLevel: "low" as const,
       permissionMode: "approve-all" as const, providerPolicy: { readOnly: true }, systemInstructions: "Bound instructions" };
-    await expect(AcpxRuntimeHost.open(options, { openRuntime, reportRetainedCleanupFailure: vi.fn() }))
-      .rejects.toThrow("verified candidate distribution is not installed");
-    expect(openRuntime).not.toHaveBeenCalled();
     const host = await AcpxRuntimeHost.open(options, fixture.dependencies({
       verifyInstallation: async () => ({ commandDigest: profile.commandDigest,
         agentServerPackageJsonPath: join(fixture.root, "package.json"), agentRuntimePackageJsonPath: null,
@@ -855,6 +882,128 @@ describe("ACPX runtime host", () => {
     }));
     await host.close({ reason: "policy verified" });
     expect(openRuntime).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "high"] as const)("retires Pi admission when the runtime reports thinking level %s", async piThinkingLevel => {
+    const fixture = await hostFixture();
+    const model = "custom-provider/caller-selected-model";
+    const runtime = runtimePort({
+      getStatus: async () => ({ models: { currentModelId: model } }),
+      identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1",
+        ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }) }),
+    });
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "pi", model, piThinkingLevel: "low", permissionMode: "deny-all",
+      providerPolicy: { readOnly: false },
+    }, fixture.dependencies({ openRuntime: async () => runtime }))).rejects.toThrow(/thinking level/);
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+
+  it.each(["cursor", "copilot", "pi"] as const)("binds %s agent files from each registered run copy, never ambient roots", async (agent) => {
+    const fixture = await hostFixture();
+    const copies = await mkdtemp(join(tmpdir(), "paperclip-agent-copies-"));
+    temporaryDirectories.push(copies);
+    const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-test-model";
+    const options = { ...fixture.options, agent, model, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}), permissionMode: "approve-all" as const,
+      providerPolicy: { readOnly: false }, environment: { AGENT_HOME: "/ambient/other-agent", PAPERCLIP_PI_AGENT_HOME: "/ambient/other-agent",
+        ...(agent === "pi" ? { OPENROUTER_API_KEY: "test" } : agent === "cursor" ? { CURSOR_API_KEY: "test" } : { COPILOT_GITHUB_TOKEN: "test" }),
+      },
+    };
+    const opened: AcpxRuntimePortOpenOptions[] = [];
+    const dependencies = fixture.dependencies({ openRuntime: async launch => {
+      opened.push(launch);
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", ...(agent === "cursor" ? { mode: launch.mode } : {}), ...(agent === "pi" ? { piThinkingLevel: launch.piThinkingLevel } : {}) }) });
+    } });
+    // Missing trusted context must not turn ambient values into authority.
+    const withoutCopy = await AcpxRuntimeHost.open(options, dependencies);
+    expect(opened.at(-1)!.launchEnvironment.AGENT_HOME).toBeUndefined();
+    expect(opened.at(-1)!.launchEnvironment.PAPERCLIP_PI_AGENT_HOME).toBeUndefined();
+    await withoutCopy.close({ reason: "no registered copy" });
+    for (const run of ["first", "second"]) {
+      const rootPath = join(copies, run); await mkdir(rootPath);
+      const runtimeContext = { instructions: { workingCopy: { kind: "agent_files", rootPath, entryPath: "AGENTS.md" } }, skills: [], mcp: { bindingId: null } } as unknown as NativeRuntimeContextSnapshot;
+      const host = await AcpxRuntimeHost.open({ ...options, runtimeContext }, dependencies);
+      const launch = opened.at(-1)!;
+      expect(launch.launchEnvironment.AGENT_HOME?.endsWith(`/${run}`)).toBe(true);
+      expect(launch.launchEnvironment.PAPERCLIP_PI_AGENT_HOME).toBe(agent === "pi" ? launch.launchEnvironment.AGENT_HOME : undefined);
+      expect(launch.launchEnvironment.HOME).not.toBe(launch.launchEnvironment.AGENT_HOME);
+      if (run === "second") {
+        await rename(rootPath, `${rootPath}-replaced`); await mkdir(rootPath);
+        expect(() => launch.assertWorkspaceHeld?.()).toThrow("changed");
+        expect(() => host.startTurn({ text: "test", requestId: "stale-directory" })).toThrow("changed");
+      }
+      await host.close({ reason: "registered copy test complete" });
+    }
+  });
+
+  it("reopens Pi with the current registered home in a resumed child shell after prior copies are removed", async () => {
+    const fixture = await hostFixture();
+    const root = await realpath(fixture.root);
+    const copies = await realpath(await mkdtemp(join(tmpdir(), "paperclip-pi-home-probe-")));
+    temporaryDirectories.push(copies);
+    const sessionHome = join(root, "pi-session-home");
+    await mkdir(join(sessionHome, "sessions"), { recursive: true });
+    const sessionPath = join(sessionHome, "sessions", "retained.jsonl");
+    await writeFile(sessionPath, "retained provider session");
+    const entrypoint = join(root, "inspect-launch.cjs");
+    const extension = join(root, "extension.js");
+    await writeFile(extension, "");
+    // The child replaces only the provider/model boundary. Its shell inherits
+    // the actual production launch spec, including the registered AGENT_HOME.
+    await writeFile(entrypoint, `
+      const { execFileSync } = require("node:child_process");
+      const shell = execFileSync("/bin/bash", ["--noprofile", "--norc", "-c",
+        'printf "%s\\n" "$AGENT_HOME"; cat "$AGENT_HOME/notes/warm-memory.txt"'],
+        { encoding: "utf8", env: process.env });
+      console.log(JSON.stringify({ shell,
+        configuration: JSON.parse(process.env.PAPERCLIP_PI_RUNTIME_CONFIGURATION),
+        arguments: process.argv.slice(2) }));
+    `);
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    const observed: Array<{ shell: string; configuration: { agentHome: string; instructions: string }; arguments: string[] }> = [];
+    const dependencies = fixture.dependencies({ openRuntime: async launch => {
+      const spec = createPiLaunchSpec({ cwd: fixture.options.workingDirectory, sessionPath }, {
+        ...launch.launchEnvironment,
+        PAPERCLIP_PI_NODE_EXECUTABLE: process.execPath,
+        PAPERCLIP_PI_ENTRYPOINT: entrypoint,
+        PAPERCLIP_PI_EXTENSION_PATH: extension,
+        PI_CODING_AGENT_DIR: sessionHome,
+      });
+      observed.push(JSON.parse(execFileSync(spec.command, spec.args, {
+        cwd: fixture.options.workingDirectory, env: spec.env, encoding: "utf8", timeout: 5_000,
+      })));
+      return runtimePort({
+        getStatus: async () => ({ models: { currentModelId: model } }),
+        identity: async () => ({ acpxRecordId: "same-record", backendSessionId: "same-session", agentSessionId: "same-session", piThinkingLevel: "low" }),
+      });
+    } });
+    let priorHome = "/unregistered-ambient-home";
+    for (const turn of [1, 2, 3]) {
+      const agentHome = join(copies, `turn-${turn}`);
+      await mkdir(join(agentHome, "notes"), { recursive: true });
+      await writeFile(join(agentHome, "notes", "warm-memory.txt"), `T${turn}\n`);
+      const instructions = `For this turn, AGENT_HOME is ${agentHome}.`;
+      const runtimeContext = { instructions: { workingCopy: { kind: "agent_files", rootPath: agentHome, entryPath: "AGENTS.md" } }, skills: [], mcp: { bindingId: null } } as unknown as NativeRuntimeContextSnapshot;
+      const host = await AcpxRuntimeHost.open({
+        ...fixture.options, agent: "pi", model, piThinkingLevel: "low", permissionMode: "approve-all",
+        providerPolicy: { readOnly: false }, runtimeContext, systemInstructions: instructions,
+        environment: { OPENROUTER_API_KEY: "test-only", AGENT_HOME: priorHome, PAPERCLIP_PI_AGENT_HOME: priorHome },
+      }, dependencies);
+      try {
+        expect(observed.at(-1)).toMatchObject({
+          shell: `${agentHome}\nT${turn}\n`, configuration: { agentHome, instructions },
+          arguments: expect.arrayContaining(["--session", sessionPath]),
+        });
+      } finally {
+        await host.close({ reason: "credential-free home probe complete" });
+      }
+      await rm(agentHome, { recursive: true });
+      priorHome = agentHome;
+    }
+    expect(observed).toHaveLength(3);
+    expect(await readFile(sessionPath, "utf8")).toBe("retained provider session");
   });
 
   it("selects and verifies Claude's qualified reported model", async () => {
@@ -1071,12 +1220,15 @@ describe("ACPX runtime host", () => {
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
+    const getStatus = vi.fn(() => new Promise<never>(() => undefined));
     const runtime = runtimePort({
-      getStatus: () => new Promise<never>(() => undefined),
+      getStatus,
     });
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     dependencies.admissionVerificationTimeoutMs = 1;
 
     await expect(
@@ -1091,12 +1243,16 @@ describe("ACPX runtime host", () => {
         dependencies,
       ),
     ).rejects.toThrow("admission verification exceeded its deadline");
+    expect(dependencies.stageCredential).toHaveBeenCalledOnce();
+    expect(getStatus).toHaveBeenCalledOnce();
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).toHaveBeenCalledOnce();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("bounds post-handshake cleanup while retaining its exact owner", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
     let finishRuntimeClose!: () => void;
     const runtimeClose = new Promise<void>((resolve) => {
       finishRuntimeClose = resolve;
@@ -1108,6 +1264,7 @@ describe("ACPX runtime host", () => {
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     let retainedAdmissionCleanup: Promise<void> | null = null;
     dependencies.retainAdmissionCleanup = (cleanup) => {
       retainedAdmissionCleanup = cleanup;
@@ -1128,6 +1285,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow("initialization and cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
     expect(retainedAdmissionCleanup).not.toBeNull();
     let cleanupSettled = false;
@@ -1140,6 +1298,7 @@ describe("ACPX runtime host", () => {
     finishRuntimeClose();
     await retainedAdmissionCleanup;
     expect(cleanupSettled).toBe(true);
+    expect(credential.close).toHaveBeenCalledOnce();
   });
 
   it("retains credential ownership when runtime shutdown fails until retry succeeds", async () => {
@@ -1359,6 +1518,34 @@ describe("ACPX runtime host", () => {
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
     );
+  });
+
+  it("keeps host shutdown independent of a concurrent managed turn cancellation", async () => {
+    const fixture = await hostFixture();
+    const raw = runtimeTurn(); // Native cancel acknowledges, but never resolves result.
+    const runtime = runtimePort({ startTurn: () => raw });
+    const host = await AcpxRuntimeHost.open(
+      {
+        ...fixture.options,
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "approve-reads",
+        environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      },
+      fixture.dependencies({ openRuntime: async () => runtime }),
+    );
+    const managed = host.startTurn({ text: "Work", requestId: "turn-1" });
+    // The host retains raw.cancel, so its shutdown cannot wait on the managed
+    // cancellation which falls back to that same host's close promise.
+    const closed = host.close({ reason: "controller shutdown" });
+    const cancelled = managed.cancel({ reason: "operator stop" });
+    await expect(Promise.all([closed, cancelled])).resolves.toEqual([undefined, undefined]);
+    await expect(managed.result).resolves.toEqual({
+      status: "cancelled", stopReason: "cancelled_after_runtime_close",
+    });
+    expect(host.isClosed()).toBe(true);
+    expect(runtime.close).toHaveBeenCalledExactlyOnceWith({ reason: "controller shutdown" });
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("clones ephemeral capabilities and fences steering controls to an acknowledged active turn", async () => {
@@ -1818,6 +2005,21 @@ describe("ACPX runtime host", () => {
     await waitForAcpxOperation(() => expect(credentialClose).toHaveBeenCalledOnce());
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
+
+// Deadline tests exercise runtime admission and cleanup, not kernel lease
+// acquisition. Keep their credential owner deterministic: real lease staging
+// uses hashed loopback ports that unrelated parallel tests can occupy. The
+// credential and retained-owner integration tests still use real leases.
+function credentialLeaseFixture(root: string) {
+  return {
+    path: join(root, "auth.json"),
+    mode: "inline_json" as const,
+    lifetimeFenceFds: [42, 43] as const,
+    lifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
+    activateLifetimeOwner: async () => undefined,
+    close: vi.fn(async () => undefined),
+  };
+}
 
 function runtimePort(
   input: {

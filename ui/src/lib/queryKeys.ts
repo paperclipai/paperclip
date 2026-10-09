@@ -374,10 +374,10 @@ export const queryKeys = {
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
-    attachments: (issueId: string) =>
-      ["issues", "attachments", issueId] as const,
-    attachmentPreview: (attachmentId: string) =>
-      ["issues", "attachment-preview", attachmentId] as const,
+    privacyConstraints: (issueId: string) => ["issues", "privacy-constraints", issueId] as const,
+    accessGrants: (issueId: string) => ["issues", "access-grants", issueId] as const,
+    attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) =>
       ["issues", "document", issueId, key] as const,
@@ -531,6 +531,7 @@ export const queryKeys = {
         { includeArchived: opts.includeArchived === true },
       ] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    accessMembers: (id: string) => ["projects", "access-members", id] as const,
   },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
@@ -621,6 +622,9 @@ export const queryKeys = {
       ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
       ["sidebar-preferences", "project-order", companyId, userId] as const,
+  },
+  primaryAgent: {
+    mine: (companyId: string, userId: string) => ["primary-agent", companyId, userId] as const,
   },
   resourceMemberships: {
     mine: (companyId: string) =>

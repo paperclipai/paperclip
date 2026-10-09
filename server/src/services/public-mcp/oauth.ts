@@ -1,12 +1,14 @@
+import { updateAgentConfigurationInTransaction } from "../agent-configuration-transaction.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHash, randomBytes } from "node:crypto";
+import { canConfigureAgentConnection } from "../../modules/agent-lifecycle/index.js";
 import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Request } from "express";
 import {
-  type Db, activityLog, authUsers, companies, companyLogos, mcpOauthClients, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions,
+  type Db, activityLog, agents, authUsers, companies, companyLogos, dotAgentBindings, mcpOauthClients, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions,
 } from "@paperclipai/db";
-import { PUBLIC_MCP_PATH, PUBLIC_MCP_SCOPES, type McpConnectionRequest } from "@paperclipai/shared";
+import { DOT_RUNNER_MCP_PATH, DOT_RUNNER_MCP_SCOPES, PUBLIC_MCP_PATH, PUBLIC_MCP_SCOPES, type McpConnectionRequest, type McpDotPairingPreview } from "@paperclipai/shared";
 import { boardAuthService } from "../board-auth.js";
 import { logActivity } from "../activity-log.js";
 import { createClientMetadataResolver, mcpRedirectMatches, validMcpRedirect as validRedirect, type MetadataFetch } from "./client-metadata.js";
@@ -28,13 +30,21 @@ const invalidGrant = () => new McpOAuthError("invalid_grant", "Authorization is 
 export function publicMcpConfig(env: NodeJS.ProcessEnv = process.env, authPublicBaseUrl?: string) {
   const origin = env.PAPERCLIP_PUBLIC_URL ?? authPublicBaseUrl;
   if (!origin) return null;
-  const url = new URL(origin);
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if ((url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
-    || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-    throw new Error("Public MCP requires PAPERCLIP_PUBLIC_URL to be an HTTPS origin (HTTP loopback is allowed for development).");
-  }
-  return { origin: url.origin, resource: url.origin + PUBLIC_MCP_PATH };
+  const normalizeOrigin = (value: string, setting: string) => {
+    const url = new URL(value);
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+      || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error(`Public MCP requires ${setting} to be an HTTPS origin (HTTP loopback is allowed for development).`);
+    }
+    return url.origin;
+  };
+  const publicOrigin = normalizeOrigin(origin, "PAPERCLIP_PUBLIC_URL");
+  // Optional browser ingress for the same instance. Protocol issuer, resource,
+  // token exchange and callback delivery remain on the public MCP origin.
+  const authorizationOrigin = env.PAPERCLIP_MCP_AUTHORIZATION_ORIGIN
+    ? normalizeOrigin(env.PAPERCLIP_MCP_AUTHORIZATION_ORIGIN, "PAPERCLIP_MCP_AUTHORIZATION_ORIGIN") : undefined;
+  return { origin: publicOrigin, resource: publicOrigin + PUBLIC_MCP_PATH, ...(authorizationOrigin ? { authorizationOrigin } : {}) };
 }
 export type PublicMcpConfig = NonNullable<ReturnType<typeof publicMcpConfig>>;
 export type McpPrincipal = {
@@ -65,13 +75,27 @@ const authorizeSchema = z.object({
 }).strip();
 
 export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: { metadataFetch?: MetadataFetch } = {}) {
+  const agentConnection = new URL(config.resource).pathname === DOT_RUNNER_MCP_PATH;
+  const scopesSupported = agentConnection ? DOT_RUNNER_MCP_SCOPES : PUBLIC_MCP_SCOPES;
+  const requiredScope = agentConnection ? "paperclip:agent" : "paperclip:read";
+  const issuer = agentConnection ? config.origin + DOT_RUNNER_MCP_PATH + "/oauth" : config.origin;
+  const authorizationOrigin = config.authorizationOrigin ?? config.origin;
   const resolveMetadata = createClientMetadataResolver(options.metadataFetch);
   const settings = instanceSettingsService(db);
-  const isEnabled = async (queryDb: Db = db) => (await (queryDb === db ? settings : instanceSettingsService(queryDb)).getExperimental()).enablePublicMcp === true;
+  const isEnabled = async (queryDb: Db = db) => {
+    const experimental = await (queryDb === db ? settings : instanceSettingsService(queryDb)).getExperimental();
+    return experimental.enablePublicMcp && (!agentConnection || experimental.enableOpenAiDot);
+  };
   async function assertEnabled(queryDb: Db = db) {
     if (!await isEnabled(queryDb)) throw new PublicMcpDisabledError();
   }
   const boardAuth = boardAuthService(db);
+
+  async function fenceAgentGrant(grant: typeof mcpOauthGrants.$inferSelect | null | undefined) {
+    if (grant?.purpose !== "agent" || !grant.agentId) return;
+    const { dotRunnerBroker } = await import("../dot-runner-broker.js");
+    await dotRunnerBroker(db).revoke(grant.companyId, grant.agentId, grant.userId, grant.id);
+  }
 
   async function actorForGrant(grant: typeof mcpOauthGrants.$inferSelect, queryDb: Db = db): Promise<Request["actor"]> {
     if (grant.revokedAt || grant.resource !== config.resource) throw invalidGrant();
@@ -79,6 +103,17 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     const membership = access.memberships.find((m) => m.companyId === grant.companyId && m.status === "active");
     const [company] = await queryDb.select({ status: companies.status }).from(companies).where(eq(companies.id, grant.companyId));
     if (!access.user || !membership || !company || company.status === "archived") throw invalidGrant();
+    if (agentConnection) {
+      if (grant.purpose !== "agent" || !grant.scopes.includes("paperclip:agent")) throw invalidGrant();
+      if (membership.membershipRole === "viewer") throw invalidGrant();
+      if (!grant.agentId) return { type: "none", source: "mcp_oauth", companyId: grant.companyId };
+      const [agent] = await queryDb.select().from(agents).where(and(eq(agents.id, grant.agentId), eq(agents.companyId, grant.companyId)));
+      // Paused Dot connections retain only the broker's fence inbox and ack
+      // authority. Each task/tool method independently rejects paused agents.
+      if (!agent || ["terminated", "pending_approval"].includes(agent.status)) throw invalidGrant();
+      return { type: "agent", source: "mcp_oauth", agentId: agent.id, companyId: grant.companyId };
+    }
+    if (grant.purpose !== "personal") throw invalidGrant();
     return {
       type: "board", source: "mcp_oauth", userId: grant.userId,
       userName: access.user.name, userEmail: access.user.email,
@@ -92,7 +127,8 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     const refresh = grant.scopes.includes("offline_access") ? secret("pcmcp_rt_") : null;
     await tx.insert(mcpOauthTokens).values([
       { grantId: grant.id, tokenHash: hashMcpSecret(access), kind: "access", expiresAt: new Date(Date.now() + accessLifetime) },
-      ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const, expiresAt: new Date(Date.now() + refreshLifetime) }] : []),
+      ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const,
+        expiresAt: agentConnection && grant.purpose === "agent" ? null : new Date(Date.now() + refreshLifetime) }] : []),
     ]);
     return {
       access_token: access, token_type: "Bearer", expires_in: accessLifetime / 1000,
@@ -190,10 +226,12 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if (!access.user || !membership || (request.requestedCompanyId && request.requestedCompanyId !== input.companyId)) throw new McpOAuthError("access_denied", "Choose an available organization for this request.", 403);
     const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, input.companyId!));
     if (!company || company.status === "archived") throw new McpOAuthError("access_denied", "This organization is no longer available.", 403);
+    if (request.resource !== config.resource) throw invalidGrant();
+    if (agentConnection && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Dot agent connections require an operator role.", 403);
     if ((input.allowWrites || input.allowConfiguration) && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
     const scopes = request.scopes.filter(s => (s !== "paperclip:write" || input.allowWrites)
       && (s !== "paperclip:configure" || input.allowConfiguration === true));
-    const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes }).returning();
+    const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
     return grant!;
@@ -225,14 +263,38 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     return outcome.tokens!;
   }
 
+  async function dotPairingContext(queryDb: Db, id: string, pairingCode: string) {
+    if (!agentConnection) throw new McpOAuthError("access_denied", "Use the dedicated Dot agent connection.", 403);
+    if (!/^[A-Za-z0-9_-]{32}$/.test(pairingCode)) throw invalidGrant();
+    await assertEnabled(queryDb);
+    const [request] = await queryDb.select().from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id)).for("update");
+    if (!request || request.resource !== config.resource || request.decidedAt || request.expiresAt <= new Date()) throw invalidGrant();
+    const [binding] = await queryDb.select().from(dotAgentBindings).where(and(
+      eq(dotAgentBindings.pairingCodeHash, hashMcpSecret(pairingCode)), isNull(dotAgentBindings.revokedAt),
+    )).for("update");
+    if (!binding || binding.status !== "pairing" || binding.grantId || !binding.pairingExpiresAt || binding.pairingExpiresAt <= new Date()) throw invalidGrant();
+    if (request.requestedCompanyId && request.requestedCompanyId !== binding.companyId) throw invalidGrant();
+    const [agent] = await queryDb.select().from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId))).for("update");
+    if (!agent || agent.adapterType !== "paperclip_runner" || !canConfigureAgentConnection(agent)) throw invalidGrant();
+    return { request, binding, agent };
+  }
+
   return {
     config, isEnabled, assertEnabled,
+    async ownsRequest(id: string) {
+      const [row] = await db.select({ resource: mcpOauthRequests.resource }).from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id));
+      return row?.resource === config.resource;
+    },
+    async ownsDevice(userCode: string) {
+      const [row] = await db.select({ resource: mcpOauthDeviceRequests.resource }).from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode)));
+      return row?.resource === config.resource;
+    },
     async deviceAuthorize(input: unknown, source = "unknown") {
       await assertEnabled();
-      const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default("paperclip:read"), company_id: z.uuid().optional() }).safeParse(input);
+      const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default(requiredScope), company_id: z.uuid().optional() }).safeParse(input);
       if (!p.success) throw new McpOAuthError("invalid_request", "Supply a registered client and the exact Paperclip resource.");
       const scopes = [...new Set(p.data.scope.split(/\s+/).filter(Boolean))];
-      if (!scopes.includes("paperclip:read") || scopes.some(s => !(PUBLIC_MCP_SCOPES as readonly string[]).includes(s))) throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
+      if (!scopes.includes(requiredScope) || scopes.some(s => !(scopesSupported as readonly string[]).includes(s))) throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
       const client = await resolveClient(p.data.client_id, source);
       if (!client?.grantTypes.includes(DEVICE_GRANT)) throw new McpOAuthError("unauthorized_client", "Register a device authorization client.");
       const deviceCode = secret("pcmcp_device_");
@@ -251,15 +313,15 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.insert(mcpOauthDeviceRequests).values({ clientId: client.id, deviceCodeHash: hashMcpSecret(deviceCode), userCodeHash: deviceHash(userCode),
           resource: config.resource, scopes, requestedCompanyId: p.data.company_id ?? null, sourceHash, expiresAt: new Date(now.getTime() + 10 * minute) });
       });
-      return { device_code: deviceCode, user_code: userCode, verification_uri: config.origin + "/mcp-device", verification_uri_complete: config.origin + "/mcp-device?user_code=" + userCode, expires_in: 600, interval: 5 };
+      return { device_code: deviceCode, user_code: userCode, verification_uri: authorizationOrigin + "/mcp-device", verification_uri_complete: authorizationOrigin + "/mcp-device?user_code=" + userCode, expires_in: 600, interval: 5 };
     },
     async describeDevice(userCode: string, actor: Request["actor"]): Promise<McpConnectionRequest> {
       await assertEnabled();
       const [row] = await db.select({ request: mcpOauthDeviceRequests, client: mcpOauthClients }).from(mcpOauthDeviceRequests)
         .innerJoin(mcpOauthClients, eq(mcpOauthClients.id, mcpOauthDeviceRequests.clientId))
         .where(and(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode)), eq(mcpOauthDeviceRequests.status, "pending"), gt(mcpOauthDeviceRequests.expiresAt, new Date())));
-      if (!row) throw new McpOAuthError("invalid_request", "This code is expired, already decided, or invalid. Start a new connection from your assistant.", 404);
-      return { id: row.request.id, clientName: row.client.name, redirectOrigin: "", clientOrigin: row.client.id.startsWith("https://") ? new URL(row.client.id).origin : null,
+      if (!row || row.request.resource !== config.resource) throw new McpOAuthError("invalid_request", "This code is expired, already decided, or invalid. Start a new connection from your assistant.", 404);
+      return { agentConnection, id: row.request.id, clientName: row.client.name, redirectOrigin: "", clientOrigin: row.client.id.startsWith("https://") ? new URL(row.client.id).origin : null,
         requestedConfigure: row.request.scopes.includes("paperclip:configure"), requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"), requestedCompanyId: row.request.requestedCompanyId,
         setupUrl: null, ...await consentContext(actor, row.request.requestedCompanyId) };
     },
@@ -268,7 +330,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       if (actor.type !== "board" || !actor.userId || !["session", "cloud_tenant"].includes(actor.source ?? "")) throw new McpOAuthError("access_denied", "Sign in to approve a connection.", 401);
       return db.transaction(async tx => {
         const [row] = await tx.select().from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode))).for("update");
-        if (!row || row.status !== "pending" || row.expiresAt <= new Date()) throw invalidGrant();
+        if (!row || row.resource !== config.resource || row.status !== "pending" || row.expiresAt <= new Date()) throw invalidGrant();
         const grant = input.decision === "approve" ? await approveGrant(tx as unknown as Db, actor, row, input) : null;
         await tx.update(mcpOauthDeviceRequests).set({ status: grant ? "approved" : "denied", grantId: grant?.id ?? null }).where(eq(mcpOauthDeviceRequests.id, row.id));
         return { status: grant ? "approved" as const : "denied" as const };
@@ -291,12 +353,12 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     },
     async authorize(input: unknown, source = "unknown") {
       await assertEnabled();
-      const parsed = authorizeSchema.safeParse(input);
+      const parsed = authorizeSchema.extend({ scope: z.string().max(200).default(requiredScope) }).safeParse(input);
       if (!parsed.success) throw new McpOAuthError("invalid_request", "A registered client, exact redirect URI, resource, and S256 PKCE challenge are required.");
       const p = parsed.data;
       if (p.resource !== config.resource) throw new McpOAuthError("invalid_target", "Resource does not match this Paperclip MCP endpoint.");
       const scopes = [...new Set(p.scope.split(/\s+/).filter(Boolean))];
-      if (!scopes.includes("paperclip:read") || scopes.some((s) => !(PUBLIC_MCP_SCOPES as readonly string[]).includes(s))) {
+      if (!scopes.includes(requiredScope) || scopes.some((s) => !(scopesSupported as readonly string[]).includes(s))) {
         throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
       }
       const client = await resolveClient(p.client_id, source);
@@ -321,16 +383,16 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           state: p.state ?? null, challenge: p.code_challenge, expiresAt: new Date(now.getTime() + 10 * minute),
         });
       });
-      return config.origin + "/mcp-connect/" + id;
+      return authorizationOrigin + (agentConnection ? "/dot-connect/" : "/mcp-connect/") + id;
     },
     async describeRequest(id: string, actor: Request["actor"], setupUrl: string | null): Promise<McpConnectionRequest> {
       await assertEnabled();
       const [row] = await db.select({ request: mcpOauthRequests, client: mcpOauthClients })
         .from(mcpOauthRequests).innerJoin(mcpOauthClients, eq(mcpOauthClients.id, mcpOauthRequests.clientId))
         .where(and(eq(mcpOauthRequests.id, id), isNull(mcpOauthRequests.decidedAt), gt(mcpOauthRequests.expiresAt, new Date())));
-      if (!row) throw new McpOAuthError("invalid_request", "Connection request is expired or already decided.", 404);
+      if (!row || row.request.resource !== config.resource) throw new McpOAuthError("invalid_request", "Connection request is expired or already decided.", 404);
       return {
-        id, clientName: row.client.name, redirectOrigin: new URL(row.request.redirectUri).origin,
+        agentConnection, id, clientName: row.client.name, redirectOrigin: new URL(row.request.redirectUri).origin,
         clientOrigin: row.client.id.startsWith("https://") ? new URL(row.client.id).origin : null,
         requestedConfigure: row.request.scopes.includes("paperclip:configure"), requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"),
         requestedCompanyId: row.request.requestedCompanyId,
@@ -349,9 +411,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       }
       const result = await db.transaction(async (tx) => {
         const [row] = await tx.select().from(mcpOauthRequests).where(eq(mcpOauthRequests.id, id)).for("update");
-        if (!row || row.decidedAt || row.expiresAt <= new Date()) throw invalidGrant();
+        if (!row || row.resource !== config.resource || row.decidedAt || row.expiresAt <= new Date()) throw invalidGrant();
         const redirect = new URL(row.redirectUri);
-        redirect.searchParams.set("iss", config.origin);
+        redirect.searchParams.set("iss", issuer);
         if (row.state !== null) redirect.searchParams.set("state", row.state);
         if (input.decision === "deny") {
           await tx.update(mcpOauthRequests).set({ decidedAt: new Date() }).where(eq(mcpOauthRequests.id, id));
@@ -370,6 +432,48 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         return { redirectUrl: redirect.toString(), grant };
       });
       return { redirectUrl: result.redirectUrl };
+    },
+    async describeDotPairing(id: string, pairingCode: string): Promise<McpDotPairingPreview> {
+      return db.transaction(async tx => {
+        const { binding, agent } = await dotPairingContext(tx as unknown as Db, id, pairingCode);
+        const access = await boardAuthService(tx as unknown as Db).resolveBoardAccess(binding.operatorId);
+        const membership = access.memberships.find(m => m.companyId === binding.companyId && m.status === "active");
+        const [company] = await tx.select().from(companies).where(eq(companies.id, binding.companyId));
+        if (!access.user || !membership || membership.membershipRole === "viewer" || !company || company.status === "archived") throw invalidGrant();
+        return { company: { id: company.id, name: company.name }, agent: { id: agent.id, name: agent.name },
+          permissions: "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Reading assigned task attachment contents sends those contents to OpenAI and requires the agent’s separate attachment setting. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
+          accessDuration: "Ongoing until revoked. This connection does not expire from inactivity.",
+          pairingExpiresAt: binding.pairingExpiresAt!.toISOString() };
+      });
+    },
+    // Pair Dot records the operator's approval in an expiring capability. It
+    // conveys only agent access, never a board session or personal MCP access.
+    async consentDotPairing(id: string, pairingCode: string) {
+      await assertEnabled();
+      if (!agentConnection) throw new McpOAuthError("access_denied", "Use the dedicated Dot agent connection.", 403);
+      if (!/^[A-Za-z0-9_-]{32}$/.test(pairingCode)) throw invalidGrant();
+      return db.transaction(async tx => {
+        const { request, binding, agent } = await dotPairingContext(tx as unknown as Db, id, pairingCode);
+        const grant = await approveGrant(tx as unknown as Db,
+          { type: "board", source: "session", userId: binding.operatorId }, request,
+          { companyId: binding.companyId, allowWrites: false, allowConfiguration: false });
+        await tx.update(mcpOauthGrants).set({ agentId: binding.agentId }).where(eq(mcpOauthGrants.id, grant.id));
+        await tx.update(dotAgentBindings).set({ grantId: grant.id, status: "connected", pairingCodeHash: null,
+          pairingExpiresAt: null, updatedAt: new Date() }).where(eq(dotAgentBindings.id, binding.id));
+        await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: binding.id } },
+          { recordRevision: { createdByUserId: binding.operatorId, source: "dot-pairing" } });
+        await logActivity(tx as unknown as Db, { companyId: binding.companyId, actorType: "user", actorId: binding.operatorId,
+          action: "dot.paired", entityType: "agent", entityId: binding.agentId,
+          details: { bindingId: binding.id, generation: binding.generation, via: "oauth_pairing_code" } });
+        const code = secret("pcmcp_code_");
+        await tx.update(mcpOauthRequests).set({ grantId: grant.id, codeHash: hashMcpSecret(code), decidedAt: new Date(),
+          expiresAt: new Date(Date.now() + minute) }).where(eq(mcpOauthRequests.id, id));
+        const redirect = new URL(request.redirectUri);
+        redirect.searchParams.set("iss", issuer);
+        if (request.state !== null) redirect.searchParams.set("state", request.state);
+        redirect.searchParams.set("code", code);
+        return { redirectUrl: redirect.toString() };
+      });
     },
     async token(input: Record<string, unknown>) {
       await assertEnabled();
@@ -397,6 +501,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         if (typeof input.refresh_token !== "string") throw invalidGrant();
         const tokenHash = hashMcpSecret(input.refresh_token);
         // A replay revokes the whole grant. Commit that revocation before returning an error.
+        let revokedGrant: typeof mcpOauthGrants.$inferSelect | null = null;
         const result = await db.transaction(async (tx) => {
           const [token] = await tx.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, tokenHash)).for("update");
           if (!token || token.kind !== "refresh") return null;
@@ -404,6 +509,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           if (!grant || grant.clientId !== clientId || grant.resource !== config.resource || grant.revokedAt) return null;
           if (token.usedAt) {
             await tx.update(mcpOauthGrants).set({ revokedAt: new Date() }).where(eq(mcpOauthGrants.id, grant.id));
+            revokedGrant = grant;
             await tx.insert(activityLog).values({
               companyId: grant.companyId, actorType: "system", actorId: "mcp_oauth",
               action: "mcp.connection_revoked", entityType: "mcp_connection", entityId: grant.id,
@@ -411,7 +517,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
             });
             return null;
           }
-          if (token.expiresAt <= new Date()) return null;
+          // Only agent connections support refresh tokens without an inactivity limit.
+          // Access tokens still expire, refresh still rotates, and replay still revokes.
+          if (token.expiresAt ? token.expiresAt <= new Date() : !agentConnection || grant.purpose !== "agent") return null;
           await actorForGrant(grant, tx as unknown as Db);
           if (input.scope !== undefined && input.scope !== grant.scopes.join(" ")) {
             throw new McpOAuthError("invalid_scope", "Refresh cannot change the consented scopes; reconnect instead.");
@@ -419,6 +527,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           await tx.update(mcpOauthTokens).set({ usedAt: new Date() }).where(eq(mcpOauthTokens.id, token.id));
           return issueTokens(tx as unknown as Db, grant);
         });
+        await fenceAgentGrant(revokedGrant);
         if (!result) throw invalidGrant();
         return result;
       }
@@ -429,7 +538,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const [row] = await queryDb.select({ grant: mcpOauthGrants, company: { id: companies.id, name: companies.name, issuePrefix: companies.issuePrefix, status: companies.status } })
         .from(mcpOauthGrants).innerJoin(companies, eq(mcpOauthGrants.companyId, companies.id))
         .where(eq(mcpOauthGrants.id, grantId));
-      if (!row || !row.grant.scopes.includes("paperclip:read")) throw invalidGrant();
+      if (!row || !row.grant.scopes.includes(requiredScope)) throw invalidGrant();
       return { ...row, actor: await actorForGrant(row.grant, queryDb) };
     },
     async authenticate(token: string): Promise<McpPrincipal> {
@@ -444,10 +553,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       catch { throw new McpOAuthError("invalid_token", "Paperclip access is no longer available.", 401); }
     },
     async revokeToken(token: string, clientId: string) {
-      await db.transaction(async (tx) => {
+      const grant = await db.transaction(async (tx) => {
         const [row] = await tx.select({ grant: mcpOauthGrants }).from(mcpOauthTokens)
           .innerJoin(mcpOauthGrants, eq(mcpOauthTokens.grantId, mcpOauthGrants.id))
-          .where(and(eq(mcpOauthTokens.tokenHash, hashMcpSecret(token)), eq(mcpOauthGrants.clientId, clientId)));
+          .where(and(eq(mcpOauthTokens.tokenHash, hashMcpSecret(token)), eq(mcpOauthGrants.clientId, clientId), eq(mcpOauthGrants.resource, config.resource)));
         if (!row) return;
         const [revoked] = await tx.update(mcpOauthGrants).set({ revokedAt: new Date() })
           .where(and(eq(mcpOauthGrants.id, row.grant.id), isNull(mcpOauthGrants.revokedAt))).returning();
@@ -456,7 +565,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           action: "mcp.connection_revoked", entityType: "mcp_connection", entityId: revoked.id,
           details: { clientId, reason: "oauth_revocation" },
         });
+        return row.grant;
       });
+      await fenceAgentGrant(grant);
     },
     async listConnections(userId: string) {
       const rows = await db.select({ grant: mcpOauthGrants, clientName: mcpOauthClients.name, companyName: companies.name, userName: authUsers.name, userImage: authUsers.image })
@@ -473,6 +584,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     async revokeConnection(id: string, userId: string) {
       const [grant] = await db.update(mcpOauthGrants).set({ revokedAt: new Date() })
         .where(and(eq(mcpOauthGrants.id, id), eq(mcpOauthGrants.userId, userId), isNull(mcpOauthGrants.revokedAt))).returning();
+      await fenceAgentGrant(grant);
       if (grant) await logActivity(db, {
         companyId: grant.companyId, actorType: "user", actorId: userId, action: "mcp.connection_revoked",
         entityType: "mcp_connection", entityId: grant.id, details: { clientId: grant.clientId },
