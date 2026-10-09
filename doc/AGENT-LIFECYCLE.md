@@ -76,6 +76,11 @@ An error rolls back both operations. Neither path permits incomplete termination
 The ordinary agent service owns reads, permissions, and keys.
 The configuration service owns configuration validation, writes, and revisions.
 Credential checks remain in the agent credential service.
+Secret proposal approval saves the secret before it applies the agent binding.
+If the binding fails, the secret remains approved and the binding remains pending.
+A retry uses the approved secret. It does not create another secret.
+The binding transaction checks authorization, expiry, and the current reporting
+structure again before it changes the agent.
 The hire service owns names, appearance, permissions, credential binding,
 connection installs, identity setup, and primary-agent selection.
 The module calls the hire service before and after the agent record write.
