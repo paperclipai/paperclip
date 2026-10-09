@@ -108,8 +108,10 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   let lastClearProbeAt = Number.NEGATIVE_INFINITY;
   let serverStarting = false;
   let disposed = false;
-  /** Bumped by every proof of reachability; a probe started before one is stale. */
+  /** Bumped by every proof of reachability; a failed probe started before one is stale. */
   let recoveries = 0;
+  /** Bumped by every `starting` report; a reachable probe started before one is stale. */
+  let startingReports = 0;
 
   const emit = () => {
     for (const listener of [...listeners]) listener();
@@ -164,17 +166,23 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   const runProbe = () => {
     if (disposed || probing || !browserOnline) return;
     probing = true;
-    const startedAfter = recoveries;
+    const recoveriesAtStart = recoveries;
+    const startingReportsAtStart = startingReports;
     void probe()
       .catch((): ProbeResult => ({ reachable: false, retryAfterMs: null }))
       .then((result) => {
         probing = false;
         if (disposed || !browserOnline) return;
-        if (!result.reachable && recoveries !== startedAfter) {
-          // A query or the socket reached the server while this probe was in
-          // flight; that newer success wins. Check again only if something
-          // failed after it.
-          if (suspectedSince !== null) runProbe();
+        const stale = result.reachable
+          ? startingReports !== startingReportsAtStart
+          : recoveries !== recoveriesAtStart;
+        if (stale) {
+          // Newer evidence arrived while this probe was in flight (a success,
+          // or a `starting` report), so it wins over this result. If that left
+          // the app reconnecting, keep the loop alive: nothing else will
+          // probe. Otherwise check again only if something failed since.
+          if (snapshot.status !== "online") scheduleProbe(result.reachable ? null : result.retryAfterMs);
+          else if (suspectedSince !== null) runProbe();
           return;
         }
         if (result.reachable) {
@@ -209,6 +217,7 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   const reportServerStarting = () => {
     if (disposed || serverStarting) return;
     serverStarting = true;
+    startingReports += 1;
     if (!browserOnline) return;
     enterReconnecting(now());
     if (probeTimer === null && !probing) scheduleProbe(null);

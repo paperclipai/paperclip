@@ -196,6 +196,44 @@ describe("connectivity store", () => {
     expect(store.getSnapshot().status).toBe("online");
   });
 
+  it("keeps probing when the server reports starting after a success while a probe is in flight", async () => {
+    let finishProbe: (result: ProbeResult) => void = () => undefined;
+    probe.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProbe = resolve;
+    }));
+    store.reportError(outage);
+    // A health query answers `starting`: the cache reports the success first,
+    // then the gate reports the starting server.
+    store.reportSuccess();
+    store.reportServerStarting();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    finishProbe(down);
+    await flush();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    probe.mockResolvedValue(up);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().status).toBe("online");
+  });
+
+  it("ignores a healthy probe that started before the server reported starting", async () => {
+    let finishProbe: (result: ProbeResult) => void = () => undefined;
+    probe.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProbe = resolve;
+    }));
+    store.reportError(outage);
+    store.reportServerStarting();
+
+    finishProbe(up);
+    await flush();
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().status).toBe("reconnecting");
+  });
+
   it("sums pending writes across sources", () => {
     store.setPendingWrites("composer", 2);
     store.setPendingWrites("autosave", 1);

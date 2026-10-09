@@ -119,8 +119,9 @@ export function ConnectionStatusMessage({
 
   // Fixed, not in flow: the desktop shell is exactly `h-dvh` with clipped
   // overflow, so an in-flow banner would push the board's bottom off screen.
+  // The top offset includes the safe-area inset so a notch cannot hide it.
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-2 z-(--z-120) flex justify-center px-2">
+    <div className="pointer-events-none fixed inset-x-0 top-(--connection-banner-top) z-(--z-120) flex justify-center px-2">
       <div
         role="status"
         aria-live="polite"

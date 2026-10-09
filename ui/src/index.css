@@ -263,6 +263,8 @@
   --new-issue-visual-viewport-offset-top: 0px;
   --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
   --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+  /* Connection banner offset: clear the notch/status bar under viewport-fit=cover. */
+  --connection-banner-top: calc(0.5rem + env(safe-area-inset-top, 0px));
   --mobile-entity-picker-visual-viewport-height: 100dvh;
   --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
