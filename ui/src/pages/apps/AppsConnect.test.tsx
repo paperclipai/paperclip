@@ -2709,6 +2709,89 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
   });
 
+  it("keeps a resumed unauthenticated draft through its finish-time active transition", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    const draft = {
+      id: connectionId,
+      companyId: "company-1",
+      applicationId: "app-context7",
+      authKind: "none",
+      credentialPolicy: "shared",
+      status: "draft",
+      transport: "mcp_remote",
+      config: { sourceTemplateKey: "context7", connectionMethodKey: "mcp", url: "https://mcp.context7.com/mcp" },
+      transportConfig: { sourceTemplateKey: "context7" },
+    };
+    mockSearch.value = `source=context7&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValue({
+      applications: [{
+        id: "app-context7",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "context7" },
+      }],
+    });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [draft] })
+      .mockResolvedValue({ connections: [{ ...draft, status: "active" }] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId,
+      connection: draft,
+      application: { name: "Context7" },
+      catalog: [{ id: "tool-context7", name: "resolve-library-id", status: "active" }],
+      actions: { readOnly: [{ catalogEntryId: "tool-context7", riskLevel: "read" }], canMakeChanges: [] },
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Connect Context7"));
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(finishAppMock).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(container.textContent).not.toContain("This setup can’t be resumed");
+      expect(container.textContent).toContain("Context7 is ready.");
+    });
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connectionId }));
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.any(Object));
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a matching-provider resume when the saved connection was already active", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup can’t be resumed"));
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("does not resolve a hidden provider when a resumed draft belongs to another provider", async () => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     mockSearch.value = `source=clickup&resume=${connectionId}`;

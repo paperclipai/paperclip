@@ -211,6 +211,7 @@ export function requestedConnectionEntry(input: {
   reconnectConnection: ToolConnection | null;
   resumeConnection: ToolConnection | null;
   resumeApplication: ToolApplication | null;
+  completedResumeConnectionId: string | null;
   applications: readonly ToolApplication[];
 }): AppDefinition | null {
   const visible = input.galleryApps.find((candidate) => candidate.slug === input.requestedAppKey);
@@ -219,6 +220,7 @@ export function requestedConnectionEntry(input: {
     requestedAppKey: input.requestedAppKey,
     resumeConnection: input.resumeConnection,
     resumeApplication: input.resumeApplication,
+    completedResumeConnectionId: input.completedResumeConnectionId,
   })) return getConnectableAppDefinition(input.requestedAppKey);
   if (!input.reconnectConnection) return null;
   const application = input.applications.find(
@@ -232,11 +234,15 @@ export function retainedResumeMatches(input: {
   requestedAppKey: string;
   resumeConnection: ToolConnection | null;
   resumeApplication: ToolApplication | null;
+  completedResumeConnectionId: string | null;
 }): boolean {
-  const { requestedAppKey, resumeConnection, resumeApplication } = input;
+  const { requestedAppKey, resumeConnection, resumeApplication, completedResumeConnectionId } = input;
   return Boolean(
     resumeConnection
-    && resumeConnection.status === "draft"
+    && (
+      resumeConnection.status === "draft"
+      || (resumeConnection.status === "active" && resumeConnection.id === completedResumeConnectionId)
+    )
     && resumeApplication
     && resumeConnection.applicationId === resumeApplication.id
     && resumeConnection.companyId === resumeApplication.companyId
@@ -752,6 +758,10 @@ function StandardConnectionSetupFlow({
   const customerClientResumeRef = useRef<string | null>(null);
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
+  // Finishing a resumed unauthenticated/API-key draft activates that exact row.
+  // Permit it through retained-draft validation only after this flow's own
+  // finish request succeeds; an initially active resume remains invalid.
+  const [completedResumeConnectionId, setCompletedResumeConnectionId] = useState<string | null>(null);
   const oauthPopupRef = useRef<Window | null>(null);
   const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
   const [authorizationFallbackUrl, setAuthorizationFallbackUrl] = useState<string | null>(null);
@@ -1205,7 +1215,12 @@ function StandardConnectionSetupFlow({
     [applicationsQuery.data, resumeConnection],
   );
   const resumeSourceMatches = requestedAppKey
-    ? retainedResumeMatches({ requestedAppKey, resumeConnection, resumeApplication })
+    ? retainedResumeMatches({
+      requestedAppKey,
+      resumeConnection,
+      resumeApplication,
+      completedResumeConnectionId,
+    })
     : false;
   const identityConnection = resumeConnection ?? reconnectConnection;
   const reconnectGrantKind: ConnectionGrantKind | null = identityConnection
@@ -1536,6 +1551,7 @@ function StandardConnectionSetupFlow({
       reconnectConnection,
       resumeConnection,
       resumeApplication,
+      completedResumeConnectionId,
       applications: applicationsQuery.data?.applications ?? [],
     });
     const requestedEntryAdvertisesManagedConnector = Boolean(
@@ -1683,6 +1699,7 @@ function StandardConnectionSetupFlow({
     resumeConnection,
     resumeApplication,
     resumeSourceMatches,
+    completedResumeConnectionId,
     resumeConnectionId,
     fullRequestedDefinition,
     requestedAppKey,
@@ -1801,6 +1818,9 @@ function StandardConnectionSetupFlow({
       return finished;
     },
     onSuccess: async (_finished, input) => {
+      if (resumeConnectionId && input.result.connectionId === resumeConnectionId) {
+        setCompletedResumeConnectionId(resumeConnectionId);
+      }
       await queryClient.invalidateQueries({ queryKey: ["tools"] });
       await queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       setAppStep("success");
