@@ -1,3 +1,5 @@
+import { executeEnvironmentTask } from "./environment-task-runtime.js";
+import type { PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
@@ -3887,6 +3889,12 @@ export function environmentRuntimeService(
     async readSandboxDuplexBridgeInput(): Promise<ResolvedSandboxDuplexBridgeInput> {
       const experimental = await instanceSettingsService(db).getExperimental();
       return resolveSandboxDuplexBridgeInput(experimental);
+    },
+
+    /** Dispatch plugin-provided Runner execution, including resource preparation and task lifecycle. */
+    async task(input: { companyId: string; leaseId: string; operation: PluginEnvironmentTaskOperation }) {
+      if (!options.pluginWorkerManager) throw new Error("Plugin-provided Runner execution worker manager unavailable");
+      return executeEnvironmentTask(db, options.pluginWorkerManager, input);
     },
 
     async acquireRunLease(input: {

@@ -1,3 +1,4 @@
+import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
@@ -1670,6 +1671,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentValidateConfig":
         return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
 
+      case "environmentTask": {
+        if (!plugin.definition.onEnvironmentTask) throw methodNotImplemented("environmentTask");
+        const input = params as PluginEnvironmentTaskParams;
+        const operation = environmentTaskOperationSchema.parse(input.operation);
+        return parseEnvironmentTaskResult(operation, input.taskId, await plugin.definition.onEnvironmentTask({ ...input, operation }));
+      }
+
       case "environmentProbe":
         return handleEnvironmentProbe(params as PluginEnvironmentProbeParams);
 
@@ -1783,6 +1791,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
     if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
+    if (plugin.definition.onEnvironmentTask) supportedMethods.push("environmentTask");
     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
     if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");

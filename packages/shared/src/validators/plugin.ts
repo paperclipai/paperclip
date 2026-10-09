@@ -177,6 +177,7 @@ export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCap
 // validation error, not a silently dropped field. A misspelled capability name
 // (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
+  supportsTasks: z.boolean().optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",

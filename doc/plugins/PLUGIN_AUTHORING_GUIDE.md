@@ -711,3 +711,10 @@ The host resets plugin state on account/company changes and keeps its built-in
 menu when no unique contribution exists, discovery fails, the module is missing,
 or rendering throws. The slot is a React-only contract; do not use a custom
 element export. This replaces only the menu, not company policy or authorization.
+
+## Plugin-provided Runner execution
+
+Plugins can [provide Runner execution through environment drivers](PLUGIN_RUNNER_EXECUTION.md).
+The driver uses host-supplied project context to prepare project and repository
+storage, starts Runner, and exposes its PRP connection. It also manages task
+status, completion, cancellation, and cleanup.
