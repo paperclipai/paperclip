@@ -30,7 +30,7 @@ export async function claimSlackRateLimitRetry(
         ),
       )
       .for("update");
-    if (!invocation) return false;
+    if (!invocation) return "not_retryable" as const;
     const [action] = await tx
       .select()
       .from(chatActions)
@@ -48,10 +48,11 @@ export async function claimSlackRateLimitRetry(
       !action ||
       action.payload.revision !== authority.revision ||
       action.result?.code !== "slack_rate_limited" ||
-      typeof action.result.retryAt !== "string" ||
-      !(Date.parse(action.result.retryAt) <= Date.now())
-    )
-      return false;
+      typeof action.result.retryAt !== "string"
+    ) return "not_retryable" as const;
+    const retryAt = Date.parse(action.result.retryAt);
+    if (!Number.isFinite(retryAt)) return "not_retryable" as const;
+    if (retryAt > Date.now()) return "deferred" as const;
     await tx
       .update(chatActions)
       .set({ status: "received", updatedAt: new Date() })
@@ -67,6 +68,6 @@ export async function claimSlackRateLimitRetry(
         updatedAt: new Date(),
       })
       .where(eq(toolInvocations.id, invocation.id));
-    return true;
+    return "claimed" as const;
   });
 }

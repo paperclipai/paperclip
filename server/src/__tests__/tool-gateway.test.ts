@@ -2102,6 +2102,66 @@ rl.on("line", (line) => {
     }
   });
 
+  it("replays a failed remote MCP invocation as the recorded failure without fetching again", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "failed-replay",
+      toolName: "write_record",
+      riskLevel: "write",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const remoteRequests: RequestInit[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        remoteRequests.push(init);
+        throw new Error("socket hang up");
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((entry) => entry.providerType === "mcp_remote_http")!;
+    const idempotencyKey = `failed-remote-call-${randomUUID()}`;
+    const call = () => gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool.name,
+      parameters: { key: "alpha", value: "one" },
+      idempotencyKey,
+    });
+
+    await call().then(
+      () => { throw new Error("Expected the first remote MCP call to fail"); },
+      (error) => expectGatewayError(error, 502, "mcp_remote_fetch_failed"),
+    );
+    // The failed transport marks this connection unhealthy and hides its tool.
+    // Restore it to model a subsequent call after the operator/provider recovers.
+    await db.update(toolConnections).set({ healthStatus: "ok" })
+      .where(eq(toolConnections.id, connection.id));
+    await call().then(
+      () => { throw new Error("Expected replay to preserve the original failure"); },
+      (error) => {
+        expectGatewayError(error, 502, "mcp_remote_fetch_failed");
+        expect((error as ToolGatewayHttpError).message).toBe("Remote MCP tool call failed");
+        expect((error as ToolGatewayHttpError).details).toMatchObject({ replayed: true });
+      },
+    );
+
+    expect(remoteRequests).toHaveLength(1);
+    const [invocation] = await db.select().from(toolInvocations)
+      .where(eq(toolInvocations.idempotencyKey, idempotencyKey));
+    expect(invocation).toMatchObject({
+      status: "failed",
+      errorCode: "mcp_remote_fetch_failed",
+      errorMessage: "Remote MCP tool call failed",
+    });
+    const replayAudit = (await db.select().from(activityLog))
+      .find((event) => event.action === "tool_gateway.call_failed"
+        && event.details?.invocationId === invocation!.id
+        && event.details?.replayed === true);
+    expect(replayAudit).toBeTruthy();
+  });
+
   it.each([
     ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
     ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],

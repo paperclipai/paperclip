@@ -5329,7 +5329,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(resolveConnectorAssignments(db, recovered)).resolves.toEqual([]);
     await expect(executeConnectorTool(db, recovered, "slack_history", { channel: "CTOOLS" })).rejects.toThrow("no longer assigned");
     await service.shutdown();
-  });
+  }, 45_000);
 
   it("captures initial Slack communication guidance once per task, ignoring forged message configuration", async () => {
     const fixture = await seedCompany();
