@@ -4749,5 +4749,56 @@ describeEmbeddedPostgres("secretService", () => {
       await expect(removal).resolves.toMatchObject({ id: secret.id });
       expect(await svc.getById(secret.id)).toBeNull();
     });
+
+    it("locks the combined config and env secret ids as one sorted batch, so crossed environment saves cannot deadlock", async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const secretA = await svc.create(companyId, {
+        name: `cross-a-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+      const secretB = await svc.create(companyId, {
+        name: `cross-b-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "runtime-secret",
+      });
+
+      // Two environment-like saves whose secret usage crosses: save 1 binds
+      // secret A as its private-key config ref and secret B in env, save 2
+      // the reverse. When both binding surfaces are written through one call
+      // that takes the combined id set in sorted order, the two transactions
+      // serialize on the first id instead of each holding one id while
+      // waiting for the other. Back-to-back per-surface locking deadlocks
+      // here and Postgres aborts one save with a 40P01.
+      const save = (targetId: string, configSecretId: string, envSecretId: string) =>
+        db.transaction((tx) =>
+          svc.syncEnvironmentSecretBindings(
+            companyId,
+            { targetType: "environment", targetId },
+            {
+              instanceTargetRefs: [{ secretId: configSecretId, configPath: "privateKeySecretRef" }],
+              envValue: { SSH_KEY_ENV: { type: "secret_ref", secretId: envSecretId, version: "latest" } },
+            },
+            { db: tx },
+          ),
+        );
+
+      for (let round = 0; round < 3; round++) {
+        const results = await Promise.allSettled([
+          save(`env-cross-1`, secretA.id, secretB.id),
+          save(`env-cross-2`, secretB.id, secretA.id),
+        ]);
+        const failures = results
+          .filter((result) => result.status === "rejected")
+          .map((result) => (result as PromiseRejectedResult).reason);
+        expect(failures).toEqual([]);
+
+        const bindingsA = await svc.listBindingReferences(companyId, secretA.id);
+        const bindingsB = await svc.listBindingReferences(companyId, secretB.id);
+        expect(bindingsA).toHaveLength(2);
+        expect(bindingsB).toHaveLength(2);
+      }
+    });
   });
 });

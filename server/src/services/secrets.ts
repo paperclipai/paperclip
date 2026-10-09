@@ -5279,6 +5279,65 @@ export function secretService(db: Db | DbTransaction) {
       return refs;
     },
 
+    // Sync both binding surfaces of an environment-like target — the
+    // instance-scoped config refs (for example `privateKeySecretRef`) and the
+    // company-scoped env bindings — under one advisory-lock batch. Each write
+    // funnel locks only its own secret ids; when one transaction runs both
+    // funnels back to back, two concurrent callers that cross their ids (one
+    // uses secret A in config and B in env, the other the reverse) can each
+    // hold one lock while waiting for the other's, and Postgres aborts one
+    // caller with a deadlock. Taking the combined id set in sorted order up
+    // front removes the cycle: both funnels re-acquire locks this transaction
+    // already holds (advisory locks are re-entrant within a session), so the
+    // whole save follows one global lock order. Advisory xact locks release
+    // only when the caller's transaction ends.
+    syncEnvironmentSecretBindings: async (
+      companyId: string,
+      target: { targetType: SecretBindingTargetType; targetId: string },
+      input: {
+        // Omit to skip the config-ref sync (an env-only save).
+        instanceTargetRefs?: Array<{
+          secretId: string;
+          configPath: string;
+          versionSelector?: SecretVersionSelector;
+          required?: boolean;
+          label?: string | null;
+          projectionClass?: SecretProjectionClass;
+          projectionAllowlistKey?: string | null;
+        }>;
+        // Omit to skip the env sync (a config-only save).
+        envValue?: unknown;
+      },
+      options?: { db?: SecretBindingWriteDb },
+    ) => {
+      const executor = options?.db ?? db;
+      const envSecretIds = input.envValue === undefined
+        ? []
+        : Object.values(asRecord(input.envValue) ?? {}).flatMap((rawBinding) => {
+            const parsed = envBindingSchema.safeParse(rawBinding);
+            if (!parsed.success) return [];
+            const binding = canonicalizeBinding(parsed.data as EnvBinding);
+            return binding.type === "secret_ref" ? [binding.secretId] : [];
+          });
+      await lockSecretBindingSecrets(executor, [
+        ...(input.instanceTargetRefs ?? []).map((ref) => ref.secretId),
+        ...envSecretIds,
+      ]);
+      if (input.instanceTargetRefs !== undefined) {
+        // Sibling funnels through a fresh service view, the same pattern
+        // `removeCurrentUserSecretValue` uses; the factory only closes over
+        // `db`, so this is the same code path with no shared mutable state.
+        await secretService(db).replaceSecretRefsForInstanceTarget(
+          target,
+          input.instanceTargetRefs,
+          options,
+        );
+      }
+      if (input.envValue !== undefined) {
+        await secretService(db).syncEnvBindingsForTarget(companyId, target, input.envValue, options);
+      }
+    },
+
     remove: removeSecretInternal,
 
     removeIfUnbound: removeIfUnboundInternal,

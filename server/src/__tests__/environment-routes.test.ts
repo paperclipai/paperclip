@@ -74,6 +74,7 @@ const mockSecretService = vi.hoisted(() => ({
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
   replaceSecretRefsForInstanceTarget: vi.fn(),
+  syncEnvironmentSecretBindings: vi.fn(),
   describeSecretRefs: vi.fn(),
   remove: vi.fn(),
 }));
@@ -331,6 +332,8 @@ describe("environment routes", () => {
     mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
     mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
+    mockSecretService.syncEnvironmentSecretBindings.mockReset();
+    mockSecretService.syncEnvironmentSecretBindings.mockResolvedValue(undefined);
     mockSecretService.describeSecretRefs.mockReset();
     mockSecretService.describeSecretRefs.mockResolvedValue([]);
     mockSecretService.remove.mockReset();
@@ -2420,9 +2423,13 @@ describe("environment routes", () => {
       envVars: {},
     }, undefined, { db: routeDbTx });
     expect(mockSecretService.create).not.toHaveBeenCalled();
-    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
+    expect(mockSecretService.syncEnvironmentSecretBindings).toHaveBeenCalledWith(
+      "company-1",
       { targetType: "environment", targetId: "env-sandbox-secure-plugin" },
-      [{ secretId, configPath: "apiKey", versionSelector: "latest" }],
+      {
+        instanceTargetRefs: [{ secretId, configPath: "apiKey", versionSelector: "latest" }],
+        envValue: {},
+      },
       { db: routeDbTx },
     );
   });
@@ -2824,9 +2831,12 @@ describe("environment routes", () => {
       }),
       { db: routeDbTx },
     );
-    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
+    expect(mockSecretService.syncEnvironmentSecretBindings).toHaveBeenCalledWith(
+      "company-new",
       { targetType: "environment", targetId: "env-sandbox" },
-      [{ secretId: newSecretId, configPath: "apiKey", versionSelector: "latest" }],
+      {
+        instanceTargetRefs: [{ secretId: newSecretId, configPath: "apiKey", versionSelector: "latest" }],
+      },
       { db: routeDbTx },
     );
     // Explicit caller context wins outright; stale bindings are never consulted.
@@ -2853,7 +2863,7 @@ describe("environment routes", () => {
       ...existing,
       config: { ...existing.config, apiKey: "33333333-3333-3333-3333-333333333333" },
     });
-    mockSecretService.replaceSecretRefsForInstanceTarget.mockRejectedValue(
+    mockSecretService.syncEnvironmentSecretBindings.mockRejectedValue(
       unprocessable("Secret referenced at apiKey was not found", { code: "secret_missing" }),
     );
     const app = createApp({

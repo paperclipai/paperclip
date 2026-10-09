@@ -50,6 +50,7 @@ const mockSecretService = vi.hoisted(() => ({
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
   replaceSecretRefsForInstanceTarget: vi.fn(),
+  syncEnvironmentSecretBindings: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -156,6 +157,8 @@ describe("environment instance routes", () => {
     mockSecretService.syncSecretRefsForTarget.mockReset();
     mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
     mockSecretService.replaceSecretRefsForInstanceTarget.mockResolvedValue([]);
+    mockSecretService.syncEnvironmentSecretBindings.mockReset();
+    mockSecretService.syncEnvironmentSecretBindings.mockResolvedValue(undefined);
 
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     mockEnvironmentService.list.mockResolvedValue([]);
@@ -266,15 +269,10 @@ describe("environment instance routes", () => {
       undefined,
       { db: expect.anything() },
     );
-    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
-      { targetType: "environment", targetId: "env-1" },
-      [],
-      { db: expect.anything() },
-    );
-    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+    expect(mockSecretService.syncEnvironmentSecretBindings).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
-      {},
+      { instanceTargetRefs: [], envValue: {} },
       { db: expect.anything() },
     );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
@@ -314,10 +312,10 @@ describe("environment instance routes", () => {
       undefined,
       { db: expect.anything() },
     );
-    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+    expect(mockSecretService.syncEnvironmentSecretBindings).toHaveBeenCalledWith(
       "company-1",
       { targetType: "environment", targetId: "env-1" },
-      envVars,
+      { instanceTargetRefs: [], envValue: envVars },
       { db: expect.anything() },
     );
   });
