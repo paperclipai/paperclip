@@ -898,6 +898,7 @@ describe("agent instructions bundle routes", () => {
       ...makeAgent(),
       adapterType: "codex_local",
       adapterConfig: {
+        model: "gpt-5.4",
         env: {
           KEEP_ME: { type: "plain", value: "keep" },
         },
@@ -929,6 +930,53 @@ describe("agent instructions bundle routes", () => {
       }),
       expect.any(Object),
     );
+    const updateInput = mockAgentService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updateInput.adapterConfig).not.toHaveProperty("model");
+  });
+
+  it("limits strict secret validation to an empty key set when PATCH omits env", async () => {
+    const previousStrictMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = "true";
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "legacy-value" },
+        },
+      },
+    });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementationOnce(
+      async (_companyId: string, config: Record<string, unknown>, options?: {
+        strictMode?: boolean;
+        strictModeKeys?: ReadonlySet<string>;
+      }) => {
+        if (
+          options?.strictMode
+          && (options.strictModeKeys === undefined || options.strictModeKeys.has("OPENAI_API_KEY"))
+        ) {
+          throw new Error("Strict secret mode requires secret references for sensitive key: OPENAI_API_KEY");
+        }
+        return config;
+      },
+    );
+
+    try {
+      const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+        .send({
+          adapterConfig: {
+            command: "codex --profile engineer",
+          },
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    } finally {
+      if (previousStrictMode === undefined) {
+        delete process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+      } else {
+        process.env.PAPERCLIP_SECRETS_STRICT_MODE = previousStrictMode;
+      }
+    }
   });
 
   it("replaces adapter config when replaceAdapterConfig is true", async () => {

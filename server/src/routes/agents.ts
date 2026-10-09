@@ -2594,8 +2594,15 @@ export function agentRoutes(
     };
     if (!hasOwn(requestedAdapterConfig, "env")) return mergedAdapterConfig;
 
+    return mergeAdapterEnvPatch(existingAdapterConfig, mergedAdapterConfig);
+  }
+
+  function mergeAdapterEnvPatch(
+    existingAdapterConfig: Record<string, unknown>,
+    requestedAdapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
     const requestedEnv = asRecord(requestedAdapterConfig.env);
-    if (!requestedEnv) return mergedAdapterConfig;
+    if (!requestedEnv) return requestedAdapterConfig;
 
     const mergedEnv = {
       ...(asRecord(existingAdapterConfig.env) ?? {}),
@@ -2608,7 +2615,7 @@ export function agentRoutes(
       }
     }
     return {
-      ...mergedAdapterConfig,
+      ...requestedAdapterConfig,
       env: mergedEnv,
     };
   }
@@ -5734,9 +5741,9 @@ export function agentRoutes(
       const submittedEnv = requestedAdapterConfig && hasOwn(requestedAdapterConfig, "env")
         ? asRecord(requestedAdapterConfig.env)
         : null;
-      const submittedEnvKeys = !replaceAdapterConfig && submittedEnv
-        ? new Set(Object.keys(submittedEnv))
-        : undefined;
+      const submittedEnvKeys = replaceAdapterConfig
+        ? undefined
+        : new Set(Object.keys(submittedEnv ?? {}));
       if (
         requestedAdapterConfig
         && replaceAdapterConfig
@@ -5770,7 +5777,7 @@ export function agentRoutes(
             && hasOwn(requestedAdapterConfig, "env")
             && !replaceAdapterConfig
           ) {
-            rawEffectiveAdapterConfig = mergeAdapterConfigPatch(
+            rawEffectiveAdapterConfig = mergeAdapterEnvPatch(
               existingAdapterConfig,
               rawEffectiveAdapterConfig,
             );
