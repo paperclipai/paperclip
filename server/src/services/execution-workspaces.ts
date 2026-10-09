@@ -40,6 +40,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   applyIssueExecutionPolicyTransition,
+  hydrateStoredIssueExecutionPolicy,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -3647,7 +3648,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           if (!sourceBefore) throw notFound("Source issue not found");
 
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
-          const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
+          const policy = hydrateStoredIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
             issue: sourceBefore,
             policy,
