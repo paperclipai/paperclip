@@ -60,5 +60,6 @@ export const BoundConnectionRecovery: Story = {
     await userEvent.keyboard("{Enter}");
     await expect(canvas.getByRole("button", { name: `Talk to ${spekoAgent.name}` })).toBeVisible();
     await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: `Talk to ${spekoAgent.name}` })).toHaveFocus();
   },
 };

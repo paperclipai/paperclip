@@ -6,7 +6,7 @@ import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { chatActions, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { chatActions, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
@@ -30,7 +30,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-speko-store-");
     db = createDb(database.connectionString);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await database?.cleanup(); });
 
   async function fixture() {
@@ -500,6 +500,41 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.store.runTool({...f.toolInput("get_updates", {cursor: 0}), sessionId: f.session.id, token, envelope, webhookId: toolId, fingerprint: createHash("sha256").update(JSON.stringify(envelope)).digest("hex")})).toMatchObject({updates: [{question: {interactionId}}]});
     await f.push();
     expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
+  });
+  it("sends long approved phone answers as durable ordered parts and resumes after a rate limit", async () => {
+    const f = await pushFixture(), text = "😀 answer ".repeat(4000) + "FINAL";
+    await db.update(chatPublications).set({payload: {text}}).where(eq(chatPublications.id, f.publication.id));
+    f.transport.sendCallMessage.mockResolvedValueOnce({messageId: "part-0"}).mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", false, 429));
+    await f.push();
+    const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, f.publication.id));
+    expect(reply.deliveredAt).toBeNull();
+    const actions = await db.select().from(chatActions).where(eq(chatActions.kind, "speko_voice_reply_push"));
+    const retry = actions.find(action => action.payload.replyId === reply.id && action.status === "retry")!;
+    expect(retry.payload).toMatchObject({partIndex: 1, partCount: 3});
+    // Polling must not replay an already accepted prefix as a complete answer.
+    const token = f.transport.createBrowserSession.mock.calls[0]![0].toolToken;
+    const toolId = randomUUID(), {sessionId: providerSessionId} = await f.transport.createBrowserSession.mock.results[0]!.value;
+    const envelope = {session_id: providerSessionId, tool_call_id: toolId, idempotency_key: `${providerSessionId}:${toolId}`, tool: "get_updates" as const, args: {cursor: 0}};
+    expect(await f.store.runTool({...f.toolInput("get_updates", {cursor: 0}), sessionId: f.session.id, token, envelope, webhookId: toolId, fingerprint: createHash("sha256").update(JSON.stringify(envelope)).digest("hex")})).toMatchObject({updates: []});
+    await db.update(chatActions).set({result: {retryAt: 0}}).where(eq(chatActions.id, retry.id));
+    // Reconstruct the service to prove continuation comes from durable receipts.
+    await voiceSessionService(db, {allowLocalBoard: false, credentials: f.credentials, provider: () => f.transport, onQuestionAnswered: vi.fn()}).pushReplies(25, f.companyId, f.endpointId);
+    await f.push();
+    const calls = f.transport.sendCallMessage.mock.calls;
+    expect(calls).toHaveLength(4); expect(calls[1]?.[1]).toBe(calls[2]?.[1]);
+    expect([calls[0]![1], calls[2]![1], calls[3]![1]].join("")).toBe(text);
+    for (const call of calls) {expect(call[1].length).toBeLessThanOrEqual(16_000); expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(call[1])).toBe(false);}
+    const [delivered] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.id, reply.id));
+    expect(delivered.deliveredAt).toBeInstanceOf(Date); expect(delivered.spokenAt).toBeNull();
+  });
+  it("does not retry an uncertain long-answer part or send its suffix", async () => {
+    const f = await pushFixture();
+    await db.update(chatPublications).set({payload: {text: "answer ".repeat(5000)}}).where(eq(chatPublications.id, f.publication.id));
+    f.transport.sendCallMessage.mockResolvedValueOnce({messageId: "part-0"}).mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", true));
+    await f.push(); await f.push();
+    expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
+    const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, f.publication.id));
+    expect(reply.deliveredAt).toBeNull();
   });
   it("pushes a published phone answer exactly once across concurrent dispatch and restart", async () => {
     const f = await pushFixture();
