@@ -38,6 +38,7 @@ export interface CompanySearchIssueSummary {
   identifier: string | null;
   title: string;
   status: IssueStatus;
+  externalConversationState?: "active" | "waiting" | null;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -146,6 +147,7 @@ export interface CompanySearchExtractResponse {
   scope: CompanySearchExtractScope;
   limit: number;
   offset: number;
+  matchesPerIssue: number;
   results: CompanySearchExtractIssueResult[];
   hasMore: boolean;
   truncated: boolean;

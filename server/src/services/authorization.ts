@@ -1,24 +1,43 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { withHumanDirectedWork } from "./human-directed-work.js";
+import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import {
   agents,
+  approvals,
+  issueApprovals,
   authUsers,
   companyMemberships,
+  chatConversations,
+  chatDeliveries,
+  chatIdentityLinks,
   heartbeatRuns,
+  executionWorkspaces,
   instanceUserRoles,
   issueComments,
+  issueAccessGrants,
   issues,
   principalPermissionGrants,
+  projectAccessMembers,
   projects,
+  userInboxAgentPolicies,
 } from "@paperclipai/db";
 import type {
   AgentApiKeyScope,
+  InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  trustPresetSchema,
+  lowTrustBoundarySchema,
+  lowTrustReviewPresetPolicySchema,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -26,6 +45,8 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
 
 export type AuthorizationActor =
   {
@@ -49,7 +70,9 @@ export type AuthorizationActor =
       | "board_key"
       | "agent_key"
       | "agent_jwt"
+      | "mcp_oauth"
       | "cloud_tenant"
+      | "cloud_control"
       | "none";
   };
 
@@ -57,16 +80,21 @@ export type AuthorizationAction =
   | PermissionKey
   | "agent_config:read"
   | "agent_config:update"
+  | "agent_instructions:update"
   | "skill_config:update"
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
+  | "decision_queue:manage"
+  | "decision_queue:read"
+  | "decision_triage:manage"
   | "issue:comment"
   | "issue:mutate"
   | "issue:read"
   | "project:read"
   | "runtime:manage"
-  | "secrets:read";
+  | "secrets:read"
+  | "secrets:propose";
 
 export type AuthorizationResource =
   | { type: "company"; companyId: string }
@@ -89,21 +117,29 @@ export type AuthorizationDecision = {
   allowed: boolean;
   action: AuthorizationAction;
   explanation: string;
+  inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
   code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
+    | "allow_role_default"
+    | "allow_user_inbox_policy"
     | "allow_direct_change"
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_direct_parent_report"
+    | "allow_visible_issue_write"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "inbox_target_user_unresolved"
+    | "inbox_management_disabled"
+    | "inbox_agent_not_allowed"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -112,6 +148,8 @@ export type AuthorizationDecision = {
     | "deny_no_grant"
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
+    | "deny_issue_private"
+    | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -131,17 +169,21 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
-  if (action === "agent_config:read" || action === "agent_config:update" || action === "skill_config:update") {
+  if (action === "agent_config:read" || action === "agent_config:update" || action === "agent_instructions:update" || action === "skill_config:update") {
     return null;
   }
   if (
     action === "agent:read" ||
     action === "agent:wake" ||
     action === "company_scope:read" ||
+    action === "decision_queue:manage" ||
+    action === "decision_queue:read" ||
+    action === "decision_triage:manage" ||
     action === "issue:read" ||
     action === "project:read" ||
     action === "runtime:manage" ||
-    action === "secrets:read"
+    action === "secrets:read" ||
+    action === "secrets:propose"
   ) {
     return null;
   }
@@ -151,8 +193,10 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
-  if (!agent.permissions || typeof agent.permissions !== "object") return false;
-  return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  // Raw agent rows may predate permission normalization; apply the same
+  // defaults the agent service applies on read so enforcement matches what
+  // the API reports.
+  return normalizeAgentPermissions(agent.permissions).canCreateAgents;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -207,7 +251,7 @@ function readBoolean(value: unknown): boolean | null {
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
-  | { kind: "requires_approval"; explanation: string }
+  | { kind: "blocked"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
 type AgentHierarchyRow = { id: string; reportsTo: string | null };
@@ -228,10 +272,11 @@ type ProjectAuthorizationRow = {
 type IssueAuthorizationRow = {
   id: string;
   companyId: string;
-  projectId: string | null;
+  projectId?: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  checkoutRunId: string | null;
   status: string;
   executionPolicy: unknown;
   originKind: string | null;
@@ -247,15 +292,27 @@ function evaluateAuthorizationPolicyForAssignment(
   const agentVisibility = readPolicyObject(policy, "agentVisibility");
   const assignmentPolicy = readPolicyObject(policy, "assignmentPolicy");
   const protectedAgent = readPolicyObject(policy, "protectedAgent");
+  // Core containment policy is understood independently of assignment policy.
+  // Recognizing it must not hide malformed values or unknown extension rules.
+  const trustSections = [
+    ["trustPreset", trustPresetSchema],
+    ["trustBoundary", lowTrustBoundarySchema],
+    ["reviewPreset", lowTrustReviewPresetPolicySchema],
+  ] as const;
+  const hasTrustPolicy = trustSections.some(([key]) => policy[key] !== undefined);
+  const hasInvalidTrustPolicy = trustSections.some(([key, schema]) =>
+    policy[key] !== undefined && !schema.safeParse(policy[key]).success,
+  );
   const knownTopLevelKeys = new Set([
     "agentVisibility",
     "assignmentPolicy",
     "protectedAgent",
     "managedBy",
+    ...trustSections.map(([key]) => key),
   ]);
   const hasUnknownTopLevelKey = Object.keys(policy).some((key) => !knownTopLevelKeys.has(key));
-  const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent);
-  if (hasUnknownTopLevelKey || !hasKnownPolicySection) {
+  const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent || hasTrustPolicy);
+  if (hasUnknownTopLevelKey || hasInvalidTrustPolicy || !hasKnownPolicySection) {
     return {
       kind: "unknown",
       explanation: `${label} has authorization policy data that core cannot evaluate for task assignment.`,
@@ -278,13 +335,19 @@ function evaluateAuthorizationPolicyForAssignment(
     };
   }
 
-  const requiresApproval =
+  // `requiresApproval` and `protectedAgentRequiresApproval` are legacy aliases.
+  // They never had an approval workflow behind them, so preserve their hard-block
+  // behavior without continuing to promise an approval step that does not exist.
+  const blockAssignment =
+    readBoolean(protectedAgent?.blockAssignment) === true ||
     readBoolean(protectedAgent?.requiresApproval) === true ||
     readBoolean(assignmentPolicy?.protectedAgentRequiresApproval) === true;
-  if (requiresApproval) {
+  if (blockAssignment) {
     return {
-      kind: "requires_approval",
-      explanation: `${label} requires approval before task assignment.`,
+      kind: "blocked",
+      explanation:
+        `${label} assignment is blocked by protected-agent policy. ` +
+        "A company administrator can remove the assignment block, then retry.",
     };
   }
 
@@ -325,7 +388,7 @@ function agentIsInSubtree(
   return false;
 }
 
-async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
+async function loadCompanyAgentHierarchy(db: Db | DbTransaction, companyId: string) {
   const rows = await db
     .select({ id: agents.id, reportsTo: agents.reportsTo })
     .from(agents)
@@ -333,7 +396,12 @@ async function loadCompanyAgentHierarchy(db: Db, companyId: string) {
   return new Map(rows.map((agent) => [agent.id, agent]));
 }
 
-async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, targetAgentId: string) {
+async function isAgentInSubtree(
+  db: Db | DbTransaction,
+  companyId: string,
+  rootAgentId: string,
+  targetAgentId: string,
+) {
   return agentIsInSubtree(
     await loadCompanyAgentHierarchy(db, companyId),
     rootAgentId,
@@ -342,7 +410,7 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
 }
 
 async function scopeAllows(
-  db: Db,
+  db: Db | DbTransaction,
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
@@ -358,6 +426,7 @@ async function scopeAllows(
         ? requestedScope.targetAgentId
         : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
+  const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
   let constrained = false;
 
   const projectIds = [
@@ -384,6 +453,12 @@ async function scopeAllows(
   if (targetAgentIds.length > 0) {
     constrained = true;
     if (!scopeIncludesId(targetAgentIds, targetAssigneeAgentId)) return false;
+  }
+
+  const targetUserIds = scopeValuesForKeys(grantScope, ["userId", "userIds"]);
+  if (targetUserIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
   const subtreeRootAgentIds = [
@@ -442,13 +517,155 @@ const responsibleUserSnapshotCache = new Map<
   { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
 >();
 
+export type IssuePrivacyRow = {
+  id: string;
+  companyId: string;
+  visibility: string;
+  privacyRootIssueId: string | null;
+  responsibleUserId: string | null;
+  createdByUserId: string | null;
+  assigneeUserId: string | null;
+  assigneeAgentId: string | null;
+  projectId?: string | null;
+};
+
+export type ProjectPrivacyRow = {
+  id: string;
+  companyId: string;
+  visibility: string;
+};
+
+export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
+  const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
+  if (mode === "off" || mode === "shadow") return mode;
+  return "enforce";
+}
+
+function issuePrivacyPrincipal(actor: AuthorizationActor) {
+  if (actor.type === "board" && actor.userId) return { type: "user" as const, id: actor.userId };
+  if (actor.type === "agent" && actor.agentId) return { type: "agent" as const, id: actor.agentId };
+  return null;
+}
+
+function projectPrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean> {
+  const principal = issuePrivacyPrincipal(actor);
+  return sql<boolean>`(${projects.visibility} = 'open' or ${principal ? sql`exists (
+    select 1 from ${projectAccessMembers} m where m.company_id = ${projects.companyId}
+      and m.project_id = ${projects.id} and m.subject_type = ${principal.type}
+      and m.subject_id = ${principal.id})` : sql`false`})`;
+}
+
+function projectPrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
+  const own = projectPrivacyPrincipalCondition(actor);
+  if (actor.type !== "agent" || !actor.onBehalfOfUserId) return own;
+  return sql<boolean>`(${own} and ${projectPrivacyPrincipalCondition({ type: "board", userId: actor.onBehalfOfUserId })}
+    and exists (select 1 from ${companyMemberships} m where m.company_id = ${projects.companyId}
+      and m.principal_type = 'user' and m.principal_id = ${actor.onBehalfOfUserId} and m.status = 'active'))`;
+}
+
+export async function canActorReadProjectPrivacy(db: Db | DbTransaction, actor: AuthorizationActor, project: ProjectPrivacyRow) {
+  return db.select({ id: projects.id }).from(projects)
+    .where(and(eq(projects.id, project.id), eq(projects.companyId, project.companyId), projectPrivacyCondition(actor)))
+    .limit(1).then(rows => rows.length > 0);
+}
+
+/** One predicate for direct reads and SQL pushdown. Grants flow only from a task
+ * to its privacy descendants, never from a child to its ancestors or siblings.
+ * UNION bounds traversal even if historical data contains a cycle. */
+function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean> {
+  const principal = issuePrivacyPrincipal(actor);
+  const implicit = principal?.type === "agent"
+    ? sql`n.assignee_agent_id = ${principal.id}`
+    : principal?.type === "user"
+      ? sql`(n.responsible_user_id = ${principal.id} or n.created_by_user_id = ${principal.id} or n.assignee_user_id = ${principal.id})`
+      : sql`false`;
+  const grant = principal ? sql`exists (
+    select 1 from ${issueAccessGrants} g where g.issue_id = n.id
+      and g.subject_type = ${principal.type} and g.subject_id = ${principal.id}
+      and g.revoked_at is null
+  )` : sql`false`;
+  const projectMember = principal ? sql`exists (
+    select 1 from ${projectAccessMembers} m
+    join ${projects} p on p.id = m.project_id and p.company_id = m.company_id
+    where p.id = n.project_id and p.company_id = n.company_id and p.visibility = 'private'
+      and m.subject_type = ${principal.type} and m.subject_id = ${principal.id}
+  )` : sql`false`;
+  return sql<boolean>`exists (
+    with recursive privacy_ancestors as (
+      select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+      from issues p where p.id = ${issues.id} and p.company_id = ${issues.companyId}
+      union
+      select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+      from issues p join privacy_ancestors c on p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
+      where p.visibility = 'private' or exists (select 1 from projects pp where pp.id = p.project_id and pp.company_id = p.company_id and pp.visibility = 'private')
+    )
+    select 1 from privacy_ancestors n
+    where ${implicit} or ${grant} or ${projectMember}
+      or not exists (
+        select 1 from privacy_ancestors restricted
+        left join projects private_project on private_project.id = restricted.project_id
+          and private_project.company_id = restricted.company_id
+        where restricted.visibility = 'private' or private_project.visibility = 'private'
+      )
+  )`;
+}
+
+function issuePrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
+  const principalCondition = issuePrivacyPrincipalCondition(actor);
+  if (actor.type !== "agent" || !actor.onBehalfOfUserId) return principalCondition;
+  const userId = actor.onBehalfOfUserId;
+  // A shared agent's grants cannot amplify the user whose run is making the call.
+  return sql<boolean>`(${principalCondition} and ${issuePrivacyPrincipalCondition({ type: "board", userId })}
+    and exists (select 1 from ${companyMemberships} m where m.company_id = ${issues.companyId}
+      and m.principal_type = 'user' and m.principal_id = ${userId} and m.status = 'active'))`;
+}
+
+export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: AuthorizationActor, issue: IssuePrivacyRow) {
+  return db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId), issuePrivacyCondition(actor)))
+    .limit(1).then(rows => rows.length > 0);
+}
+
+/** Filter every externally reachable task query with the same privacy predicate. */
+export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
+    && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
+      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
+  return issuePrivacyCondition(actor);
+}
+
+/** SQL equivalent used for project list/search pushdown. */
+export async function projectReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (
+    actor.type === "board"
+    && !actor.ignoreInstanceAdmin
+    && actor.source !== "cloud_tenant"
+    && Boolean(await db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(
+        eq(instanceUserRoles.userId, actor.userId ?? ""),
+        eq(instanceUserRoles.role, "instance_admin"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null))
+  ) return sql<boolean>`true`;
+  return projectPrivacyCondition(actor);
+}
+
 function responsibleUserSnapshotTtlMs() {
   const raw = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_CACHE_TTL_MS?.trim();
   if (!raw) return 5_000;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
 }
-
 export function responsibleUserAuthzShadowMode() {
   const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
   const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
@@ -505,7 +722,9 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   };
 }
 
-export function authorizationService(db: Db) {
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export function authorizationService(db: Db | DbTransaction) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
     if (
@@ -582,7 +801,9 @@ export function authorizationService(db: Db) {
     const requestMemo = actorWithMemo.__responsibleUserSnapshotMemo.get(key);
     if (requestMemo) return requestMemo;
 
-    const actorMembership = activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId);
+    const actorMembership = input.actor.onBehalfOfUserId === input.userId
+      ? activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId)
+      : null;
     if (actorMembership) {
       const promise = Promise.resolve({
         userId: input.userId,
@@ -594,24 +815,13 @@ export function authorizationService(db: Db) {
       return promise;
     }
 
-    const now = Date.now();
-    const cached = responsibleUserSnapshotCache.get(key);
-    if (cached && cached.expiresAt > now) {
-      actorWithMemo.__responsibleUserSnapshotMemo.set(key, cached.promise);
-      return cached.promise;
-    }
-
-    const ttlMs = responsibleUserSnapshotTtlMs();
     const promise = loadResponsibleUserSnapshot(input.companyId, input.userId);
-    if (ttlMs > 0) {
-      responsibleUserSnapshotCache.set(key, { expiresAt: now + ttlMs, promise });
-      promise.catch(() => {
-        if (responsibleUserSnapshotCache.get(key)?.promise === promise) {
-          responsibleUserSnapshotCache.delete(key);
-        }
-      });
-    }
     actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+    void promise.catch(() => {
+      if (actorWithMemo.__responsibleUserSnapshotMemo?.get(key) === promise) {
+        actorWithMemo.__responsibleUserSnapshotMemo.delete(key);
+      }
+    });
     return promise;
   }
 
@@ -654,6 +864,19 @@ export function authorizationService(db: Db) {
 
     const grant = await findGrant(input.companyId, input.principalType, input.principalId, input.permissionKey);
     if (!grant) {
+      if (
+        input.principalType === "user"
+        && input.permissionKey.startsWith("tools:")
+        && (membership.membershipRole === "owner" || membership.membershipRole === "admin")
+        && grantsForHumanRole(normalizeHumanRole(membership.membershipRole, "operator"))
+          .some((defaultGrant) => defaultGrant.permissionKey === input.permissionKey)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_role_default",
+          explanation: `Allowed by the ${membership.membershipRole ?? "operator"} membership role.`,
+        });
+      }
       return deny({
         action: input.action,
         reason: "deny_missing_grant",
@@ -728,6 +951,7 @@ export function authorizationService(db: Db) {
         parentId: issues.parentId,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
         status: issues.status,
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
@@ -755,6 +979,46 @@ export function authorizationService(db: Db) {
     return isPlainRecord(context?.executionPolicy)
       ? { companyId: row.companyId, executionPolicy: context.executionPolicy }
       : null;
+  }
+
+  async function loadRunIssueId(runId: string | null | undefined, companyId: string, agentId: string) {
+    if (!runId) return null;
+    const row = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!row || row.companyId !== companyId || row.agentId !== agentId) return null;
+    const context = isPlainRecord(row.contextSnapshot) ? row.contextSnapshot : null;
+    const issueId = typeof context?.issueId === "string"
+      ? context.issueId.trim()
+      : typeof context?.taskId === "string"
+        ? context.taskId.trim()
+        : "";
+    return issueId || null;
+  }
+
+  async function isDirectParentReportTarget(input: {
+    actor: AuthorizationActor;
+    actorAgentId: string;
+    companyId: string;
+    resource: AuthorizationResource;
+  }) {
+    if (input.resource.type !== "issue" || !input.resource.issueId) return false;
+    const runIssueId = await loadRunIssueId(input.actor.runId, input.companyId, input.actorAgentId);
+    if (!runIssueId || runIssueId === input.resource.issueId) return false;
+    const runIssue = await loadIssue(runIssueId);
+    return Boolean(
+      runIssue &&
+      runIssue.companyId === input.companyId &&
+      runIssue.assigneeAgentId === input.actorAgentId &&
+      runIssue.checkoutRunId === input.actor.runId &&
+      runIssue.parentId === input.resource.issueId,
+    );
   }
 
   async function loadProjectAuthorizationPolicy(companyId: string, projectId: string) {
@@ -795,12 +1059,16 @@ export function authorizationService(db: Db) {
   }): Promise<TrustPresetResolution> {
     const { issue, project } = await loadResourceContext(input.resource);
     const run = await loadRunPolicy(input.actor.runId, input.companyId, input.actorAgent.id);
-    return resolveCoreTrustPreset({
+    const resolution = resolveCoreTrustPreset({
       companyId: input.companyId,
       agent: input.actorAgent,
       project,
       issue,
       run,
+    });
+    if (!input.actor.runId || resolution.kind !== "low_trust_review") return resolution;
+    return withHumanDirectedWork(db, resolution, {
+      companyId: input.companyId, agentId: input.actorAgent.id, runId: input.actor.runId,
     });
   }
 
@@ -842,21 +1110,16 @@ export function authorizationService(db: Db) {
     if (candidate.id && boundary.rootIssueId) {
       return issueIdIsDescendantOf(candidate.id, boundary.rootIssueId, boundary.companyId);
     }
-    if (!resource.parentIssueId) return false;
+    // Only an explicit root scope includes descendants. A parent in a permitted
+    // project (or an exact issue-id scope) cannot authorize a child elsewhere.
+    if (!resource.parentIssueId || !boundary.rootIssueId) return false;
     const parent = await loadIssue(resource.parentIssueId);
-    if (!parent) return false;
-    if (
-      isIssueWithinLowTrustBoundary(boundary, {
-        companyId: parent.companyId,
-        id: parent.id,
-        projectId: parent.projectId,
-      })
-    ) {
-      return true;
-    }
-    return boundary.rootIssueId
-      ? issueIdIsDescendantOf(parent.id, boundary.rootIssueId, boundary.companyId)
-      : false;
+    if (!parent || parent.companyId !== boundary.companyId) return false;
+    // Root ancestry permits decomposition, not selection of an unrelated
+    // project. Projectless children remain possible for projectless roots.
+    if (candidate.projectId && !await projectWithinLowTrustBoundary(boundary, candidate.projectId)) return false;
+    return parent.id === boundary.rootIssueId ||
+      issueIdIsDescendantOf(parent.id, boundary.rootIssueId, boundary.companyId);
   }
 
   async function projectWithinLowTrustBoundary(
@@ -881,9 +1144,11 @@ export function authorizationService(db: Db) {
 
   async function decideLowTrustAccess(input: {
     actorAgentId: string;
+    actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
+    directParentReportTarget: boolean;
   }): Promise<AuthorizationDecision | null> {
     if (input.resolution.kind === "standard") return null;
     if (input.resolution.kind === "denied") {
@@ -908,13 +1173,40 @@ export function authorizationService(db: Db) {
         explanation,
       });
 
+    if (input.action === "agent_instructions:update") {
+      if (input.resource.type === "agent" && input.resource.agentId === input.actorAgentId &&
+          await hasOwnerChatInstructionAuthority(db, {
+            companyId: boundary.companyId,
+            agentId: input.actorAgentId,
+            runId: input.actor.runId,
+            userId: input.actor.onBehalfOfUserId,
+          })) {
+        // Continue through self-instruction permissions, explicit protected
+        // change restrictions, and the responsible user's current edit access.
+        return null;
+      }
+      return lowTrustDeny(
+        "This low-trust run cannot change persistent agent instructions, including AGENTS.md. Self-edits require a direct message in the authorized user's chat with this agent. Outside-triggered work and subtasks do not inherit that authority; ask the authorized user to request the edit in their chat or apply it directly.",
+      );
+    }
+
     if (
       input.action === "company_scope:read" ||
+      // Agent creation is a company-wide privileged action. The default-on
+      // canCreateAgents flag must never reach the legacy creator allow when
+      // the effective execution context (agent, project, issue, or run
+      // policy) resolves to low trust.
+      input.action === "agents:create" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent_config:read" ||
       input.action === "agent_config:update" ||
       input.action === "skill_config:update" ||
+      input.action === "inbox:manage" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return lowTrustDeny(
         `${LOW_TRUST_REVIEW_PRESET} agents cannot use company-wide or privileged ${input.action} APIs by default.`,
@@ -945,6 +1237,25 @@ export function authorizationService(db: Db) {
     if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
+      }
+      if (input.resolution.humanDirectedIssueId && input.resource.companyId === boundary.companyId &&
+          input.resource.issueId === input.resolution.humanDirectedIssueId) {
+        return lowTrustAllow("Allowed on the exact task directed by an authenticated human.");
+      }
+      if (input.action === "issue:comment" && input.directParentReportTarget) {
+        if (
+          input.resource.issueId &&
+          await agentHasMentionGrantOnIssue({
+            action: input.action,
+            companyId: boundary.companyId,
+            issueId: input.resource.issueId,
+            issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
+            actorAgentId: input.actorAgentId,
+          })
+        ) {
+          return allowIssueMentionGrant(input.action);
+        }
+        return lowTrustDeny("Direct-parent report comments are disabled for low-trust review runs.");
       }
       if (await issueResourceWithinLowTrustBoundary(boundary, input.resource)) {
         return lowTrustAllow("Allowed inside the low-trust issue boundary.");
@@ -1065,11 +1376,15 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent:read" ||
       input.action === "agent:wake" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return denyBridge("Task bridge keys cannot use company-wide, peer-agent, project, runtime, or secret APIs.");
     }
@@ -1131,11 +1446,15 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent:read" ||
       input.action === "agent:wake" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read" ||
+      input.action === "secrets:propose" ||
       input.action === "tasks:assign"
     ) {
       return denySkillTest("Skill-test run tokens cannot use company-wide, peer-agent, project, runtime, secret, or task-create APIs.");
@@ -1209,7 +1528,7 @@ export function authorizationService(db: Db) {
     const effects = await Promise.all(checks);
     return (
       effects.find((effect) => effect.kind === "unknown") ??
-      effects.find((effect) => effect.kind === "requires_approval") ??
+      effects.find((effect) => effect.kind === "blocked") ??
       effects.find((effect) => effect.kind === "restricted") ??
       { kind: "none" }
     );
@@ -1314,6 +1633,76 @@ export function authorizationService(db: Db) {
   }): Promise<AuthorizationDecision> {
     const permissionKey = permissionForAction(input.action);
     const companyId = companyIdForResource(input.resource);
+
+    /**
+     * Shared default-open decision for issue write-influence channels.
+     *
+     * Keep visibility structurally upstream of every standard-trust write so
+     * future visibility scoping can be implemented in issue:read without
+     * recreating per-action scope checks. The responsible-user ceiling remains
+     * in decide(), after this base decision.
+     */
+    async function decideVisibleIssueWrite(): Promise<AuthorizationDecision> {
+      let visibilityResource: AuthorizationResource = input.resource;
+
+      // New-child assignment decisions identify the issue being influenced by
+      // parentIssueId. Resolve that parent into the same resource shape used by
+      // issue:read so child-create and assign share the visibility hook.
+      if (
+        input.resource.type === "issue" &&
+        !input.resource.issueId &&
+        input.resource.parentIssueId
+      ) {
+        const parent = await loadIssue(input.resource.parentIssueId);
+        if (!parent || parent.companyId !== companyId) {
+          return deny({
+            action: input.action,
+            reason: "deny_company_boundary",
+            explanation: "The issue write target is not visible in this company.",
+          });
+        }
+        visibilityResource = {
+          type: "issue",
+          companyId: parent.companyId,
+          issueId: parent.id,
+          projectId: parent.projectId,
+          parentIssueId: parent.parentId,
+          assigneeAgentId: parent.assigneeAgentId,
+          assigneeUserId: parent.assigneeUserId,
+          originKind: parent.originKind,
+          originId: parent.originId,
+          status: parent.status,
+        };
+      }
+
+      const visibilityDecision = visibilityResource.type === "issue" && visibilityResource.issueId
+        ? await decideBase({
+            actor: input.actor,
+            action: "issue:read",
+            resource: visibilityResource,
+            scope: input.scope,
+          })
+        : await decideBase({
+            actor: input.actor,
+            action: "company_scope:read",
+            resource: { type: "company", companyId },
+            scope: input.scope,
+          });
+
+      if (!visibilityDecision.allowed) {
+        return {
+          ...visibilityDecision,
+          action: input.action,
+          explanation: `Issue write denied because the target is not visible: ${visibilityDecision.explanation}`,
+        };
+      }
+
+      return allow({
+        action: input.action,
+        reason: "allow_visible_issue_write",
+        explanation: "Allowed by the shared default-open visible-issue write rule.",
+      });
+    }
 
     async function decideWithTaskAssignmentGrants(
       principalType: PrincipalType,
@@ -1467,13 +1856,18 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
-      // cloud_tenant actors are company-scoped by contract and must never be
-      // elevated — not even via stale instance_admin rows left behind by
-      // deployments that ran the pre-hardening cloud_tenant path.
+      // MCP grants always use their explicitly consented company membership,
+      // even when the consenting person is an instance administrator.
+      // A cloud_tenant actor's computed `isInstanceAdmin` flag is trusted: it
+      // can only be set by the attested trusted-header resolver (stack owner +
+      // `enableOwnerInstanceAdmin`). The `instance_user_roles` DB lookup stays
+      // excluded for cloud_tenant actors, so a stale or hand-inserted
+      // instance_admin row left behind by deployments that ran the
+      // pre-hardening cloud_tenant path still elevates nothing.
       if (
-        !input.actor.ignoreInstanceAdmin &&
-        input.actor.source !== "cloud_tenant" &&
-        (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
+        !input.actor.ignoreInstanceAdmin && input.actor.source !== "mcp_oauth" &&
+        (input.actor.isInstanceAdmin ||
+          (input.actor.source !== "cloud_tenant" && await isInstanceAdmin(input.actor.userId)))
       ) {
         return allow({
           action: input.action,
@@ -1492,6 +1886,7 @@ export function authorizationService(db: Db) {
           if (
             input.action === "agent:read" ||
             input.action === "company_scope:read" ||
+            input.action === "decision_queue:read" ||
             input.action === "issue:read" ||
             input.action === "project:read"
           ) {
@@ -1502,7 +1897,12 @@ export function authorizationService(db: Db) {
             });
           }
           if (
-            (input.action === "issue:comment" || input.action === "issue:mutate") &&
+            (
+              input.action === "issue:comment" ||
+              input.action === "issue:mutate" ||
+              input.action === "decision_queue:manage" ||
+              input.action === "decision_triage:manage"
+            ) &&
             membership.membershipRole !== "viewer"
           ) {
             return allow({
@@ -1544,7 +1944,7 @@ export function authorizationService(db: Db) {
       if (input.action === "agent_config:read") {
         return decideWithAgentConfigReadGrant("user", input.actor.userId);
       }
-      if (input.action === "agent_config:update") {
+      if (input.action === "agent_config:update" || input.action === "agent_instructions:update") {
         return decideWithProtectedChangeGrants("user", input.actor.userId, {
           direct: "agents:configure",
           suggest: "agents:suggest-changes",
@@ -1557,19 +1957,63 @@ export function authorizationService(db: Db) {
         });
       }
       if (!permissionKey) {
+        if (input.action === "issue:comment" || input.action === "issue:mutate") {
+          if (
+            input.resource.type !== "issue" ||
+            !input.resource.issueId ||
+            typeof input.resource.status !== "string" ||
+            input.resource.assigneeAgentId === undefined ||
+            input.resource.assigneeUserId === undefined
+          ) {
+            return deny({
+              action: input.action,
+              reason: "deny_unsupported_action",
+              explanation: `No board permission mapping exists for ${input.action}.`,
+            });
+          }
+          const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+          if (membership && membership.membershipRole !== "viewer") {
+            return allow({
+              action: input.action,
+              reason: "allow_simple_company_member",
+              explanation: "Allowed by standard same-company board membership issue mutation.",
+            });
+          }
+          if (membership) {
+            return deny({
+              action: input.action,
+              reason: "deny_missing_grant",
+              explanation: `Viewer membership does not grant ${input.action}.`,
+            });
+          }
+          return deny({
+            action: input.action,
+            reason: "deny_missing_membership",
+            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+          });
+        }
         if (
           input.action === "agent:read" ||
+          input.action === "agent:wake" ||
           input.action === "company_scope:read" ||
+          input.action === "decision_queue:manage" ||
+          input.action === "decision_queue:read" ||
+          input.action === "decision_triage:manage" ||
           input.action === "issue:read" ||
           input.action === "project:read" ||
           input.action === "runtime:manage" ||
-          input.action === "secrets:read"
+          input.action === "secrets:read" ||
+          input.action === "secrets:propose"
         ) {
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           // Mirroring the tasks:assign carve-out above, viewers keep the
           // read-only visibility actions but not the privileged ones.
           const requiresNonViewer =
-            input.action === "runtime:manage" || input.action === "secrets:read";
+            input.action === "agent:wake" ||
+            input.action === "runtime:manage" ||
+            input.action === "secrets:read" ||
+            input.action === "decision_queue:manage" ||
+            input.action === "decision_triage:manage";
           if (membership && (!requiresNonViewer || membership.membershipRole !== "viewer")) {
             return allow({
               action: input.action,
@@ -1647,7 +2091,7 @@ export function authorizationService(db: Db) {
       if (skillTestDecision) return skillTestDecision;
     }
 
-    if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "task_bridge") {
+    if (input.actor.keyScope?.kind === "task_bridge") {
       const keyId = input.actor.keyId ?? null;
       if (!keyId) {
         return deny({
@@ -1666,16 +2110,27 @@ export function authorizationService(db: Db) {
       if (taskBridgeDecision) return taskBridgeDecision;
     }
 
-    const lowTrustDecision = await decideLowTrustAccess({
-      actorAgentId,
-      action: input.action,
+    const trustResolution = await resolveActorTrust({
+      actorAgent,
+      actor: input.actor,
+      companyId,
       resource: input.resource,
-      resolution: await resolveActorTrust({
-        actorAgent,
+    });
+    const directParentReportTarget =
+      input.action === "issue:comment" &&
+      await isDirectParentReportTarget({
         actor: input.actor,
+        actorAgentId,
         companyId,
         resource: input.resource,
-      }),
+      });
+    const lowTrustDecision = await decideLowTrustAccess({
+      actorAgentId,
+      actor: input.actor,
+      action: input.action,
+      resource: input.resource,
+      resolution: trustResolution,
+      directParentReportTarget,
     });
     if (lowTrustDecision) {
       if (!lowTrustDecision.allowed) return lowTrustDecision;
@@ -1683,28 +2138,210 @@ export function authorizationService(db: Db) {
         input.action === "agent:read" ||
         input.action === "agent:wake" ||
         input.action === "company_scope:read" ||
+        input.action === "decision_queue:read" ||
         input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
-        input.action === "secrets:read"
+        input.action === "secrets:read" ||
+        input.action === "secrets:propose"
       ) {
         return lowTrustDecision;
       }
     }
 
+    const visibleIssueWriteDecision =
+      trustResolution.kind === "standard" &&
+      (input.action === "issue:comment" || input.action === "issue:mutate")
+        ? await decideVisibleIssueWrite()
+        : null;
+    if (visibleIssueWriteDecision && !visibleIssueWriteDecision.allowed) {
+      return visibleIssueWriteDecision;
+    }
+
+    if (
+      trustResolution.kind === "standard" &&
+      input.action === "issue:comment" &&
+      directParentReportTarget
+    ) {
+      return allow({
+        action: input.action,
+        reason: "allow_direct_parent_report",
+        explanation: "Allowed because the target is the current run issue's direct parent under the standard trust preset.",
+      });
+    }
+
+
+    if (input.action === "inbox:manage") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active in the target company.",
+        });
+      }
+      const responsibleUserId = input.actor.onBehalfOfUserId?.trim() || null;
+      const explicitTargetUserId = typeof input.scope?.userId === "string"
+        ? input.scope.userId.trim() || null
+        : null;
+      const targetUserId = explicitTargetUserId ?? responsibleUserId;
+      if (!targetUserId) {
+        return deny({
+          action: input.action,
+          reason: "inbox_target_user_unresolved",
+          explanation: "Inbox target user could not be resolved from the request or responsible-user context.",
+        });
+      }
+
+      const targetSnapshot = await getResponsibleUserSnapshot({
+        actor: input.actor,
+        companyId,
+        userId: targetUserId,
+      });
+      if (!targetSnapshot.userExists || !targetSnapshot.activeMembership) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: `Inbox target user ${targetUserId} is not an active member of company ${companyId}.`,
+        });
+      }
+
+      const policy = await db
+        .select({
+          mode: userInboxAgentPolicies.mode,
+          allowedAgentIds: userInboxAgentPolicies.allowedAgentIds,
+        })
+        .from(userInboxAgentPolicies)
+        .where(
+          and(
+            eq(userInboxAgentPolicies.companyId, companyId),
+            eq(userInboxAgentPolicies.userId, targetUserId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (targetUserId !== responsibleUserId) {
+        // A scoped grant remains an administrative override, including over a
+        // disabled user policy. Otherwise, a materialized target-user policy is
+        // explicit consent for agents selected in the profile control. The
+        // implicit default-open policy remains responsible-user-only so an
+        // absent row never becomes a company-wide cross-user grant.
+        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
+        if (grant && grant.scope?.responsibleUserOnly !== true &&
+            (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+          return allow({
+            action: input.action,
+            reason: "allow_explicit_grant",
+            explanation: "Allowed by explicit grant inbox:manage.",
+            inboxPolicyMode: "grant_override",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+
+        if (policy?.mode === "disabled") {
+          return deny({
+            action: input.action,
+            reason: "inbox_management_disabled",
+            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          });
+        }
+        if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
+          return deny({
+            action: input.action,
+            reason: "inbox_agent_not_allowed",
+            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          });
+        }
+        if (policy?.mode === "open" || policy?.mode === "allowlist") {
+          return allow({
+            action: input.action,
+            reason: "allow_user_inbox_policy",
+            inboxPolicyMode: policy.mode,
+            explanation: policy.mode === "allowlist"
+              ? "Allowed by the target user's inbox agent allowlist."
+              : "Allowed by the target user's saved open inbox policy.",
+          });
+        }
+
+        if (grant) {
+          return deny({
+            action: input.action,
+            reason: "deny_scope",
+            explanation: "Permission inbox:manage does not cover the requested user.",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing permission: inbox:manage.",
+        });
+      }
+
+      if (policy?.mode === "disabled") {
+        return deny({
+          action: input.action,
+          reason: "inbox_management_disabled",
+          explanation: `Inbox management is disabled for user ${targetUserId}.`,
+        });
+      }
+      if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
+        return deny({
+          action: input.action,
+          reason: "inbox_agent_not_allowed",
+          explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+        });
+      }
+
+      return allow({
+        action: input.action,
+        reason: "allow_self",
+        inboxPolicyMode: policy?.mode ?? "open",
+        explanation: policy?.mode === "allowlist"
+          ? "Allowed by the responsible user's inbox agent allowlist."
+          : "Allowed by the responsible user's default-open inbox policy.",
+      });
+    }
+
     if (
       input.action === "agent:read" ||
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:read" ||
       input.action === "issue:read" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return allow({
         action: input.action,
         reason: "allow_company_agent",
         explanation: "Allowed by standard same-company agent visibility.",
+      });
+    }
+
+    if (input.action === "decision_queue:manage" || input.action === "decision_triage:manage") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active in the target company.",
+        });
+      }
+      return allow({
+        action: input.action,
+        reason: "allow_company_agent",
+        explanation: "Allowed for an active standard-scope company agent.",
       });
     }
 
@@ -1739,10 +2376,11 @@ export function authorizationService(db: Db) {
         if (grantDecision.allowed) return grantDecision;
         return denyRestrictedAssignmentPolicy(policyEffect);
       }
+      if (trustResolution.kind === "standard") return decideVisibleIssueWrite();
       return allow({
         action: input.action,
         reason: "allow_simple_company_member",
-        explanation: "Allowed by simple mode company-wide task assignment default.",
+        explanation: "Allowed by the existing bounded task assignment rule.",
       });
     }
 
@@ -1775,6 +2413,7 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
     if (
       input.action === "agent_config:update" &&
@@ -1798,6 +2437,19 @@ export function authorizationService(db: Db) {
         });
       }
       return decideWithAgentConfigReadGrant("agent", actorAgentId);
+    }
+
+    if (input.action === "agent_instructions:update") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status) || !input.actor.onBehalfOfUserId) {
+        return deny({ action: input.action, reason: "deny_missing_membership", explanation: "Instruction edits require an active agent and a responsible user." });
+      }
+      // Explicit configure/suggest restrictions still govern content changes.
+      // Only self edits may fall back to the responsible user's target access.
+      const restricted = await decideWithProtectedChangeGrants("agent", actorAgentId, {
+        direct: "agents:configure", suggest: "agents:suggest-changes",
+      });
+      if (restricted.reason !== "deny_no_grant" || input.resource.type !== "agent" || input.resource.agentId !== actorAgentId) return restricted;
+      return allow({ action: input.action, reason: "allow_self", explanation: "Own instruction content edit, subject to the responsible user's target edit access." });
     }
 
     if (input.action === "agent_config:update") {
@@ -1826,11 +2478,19 @@ export function authorizationService(db: Db) {
       if (grantDecision.allowed) return grantDecision;
     }
 
-    if (
-      (input.action === "agents:create" ||
-        input.action === "tasks:manage_active_checkouts") &&
-      canCreateAgentsLegacy(actorAgent)
-    ) {
+    if (input.action === "agents:create" && canCreateAgentsLegacy(actorAgent)) {
+      return allow({
+        action: input.action,
+        reason: "allow_legacy_agent_creator",
+        explanation: "Allowed by legacy agent creator authority.",
+      });
+    }
+
+    // Active-checkout management deliberately does not ride on
+    // canCreateAgents: that flag is default-on for standard-trust agents, and
+    // coupling would let any peer write over another agent's checked-out
+    // issue. CEOs, explicit grants, and the manager chain remain the paths.
+    if (input.action === "tasks:manage_active_checkouts" && actorAgent.role === "ceo") {
       return allow({
         action: input.action,
         reason: "allow_legacy_agent_creator",
@@ -1870,7 +2530,12 @@ export function authorizationService(db: Db) {
     agentDecision: AuthorizationDecision,
   ): Promise<AuthorizationDecision> {
     const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
-    if (input.actor.type !== "agent" || !responsibleUserId || !agentDecision.allowed) {
+    if (
+      input.actor.type !== "agent" ||
+      input.action === "inbox:manage" ||
+      !responsibleUserId ||
+      !agentDecision.allowed
+    ) {
       return agentDecision;
     }
 
@@ -1951,7 +2616,7 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return input.action !== "agent_instructions:update" && responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
   async function decide(input: {
@@ -1961,11 +2626,188 @@ export function authorizationService(db: Db) {
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
     const agentDecision = await decideBase(input);
-    return applyResponsibleUserIntersection(input, agentDecision);
+    const intersectedDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    if (
+      input.action === "project:read"
+      && input.resource.type === "project"
+      && input.resource.projectId
+      && intersectedDecision.allowed
+      && intersectedDecision.reason !== "allow_instance_admin"
+      && intersectedDecision.reason !== "allow_local_board"
+      && issuePrivacyMode() !== "off"
+    ) {
+      const project = await db
+        .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
+        .from(projects)
+        .where(and(eq(projects.id, input.resource.projectId), eq(projects.companyId, input.resource.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (project && !(await canActorReadProjectPrivacy(db, input.actor, project))) {
+        const denied = deny({
+          action: input.action,
+          reason: "deny_project_private",
+          explanation: "Project is private and the actor is not an access member.",
+        });
+        logger.warn({
+          authzMode: issuePrivacyMode(),
+          action: input.action,
+          companyId: project.companyId,
+          projectId: project.id,
+          actorType: input.actor.type,
+          actorUserId: input.actor.type === "board" ? input.actor.userId ?? null : null,
+          actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
+          reason: denied.reason,
+        }, "project privacy would deny read");
+        return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+      }
+    }
+    if (
+      input.action !== "issue:read"
+      || input.resource.type !== "issue"
+      || !input.resource.issueId
+      || !intersectedDecision.allowed
+      || intersectedDecision.reason === "allow_instance_admin"
+      || intersectedDecision.reason === "allow_local_board"
+      || issuePrivacyMode() === "off"
+    ) return intersectedDecision;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        visibility: issues.visibility,
+        privacyRootIssueId: issues.privacyRootIssueId,
+        responsibleUserId: issues.responsibleUserId,
+        createdByUserId: issues.createdByUserId,
+        assigneeUserId: issues.assigneeUserId,
+        assigneeAgentId: issues.assigneeAgentId,
+        projectId: issues.projectId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.resource.issueId), eq(issues.companyId, input.resource.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || await canActorReadIssuePrivacy(db, input.actor, issue)) return intersectedDecision;
+
+    const denied = deny({
+      action: input.action,
+      reason: "deny_issue_private",
+      explanation: "Issue is private and the actor is not an implicit principal or active grantee.",
+    });
+    logger.warn({
+      authzMode: issuePrivacyMode(),
+      action: input.action,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      privacyRootIssueId: issue.privacyRootIssueId,
+      actorType: input.actor.type,
+      actorUserId: input.actor.type === "board" ? input.actor.userId ?? null : null,
+      actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
+      reason: denied.reason,
+    }, "issue privacy would deny read");
+    return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+  }
+
+  // A candidate filter only: project policies and responsible-user grants are
+  // still evaluated by decide(). Project policies can contribute an additional
+  // root/project scope, so the query must also retain projects with such policy.
+  async function projectDiscoveryCandidateIds(actor: AuthorizationActor, companyId: string): Promise<string[] | null> {
+    if (actor.type !== "agent" || !actor.agentId || actor.keyScope) return null;
+    const agent = await loadAgent(actor.agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const run = await loadRunPolicy(actor.runId, companyId, agent.id);
+    const resolution = resolveCoreTrustPreset({ companyId, agent, run });
+    // A project can supply a missing boundary; never prefilter that case.
+    if (resolution.kind !== "low_trust_review") return null;
+    const ids = new Set(resolution.boundary.projectIds ?? []);
+    if (resolution.boundary.rootIssueId) {
+      const root = await loadIssue(resolution.boundary.rootIssueId);
+      if (root?.companyId === companyId && root.projectId) ids.add(root.projectId);
+    }
+    return [...ids];
   }
 
   return {
     decide,
+    projectDiscoveryCandidateIds,
     decidePrincipalGrant,
   };
+}
+
+/** A workspace can contain several tasks. Reading files/operations requires
+ * access to every task bound to it, not just the task that originally made it. */
+export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  const issueCondition = await issueReadSqlCondition(db, actor);
+  const projectCondition = await projectReadSqlCondition(db, actor);
+  return sql<boolean>`(
+    (${executionWorkspaces.projectId} is null or exists (
+      select 1 from ${projects} where ${projects.id} = ${executionWorkspaces.projectId}
+        and ${projects.companyId} = ${executionWorkspaces.companyId} and ${projectCondition}))
+    and not exists (select 1 from jsonb_object_keys(coalesce(${executionWorkspaces.metadata}->'_issuePrivacySources', '{}'::jsonb)) source(id)
+      where not exists (select 1 from ${issues} where ${issues.id}::text = source.id
+        and ${issues.companyId} = ${executionWorkspaces.companyId} and ${issueCondition}))
+    and not exists (select 1 from ${issues}
+      where ${issues.companyId} = ${executionWorkspaces.companyId}
+        and (${issues.executionWorkspaceId} = ${executionWorkspaces.id} or ${issues.id} = ${executionWorkspaces.sourceIssueId})
+        and not ${issueCondition})
+  )`;
+}
+
+/** An approval may contain task-derived payload; every linked task must be readable. */
+export async function approvalReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  const readable = await issueReadSqlCondition(db, actor);
+  return sql<boolean>`not exists (
+    select 1 from (values (${approvals.payload}->>'issueId'), (${approvals.payload}->>'sourceIssueId')) claimed(id)
+      where claimed.id is not null and not exists (
+        select 1 from ${issues} where ${issues.id}::text = claimed.id and ${issues.companyId} = ${approvals.companyId})
+  ) and not exists (
+    select 1 from ${issues} where ${issues.companyId} = ${approvals.companyId}
+      and (${issues.id}::text = ${approvals.payload}->>'issueId'
+        or ${issues.id}::text = ${approvals.payload}->>'sourceIssueId'
+        or exists (select 1 from ${issueApprovals} ia where ia.approval_id = ${approvals.id}
+          and ia.company_id = ${approvals.companyId} and ia.issue_id = ${issues.id}))
+      and not (${readable})
+  )`;
+}
+
+export async function canActorReadApproval(db: Db | DbTransaction, actor: AuthorizationActor, approvalId: string) {
+  return db.select({ id: approvals.id }).from(approvals)
+    .where(and(eq(approvals.id, approvalId), await approvalReadSqlCondition(db, actor)))
+    .limit(1).then(rows => rows.length > 0);
+}
+
+export async function canActorReadExecutionWorkspace(db: Db, actor: AuthorizationActor, id: string) {
+  return db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.id, id), await executionWorkspaceReadSqlCondition(db, actor)))
+    .limit(1).then(rows => rows.length > 0);
+}
+
+/** Recheck the external audience immediately before publishing task-derived content. */
+export async function canPublishIssueToChatAudience(
+  tx: Db | DbTransaction,
+  publication: { issueId: string; companyId: string; conversationId: string; endpointId: string },
+): Promise<boolean> {
+    const [privacyIssue] = await tx.select().from(issues)
+      .where(and(eq(issues.id, publication.issueId), eq(issues.companyId, publication.companyId)));
+    if (!privacyIssue) return false;
+    if (!(await canActorReadIssuePrivacy(tx, { type: "none" }, privacyIssue))) {
+      const [conversation] = await tx.select().from(chatConversations).where(and(
+        eq(chatConversations.id, publication.conversationId), eq(chatConversations.companyId, publication.companyId),
+        eq(chatConversations.endpointId, publication.endpointId)));
+      // Shared channels have no bounded, authenticated recipient set. Private
+      // output may leave only through a DM whose known recipients still qualify.
+      if (!conversation?.isDirectMessage) return false;
+      const recipients = await tx.selectDistinct({ principalId: chatDeliveries.principalId }).from(chatDeliveries)
+        .where(and(eq(chatDeliveries.conversationId, conversation.id), eq(chatDeliveries.companyId, publication.companyId),
+          inArray(chatDeliveries.eventKind, ["message", "mention"])));
+      if (!recipients.length || recipients.some(recipient => !recipient.principalId)) return false;
+      for (const recipient of recipients) {
+        const [link] = await tx.select().from(chatIdentityLinks).where(and(
+          eq(chatIdentityLinks.companyId, publication.companyId), eq(chatIdentityLinks.endpointId, publication.endpointId),
+          eq(chatIdentityLinks.principalId, recipient.principalId!), eq(chatIdentityLinks.status, "linked"), isNull(chatIdentityLinks.revokedAt)));
+        if (!link?.paperclipUserId) return false;
+        const allowed = await authorizationService(tx).decide({ actor: { type: "board", userId: link.paperclipUserId, source: "session", ignoreInstanceAdmin: true },
+          action: "issue:read", resource: { type: "issue", companyId: publication.companyId, issueId: publication.issueId } });
+        if (!allowed.allowed) return false;
+      }
+    }
+  return true;
 }

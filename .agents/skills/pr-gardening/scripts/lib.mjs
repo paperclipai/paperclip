@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 export const GREEN_CHECK_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 export const GREEN_STATUS_STATES = new Set(["SUCCESS"]);
 export const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const GH_JSON_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export function parseArgs(argv, defaults = {}) {
   const args = { ...defaults };
@@ -33,8 +34,31 @@ export function writeJson(path, value) {
 }
 
 export function ghJson(args) {
-  const output = execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-  return JSON.parse(output);
+  const result = spawnSync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: GH_JSON_MAX_BUFFER_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  // Surface gh diagnostics (warnings, deprecation/auth notices, error output)
+  // on both success and failure — spawnSync captures stderr in every case.
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const error = new Error(`gh ${args.join(" ")} exited with status ${result.status}`);
+    error.stderr = result.stderr;
+    error.status = result.status;
+    throw error;
+  }
+  return JSON.parse(result.stdout);
+}
+
+export function isMissingPullRequestError(error) {
+  const detail = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+  // Scope to the exact signals gh emits for a deleted/nonexistent PR: the GraphQL
+  // "Could not resolve to a PullRequest" message and REST "Not Found (HTTP 404)".
+  // A bare "Not Found" would over-match unrelated failures (e.g. "repository not
+  // found"), so we require the HTTP 404 marker for the REST case.
+  return /Could not resolve to a PullRequest|HTTP 404/i.test(detail);
 }
 
 export function normalizeRepository(value) {
@@ -49,6 +73,37 @@ export function repositoryFromGh() {
 
 export function prUrl(repository, number) {
   return `https://github.com/${repository}/pull/${number}`;
+}
+
+export function resolveAuthorAllowlist(options, getGhJson) {
+  if (options.include_community) return null;
+  if (options.authors === true) throw new Error("--authors requires a comma-separated list of GitHub logins");
+  // Default to the authenticated gh identity: every PR this Paperclip instance
+  // opens is authored by that login, so it is the scope boundary that excludes
+  // community contributions without maintaining a separate roster.
+  const raw = options.authors ?? getGhJson(["api", "user"]).login;
+  const authors = String(raw)
+    .split(",")
+    .map((login) => login.trim().toLowerCase())
+    .filter(Boolean);
+  if (authors.length === 0) throw new Error("--authors requires at least one GitHub login");
+  return authors;
+}
+
+export function summarizePullRequestBody(body) {
+  const text = String(body ?? "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replaceAll("\r", "");
+  for (const block of text.split(/\n\s*\n/)) {
+    const line = block
+      .split("\n")
+      .map((entry) => entry.replace(/^[\s>]*(?:[-*]\s+)?/, "").trim())
+      .filter((entry) => entry && !entry.startsWith("#"))
+      .join(" ");
+    if (!line) continue;
+    return line.length > 280 ? `${line.slice(0, 277)}…` : line;
+  }
+  return null;
 }
 
 export function pullRequestIdentity(value) {

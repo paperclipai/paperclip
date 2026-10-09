@@ -15,7 +15,7 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 | Import | Purpose |
 |--------|--------|
 | `@paperclipai/plugin-sdk` | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers |
-| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, `useHostNavigation`, slot prop types |
+| `@paperclipai/plugin-sdk/ui` | UI entry: hooks, host navigation, HTTP-safe clipboard copy, shared components, and slot prop types |
 | `@paperclipai/plugin-sdk/ui/hooks` | Hooks only |
 | `@paperclipai/plugin-sdk/ui/types` | UI types and slot prop interfaces |
 | `@paperclipai/plugin-sdk/testing` | `createTestHarness` for unit/integration tests |
@@ -214,6 +214,7 @@ Slot types describe where a component mounts. Most values also exist as launcher
 | `settingsPage` | Global | — |
 | `dashboardWidget` | Global | — |
 | `globalToolbarButton` | Global | — |
+| `appShellOverlay` (slot only) | Signed-in application shell | — |
 | `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
 | `taskDetailView` | Entity | (task/issue context) |
 | `commentAnnotation` | Entity | `comment` |
@@ -334,6 +335,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issues.checkout` |
 | | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.comments.create_human_attributed` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
@@ -569,6 +571,26 @@ const summary = await ctx.issues.summaries.getOrchestration({
 });
 ```
 
+By default, `ctx.issues.createComment` attributes the comment to the calling
+plugin's own agent (`authorAgentId`). A plugin that relays a message a human
+actually sent — a chat gateway bridging Slack/Telegram replies back onto an
+issue, for example — can instead attribute the comment to that person by
+passing `actorUserId`:
+
+```ts
+await ctx.issues.createComment(issueId, replyText, companyId, {
+  actorUserId: verifiedSlackUser.paperclipUserId,
+});
+```
+
+This requires the `issue.comments.create_human_attributed` capability in
+addition to `issue.comments.create`. The host independently verifies that
+`actorUserId` is an active human member of the issue's company before
+applying the comment — a plugin cannot forge attribution to an arbitrary or
+inactive user id. When the issue has a non-terminal status and an assigned
+agent, a human-attributed comment also wakes that assignee, the same way a
+board user's comment does in the web app.
+
 Required capabilities:
 
 | API | Capability |
@@ -577,6 +599,8 @@ Required capabilities:
 | `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
 | `ctx.issues.getSubtree` | `issue.subtree.read` |
 | `ctx.issues.assertCheckoutOwner` | `issues.checkout` |
+| `ctx.issues.createComment` | `issue.comments.create` |
+| `ctx.issues.createComment` with `actorUserId` | `issue.comments.create` + `issue.comments.create_human_attributed` |
 | `ctx.issues.requestWakeup` / `requestWakeups` | `issues.wakeup` |
 | `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
 
@@ -740,6 +764,16 @@ The SSE connection targets `GET /api/plugins/:pluginId/bridge/stream/:channel?co
 The host provides selected shared UI components through `@paperclipai/plugin-sdk/ui`.
 Plugins can also use normal React components, their own CSS, or small design
 primitives inside the plugin package.
+
+Use `copyTextToClipboard` for every plugin copy action. The host selects the
+modern Clipboard API in secure contexts and a compatible fallback in plain-HTTP
+deployments.
+
+```tsx
+import { copyTextToClipboard } from "@paperclipai/plugin-sdk/ui";
+
+await copyTextToClipboard("text to copy");
+```
 
 Use the shared components when the plugin needs to look and behave like a native
 Paperclip surface:
@@ -1264,3 +1298,10 @@ const server = await startPluginDevServer({ rootDir: process.cwd() });
 Dev server endpoints:
 - `GET /__paperclip__/health` returns `{ ok, rootDir, uiDir }`
 - `GET /__paperclip__/events` streams `reload` SSE events on UI build changes
+
+### Persistent application shell contributions
+
+An `appShellOverlay` slot uses `ui.action.register` and the standard
+`PluginWidgetProps` context. It survives navigation and unmounts on account or
+company changes, sign-out and onboarding. Plugins own panel accessibility and
+request cleanup. See [the distribution and lifecycle contract](../../../doc/plugins/DISTRIBUTION-PLUGINS.md).

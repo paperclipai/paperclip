@@ -4,12 +4,14 @@ import {
   chooseOriginatingIssue,
   extractPullRequestNumber,
   ghJson,
+  isMissingPullRequestError,
   issueSummary,
   normalizeRepository,
   paperclipGet,
   parseArgs,
   prUrl,
   repositoryFromGh,
+  resolveAuthorAllowlist,
   writeJson,
 } from "./lib.mjs";
 
@@ -17,8 +19,11 @@ export async function findCandidates(options) {
   const getPaperclip = options.paperclip_get ?? paperclipGet;
   const getGhJson = options.gh_json ?? ghJson;
   const repository = normalizeRepository(options.repo ?? repositoryFromGh());
-  const days = Number(options.days ?? 30);
+  const authorAllowlist = resolveAuthorAllowlist(options, getGhJson);
+  const days = Number(options.days ?? 14);
   if (!Number.isInteger(days) || days < 1 || days > 999) throw new Error("--days must be an integer from 1 to 999");
+  const now = options.now ? new Date(options.now) : new Date();
+  const windowStartMs = now.getTime() - days * 24 * 60 * 60 * 1000;
 
   const apiUrl = options.api_url ?? process.env.PAPERCLIP_API_URL;
   const apiKey = options.api_key ?? process.env.PAPERCLIP_API_KEY;
@@ -29,9 +34,9 @@ export async function findCandidates(options) {
 
   const contains = `github.com/${repository}/pull`;
   const limit = 200;
+  const matchesPerIssue = 200;
   const issueMap = new Map();
   let offset = 0;
-  let truncated = false;
 
   while (true) {
     const query = new URLSearchParams({
@@ -41,15 +46,26 @@ export async function findCandidates(options) {
       updatedWithin: `${days}d`,
       limit: String(limit),
       offset: String(offset),
+      matchesPerIssue: String(matchesPerIssue),
     });
     const page = await getPaperclip(`/companies/${companyId}/search/extract?${query}`, { apiUrl, apiKey });
     for (const issue of page.results) issueMap.set(issue.issueId, issue);
-    truncated ||= page.results.some((issue) => issue.matchesTruncated);
     if (!page.hasMore) break;
     offset += limit;
     if (offset > 5000) throw new Error("Extract-search pagination exceeded the supported 5000 issue offset");
   }
-  if (truncated) throw new Error("Extract-search truncated one or more issue match sets; refusing an incomplete candidate report");
+  // Issues that hit the per-issue match cap (typically digest/QA issues that
+  // enumerate hundreds of PR URLs) lose mentions beyond the cap. That only
+  // weakens attribution for those issues, so record them and continue rather
+  // than refusing the whole run.
+  const truncatedIssues = [...issueMap.values()]
+    .filter((issue) => issue.matchesTruncated)
+    .map((issue) => ({ issueId: issue.issueId, identifier: issue.identifier, title: issue.title }));
+  if (truncatedIssues.length > 0) {
+    process.stderr.write(
+      `warning: ${truncatedIssues.length} issue(s) exceeded the ${matchesPerIssue}-match extract cap; PR mentions beyond the cap were not scanned: ${truncatedIssues.map((issue) => issue.identifier ?? issue.issueId).join(", ")}\n`,
+    );
+  }
 
   const pullRequests = new Map();
   for (const issue of issueMap.values()) {
@@ -89,21 +105,47 @@ export async function findCandidates(options) {
 
   const candidates = [];
   const closed = [];
+  const unavailable = [];
+  const community = [];
+  const stale = [];
   for (const entry of [...pullRequests.values()].sort((left, right) => left.number - right.number)) {
-    const pullRequest = getGhJson([
-      "pr",
-      "view",
-      String(entry.number),
-      "--repo",
-      repository,
-      "--json",
-      "number,url,title,state,isDraft,headRefOid,updatedAt",
-    ]);
+    let pullRequest;
+    try {
+      pullRequest = getGhJson([
+        "pr",
+        "view",
+        String(entry.number),
+        "--repo",
+        repository,
+        "--json",
+        "number,url,title,author,state,isDraft,headRefOid,updatedAt",
+      ]);
+    } catch (error) {
+      if (!isMissingPullRequestError(error)) throw error;
+      unavailable.push({
+        number: entry.number,
+        url: prUrl(repository, entry.number),
+        state: "unavailable",
+        reason: "GitHub could not resolve this pull request",
+      });
+      continue;
+    }
+    const author = pullRequest.author?.login ?? null;
+    if (authorAllowlist && !authorAllowlist.includes(author?.toLowerCase())) {
+      community.push({
+        number: entry.number,
+        url: prUrl(repository, entry.number),
+        author,
+        state: pullRequest.state.toLowerCase(),
+      });
+      continue;
+    }
     const sourceIssues = [...entry.issueMentions.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     const candidate = {
       number: pullRequest.number,
       url: pullRequest.url,
       title: pullRequest.title,
+      author,
       state: pullRequest.state.toLowerCase(),
       isDraft: pullRequest.isDraft,
       headSha: pullRequest.headRefOid,
@@ -111,8 +153,16 @@ export async function findCandidates(options) {
       sourceIssues,
       originatingIssue: chooseOriginatingIssue(sourceIssues, prUrl(repository, entry.number)),
     };
-    if (pullRequest.state === "OPEN") candidates.push(candidate);
-    else closed.push({ number: candidate.number, url: candidate.url, state: candidate.state });
+    if (pullRequest.state !== "OPEN") {
+      closed.push({ number: candidate.number, url: candidate.url, state: candidate.state });
+    } else if (new Date(pullRequest.updatedAt).getTime() < windowStartMs) {
+      // A recently active issue can mention a long-dormant PR (old digests,
+      // salvage discussions); gardening only drives PRs with activity inside
+      // the window.
+      stale.push({ number: candidate.number, url: candidate.url, author, updatedAt: pullRequest.updatedAt });
+    } else {
+      candidates.push(candidate);
+    }
   }
 
   return {
@@ -121,7 +171,7 @@ export async function findCandidates(options) {
     repository,
     windowDays: days,
     dryRun: Boolean(options.dry_run),
-    query: { contains, kind: "url", scope: "all", updatedWithin: `${days}d` },
+    query: { contains, kind: "url", scope: "all", updatedWithin: `${days}d`, authors: authorAllowlist },
     source: {
       issueCount: issueMap.size,
       mentionCount: [...pullRequests.values()].reduce(
@@ -131,7 +181,11 @@ export async function findCandidates(options) {
       distinctPullRequestCount: pullRequests.size,
       openPullRequestCount: candidates.length,
       droppedClosedPullRequests: closed,
-      truncated: false,
+      droppedUnavailablePullRequests: unavailable,
+      droppedCommunityPullRequests: community,
+      droppedStalePullRequests: stale,
+      truncated: truncatedIssues.length > 0,
+      truncatedIssues,
     },
     candidates,
   };

@@ -34,8 +34,8 @@ export function Identity({ name, avatarUrl, initials, size = "default", shape = 
       className={cn("inline-flex min-w-0 gap-1.5 items-center", size === "xs" && "gap-1", size === "lg" && "gap-2", className)}
       title={name}
     >
-      <Avatar size={size} shape={shape}>
-        {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
+      <Avatar size={size} shape={shape} aria-hidden="true">
+        {avatarUrl && <AvatarImage src={avatarUrl} alt="" />}
         <AvatarFallback>{displayInitials}</AvatarFallback>
       </Avatar>
       <span className={cn("truncate", textSize[size])}>{name}</span>

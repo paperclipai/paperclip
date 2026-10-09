@@ -346,6 +346,7 @@ const billerSpendRows: Array<{
 const financeBillerRows: FinanceByBiller[] = [
   {
     biller: "openai",
+    currency: "USD",
     debitCents: 74_200,
     creditCents: 12_000,
     netCents: 62_200,
@@ -355,6 +356,7 @@ const financeBillerRows: FinanceByBiller[] = [
   },
   {
     biller: "aws_bedrock",
+    currency: "USD",
     debitCents: 45_880,
     creditCents: 0,
     netCents: 45_880,
@@ -367,6 +369,7 @@ const financeBillerRows: FinanceByBiller[] = [
 const financeKindRows: FinanceByKind[] = [
   {
     eventKind: "inference_charge",
+    currency: "USD",
     debitCents: 49_820,
     creditCents: 0,
     netCents: 49_820,
@@ -376,6 +379,7 @@ const financeKindRows: FinanceByKind[] = [
   },
   {
     eventKind: "log_storage_charge",
+    currency: "USD",
     debitCents: 8_760,
     creditCents: 0,
     netCents: 8_760,
@@ -385,6 +389,7 @@ const financeKindRows: FinanceByKind[] = [
   },
   {
     eventKind: "provisioned_capacity_charge",
+    currency: "USD",
     debitCents: 42_900,
     creditCents: 0,
     netCents: 42_900,
@@ -394,6 +399,7 @@ const financeKindRows: FinanceByKind[] = [
   },
   {
     eventKind: "credit_refund",
+    currency: "USD",
     debitCents: 0,
     creditCents: 12_000,
     netCents: -12_000,
@@ -428,6 +434,7 @@ const financeTimelineRows: FinanceEvent[] = [
     amountCents: 40_000,
     currency: "USD",
     estimated: false,
+    idempotencyKey: null,
     externalInvoiceId: "INV-2026-04-OPENAI-1184",
     metadataJson: { paymentMethod: "corporate-card" },
     occurredAt: at(1_260),
@@ -457,6 +464,7 @@ const financeTimelineRows: FinanceEvent[] = [
     amountCents: 42_900,
     currency: "USD",
     estimated: true,
+    idempotencyKey: null,
     externalInvoiceId: "AWS-EST-7713",
     metadataJson: { purchaseOrder: "PO-STORYBOOK-APR" },
     occurredAt: at(420),
@@ -486,6 +494,7 @@ const financeTimelineRows: FinanceEvent[] = [
     amountCents: 8_760,
     currency: "USD",
     estimated: true,
+    idempotencyKey: null,
     externalInvoiceId: "CF-APR-2026-0091",
     metadataJson: null,
     occurredAt: at(210),
@@ -515,6 +524,7 @@ const financeTimelineRows: FinanceEvent[] = [
     amountCents: 12_000,
     currency: "USD",
     estimated: false,
+    idempotencyKey: null,
     externalInvoiceId: "CR-2026-04-OPENAI-041",
     metadataJson: null,
     occurredAt: at(64),

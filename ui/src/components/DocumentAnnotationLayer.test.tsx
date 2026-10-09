@@ -66,7 +66,7 @@ describe("DocumentAnnotationLayer", () => {
     vi.clearAllMocks();
   });
 
-  it("uses solid yellow backgrounds for annotation highlights in light and dark themes", async () => {
+  it("uses borderless token-driven overlay boxes for annotation highlight states", async () => {
     const body = document.createElement("div");
     body.textContent = "Annotated body text.";
     root = createRoot(container);
@@ -97,14 +97,16 @@ describe("DocumentAnnotationLayer", () => {
     expect(highlights).toHaveLength(4);
 
     for (const highlight of highlights) {
-      const backgroundClasses = Array.from(highlight.classList).filter((className) =>
-        /^(dark:|hover:|dark:hover:)?bg-yellow-\d+$/.test(className)
-        || /^(dark:|hover:|dark:hover:)?bg-yellow-\d+\//.test(className),
-      );
-      expect(backgroundClasses.some((className) => className.includes("/"))).toBe(false);
-      expect(backgroundClasses.some((className) => className.startsWith("bg-yellow-"))).toBe(true);
-      expect(backgroundClasses.some((className) => className.startsWith("dark:bg-yellow-"))).toBe(true);
+      expect(highlight.className).toBe("paperclip-doc-annotation-highlight absolute");
+      expect(highlight.className).not.toContain("outline");
+      expect(highlight.className).not.toContain("shadow");
     }
+    expect(highlights.find((highlight) => highlight.getAttribute("data-thread-id") === "focused")
+      ?.getAttribute("data-focused")).toBe("true");
+    expect(highlights.find((highlight) => highlight.getAttribute("data-thread-id") === "stale")
+      ?.getAttribute("data-anchor-state")).toBe("stale");
+    expect(highlights.find((highlight) => highlight.getAttribute("data-thread-id") === "resolved")
+      ?.getAttribute("data-status")).toBe("resolved");
   });
 
   it("does not render highlights for text clipped by folded document content", async () => {
@@ -241,7 +243,7 @@ describe("DocumentAnnotationLayer", () => {
     }
   });
 
-  it("uses native CSS highlights for visual paint when the browser supports them", async () => {
+  it("keeps native CSS highlight ranges synchronized while using the overlay for visual paint", async () => {
     const originalCss = globalThis.CSS;
     const originalHighlight = (globalThis as { Highlight?: unknown }).Highlight;
     const setHighlight = vi.fn();
@@ -284,7 +286,7 @@ describe("DocumentAnnotationLayer", () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
     });
 
-    expect(container.querySelector(".paperclip-doc-annotation-highlight")).toBeNull();
+    expect(container.querySelector(".paperclip-doc-annotation-highlight")).not.toBeNull();
     expect(container.querySelector(".paperclip-doc-annotation-hit-target")).not.toBeNull();
     const openHighlightCall = setHighlight.mock.calls.find(([name]) => name === "paperclip-doc-annotation-open");
     expect(openHighlightCall).toBeTruthy();

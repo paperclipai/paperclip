@@ -9,6 +9,10 @@ import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  filterLocalInboxArchivedIssues,
+  useLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
 import {
   buildInboxDismissedAtByKey,
@@ -174,6 +178,7 @@ export function useReadInboxItems() {
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
+  const locallyArchivedIssueIds = useLocalInboxArchiveIssueIds(companyId);
   const { dismissed: dismissedAlerts } = useDismissedInboxAlerts();
   const { dismissedAtByKey } = useInboxDismissals(companyId);
   const { data: session } = useQuery({
@@ -239,7 +244,10 @@ export function useInboxBadge(companyId: string | null | undefined) {
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
+  const mineIssues = useMemo(
+    () => getRecentTouchedIssues(filterLocalInboxArchivedIssues(companyId, mineIssuesRaw)),
+    [companyId, locallyArchivedIssueIds, mineIssuesRaw],
+  );
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   const { data: heartbeatRuns = [] } = useQuery({

@@ -12,10 +12,10 @@ import {
   updateRoutineTriggerSchema,
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
-import { validate } from "../middleware/validate.js";
+import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -68,6 +68,7 @@ export function routineRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "routine.document_annotation_remapped",
         entityType: "routine",
         entityId: routineId,
@@ -132,6 +133,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.revision_created",
       entityType: "routine",
       entityId: input.routineId,
@@ -168,6 +170,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.created",
       entityType: "routine",
       entityId: created.id,
@@ -259,6 +262,7 @@ export function routineRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "routine.document_annotation_thread_created",
         entityType: "routine",
         entityId: routine.id,
@@ -299,6 +303,7 @@ export function routineRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "routine.document_annotation_comment_added",
         entityType: "routine",
         entityId: routine.id,
@@ -337,6 +342,7 @@ export function routineRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: thread.status === "resolved"
           ? "routine.document_annotation_thread_resolved"
           : "routine.document_annotation_thread_reopened",
@@ -392,6 +398,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.updated",
       entityType: "routine",
       entityId: routine.id,
@@ -430,6 +437,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.revision_restored",
       entityType: "routine",
       entityId: routine.id,
@@ -472,6 +480,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.trigger_created",
       entityType: "routine_trigger",
       entityId: created.trigger.id,
@@ -512,10 +521,11 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "routine.trigger_updated",
-      entityType: "routine_trigger",
-      entityId: trigger.id,
-      details: { routineId: routine.id, kind: updated?.trigger.kind ?? trigger.kind },
+      agentApiKeyId: actor.agentApiKeyId,
+      action: req.body.archived === true ? "routine.trigger_removed" : req.body.archived === false ? "routine.trigger_restored" : req.body.setupPending === false ? "routine.trigger_setup_finished" : "routine.trigger_updated",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { triggerId: trigger.id, kind: updated?.trigger.kind ?? trigger.kind },
     });
     if (updated) {
       await logRoutineRevisionCreated(req, {
@@ -553,6 +563,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.trigger_deleted",
       entityType: "routine_trigger",
       entityId: trigger.id,
@@ -597,6 +608,7 @@ export function routineRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "routine.trigger_secret_rotated",
         entityType: "routine_trigger",
         entityId: trigger.id,
@@ -614,7 +626,7 @@ export function routineRoutes(
     },
   );
 
-  router.post("/routines/:id/run", validate(runRoutineSchema), async (req, res) => {
+  router.post("/routines/:id/run", validateIssueMutationBody(runRoutineSchema), async (req, res) => {
     const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
     if (!routine) {
       res.status(404).json({ error: "Routine not found" });
@@ -632,6 +644,7 @@ export function routineRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "routine.run_triggered",
       entityType: "routine_run",
       entityId: run.id,
@@ -641,12 +654,19 @@ export function routineRoutes(
   });
 
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
+    if (!req.is("application/json")) {
+      throw unsupportedMediaType("Send the webhook payload with Content-Type: application/json");
+    }
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      throw badRequest("Webhook payload must be a JSON object");
+    }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
+      firefliesSignatureHeader: req.header("x-hub-signature"),
       timestampHeader: req.header("x-paperclip-timestamp"),
-      idempotencyKey: req.header("idempotency-key"),
+      idempotencyKey: req.header("idempotency-key") ?? req.header("x-github-delivery"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,
     });

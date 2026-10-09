@@ -1,8 +1,12 @@
 import { z } from "zod";
 import {
+  CONNECTION_REQUEST_TOOL_DESCRIPTION,
+  CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
   addIssueCommentSchema,
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
+  connectionRequestInputSchema,
+  connectionsSearchInputSchema,
   createApprovalSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
@@ -19,7 +23,7 @@ import { formatErrorResponse, formatTextResponse } from "./format.js";
 export interface ToolDefinition {
   name: string;
   description: string;
-  schema: z.AnyZodObject;
+  schema: z.ZodObject;
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
@@ -51,26 +55,55 @@ function parseOptionalJson(raw: string | undefined | null): unknown {
   return JSON.parse(raw);
 }
 
-const companyIdOptional = z.string().uuid().optional().nullable();
-const agentIdOptional = z.string().uuid().optional().nullable();
+async function callRuntimeConnectionTool(
+  endpointEnv: "PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL" | "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
+  body: unknown,
+) {
+  const endpoint = process.env[endpointEnv]?.trim();
+  const token = process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN?.trim();
+  if (!endpoint || !token) {
+    throw new Error("Connection intent tools are available only inside an active Paperclip heartbeat run");
+  }
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const parsed = text ? JSON.parse(text) as unknown : null;
+  if (!response.ok) {
+    const message = parsed && typeof parsed === "object" && "error" in parsed
+      ? String((parsed as { error: unknown }).error)
+      : `Runtime connection tool failed with ${response.status}`;
+    throw new Error(message);
+  }
+  return parsed;
+}
+
+const companyIdOptional = z.string().guid().optional().nullable();
+const agentIdOptional = z.string().guid().optional().nullable();
 const issueIdSchema = z.string().min(1);
 const projectIdSchema = z.string().min(1);
-const goalIdSchema = z.string().uuid();
-const approvalIdSchema = z.string().uuid();
+const goalIdSchema = z.string().guid();
+const approvalIdSchema = z.string().guid();
 const documentKeySchema = z.string().trim().min(1).max(64);
 
 const listIssuesSchema = z.object({
   companyId: companyIdOptional,
   status: z.string().optional(),
-  projectId: z.string().uuid().optional(),
-  assigneeAgentId: z.string().uuid().optional(),
-  participantAgentId: z.string().uuid().optional(),
+  projectId: z.string().guid().optional(),
+  assigneeAgentId: z.string().guid().optional(),
+  participantAgentId: z.string().guid().optional(),
   assigneeUserId: z.string().optional(),
   touchedByUserId: z.string().optional(),
   inboxArchivedByUserId: z.string().optional(),
   unreadForUserId: z.string().optional(),
-  labelId: z.string().uuid().optional(),
-  executionWorkspaceId: z.string().uuid().optional(),
+  labelId: z.string().guid().optional(),
+  executionWorkspaceId: z.string().guid().optional(),
   originKind: z.string().optional(),
   originId: z.string().optional(),
   includeRoutineExecutions: z.boolean().optional(),
@@ -80,7 +113,7 @@ const listIssuesSchema = z.object({
 
 const listCommentsSchema = z.object({
   issueId: issueIdSchema,
-  after: z.string().uuid().optional(),
+  after: z.string().guid().optional(),
   order: z.enum(["asc", "desc"]).optional(),
   limit: z.number().int().positive().max(500).optional(),
 });
@@ -92,7 +125,7 @@ const upsertDocumentToolSchema = z.object({
   format: z.enum(["markdown"]).default("markdown"),
   body: z.string().max(524288),
   changeSummary: z.string().trim().max(500).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.string().guid().nullable().optional(),
 });
 
 const createIssueToolSchema = z.object({
@@ -116,8 +149,8 @@ const addCommentToolSchema = z.object({
 const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
-  sourceCommentId: z.string().uuid().nullable().optional(),
-  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceCommentId: z.string().guid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
@@ -127,8 +160,8 @@ const createSuggestTasksToolSchema = z.object({
 const createAskUserQuestionsToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
-  sourceCommentId: z.string().uuid().nullable().optional(),
-  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceCommentId: z.string().guid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
@@ -138,8 +171,8 @@ const createAskUserQuestionsToolSchema = z.object({
 const createRequestConfirmationToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
-  sourceCommentId: z.string().uuid().nullable().optional(),
-  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceCommentId: z.string().guid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
@@ -149,8 +182,8 @@ const createRequestConfirmationToolSchema = z.object({
 const createRequestCheckboxConfirmationToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
-  sourceCommentId: z.string().uuid().nullable().optional(),
-  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceCommentId: z.string().guid().nullable().optional(),
+  sourceRunId: z.string().guid().nullable().optional(),
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
@@ -176,7 +209,7 @@ const apiRequestSchema = z.object({
 
 const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
-  runtimeServiceId: z.string().uuid().optional().nullable(),
+  runtimeServiceId: z.string().guid().optional().nullable(),
   serviceIndex: z.number().int().nonnegative().optional().nullable(),
 });
 
@@ -187,7 +220,7 @@ const issueWorkspaceRuntimeControlSchema = z.object({
 
 const waitForIssueWorkspaceServiceSchema = z.object({
   issueId: issueIdSchema,
-  runtimeServiceId: z.string().uuid().optional().nullable(),
+  runtimeServiceId: z.string().guid().optional().nullable(),
   serviceName: z.string().min(1).optional().nullable(),
   timeoutSeconds: z.number().int().positive().max(300).optional(),
 });
@@ -237,6 +270,24 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
     makeTool(
+      "connections_search",
+      CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
+      connectionsSearchInputSchema,
+      async (input) => callRuntimeConnectionTool(
+        "PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL",
+        input,
+      ),
+    ),
+    makeTool(
+      "connection_request",
+      CONNECTION_REQUEST_TOOL_DESCRIPTION,
+      connectionRequestInputSchema,
+      async (input) => callRuntimeConnectionTool(
+        "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
+        input,
+      ),
+    ),
+    makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",
       z.object({}),
@@ -253,6 +304,12 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "List agents in a company",
       z.object({ companyId: companyIdOptional }),
       async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/agents`),
+    ),
+    makeTool(
+      "paperclipListSkills",
+      "List the company skill library (all installed skills, independent of which agents have them enabled)",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/skills`),
     ),
     makeTool(
       "paperclipGetAgent",
@@ -287,7 +344,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     makeTool(
       "paperclipGetHeartbeatContext",
       "Get compact heartbeat context for an issue",
-      z.object({ issueId: issueIdSchema, wakeCommentId: z.string().uuid().optional() }),
+      z.object({ issueId: issueIdSchema, wakeCommentId: z.string().guid().optional() }),
       async ({ issueId, wakeCommentId }) => {
         const qs = wakeCommentId ? `?wakeCommentId=${encodeURIComponent(wakeCommentId)}` : "";
         return client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/heartbeat-context${qs}`);
@@ -309,7 +366,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     makeTool(
       "paperclipGetComment",
       "Get a specific issue comment by id",
-      z.object({ issueId: issueIdSchema, commentId: z.string().uuid() }),
+      z.object({ issueId: issueIdSchema, commentId: z.string().guid() }),
       async ({ issueId, commentId }) =>
         client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/comments/${encodeURIComponent(commentId)}`),
     ),
@@ -558,7 +615,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       z.object({
         issueId: issueIdSchema,
         key: documentKeySchema,
-        revisionId: z.string().uuid(),
+        revisionId: z.string().guid(),
       }),
       async ({ issueId, key, revisionId }) =>
         client.requestJson(

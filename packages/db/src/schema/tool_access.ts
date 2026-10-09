@@ -4,16 +4,19 @@ import {
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   McpConnectionCredentialRef,
@@ -25,10 +28,18 @@ import type {
   ToolCatalogEntryKind,
   ToolCatalogEntryStatus,
   ToolConnectionHealthStatus,
+  ToolConnectionAuthKind,
+  ToolConnectionCredentialSource,
   ToolConnectionKind,
+  ToolConnectionCredentialPolicy,
+  ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionInstallTargetType,
   ToolConnectionStatus,
   ToolConnectionTransport,
+  ConnectionGrantKind,
+  ConnectionGrantMemberSubjectType,
+  ConnectionGrantStatus,
   ToolCredentialSecretRef,
   ToolInvocationApprovalState,
   ToolInvocationStatus,
@@ -53,6 +64,8 @@ import type {
   ToolRiskLevel,
   ToolRuntimeKind,
   ToolRuntimeSlotStatus,
+  VercelConnectCredentialReference,
+  VercelConnectGrantReference,
 } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { approvals } from "./approvals.js";
@@ -106,10 +119,18 @@ export const toolConnections = pgTable(
     // and the connections are gone by the time this constraint is checked.
     applicationId: uuid("application_id").notNull().references(() => toolApplications.id, { onDelete: "no action" }),
     name: text("name").notNull(),
+    uid: text("uid").notNull(),
     connectionKind: text("connection_kind").$type<ToolConnectionKind>().notNull().default("managed"),
+    connectionPurpose: text("connection_purpose").$type<ToolConnectionPurpose>().notNull().default("tool"),
+    ownership: text("ownership").$type<ToolConnectionOwnership>().notNull().default("customer"),
     transport: text("transport").$type<ToolConnectionTransport>().notNull(),
+    authKind: text("auth_kind").$type<ToolConnectionAuthKind>().notNull().default("none"),
+    credentialSource: text("credential_source").$type<ToolConnectionCredentialSource>().notNull().default("paperclip_vault"),
+    externalCredential: jsonb("external_credential").$type<VercelConnectCredentialReference>(),
+    credentialPolicy: text("credential_policy").$type<ToolConnectionCredentialPolicy>().notNull().default("shared"),
     status: text("status").$type<ToolConnectionStatus>().notNull().default("draft"),
     enabled: boolean("enabled").notNull().default(false),
+    agentInstructions: jsonb("agent_instructions").$type<ConnectionAgentInstructions>(),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     transportConfig: jsonb("transport_config").$type<Record<string, unknown>>().notNull().default({}),
     credentialRefs: jsonb("credential_refs").$type<McpConnectionCredentialRef[]>().notNull().default([]),
@@ -126,10 +147,166 @@ export const toolConnections = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
+    check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
+    check("tool_connections_channel_transport_check", sql`(
+      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'runtime_auth'))
+      or
+      (${table.connectionPurpose} = 'channel' and (${table.transport} = 'chat_sdk' or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
+      or
+      (${table.connectionPurpose} = 'ai' and ${table.transport} = 'runtime_auth')
+    )`),
+    check("tool_connections_auth_kind_check", sql`${table.authKind} in ('oauth', 'api_key', 'none')`),
+    check("tool_connections_credential_source_check", sql`${table.credentialSource} in ('paperclip_vault', 'vercel_connect')`),
+    check("tool_connections_credential_source_one_of_check", sql`(
+      (${table.credentialSource} = 'paperclip_vault' and ${table.externalCredential} is null)
+      or
+      (${table.credentialSource} = 'vercel_connect' and ${table.externalCredential} is not null and jsonb_array_length(${table.credentialRefs}) = 0 and jsonb_array_length(${table.credentialSecretRefs}) = 0)
+    )`),
+    check("tool_connections_credential_policy_check", sql`${table.credentialPolicy} in ('shared', 'per_user', 'per_user_with_fallback', 'per_agent')`),
     index("tool_connections_company_idx").on(table.companyId),
     index("tool_connections_application_idx").on(table.applicationId),
     index("tool_connections_company_enabled_idx").on(table.companyId, table.enabled),
-    uniqueIndex("tool_connections_company_name_uq").on(table.companyId, table.name),
+    uniqueIndex("tool_connections_company_uid_uq").on(table.companyId, table.uid),
+    unique("tool_connections_company_id_uq").on(table.companyId, table.id),
+  ],
+);
+
+export const connectionGrants = pgTable(
+  "connection_grants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull(),
+    kind: text("kind").$type<ConnectionGrantKind>().notNull(),
+    subjectUserId: text("subject_user_id"),
+    subjectAgentId: uuid("subject_agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    providerTenant: jsonb("provider_tenant").$type<{
+      name?: string;
+      externalId?: string;
+      oauth?: {
+        strategy?: string;
+        accessTokenExpiresAt?: string | null;
+        scopes?: string[];
+        /**
+         * Whether `scopes` is what the provider asserted, or only what we requested.
+         * A provider may omit `scope` from the token response, and RFC 6749 §5.1 reads that
+         * omission as "the grant matches the request" — but a provider that over-grants and
+         * omits it turns our own request into a false record of the grant.
+         */
+        scopeSource?: "provider" | "requested_fallback";
+        /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+        unrequestedScopes?: string[];
+        /**
+         * The scopes the authorization URL sent for *this* grant. A refresh carries no fresh
+         * request, so this is the baseline it judges the provider's response against. It is
+         * per-grant because two users can authorize the same connection with different scopes.
+         */
+        requestedScopes?: string[];
+        tokenType?: string;
+        refreshedAt?: string;
+        refreshTokenExpiresAt?: string;
+        refreshLease?: {
+          id?: string;
+          expiresAt?: string;
+        };
+      };
+      slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
+      github?: {
+        userId: string;
+        login: string;
+        avatarUrl?: string;
+        installationCount: number;
+        repositoryCount: number;
+        repositorySelection: "all" | "selected" | "mixed" | "none";
+        installationIds: string[];
+        installationOwnerLogins: string[];
+        /** Repository metadata visible to this credential; refreshed from GitHub. */
+        repositories?: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
+        installationUrl?: string;
+        managementUrl?: string;
+        appSlug?: string;
+        accessRevision?: string;
+        lastAccessRefreshAt?: string;
+        lastWebhookAt?: string;
+        webhookHealth?: "pending" | "healthy" | "unhealthy";
+      };
+    }>(),
+    credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
+    externalCredential: jsonb("external_credential").$type<VercelConnectGrantReference>(),
+    status: text("status").$type<ConnectionGrantStatus>().notNull().default("active"),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByAgentId: uuid("revoked_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    revokedByUserId: text("revoked_by_user_id"),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("connection_grants_kind_check", sql`${table.kind} in ('organization', 'user', 'agent')`),
+    check("connection_grants_status_check", sql`${table.status} in ('active', 'revoked', 'expired', 'needs_reauthorization')`),
+    check("connection_grants_credential_source_one_of_check", sql`${table.externalCredential} is null or jsonb_array_length(${table.credentialSecretRefs}) = 0`),
+    check("connection_grants_subject_check", sql`(${table.kind} = 'user' and ${table.subjectUserId} is not null and ${table.subjectAgentId} is null) or (${table.kind} = 'agent' and ${table.subjectAgentId} is not null and ${table.subjectUserId} is null) or (${table.kind} = 'organization' and ${table.subjectUserId} is null and ${table.subjectAgentId} is null)`),
+    check("connection_grants_default_check", sql`${table.isDefault} = false or ${table.kind} = 'organization'`),
+    foreignKey({
+      columns: [table.companyId, table.connectionId],
+      foreignColumns: [toolConnections.companyId, toolConnections.id],
+      name: "connection_grants_company_connection_fk",
+    }).onDelete("cascade"),
+    index("connection_grants_company_connection_idx").on(table.companyId, table.connectionId),
+    index("connection_grants_subject_user_idx").on(table.companyId, table.subjectUserId),
+    index("connection_grants_subject_agent_idx").on(table.companyId, table.subjectAgentId),
+    unique("connection_grants_company_id_uq").on(table.companyId, table.id),
+    uniqueIndex("connection_grants_user_uq").on(table.connectionId, table.subjectUserId),
+    uniqueIndex("connection_grants_agent_uq").on(table.connectionId, table.subjectAgentId),
+    uniqueIndex("connection_grants_default_uq").on(table.connectionId).where(sql`${table.isDefault} = true and ${table.kind} = 'organization'`),
+  ],
+);
+
+export const connectionGrantMembers = pgTable(
+  "connection_grant_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    grantId: uuid("grant_id").notNull(),
+    subjectType: text("subject_type").$type<ConnectionGrantMemberSubjectType>().notNull(),
+    subjectId: text("subject_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("connection_grant_members_subject_type_check", sql`${table.subjectType} in ('user')`),
+    foreignKey({
+      columns: [table.companyId, table.grantId],
+      foreignColumns: [connectionGrants.companyId, connectionGrants.id],
+      name: "connection_grant_members_company_grant_fk",
+    }).onDelete("cascade"),
+    index("connection_grant_members_company_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
+    uniqueIndex("connection_grant_members_grant_subject_uq").on(table.grantId, table.subjectType, table.subjectId),
+  ],
+);
+
+export const connectionGrantDelegations = pgTable(
+  "connection_grant_delegations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    grantId: uuid("grant_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    createdByUserId: text("created_by_user_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.companyId, table.grantId],
+      foreignColumns: [connectionGrants.companyId, connectionGrants.id],
+      name: "connection_grant_delegations_company_grant_fk",
+    }).onDelete("cascade"),
+    index("connection_grant_delegations_company_agent_idx").on(table.companyId, table.agentId),
+    uniqueIndex("connection_grant_delegations_grant_agent_uq").on(table.grantId, table.agentId),
   ],
 );
 
@@ -168,6 +345,12 @@ export const toolOauthStates = pgTable(
     createdByActorType: text("created_by_actor_type"),
     createdByActorId: text("created_by_actor_id"),
     createdBySessionId: text("created_by_session_id"),
+    subjectUserId: text("subject_user_id"),
+    subjectAgentId: uuid("subject_agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    requestedScopes: jsonb("requested_scopes").$type<string[]>(),
+    returnTo: text("return_to"),
+    issueId: uuid("issue_id"),
+    interactionId: uuid("interaction_id"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -175,6 +358,7 @@ export const toolOauthStates = pgTable(
     index("tool_oauth_states_company_idx").on(table.companyId),
     index("tool_oauth_states_connection_idx").on(table.connectionId),
     index("tool_oauth_states_actor_idx").on(table.createdByActorType, table.createdByActorId),
+    index("tool_oauth_states_subject_agent_idx").on(table.companyId, table.subjectAgentId),
     index("tool_oauth_states_expires_at_idx").on(table.expiresAt),
   ],
 );
@@ -396,6 +580,7 @@ export const toolMcpGatewayTokens = pgTable(
   },
   (table) => [
     uniqueIndex("tool_mcp_gateway_tokens_token_hash_uq").on(table.tokenHash),
+    index("tool_mcp_gateway_tokens_expiry_idx").on(table.expiresAt, table.id),
     index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
     index("tool_mcp_gateway_tokens_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
     index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),

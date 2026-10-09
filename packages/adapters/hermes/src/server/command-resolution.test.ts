@@ -154,3 +154,22 @@ test("execute detects model and provider from configured Hermes profile config",
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("managed connections probe the selected environment without falling back to host keys", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-managed-probe-"));
+  const cliPath = path.join(tempDir, "fake-hermes");
+  try {
+    await writeFile(cliPath, '#!/bin/sh\n[ "$HERMES_HOME" = "' + tempDir + '" ] || exit 1\n[ "$OPENAI_API_KEY" = "selected-key" ] || exit 1\n[ "$ANTHROPIC_API_KEY" = "" ] || exit 1\n[ "$1" = "chat" ] || exit 1\necho hello\n');
+    await chmod(cliPath, 0o755);
+    const config = { command: cliPath, managedAiRouting: true, model: "custom/model", provider: "auto", env: { HERMES_HOME: tempDir, OPENAI_API_KEY: "selected-key", ANTHROPIC_API_KEY: "" } };
+    const passed = await testEnvironment({ companyId: "test", adapterType: "hermes_local", config });
+    expect(passed.status).toBe("pass");
+    expect(passed.checks[0]?.code).toBe("hermes_hello_probe_passed");
+    const failed = await testEnvironment({ companyId: "test", adapterType: "hermes_local", config: { ...config, env: { ...config.env, OPENAI_API_KEY: "wrong-key" } } });
+    expect(failed.status).toBe("fail");
+    expect(failed.checks[0]?.code).toBe("hermes_hello_probe_failed");
+    expect(JSON.stringify(failed)).not.toContain("wrong-key");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

@@ -49,13 +49,11 @@ function company(overrides: Record<string, unknown> = {}) {
     issueCounter: 1,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
-    attachmentMaxBytes: 1073741824,
     requireBoardApprovalForNewAgents: false,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#5c5fff",
     logoAssetId: null,
     createdAt: "2026-06-04T00:00:00.000Z",
     updatedAt: "2026-06-04T00:00:00.000Z",
@@ -347,8 +345,6 @@ describe("renderCompanyImportPreview", () => {
           path: "COMPANY.md",
           name: "Source Co",
           description: null,
-          attachmentMaxBytes: null,
-          brandColor: null,
           logoPath: null,
           requireBoardApprovalForNewAgents: false,
           feedbackDataSharingEnabled: false,
@@ -504,10 +500,24 @@ describe("renderCompanyImportResult", () => {
           { slug: "cto", id: "agent-2", action: "updated", name: "CTO", reason: "replace strategy" },
           { slug: "ops", id: null, action: "skipped", name: "Ops", reason: "skip strategy" },
         ],
+        skills: [
+          {
+            originalKey: "company/source/review",
+            originalSlug: "review",
+            key: "company/target/review-2",
+            slug: "review-2",
+            id: "skill-1",
+            action: "renamed",
+            reason: "rename strategy",
+          },
+        ],
         projects: [
           { slug: "app", id: "project-1", action: "created", name: "App", reason: null },
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
+        ],
+        routines: [
+          { slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly report", status: "paused" },
         ],
         envInputs: [],
         warnings: ["Review API keys"],
@@ -522,8 +532,10 @@ describe("renderCompanyImportResult", () => {
     expect(rendered).toContain("Company");
     expect(rendered).toContain("https://paperclip.example/PAP/dashboard");
     expect(rendered).toContain("3 agents total (1 created, 1 updated, 1 skipped)");
+    expect(rendered).toContain("1 skill total (1 renamed)");
     expect(rendered).toContain("3 projects total (1 created, 1 updated, 1 skipped)");
     expect(rendered).toContain("Agent results");
+    expect(rendered).toContain("Skill results");
     expect(rendered).toContain("Project results");
     expect(rendered).toContain("Using claude-local adapter");
     expect(rendered).toContain("Review API keys");
@@ -568,8 +580,6 @@ describe("import selection catalog", () => {
           path: "COMPANY.md",
           name: "Source Co",
           description: null,
-          attachmentMaxBytes: null,
-          brandColor: null,
           logoPath: "images/company-logo.png",
           requireBoardApprovalForNewAgents: false,
           feedbackDataSharingEnabled: false,
@@ -706,6 +716,83 @@ describe("import selection catalog", () => {
     expect(selectedFiles).toContain("projects/alpha/notes.md");
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/TASK.md");
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/details.md");
+  });
+
+  it("includes extension file even when all entities are deselected", () => {
+    const preview: CompanyPortabilityPreviewResult = {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: true,
+      },
+      targetCompanyId: "company-123",
+      targetCompanyName: "Imported Co",
+      collisionStrategy: "rename",
+      selectedAgentSlugs: [],
+      plan: {
+        companyAction: "create",
+        agentPlans: [],
+        projectPlans: [],
+        issuePlans: [],
+      },
+      manifest: {
+        schemaVersion: 1,
+        generatedAt: "2026-03-23T18:00:00.000Z",
+        source: {
+          companyId: "company-src",
+          companyName: "Source Co",
+        },
+        includes: {
+          company: true,
+          agents: true,
+          projects: true,
+          issues: true,
+          skills: true,
+        },
+        company: {
+          path: "COMPANY.md",
+          name: "Source Co",
+          description: null,
+          logoPath: null,
+          requireBoardApprovalForNewAgents: false,
+          feedbackDataSharingEnabled: false,
+          feedbackDataSharingConsentAt: null,
+          feedbackDataSharingConsentByUserId: null,
+          feedbackDataSharingTermsVersion: null,
+        },
+        sidebar: {
+          agents: [],
+          projects: [],
+        },
+        agents: [],
+        skills: [],
+        projects: [],
+        issues: [],
+        envInputs: [],
+      },
+      files: {
+        ".paperclip.yaml": "schema: paperclip/v1\n",
+      },
+      envInputs: [],
+      warnings: [],
+      errors: [],
+    };
+
+    const catalog = buildImportSelectionCatalog(preview);
+    const state = buildDefaultImportSelectionState(catalog);
+
+    state.company = false;
+    state.projects.clear();
+    state.issues.clear();
+    state.agents.clear();
+    state.skills.clear();
+
+    const selectedFiles = buildSelectedFilesFromImportSelection(catalog, state);
+
+    expect(selectedFiles).toContain(".paperclip.yaml");
+    expect(selectedFiles).toHaveLength(1);
   });
 });
 

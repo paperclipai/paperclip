@@ -14,8 +14,8 @@ const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listActionRequests: (companyId: string, status: string) => listActionRequestsMock(companyId, status),
-    approveActionRequest: (companyId: string, actionRequestId: string) =>
-      approveActionRequestMock(companyId, actionRequestId),
+    approveActionRequest: (companyId: string, actionRequestId: string, rememberAction?: boolean) =>
+      approveActionRequestMock(companyId, actionRequestId, rememberAction),
     createTrustRuleFromActionRequest: (companyId: string, actionRequestId: string, input: unknown) =>
       createTrustRuleFromActionRequestMock(companyId, actionRequestId, input),
   },
@@ -123,7 +123,7 @@ describe("ReviewQueueCard", () => {
     await flushReact();
   }
 
-  it("promotes Always allow only after the action request is approved", async () => {
+  it("submits approval and remembered permission as one atomic decision", async () => {
     const calls: string[] = [];
     approveActionRequestMock.mockImplementation(async () => {
       calls.push("approve");
@@ -141,13 +141,9 @@ describe("ReviewQueueCard", () => {
     });
     await flushReact();
 
-    expect(calls).toEqual(["approve", "trust-rule"]);
-    expect(approveActionRequestMock).toHaveBeenCalledWith("company-1", "request-1");
-    expect(createTrustRuleFromActionRequestMock).toHaveBeenCalledWith(
-      "company-1",
-      "request-1",
-      { approvalThreshold: 1 },
-    );
+    expect(calls).toEqual(["approve"]);
+    expect(approveActionRequestMock).toHaveBeenCalledWith("company-1", "request-1", true);
+    expect(createTrustRuleFromActionRequestMock).not.toHaveBeenCalled();
     expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Always allowed" }));
   });
 });

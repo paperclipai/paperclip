@@ -17,6 +17,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
@@ -35,6 +36,12 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("../components/IssuesQuicklook", () => ({
   IssuesQuicklook: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card">Workspaces summary card</div>;
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -176,6 +183,15 @@ describe("Workspaces", () => {
     expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
     expect(mockExecutionWorkspacesApi.listOverview).toHaveBeenCalledWith("company-1", { offset: 0 });
     expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Workspaces summary card");
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "workspaces_overview",
+      title: "Workspace summary",
+    }));
+    const heading = Array.from(container.querySelectorAll("h2")).find((node) => node.textContent === "Workspaces");
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(heading && summaryCard ? Boolean(heading.compareDocumentPosition(summaryCard) & Node.DOCUMENT_POSITION_FOLLOWING) : false).toBe(true);
     expect(container.textContent).toContain("Paperclip App");
     expect(container.textContent).toContain("Workspace Alpha");
     expect(container.textContent).toContain("PAP-11916");

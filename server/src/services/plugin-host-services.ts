@@ -4,6 +4,7 @@ import {
   agentTaskSessions as agentTaskSessionsTable,
   agents as agentsTable,
   budgetIncidents,
+  companyMemberships,
   costEvents,
   heartbeatRuns,
   invites,
@@ -26,7 +27,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -39,11 +40,14 @@ import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
+import { approvalService } from "./approvals.js";
+import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
+import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
@@ -73,8 +77,21 @@ import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
-import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { sanitizeRecord } from "../redaction.js";
+import {
+  authorizationService,
+  canActorReadIssuePrivacy,
+  issuePrivacyMode,
+  issueReadSqlCondition,
+  type AuthorizationActor,
+  type IssuePrivacyRow,
+} from "./authorization.js";
+import { redactEventPayload, sanitizeRecord } from "../redaction.js";
+import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import {
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -487,13 +504,214 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+// ---------------------------------------------------------------------------
+// Provider span trust boundary (the `span.record` host handler)
+// ---------------------------------------------------------------------------
+//
+// The plugin worker runs in a separate process, so the host treats every field
+// of a worker-sent span as untrusted input. The host re-clamps the span name
+// and every attribute here, before it records the span. A worker-side or
+// plugin-side helper is not sufficient; this is the single boundary.
+
+const SPAN_ATTRS = SANDBOX_STARTUP_SPAN_ATTRS;
+
+/** The closed set of provider span leaf names a plugin may emit. `pack` and
+ * `transfer` are the host-local build and the byte upload. `ensureDirectory`,
+ * `checkSymlinkEscape`, `promote`, `extractTarball`, and `postUploadCommand`
+ * are the per-round-trip command spans in the inbound sync path. `session.open`
+ * and `session.close` are the short spans that wrap a persistent-session create
+ * and delete. */
+const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
+  "pack",
+  "transfer",
+  "ensureDirectory",
+  "checkSymlinkEscape",
+  "promote",
+  "extractTarball",
+  "postUploadCommand",
+  "session.open",
+  "session.close",
+]);
+
+/** Clamp the span name to a closed, namespaced set. A known name maps to
+ * `sandbox.daytona.<name>`; any other value maps to `sandbox.daytona.other`, so
+ * a span name never carries free-form data. Only the daytona provider emits
+ * these spans today, so the segment is the literal `daytona`. When a second
+ * provider emits provider spans, derive the segment from the normalized
+ * `provider` family attribute on the span instead of this literal. */
+function clampProviderSpanName(raw: unknown): string {
+  const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
+  return `sandbox.daytona.${name}`;
+}
+
+/** The closed allowlist of attribute keys a provider span may carry. The host
+ * drops every other key, so a command, an argument, a path, an id, a standard
+ * output, a standard error, or an `extra` field can never ride a provider span. */
+const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.provider,
+  SPAN_ATTRS.outcome,
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+  SPAN_ATTRS.transferDirection,
+]);
+
+/** The subset of allowed keys that carry a finite number. */
+const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
+  SPAN_ATTRS.packWallMs,
+  SPAN_ATTRS.transferWallMs,
+  SPAN_ATTRS.transferGuardCount,
+]);
+
+/** The closed value set for the `outcome` attribute. */
+const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "failed"]);
+
+/** The closed value set for the `transfer.direction` attribute. */
+const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
+/**
+ * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
+ * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
+ * bound `outcome` and `transfer.direction` each to its closed set, and keep a
+ * numeric attribute only when it is a finite number. The result holds only
+ * bounded, low-cardinality values.
+ */
+export function clampProviderSpanAttributes(
+  raw: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> {
+  const clamped: Record<string, string | number | boolean> = {};
+  if (!raw) return clamped;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.provider) {
+      clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
+      continue;
+    }
+    if (key === SPAN_ATTRS.outcome) {
+      if (typeof value === "string" && KNOWN_SPAN_OUTCOMES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === SPAN_ATTRS.transferDirection) {
+      if (typeof value === "string" && KNOWN_TRANSFER_DIRECTIONS.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
+      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      continue;
+    }
+  }
+  return clamped;
+}
+
+/**
+ * Parse and validate a W3C `traceparent`. Return the parts, or `null` when the
+ * value is absent or malformed. The host mints the value, but this is the trust
+ * boundary, so it validates before use. It never logs the value.
+ */
+export function parseTraceparent(raw: string | undefined | null): ParsedTraceparent | null {
+  if (typeof raw !== "string") return null;
+  const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(raw);
+  if (!match) return null;
+  const [, version, traceId, spanId, flags] = match;
+  if (version === "ff") return null; // the W3C spec forbids version 0xff
+  if (traceId === "0".repeat(32)) return null; // an all-zero trace id is invalid
+  if (spanId === "0".repeat(16)) return null; // an all-zero span id is invalid
+  return { traceId, spanId, traceFlags: parseInt(flags, 16) };
+}
+
+/** Keep only the numeric status code. A status message could carry free-form
+ * text, so the host drops it — never a standard-stream text on a span. */
+function clampSpanStatus(
+  status: { code?: unknown; message?: unknown } | undefined,
+): { code: number } | undefined {
+  if (!status || typeof status.code !== "number" || !Number.isFinite(status.code)) return undefined;
+  return { code: status.code };
+}
+
+/** The largest span duration the host accepts as a real wall-clock width. A
+ * larger difference means a skewed or wrong clock, so the host drops the pair. */
+const MAX_PROVIDER_SPAN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+/** The largest age the host accepts for a span start time relative to its own
+ * clock. An older start means a stale or wrong clock, so the host drops the
+ * pair. A small negative skew (a start slightly ahead of the host clock) is
+ * allowed, because the host and the worker clocks can differ. */
+const MAX_PROVIDER_SPAN_START_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+/** The largest amount by which the end time may be ahead of the host clock. A
+ * larger lead means a wrong or skewed clock, so the host drops the pair. This
+ * upper bound rejects a timestamp pair that is far in the future. It still
+ * allows a small clock skew between the host and the worker. */
+const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
+
+/**
+ * Validate the worker-sent start-time and end-time pair at the trust boundary.
+ * Return the pair only when it passes the clock-safety policy:
+ * - both values are finite numbers;
+ * - the start time is less than or equal to the end time;
+ * - the duration is not larger than a bounded ceiling;
+ * - the start time is not older than a bounded age relative to the host clock;
+ * - the end time is not ahead of the host clock by more than a bounded skew.
+ * Return `undefined` when any check fails, so the host falls back to the
+ * synchronous open-and-end path.
+ */
+function validateProviderSpanTimes(
+  startTimeMs: unknown,
+  endTimeMs: unknown,
+): { startTimeMs: number; endTimeMs: number } | undefined {
+  if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
+  if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
+  if (startTimeMs > endTimeMs) return undefined;
+  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
+  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
+  return { startTimeMs, endTimeMs };
+}
+
+/**
+ * Record a worker-sent provider span through the real tracer. This is the host
+ * trust boundary: it validates the host-minted `traceparent`, re-clamps the span
+ * name and every attribute, mints the parentage host-side, and drops a status
+ * message. It validates the optional start-time and end-time pair with a
+ * clock-safety policy; a valid pair gives the span its true native width, and an
+ * absent or invalid pair falls back to the synchronous open-and-end path. It
+ * rejects a span with a missing or malformed `traceparent`. It never throws —
+ * observability must not change control flow.
+ */
+export function recordWorkerProviderSpan(
+  params: {
+    name: string;
+    attributes?: Record<string, unknown>;
+    status?: { code?: unknown; message?: unknown };
+    startTimeMs?: unknown;
+    endTimeMs?: unknown;
+  },
+  context: WorkerHostCallContext | undefined,
+): void {
+  const parent = parseTraceparent(context?.traceparent);
+  if (!parent) return; // reject a missing or malformed traceparent
+  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
+  const status = clampSpanStatus(params.status);
+  recordProviderPluginSpan({
+    name: clampProviderSpanName(params.name),
+    parent,
+    attributes: clampProviderSpanAttributes(params.attributes),
+    ...(status ? { status } : {}),
+    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
+  });
+}
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    heartbeatRuntimeEnv?: Record<string, string | undefined>;
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -533,6 +751,7 @@ export function buildHostServices(
   });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
+    runtimeEnv: options.heartbeatRuntimeEnv,
   });
   const projects = projectService(db);
   const executionWorkspaces = executionWorkspaceService(db);
@@ -543,7 +762,139 @@ export function buildHostServices(
   const authorization = authorizationService(db);
   const budgets = budgetService(db);
   const issueApprovals = issueApprovalService(db);
+  const approvalSvc = approvalService(db);
+  const interactions = issueThreadInteractionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
+  const lifecycleInbox = pluginLifecycleInbox(db, pluginId);
+
+  // --- Issue privacy for plugin-facing reads (PAP-16091 / PAP-16050) ---------
+  // Plugins are non-member principals: they hold no company membership, issue
+  // access grant, or private-project access, so the canonical issue-visibility
+  // predicate resolves them to the same scope as any other non-member — public
+  // issues only. Notification/digest plugins (e.g. a Slack notifier) fan issue
+  // data out to shared channels whose audience is, by definition, non-members,
+  // so private issue content and relationship metadata must never reach them.
+  //
+  // A synthetic { type: "none" } actor produces exactly that scope: it yields a
+  // null privacy principal (no implicit/grant/project-member match) and does not
+  // trip the local-implicit / instance-admin bypasses inside the predicate. In
+  // "off"/"shadow" modes these helpers are pass-through, matching every other
+  // enforcement surface so the enforce flip stays the single behavioral switch.
+  const pluginIssuePrivacyActor: AuthorizationActor = { type: "none" };
+  const toIssuePrivacyRow = (issue: {
+    id: string;
+    companyId: string;
+    visibility?: string | null;
+    privacyRootIssueId?: string | null;
+    responsibleUserId?: string | null;
+    createdByUserId?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    projectId?: string | null;
+  }): IssuePrivacyRow => ({
+    id: issue.id,
+    companyId: issue.companyId,
+    visibility: issue.visibility ?? "open",
+    privacyRootIssueId: issue.privacyRootIssueId ?? null,
+    responsibleUserId: issue.responsibleUserId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    projectId: issue.projectId ?? null,
+  });
+  const pluginCanReadIssue = async (
+    issue: Parameters<typeof toIssuePrivacyRow>[0] | null | undefined,
+  ): Promise<boolean> => {
+    if (!issue) return false;
+    if (issuePrivacyMode() !== "enforce") return true;
+    return canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue));
+  };
+  const pluginReadableIssueIds = async (
+    issueList: Array<Parameters<typeof toIssuePrivacyRow>[0]>,
+  ): Promise<Set<string>> => {
+    if (issuePrivacyMode() !== "enforce") return new Set(issueList.map((issue) => issue.id));
+    const decisions = await Promise.all(
+      issueList.map(async (issue) => ({
+        id: issue.id,
+        allowed: await canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue)),
+      })),
+    );
+    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+  };
+  // Column projection matching IssuePrivacyRow, for ad-hoc readability lookups
+  // of bare issue IDs (relation targets, subtree descendants) that arrive
+  // without their privacy columns loaded.
+  const issuePrivacyRowColumns = {
+    id: issuesTable.id,
+    companyId: issuesTable.companyId,
+    visibility: issuesTable.visibility,
+    privacyRootIssueId: issuesTable.privacyRootIssueId,
+    responsibleUserId: issuesTable.responsibleUserId,
+    createdByUserId: issuesTable.createdByUserId,
+    assigneeUserId: issuesTable.assigneeUserId,
+    assigneeAgentId: issuesTable.assigneeAgentId,
+    projectId: issuesTable.projectId,
+  } as const;
+  // Resolve which of the given issue IDs a non-member plugin may read. Loads
+  // the privacy-relevant columns for those IDs and evaluates the canonical
+  // predicate. An ID with no surviving row (deleted, cross-company) is absent
+  // from the result set — fail closed.
+  const pluginReadableIssueIdsByIds = async (
+    companyId: string,
+    ids: Iterable<string>,
+  ): Promise<Set<string>> => {
+    const uniqueIds = [...new Set(ids)];
+    if (issuePrivacyMode() !== "enforce" || uniqueIds.length === 0) {
+      return new Set(uniqueIds);
+    }
+    const rows = await db
+      .select(issuePrivacyRowColumns)
+      .from(issuesTable)
+      .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, uniqueIds)));
+    return pluginReadableIssueIds(rows);
+  };
+  // Fetch an issue and require it be both in-company and readable by a
+  // non-member plugin. A private (unreadable) issue throws the same "not found"
+  // error a genuinely missing issue would, so its existence never leaks. This
+  // is the single gate every issue-derived plugin read routes through, so no
+  // method needs its own bespoke visibility check.
+  const requirePluginReadableIssue = async (issueId: string, companyId: string): Promise<Issue> => {
+    const issue = requireInCompany("Issue", await issues.getById(issueId), companyId);
+    if (!(await pluginCanReadIssue(issue))) {
+      throw new Error("Issue not found");
+    }
+    return issue as Issue;
+  };
+  // Redact a relation summary so blocker/blocked edges pointing at an issue the
+  // plugin cannot read are dropped, recursing into nested terminal blockers. An
+  // edge's title/status/assignee is relationship metadata a non-member must not
+  // see even when the issue that owns the edge is itself public.
+  const pluginRedactRelationSummary = async <
+    R extends { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
+  >(
+    companyId: string,
+    relation: R,
+  ): Promise<R> => {
+    if (issuePrivacyMode() !== "enforce") return relation;
+    const edgeIds = new Set<string>();
+    const collect = (edges: IssueRelationIssueSummary[]) => {
+      for (const edge of edges) {
+        edgeIds.add(edge.id);
+        if (edge.terminalBlockers?.length) collect(edge.terminalBlockers);
+      }
+    };
+    collect(relation.blockedBy);
+    collect(relation.blocks);
+    if (edgeIds.size === 0) return relation;
+    const readable = await pluginReadableIssueIdsByIds(companyId, edgeIds);
+    const redact = (edges: IssueRelationIssueSummary[]): IssueRelationIssueSummary[] =>
+      edges
+        .filter((edge) => readable.has(edge.id))
+        .map((edge) => (edge.terminalBlockers?.length
+          ? { ...edge, terminalBlockers: redact(edge.terminalBlockers) }
+          : edge));
+    return { ...relation, blockedBy: redact(relation.blockedBy), blocks: redact(relation.blocks) };
+  };
 
   // Track active session event subscriptions for cleanup
   const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
@@ -653,6 +1004,152 @@ export function buildHostServices(
     }
     return record;
   };
+
+  /**
+   * Verify `userId` is an active human member of `companyId` before letting a
+   * plugin attribute a mutation to them. Mirrors the authorization bar the
+   * web app's own board routes apply — a plugin can only ever attribute an
+   * action to an identity that could have taken it in the web app itself.
+   * Used by any plugin capability that accepts an `actorUserId`
+   * (`createComment`'s human-attributed path, `respondInteraction`, and
+   * `approvals.decide`).
+   *
+   * All current call sites are non-safe (write) actions, so by default this
+   * also rejects a `viewer`-role member — the web app's board write-routes
+   * treat `membershipRole === "viewer"` as read-only and 403 it ("Viewer
+   * access is read-only", routes/authz.ts:115-116). Without this bar a plugin
+   * holding `approvals.respond` / `issue.interactions.respond` could attribute
+   * a decision to a viewer who is denied that same action in the web UI —
+   * strictly more authority than the paired user has (privilege escalation).
+   * A future *read-only* attribution path can opt into allowing viewers with
+   * `{ allowViewer: true }`; the default is failure-closed.
+   */
+  const requireActiveHumanMember = async (
+    companyId: string,
+    userId: string,
+    { allowViewer = false }: { allowViewer?: boolean } = {},
+  ): Promise<void> => {
+    const [membership] = await db
+      .select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .limit(1);
+    if (!membership) {
+      throw new Error(`actorUserId "${userId}" is not an active human member of this company`);
+    }
+    if (!allowViewer && membership.membershipRole === "viewer") {
+      throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
+    }
+  };
+
+  /**
+   * Wake the assignee of a continuation issue after a plugin-relayed board-user
+   * interaction resolution, mirroring the web app's board interaction routes
+   * (routes/issues.ts's queueResolvedInteractionContinuationWakeup) so a
+   * confirmation accepted/rejected from chat resumes the agent the same way it
+   * would from the web app. Deliberately narrower than the HTTP helper: it
+   * carries the core interaction context plus the plan-review continuation
+   * payload (the confirmation kind the gateway resolves), and skips the
+   * checkbox/tool-action/item-verdict extras that the gateway's yes/no decision
+   * cards never produce. Failure-tolerant: a wake failure is logged, never
+   * thrown back to the plugin (the decision itself already applied).
+   */
+  const queuePluginInteractionContinuationWakeup = (args: {
+    issue: { id: string; assigneeAgentId: string | null; status: string };
+    interaction: {
+      id: string;
+      kind: string;
+      status: string;
+      continuationPolicy: string;
+      sourceCommentId?: string | null;
+      sourceRunId?: string | null;
+      payload?: unknown;
+    };
+    actorUserId: string;
+    source: string;
+  }): void => {
+    const { interaction, issue } = args;
+    if (
+      interaction.continuationPolicy !== "wake_assignee"
+      && interaction.continuationPolicy !== "wake_assignee_on_accept"
+    ) return;
+    if (
+      interaction.continuationPolicy === "wake_assignee_on_accept"
+      && interaction.status !== "accepted"
+    ) return;
+    if (interaction.status === "expired") return;
+    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") return;
+
+    let planReviewInteraction: Record<string, unknown> | null = null;
+    if (interaction.kind === "request_confirmation" && isRecord(interaction.payload)) {
+      const target = isRecord(interaction.payload.target) ? interaction.payload.target : null;
+      if (
+        target
+        && target.type === "issue_document"
+        && target.key === "plan"
+        && typeof target.issueId === "string"
+        && target.issueId === issue.id
+      ) {
+        planReviewInteraction = {
+          id: interaction.id,
+          kind: interaction.kind,
+          status: interaction.status,
+          target,
+          acceptedTargetRevision: interaction.status === "accepted" ? target : null,
+        };
+      }
+    }
+
+    void heartbeat.wakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        sourceCommentId: interaction.sourceCommentId ?? null,
+        sourceRunId: interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        mutation: "interaction",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: args.actorUserId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        wakeReason: "issue_commented",
+        source: `plugin:${pluginKey}`,
+      },
+    }).catch((err) => logger.warn({
+      err,
+      issueId: issue.id,
+      interactionId: interaction.id,
+      agentId: issue.assigneeAgentId,
+      source: args.source,
+    }, "failed to wake assignee on plugin-relayed interaction resolution"));
+  };
+
+  /**
+   * Redact an approval's payload before returning it through the plugin bridge,
+   * mirroring the web app's own approval read routes (routes/approvals.ts's
+   * redactApprovalPayload). Ensures the chat surface never receives secrets the
+   * web app itself hides from an approval reader.
+   */
+  const redactApprovalPayload = <T extends { payload: Record<string, unknown> }>(approval: T): T => ({
+    ...approval,
+    payload: redactEventPayload(approval.payload) ?? {},
+  });
 
   const pluginActivityDetails = (
     details: Record<string, unknown> | null | undefined,
@@ -1198,6 +1695,12 @@ export function buildHostServices(
     },
 
     events: {
+      async listLifecycle(params) {
+        return lifecycleInbox.list(ensureCompanyId(params.companyId), params.limit, params.afterId);
+      },
+      async acknowledgeLifecycle(params) {
+        await lifecycleInbox.acknowledge(ensureCompanyId(params.companyId), params.eventId);
+      },
       async emit(params) {
         if (params.companyId) {
           await ensurePluginAvailableForCompany(params.companyId);
@@ -1331,6 +1834,17 @@ export function buildHostServices(
             console.error("[plugin-host-services] Triggered log flush failed:", err);
           });
         }
+      },
+    },
+
+    tracer: {
+      async record(params, context) {
+        // The host trust boundary: validate the host-minted `traceparent`,
+        // re-clamp the span name and every attribute, mint the parentage
+        // host-side, and record the span through the real tracer. The capability
+        // gate in `createHostClientHandlers` already rejected an ungranted
+        // plugin before this runs.
+        recordWorkerProviderSpan(params, context);
       },
     },
 
@@ -1534,13 +2048,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // Push the non-member visibility predicate into the list query so private
+        // issues are filtered at the SQL layer before they can reach a plugin.
+        const readCondition = await issueReadSqlCondition(db, pluginIssuePrivacyActor);
+        return applyWindow(
+          (await issues.list(companyId, { ...(params as any), readCondition })) as Issue[],
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
-        return (inCompany(issue, companyId) ? issue : null) as Issue | null;
+        if (!inCompany(issue, companyId)) return null;
+        if (!(await pluginCanReadIssue(issue))) return null;
+        return issue as Issue;
       },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1551,6 +2073,17 @@ export function buildHostServices(
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
+        if (issueInput.parentId) await requirePluginReadableIssue(issueInput.parentId, companyId);
+        const sourceRunId = params.originRunId ?? actorRunId;
+        if (sourceRunId) {
+          const [sourceRun] = await db.select().from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
+          if (!sourceRun) throw new Error("Origin run not found");
+          if (sourceRun.scopeKind !== "company") {
+            if (!sourceRun.issueId) throw new Error("Origin run not found");
+            await requirePluginReadableIssue(sourceRun.issueId, companyId);
+          }
+        }
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
@@ -1582,6 +2115,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await requirePluginReadableIssue(params.issueId, companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
@@ -1618,13 +2152,20 @@ export function buildHostServices(
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return await issues.getRelationSummaries(params.issueId);
+        // Private root -> indistinguishable from missing; readable root ->
+        // still redact any edge that points at an issue the plugin cannot read.
+        await requirePluginReadableIssue(params.issueId, companyId);
+        return await pluginRedactRelationSummary(
+          companyId,
+          await issues.getRelationSummaries(params.issueId),
+        );
       },
       async setBlockedBy(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return setBlockedByWithActivity({
+        // The echoed relation summary can name a private blocker target, so
+        // redact unreadable edges before returning it to a non-member plugin.
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: params.blockedByIssueIds,
@@ -1632,7 +2173,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async addBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1645,7 +2186,7 @@ export function buildHostServices(
             ...params.blockerIssueIds,
           ]),
         ];
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -1653,7 +2194,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async removeBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1664,7 +2205,7 @@ export function buildHostServices(
         const nextBlockedByIssueIds = previous.blockedBy
           .map((relation) => relation.id)
           .filter((issueId) => !removals.has(issueId));
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -1672,7 +2213,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async assertCheckoutOwner(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1711,17 +2252,31 @@ export function buildHostServices(
       async getSubtree(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any descendant metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
         const includeRoot = params.includeRoot !== false;
         const subtreeIssueIds = await collectIssueSubtreeIds(companyId, rootIssue.id);
-        const issueIds = includeRoot ? subtreeIssueIds : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
-        const issueRows = issueIds.length > 0
+        const candidateIssueIds = includeRoot
+          ? subtreeIssueIds
+          : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
+        const issueRows = candidateIssueIds.length > 0
           ? await db
             .select()
             .from(issuesTable)
-            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, candidateIssueIds)))
           : [];
-        const issuesById = new Map(issueRows.map((issue) => [issue.id, issue as Issue]));
+        // Filter private descendants BEFORE fetching any relations, documents,
+        // runs, or assignees so private issue rows and their metadata never
+        // enter the result. The root has already cleared the readability gate.
+        const readableSubtreeIds = await pluginReadableIssueIds(issueRows);
+        readableSubtreeIds.add(rootIssue.id);
+        const issueIds = candidateIssueIds.filter((issueId) => readableSubtreeIds.has(issueId));
+        const issuesById = new Map(
+          issueRows
+            .filter((issue) => readableSubtreeIds.has(issue.id))
+            .map((issue) => [issue.id, issue as Issue]),
+        );
         const outputIssues = issueIds
           .map((issueId) => issuesById.get(issueId))
           .filter((issue): issue is Issue => Boolean(issue));
@@ -1732,7 +2287,10 @@ export function buildHostServices(
 
         const [relationPairs, documentPairs, activeRunRows, assigneeRows] = await Promise.all([
           params.includeRelations
-            ? Promise.all(issueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const))
+            ? Promise.all(issueIds.map(async (issueId) => [
+              issueId,
+              await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+            ] as const))
             : Promise.resolve(null),
           params.includeDocuments
             ? Promise.all(
@@ -1930,12 +2488,27 @@ export function buildHostServices(
       async getOrchestrationSummary(params): Promise<PluginIssueOrchestrationSummary> {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        const subtreeIssueIds = params.includeSubtree
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any subtree relationship metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
+        const rawSubtreeIssueIds = params.includeSubtree
           ? await collectIssueSubtreeIds(companyId, rootIssue.id)
           : [rootIssue.id];
+        // Drop any private descendant the plugin may not read so its relations,
+        // approvals, runs, costs, and budget blocks never enter the summary.
+        const readableSubtreeIds = await pluginReadableIssueIdsByIds(companyId, rawSubtreeIssueIds);
+        readableSubtreeIds.add(rootIssue.id);
+        const subtreeIssueIds = rawSubtreeIssueIds.filter((id) => readableSubtreeIds.has(id));
+        // Blocker edges can point at private issues outside the readable subtree
+        // (e.g. a public task blocked by a private one). Their title/status/
+        // assignee are relationship metadata a non-member must not see, so
+        // pluginRedactRelationSummary drops any edge whose target is unreadable,
+        // recursing into nested terminal blockers.
         const relationPairs = await Promise.all(
-          subtreeIssueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const),
+          subtreeIssueIds.map(async (issueId) => [
+            issueId,
+            await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+          ] as const),
         );
         const approvalRows = (
           await Promise.all(
@@ -2005,30 +2578,96 @@ export function buildHostServices(
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Comment visibility follows the ACL of the issue they were posted on.
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await issues.listComments(params.issueId)) as IssueComment[];
       },
       async createComment(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        if (params.actorUserId) {
+          await requireActiveHumanMember(companyId, params.actorUserId);
+        }
         const comment = (await issues.addComment(
           params.issueId,
           params.body,
-          { agentId: params.authorAgentId },
+          { agentId: params.actorUserId ? undefined : params.authorAgentId, userId: params.actorUserId },
         )) as IssueComment;
         await logPluginActivity({
           companyId,
           action: "issue.comment.created",
           entityType: "issue",
           entityId: issue.id,
-          actor: { actorAgentId: params.authorAgentId ?? null },
+          actor: { actorAgentId: params.actorUserId ? null : params.authorAgentId ?? null, actorUserId: params.actorUserId ?? null },
           details: {
             identifier: issue.identifier,
             commentId: comment.id,
             bodySnippet: comment.body.slice(0, 120),
           },
         });
+
+        // Human-attributed comments participate in the same "wake the
+        // assignee" behavior a board user's comment gets in the web app
+        // (routes/issues.ts's addComment route) — a plugin's own
+        // agent-attributed comments never do this. Deliberately narrower
+        // than the HTTP route: no reopen/resume/interrupt/scheduled-retry
+        // handling here, just the core wake. An assignee-less or
+        // closed-status issue is a silent no-op, matching the route's own
+        // guard.
+        //
+        // The guard re-fetches the issue instead of trusting the pre-insert
+        // `issue` snapshot: a concurrent close/unassign/reassign landing
+        // between the initial fetch and here would otherwise wake the wrong
+        // (or no-longer-relevant) agent off stale state.
+        //
+        // The comment is already committed above, so this best-effort wake
+        // must never change that outcome: a failed re-fetch is logged and
+        // falls back to the in-hand snapshot rather than rejecting
+        // createComment — a rejection would surface to the caller as a failed
+        // write and invite a retry that inserts a duplicate comment.
+        if (params.actorUserId) {
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin-relayed human comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
+          if (
+            postCommentIssue.assigneeAgentId
+            && postCommentIssue.status !== "done"
+            && postCommentIssue.status !== "cancelled"
+          ) {
+            await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                mutation: "comment",
+              },
+              requestedByActorType: "user",
+              requestedByActorId: params.actorUserId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                sourceCommentId: comment.id,
+                wakeReason: "issue_commented",
+                source: `plugin:${pluginKey}`,
+              },
+            }).catch((err) => logger.warn({
+              err,
+              issueId: issue.id,
+              commentId: comment.id,
+              agentId: postCommentIssue.assigneeAgentId,
+            }, "failed to wake assignee on plugin-relayed human comment"));
+          }
+        }
+
         return comment;
       },
       async createInteraction(params) {
@@ -2054,20 +2693,258 @@ export function buildHostServices(
         });
         return interaction as any;
       },
+      async listInteractions(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Interaction payloads follow the ACL of the issue they belong to; a
+        // private issue yields no interactions to a non-member plugin.
+        if (!(await pluginCanReadIssue(issue))) return [];
+        return (await interactions.listForIssue(params.issueId)) as any;
+      },
+      async respondInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Resolving an interaction is a board-user action (the web app's
+        // interaction-resolve routes are board-only). The host re-verifies the
+        // paired user is an active human member at apply time and never trusts
+        // the plugin-supplied identity — matching the createComment bar.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const current = await interactions.getById(params.interactionId);
+        if (!current || current.issueId !== issue.id || current.companyId !== companyId) {
+          throw new Error(`Interaction "${params.interactionId}" not found for this issue`);
+        }
+        // Idempotent replay: an already-resolved interaction converges without
+        // re-applying, so a duplicate button tap from chat is a safe no-op.
+        if (current.status !== "pending") {
+          return { interaction: current as any, applied: false };
+        }
+
+        const actor = { userId: params.actorUserId };
+        let resolved: typeof current;
+        let continuationTarget = {
+          id: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          status: issue.status,
+        };
+        if (params.action === "accept") {
+          const result = await interactions.acceptInteraction(
+            {
+              id: issue.id,
+              companyId,
+              projectId: issue.projectId ?? null,
+              goalId: issue.goalId ?? null,
+              status: issue.status,
+            },
+            params.interactionId,
+            {},
+            actor,
+          );
+          resolved = result.interaction as typeof current;
+          if (result.continuationIssue) {
+            continuationTarget = {
+              id: result.continuationIssue.id,
+              assigneeAgentId: result.continuationIssue.assigneeAgentId,
+              status: result.continuationIssue.status,
+            };
+          }
+        } else {
+          resolved = (await interactions.rejectInteraction(
+            { id: issue.id, companyId, status: issue.status },
+            params.interactionId,
+            { reason: params.reason ?? undefined },
+            actor,
+          )) as typeof current;
+        }
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "accept"
+            ? "issue.thread_interaction_accepted"
+            : "issue.thread_interaction_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            identifier: issue.identifier,
+            interactionId: resolved.id,
+            interactionKind: resolved.kind,
+            interactionStatus: resolved.status,
+          },
+        });
+
+        queuePluginInteractionContinuationWakeup({
+          issue: continuationTarget,
+          interaction: resolved,
+          actorUserId: params.actorUserId,
+          source: `plugin:${pluginKey}:interaction.${params.action}`,
+        });
+
+        return { interaction: resolved as any, applied: true };
+      },
+      async listAttachments(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        if (!(await pluginCanReadIssue(issue))) return [];
+        return (await issues.listAttachments(params.issueId)) as any;
+      },
+      async getAttachmentContent(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const attachment = await issues.getAttachmentById(params.attachmentId);
+        // Unknown and cross-company ids are deliberately indistinguishable to
+        // the plugin: both return null (no existence oracle across companies).
+        if (!attachment || attachment.companyId !== companyId) return null;
+        // A private issue's attachment content must not reach a non-member
+        // plugin: gate on the parent issue's visibility, same null response.
+        if (!(await pluginCanReadIssue(await issues.getById(attachment.issueId)))) return null;
+
+        const maxBytes = typeof params.maxBytes === "number" && params.maxBytes > 0 ? params.maxBytes : null;
+        if (maxBytes !== null && attachment.byteSize > maxBytes) {
+          throw new Error(
+            `attachment ${attachment.id} is ${attachment.byteSize} bytes, over the ${maxBytes}-byte cap`,
+          );
+        }
+
+        const object = await getStorageService().getObject(attachment.companyId, attachment.objectKey);
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of object.stream) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buf.length;
+          // Defense in depth: enforce the cap during streaming too, so a
+          // metadata/object size mismatch can never exceed the requested cap.
+          if (maxBytes !== null && total > maxBytes) {
+            object.stream.destroy();
+            throw new Error(`attachment ${attachment.id} exceeded the ${maxBytes}-byte cap while reading`);
+          }
+          chunks.push(buf);
+        }
+        const bytes = Buffer.concat(chunks);
+
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment.read",
+          entityType: "issue",
+          entityId: attachment.issueId,
+          details: {
+            attachmentId: attachment.id,
+            byteSize: bytes.length,
+            contentType: attachment.contentType,
+          },
+        });
+
+        return {
+          attachmentId: attachment.id,
+          contentType: attachment.contentType,
+          byteSize: bytes.length,
+          sha256: attachment.sha256,
+          originalFilename: attachment.originalFilename ?? null,
+          contentBase64: bytes.toString("base64"),
+        };
+      },
+    },
+
+    approvals: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await approvalSvc.list(companyId, params.status ?? undefined);
+        // Match the web app's approval read surface: payloads are redacted so
+        // the chat bridge never receives secrets the web app itself hides.
+        return rows.map((approval) => redactApprovalPayload(approval)) as any;
+      },
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const approval = await approvalSvc.getById(params.approvalId);
+        if (!approval || approval.companyId !== companyId) return null;
+        return redactApprovalPayload(approval) as any;
+      },
+      async decide(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const existing = await approvalSvc.getById(params.approvalId);
+        if (!existing || existing.companyId !== companyId) {
+          throw new Error(`Approval "${params.approvalId}" not found`);
+        }
+        // Deciding an approval is a board-user action (the web app's approval
+        // decision routes are board-only). Re-verify active membership at apply
+        // time; never trust the plugin-supplied identity.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to decide an approval on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const { approval, applied } = params.action === "approve"
+          ? await approvalSvc.approve(params.approvalId, params.actorUserId, params.decisionNote ?? null)
+          : await approvalSvc.reject(params.approvalId, params.actorUserId, params.decisionNote ?? null);
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "approve" ? "approval.approved" : "approval.rejected",
+          entityType: "approval",
+          entityId: approval.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            type: approval.type,
+            requestedByAgentId: approval.requestedByAgentId,
+            applied,
+          },
+        });
+
+        // Mirror the web app's approve/reject routes: wake the requesting agent
+        // so it resumes after a chat-driven decision. Only on a fresh decision
+        // (applied) and only when a requester agent exists.
+        if (applied && approval.requestedByAgentId) {
+          void heartbeat.wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: params.actorUserId,
+            contextSnapshot: {
+              source: `plugin:${pluginKey}:approval.${params.action}`,
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              wakeReason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            },
+          }).catch((err) => logger.warn({
+            err,
+            approvalId: approval.id,
+            requestedByAgentId: approval.requestedByAgentId,
+          }, "failed to wake requester on plugin-relayed approval decision"));
+        }
+
+        return { approval: redactApprovalPayload(approval) as any, applied };
+      },
     },
 
     issueDocuments: {
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Document bodies follow the issue ACL; a private issue is not-found.
+        await requirePluginReadableIssue(params.issueId, companyId);
         const rows = await documents.listIssueDocuments(params.issueId);
         return rows as any;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await requirePluginReadableIssue(params.issueId, companyId);
         const doc = await documents.getIssueDocumentByKey(params.issueId, params.key);
         return (doc ?? null) as any;
       },
@@ -2155,6 +3032,14 @@ export function buildHostServices(
           triggerDetail: "system",
           reason: params.reason ?? null,
           payload: { prompt: params.prompt },
+          contextSnapshot: {
+            wakeReason: params.reason ?? null,
+            paperclipAgentMessage: {
+              text: params.prompt,
+              source: "plugin_invoke",
+              pluginKey,
+            },
+          },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
@@ -2633,8 +3518,15 @@ export function buildHostServices(
           payload: { prompt: params.prompt },
           contextSnapshot: {
             taskKey: session.taskKey,
+            wakeReason: params.reason ?? null,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
+            paperclipAgentMessage: {
+              text: params.prompt,
+              source: "plugin_session",
+              pluginKey,
+              sessionId: params.sessionId,
+            },
           },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
@@ -2676,7 +3568,9 @@ export function buildHostServices(
                   seq: 0,
                   eventType: status === "succeeded" ? "done" : "error",
                   stream: "system",
-                  message: status === "succeeded" ? "Run completed" : `Run ${status}`,
+                  message: status === "succeeded"
+                    ? (typeof payload.finalText === "string" ? payload.finalText : null)
+                    : `Run ${status}`,
                   payload: payload,
                 });
                 cleanup();

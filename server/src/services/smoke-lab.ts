@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  connectionGrants,
   smokeRuns,
   smokeRunSteps,
   toolApplications,
@@ -717,7 +718,7 @@ export function smokeLabService(db: Db, options: {
     companyId: string;
     applicationId: string;
     name: string;
-    transport: "local_stdio" | "remote_http";
+    transport: "local_stdio" | "mcp_remote";
     config: Record<string, unknown>;
     transportConfig?: Record<string, unknown>;
     actor?: SmokeLabActorInfo;
@@ -741,18 +742,40 @@ export function smokeLabService(db: Db, options: {
       lastHealthAt: now,
       updatedAt: now,
     };
+    const ensureDefaultOrganizationGrant = async (connectionId: string) => {
+      const [existingGrant] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, input.companyId),
+        eq(connectionGrants.connectionId, connectionId),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.isDefault, true),
+      ));
+      if (existingGrant) return;
+      await db.insert(connectionGrants).values({
+        companyId: input.companyId,
+        connectionId,
+        kind: "organization",
+        status: "active",
+        isDefault: true,
+        credentialSecretRefs: [],
+        createdAt: now,
+        updatedAt: now,
+      });
+    };
     if (existing) {
       const [updated] = await db.update(toolConnections).set(values).where(eq(toolConnections.id, existing.id)).returning();
+      await ensureDefaultOrganizationGrant(existing.id);
       return { row: updated ?? existing, created: false };
     }
     const [created] = await db.insert(toolConnections).values({
       companyId: input.companyId,
       name: input.name,
+      uid: `smoke-lab/${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
       ...values,
       createdByAgentId: input.actor?.actorType === "agent" ? input.actor.agentId : null,
       createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
       createdAt: now,
     }).returning();
+    await ensureDefaultOrganizationGrant(created.id);
     return { row: created, created: true };
   }
 
@@ -1089,7 +1112,7 @@ export function smokeLabService(db: Db, options: {
         companyId,
         applicationId: httpApp.row.id,
         name: HTTP_CONNECTION_NAME,
-        transport: "remote_http",
+        transport: "mcp_remote",
         config: {
           smokeLabFixture: "oauth-http",
           service: "smoke-lab.http-mcp-fixture",

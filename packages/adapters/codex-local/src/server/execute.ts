@@ -1,7 +1,17 @@
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
+import {
+  ensureCodexAuthCacheEntryDir,
+  isCodexAuthCacheEnabled,
+  resolveCodexAuthCacheEntryPath,
+  selectVendCredential,
+} from "./codex-auth-cache.js";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -13,6 +23,8 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -30,14 +42,16 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolvePaperclipDesiredSkillNames,
   renderTemplate,
-  renderPaperclipWakePrompt,
+  hydrateFreshSessionHandoff,
+  selectInitialCommunicationGuidance,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
-  stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -48,9 +62,10 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
-  parseCodexJsonl,
+  parseCodexJsonl, createCodexJsonlParser,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -64,6 +79,7 @@ import {
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
+  stageCodexHomeForSync,
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
@@ -85,8 +101,12 @@ import {
   resolveCodexInactivityTimeout,
 } from "./output-inactivity-monitor.js";
 import {
+  CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+  createCodexProcessActivityMonitor,
+  type CodexProcessActivityMonitorHandle,
+} from "./process-activity-monitor.js";
+import {
   createCodexAcpExecutor,
-  formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
 
@@ -117,6 +137,29 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+// Benign stderr lines that never explain a nonzero exit and must not be
+// surfaced as the run error: Codex always prints the YOLO approvals warning
+// because this adapter passes the approvals-bypass flag itself, and
+// "[paperclip] ..." lines are diagnostics the adapter injected (e.g. ACP
+// fallback notes). Keep this list conservative so real errors are never
+// skipped.
+const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
+  /^YOLO mode is enabled\b/i,
+  /^\[paperclip\]/,
+];
+
+function isBenignCodexStderrLine(line: string): boolean {
+  return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
+}
+
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
 }
 
 function signalCodexChild(
@@ -282,13 +325,21 @@ function managedMcpGatewaysFromContext(context: Record<string, unknown>): Manage
 type ResolvedExecutionTarget = ReturnType<typeof readAdapterExecutionTarget>;
 type MaybeResolvedExecutionTarget = ResolvedExecutionTarget | undefined;
 
-async function sandboxCodexAuthJsonExists(input: {
+type SandboxCodexAuthProbeResult = "present" | "absent" | "unknown";
+
+/**
+ * Probe the sandbox for its own `~/.codex/auth.json`. "unknown" means the
+ * probe itself failed (timeout, transport error, or a shell failure other
+ * than `test`'s clean false) — callers that gate on the result must not
+ * report that as a missing credential.
+ */
+async function probeSandboxCodexAuthJson(input: {
   runId: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
-}): Promise<boolean> {
+}): Promise<SandboxCodexAuthProbeResult> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
-    return false;
+    return "absent";
   }
 
   try {
@@ -302,10 +353,92 @@ async function sandboxCodexAuthJsonExists(input: {
         timeoutSec: 5,
       },
     );
-    return !result.timedOut && result.exitCode === 0;
+    if (result.timedOut) return "unknown";
+    if (result.exitCode === 0) return "present";
+    return result.exitCode === 1 ? "absent" : "unknown";
   } catch {
-    return false;
+    return "unknown";
   }
+}
+
+async function sandboxCodexAuthJsonExists(input: {
+  runId: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+}): Promise<boolean> {
+  return (await probeSandboxCodexAuthJson(input)) === "present";
+}
+
+/**
+ * Execute-time credential gate. A managed home with no host-side credentials
+ * is still launchable when the run targets a sandbox whose image carries its
+ * own Codex login (`~/.codex/auth.json` baked in during image setup): the
+ * inbound auth merge ships the credential-less host home and keeps the
+ * sandbox's credential, so the host is not a required credential source —
+ * on managed cloud hosts a local Codex login never exists at all. The
+ * sandbox is probed before the run is declared unlaunchable; non-sandbox
+ * targets keep the strict host-side requirement.
+ */
+export async function assertCodexCredentialsLaunchable(input: {
+  runId: string;
+  companyId: string;
+  configuredCodexHome: string | null;
+  configuredApiKey: string | null;
+  effectiveCodexHome: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const credentialReadiness = await evaluateCodexCredentialReadiness({
+    env: input.env ?? process.env,
+    companyId: input.companyId,
+    configuredCodexHome: input.configuredCodexHome,
+    configuredApiKey: input.configuredApiKey,
+  });
+  if (!credentialReadiness.managed || credentialReadiness.ready) return;
+
+  const targetIsSandbox =
+    input.target?.kind === "remote" && input.target.transport === "sandbox";
+  if (targetIsSandbox) {
+    const sandboxAuthJson = await probeSandboxCodexAuthJson({
+      runId: input.runId,
+      target: input.target,
+      cwd: input.cwd,
+    });
+    if (sandboxAuthJson === "present") {
+      await input.onLog(
+        "stdout",
+        `Using the sandbox's own Codex login; managed home "${input.effectiveCodexHome}" has no host credentials.\n`,
+      );
+      return;
+    }
+    if (sandboxAuthJson === "unknown") {
+      // The probe failing is an operational problem, not evidence that the
+      // sandbox lacks a login — proceeding lets a genuinely credentialed
+      // sandbox run, and a credential-less one still fails at Codex's first
+      // request with the provider's own error.
+      await input.onLog(
+        "stderr",
+        `Could not verify the sandbox's Codex login (probe failed); proceeding. ` +
+          `If the sandbox has no credentials, Codex will fail at its first request.\n`,
+      );
+      return;
+    }
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+        `(no usable auth.json, OPENAI_API_KEY is empty, and the sandbox has no Codex login). ` +
+        `Use a sandbox image that is signed in to Codex, configure a per-agent OPENAI_API_KEY, ` +
+        `or sign in to Codex on the host with a ChatGPT subscription.`,
+    );
+  }
+
+  throw new Error(
+    `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+      `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+      `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+      `OPENAI_API_KEY.`,
+  );
 }
 
 async function emitSandboxAuthPrecedenceWarningIfNeeded(input: {
@@ -372,7 +505,10 @@ export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
 ) {
-  const allSkillsEntries = options.skillsEntries ?? await readPaperclipRuntimeSkillEntries({}, __moduleDir);
+  const allSkillsEntries = options.skillsEntries
+    ?? (await readPaperclipRuntimeSkillEntries({}, __moduleDir)).filter(
+      (entry) => !isPaperclipSkillSourceMissing(entry),
+    );
   const desiredSkillNames =
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
@@ -434,28 +570,31 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeCodexAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
-      );
-    }
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
   }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
+  if (engineSelection.engine === "acp") {
+    return executeCodexAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
@@ -486,23 +625,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       )
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
-  const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
+  const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
+  const configuredCwd = asString(config.cwd, "");
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const effectiveWorkspaceCwd = targetWorkspaceRealization?.mode === "in_place"
+    ? targetWorkspaceRealization.authoritativeRoot
+    : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
-  const configuredCodexHome =
+  let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
-  const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const connectorSourceHome = configuredCodexHome;
+  const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
+    && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
+  if (connectorSkillDigest) {
+    // Never mount assignment-specific skills into the shared company/user home.
+    // A different skill revision gets a new home, so revoked/changed resources
+    // cannot survive as stale symlinks or bleed into another agent's session.
+    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+      "connector-runtimes", agent.id, connectorSkillDigest);
+  }
+  const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
+    // A missing-source entry would become a dangling skill symlink; skip it.
+    .filter((entry) => !isPaperclipSkillSourceMissing(entry));
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
@@ -515,12 +671,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredHomeIsManaged =
     configuredCodexHome != null &&
     isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome);
-  if (configuredCodexHome == null) {
+  // Identity-anchored cache vend (host to sandbox). Before the managed home is
+  // seeded from the shared source `auth.json`, refresh the shared credential with
+  // a strictly-newer cached copy of the SAME identity. The vend reads the host
+  // identity first and resolves only that identity's cache slot; when the host
+  // holds no credential it does nothing (no random pick). This keeps the change
+  // additive: the managed home still symlinks the shared `auth.json`, now at its
+  // freshest same-identity copy. The off-switch (default on) skips the vend.
+  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+    const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    // This caller reads `process.env` directly and holds no separate `env`
+    // object, so `selectVendCredential` falls back to its own `process.env`
+    // default for the merge lock root.
+    await selectVendCredential(
+      sharedHomeAuthPath,
+      (accountId) => resolveCodexAuthCacheEntryPath(process.env, accountId, agent.companyId),
+      (line) => onLog("stdout", `${line}\n`),
+    ).catch(async (error) => {
+      // The vend is best-effort and additive. A vend failure must never block a
+      // run: log and fall through to seed from the unrefreshed shared credential.
+      await onLog(
+        "stderr",
+        `[paperclip] Codex auth cache: vend skipped after an error; using the shared credential as-is.\n`,
+      );
+      void error;
+    });
+  }
+  if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
     });
-  } else if (configuredHomeIsManaged) {
-    await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
+  }
+  if (configuredHomeIsManaged && configuredCodexHome) {
+    const seedEnv = connectorSkillDigest ? {
+      ...process.env, CODEX_HOME: connectorSourceHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
+    } : process.env;
+    await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
     });
   }
@@ -528,28 +714,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
-  // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
-  // with OPENAI_API_KEY="" the provider rejects every request with
+  // Never launch a managed CODEX_HOME with no credentials. Without auth.json
+  // and with OPENAI_API_KEY="" the provider rejects every request with
   // "401 Missing bearer"; fail fast with a clear adapter error instead of
   // emitting unauthenticated calls. External overrides manage their own auth.
   // This is the execute-time backstop for the control plane's pre-dispatch
-  // configuration-incomplete gate (see server heartbeat) — both decide
-  // readiness through the same `evaluateCodexCredentialReadiness` predicate, so
-  // they cannot drift.
-  const credentialReadiness = await evaluateCodexCredentialReadiness({
-    env: process.env,
+  // configuration-incomplete gate (see server heartbeat); both decide host
+  // readiness through the same `evaluateCodexCredentialReadiness` predicate,
+  // and sandbox targets are additionally allowed to supply their own login
+  // (the pre-dispatch gate defers sandbox-destined runs here for exactly that
+  // probe).
+  await assertCodexCredentialsLaunchable({
+    runId,
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    effectiveCodexHome,
+    target: executionTarget,
+    cwd,
+    onLog,
   });
-  if (credentialReadiness.managed && !credentialReadiness.ready) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
-        `OPENAI_API_KEY.`,
-    );
-  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
@@ -563,11 +747,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env: envConfigStrings,
     codexHome: configuredCodexHome ? null : effectiveCodexHome,
   });
+  // Curated allowlist dir staged for the remote `home` asset (see below). Held
+  // here so the outer `finally` can remove it on every exit path (teardown and
+  // error), never only the happy path.
+  let stagedCodexHomeDir: string | null = null;
   try {
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
-    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const paperclipBaseEnv = buildPaperclipEnv(agent, ctx.agentIdentity);
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
@@ -607,19 +795,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
-    let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+    let effectiveExecutionCwd = targetWorkspaceRealization?.mode === "in_place"
+      ? targetWorkspaceRealization.authoritativeRoot
+      : adapterExecutionTargetRemoteCwd(executionTarget, cwd);
     const preparedExecutionTargetRuntime = executionTargetIsRemote
       ? await (async () => {
           await onLog(
             "stdout",
-            `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+            `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "CODEX_HOME" : "workspace and CODEX_HOME"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
+          // Stage only the files Codex actually needs into a curated temp dir and
+          // ship THAT as the `home` asset, instead of the whole managed
+          // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
+          // (provider merge + MCP block splice above) and skills injection, so the
+          // staged config.toml/skills reflect their final state. Symlinks (incl.
+          // the single-use `auth.json`) are dereferenced to bytes. This drops the
+          // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
+          // 4-name denylist missed and that a sandbox run never needs.
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
             adapterKey: "codex",
             timeoutSec,
             workspaceLocalDir: cwd,
+            workspaceRemoteDir:
+              targetWorkspaceRealization?.mode === "in_place"
+                ? targetWorkspaceRealization.authoritativeRoot
+                : undefined,
+            syncWorkspace: targetWorkspaceRealization?.mode !== "in_place",
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),
@@ -627,20 +831,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             assets: [
               {
                 key: "home",
-                localDir: effectiveCodexHome,
+                localDir: stagedCodexHomeDir,
                 followSymlinks: true,
-                // Exclude state that the sandbox run never needs so we don't
-                // tar/upload hundreds of MB on every run:
-                // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
-                //   host Codex binary (e.g. `tmp/arg0`); followSymlinks would
-                //   inline those binaries and bloat the archive.
-                // - `sessions`: prior conversation rollouts (host-local history,
-                //   typically the bulk of CODEX_HOME) — irrelevant to a fresh run.
-                // - `shell_snapshots`: host shell captures that don't apply to
-                //   the sandbox's (different) shell/OS.
-                // Auth, config, and skills (the bits Codex actually needs) are
-                // small and still uploaded.
-                exclude: ["tmp", ".tmp", "sessions", "shell_snapshots"],
+                // Inbound (host→sandbox) auth-merge contribution: stages the two
+                // merge scripts and runs the merge-extract command so a sandbox
+                // that already carries a Codex `auth.json` keeps whichever
+                // credential is newer. The sandbox runtime core stays adapter-
+                // agnostic — it just invokes this generic `provision` seam.
+                provision: buildCodexAuthInboundProvision(),
+                // Outbound (sandbox→host) auth copy-back contribution: at
+                // teardown, read the sandbox's `auth.json` and — guarded by the
+                // same direction-agnostic decision predicate under a directory
+                // lock — atomically install it onto the shared host credential
+                // when it is a strictly-newer same-identity subscription copy.
+                // The sandbox core stays adapter-agnostic; it just awaits this
+                // generic `restore` seam per asset before destroying the sandbox.
+                // Target is the shared symlink SOURCE (what managed homes point
+                // `auth.json` at), not the in-sandbox symlink.
+                restore: async ({ assetDir, readFile }) =>
+                  void (await copyBackCodexAuth({
+                    readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                    hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    log: (line) => onLog("stdout", `${line}\n`),
+                    // Additive cache write (sandbox to host): also cache the
+                    // sandbox subscription credential in its per-identity slot,
+                    // keyed by the real `account_id`. Company-scoped root; the
+                    // helper ensures the slot directory private and containment-
+                    // guarded. The off-switch (default on) is read inside.
+                    resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
+                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
+                    env: process.env,
+                  })),
+                // No `exclude` denylist: `stagedCodexHomeDir` already contains
+                // ONLY the allowlisted files (auth/config/skills), so there is
+                // nothing to filter out.
               },
             ],
           });
@@ -669,8 +893,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
       onEvent,
     });
-    const hasExplicitApiKey =
-      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...paperclipBaseEnv };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
@@ -696,7 +918,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const linkedIssueIds = Array.isArray(context.issueIds)
       ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       : [];
-    const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
     const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
     if (wakeTaskId) {
       env.PAPERCLIP_TASK_ID = wakeTaskId;
@@ -719,9 +940,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (linkedIssueIds.length > 0) {
       env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
     }
-    if (wakePayloadJson) {
-      env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-    }
     refreshPaperclipWorkspaceEnvForExecution({
       env,
       envConfig,
@@ -738,6 +956,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTargetIsRemote,
       executionCwd: effectiveExecutionCwd,
     });
+    if (targetWorkspaceRealization) {
+      env.PAPERCLIP_WORKSPACE_REALIZATION_MODE = targetWorkspaceRealization.mode;
+      env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT = targetWorkspaceRealization.authoritativeRoot;
+    }
     if (runtimeServiceIntents.length > 0) {
       env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
     }
@@ -748,13 +970,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (!hasExplicitApiKey && authToken) {
+    if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
         target: runtimeExecutionTarget,
+        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
         runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
         adapterKey: "codex",
         timeoutSec,
@@ -770,7 +994,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const billingType = resolveCodexBillingType(effectiveEnv);
+    const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting);
+    const billingType = managedBilling?.billingType ?? resolveCodexBillingType(effectiveEnv);
+    const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
     const networkScope = parseLocalProcessNetworkScope(config.networkScope);
     const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
     const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -780,9 +1006,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             filesystemScope,
             managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
             extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            pathAliases: targetWorkspaceRealization?.mode === "copy"
+              ? targetWorkspaceRealization.pathAliases
+              : [],
+            outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
             homeDir: filesystemScope ? effectiveCodexHome : null,
             networkScope,
             networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            networkTrustedUrls: [
+              paperclipBaseEnv.PAPERCLIP_API_URL,
+              ...runtimeMcpGateways.map((gateway) => gateway.endpointPath),
+            ],
             command: asString(config.filesystemSandboxCommand, "bwrap"),
           }
         : null;
@@ -857,7 +1091,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
     let instructionsPrefix = "";
-    let instructionsChars = 0;
     if (instructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
@@ -865,7 +1098,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${instructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
-        instructionsChars = instructionsPrefix.length;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
@@ -886,14 +1118,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const renderedBootstrapPrompt =
-      !sessionId && bootstrapPromptTemplate.trim().length > 0
-        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-        : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-    instructionsChars = promptInstructionsPrefix.length;
     const continuationSummary = parseObject(context.paperclipContinuationSummary);
     const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
     const codexFallbackHandoffNote =
@@ -904,22 +1128,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             continuationSummaryBody,
           })
         : "";
-    const commandNotes = (() => {
-      if (!instructionsFilePath) {
-        const notes = [repoAgentsNote];
-        if (forceSaferInvocation) {
-          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+    const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      const renderedBootstrapPrompt =
+        !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+          ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+          : "";
+      const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
+      });
+      const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+      const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+      const commandNotes = (() => {
+        if (!instructionsFilePath) {
+          const notes = [repoAgentsNote];
+          if (forceSaferInvocation) {
+            notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+          }
+          if (forceFreshSession) {
+            notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+          }
+          return notes;
         }
-        if (forceFreshSession) {
-          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-        }
-        return notes;
-      }
-      if (instructionsPrefix.length > 0) {
-        if (shouldUseResumeDeltaPrompt) {
+        if (instructionsPrefix.length > 0) {
+          if (shouldUseResumeDeltaPrompt) {
+            const notes = [
+              `Loaded agent instructions from ${instructionsFilePath}`,
+              "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+              repoAgentsNote,
+            ];
+            if (forceSaferInvocation) {
+              notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+            }
+            if (forceFreshSession) {
+              notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+            }
+            return notes;
+          }
           const notes = [
             `Loaded agent instructions from ${instructionsFilePath}`,
-            "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+            `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
             repoAgentsNote,
           ];
           if (forceSaferInvocation) {
@@ -931,8 +1180,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return notes;
         }
         const notes = [
-          `Loaded agent instructions from ${instructionsFilePath}`,
-          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
           repoAgentsNote,
         ];
         if (forceSaferInvocation) {
@@ -942,57 +1190,60 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
         }
         return notes;
+      })();
+      if (executionTargetIsSandbox) {
+        commandNotes.push(
+          "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+        );
       }
-      const notes = [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-        repoAgentsNote,
-      ];
-      if (forceSaferInvocation) {
-        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+      if (preparedRuntimeConfig.notes.length > 0) {
+        commandNotes.unshift(...preparedRuntimeConfig.notes);
       }
-      if (forceFreshSession) {
-        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-      }
-      return notes;
-    })();
-    if (executionTargetIsSandbox) {
-      commandNotes.push(
-        "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
-      );
-    }
-    if (preparedRuntimeConfig.notes.length > 0) {
-      commandNotes.unshift(...preparedRuntimeConfig.notes);
-    }
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const prompt = joinPromptSections([
-      promptInstructionsPrefix,
-      renderedBootstrapPrompt,
-      wakePrompt,
-      codexFallbackHandoffNote,
-      sessionHandoffNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: prompt.length,
-      instructionsChars,
-      bootstrapPromptChars: renderedBootstrapPrompt.length,
-      wakePromptChars: wakePrompt.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
-
-    const runAttempt = async (resumeSessionId: string | null) => {
+      const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+      const prompt = joinPromptSections([
+        promptInstructionsPrefix,
+        renderedBootstrapPrompt,
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+        wakePrompt,
+        codexFallbackHandoffNote,
+        sessionHandoffNote,
+        taskContextNote,
+        renderedPrompt,
+      ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        instructionsChars: promptInstructionsPrefix.length,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
+        wakePromptChars: wakePrompt.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        taskContextChars: taskContextNote.length,
+        heartbeatPromptChars: renderedPrompt.length,
+      };
       const execArgs = buildCodexExecArgs(
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {
           resumeSessionId,
           skipGitRepoCheck: executionTargetIsSandbox,
+          networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
         },
       );
       const args = execArgs.args;
+      const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
+      if (ctx.agentIdentity) {
+        const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
+        const shellKeys = [...new Set([
+          "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+          // Keep Codex's default secret-name exclusions except for the scoped
+          // Paperclip API token used by the agent skill. Never include host env.
+          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          ...identityNames,
+        ])];
+        args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
+      }
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null
           ? commandNotes
@@ -1021,6 +1272,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
       let monitorLogPromise: Promise<unknown> | null = null;
+      const processActivityMonitor: { current: CodexProcessActivityMonitorHandle | null } = { current: null };
+      const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
 
       const monitor =
         monitorResolution.mode === "disabled"
@@ -1037,7 +1290,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
-                  `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
+                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                  `parsedEvents=${state.parsedEventCount} processActivityCount=${state.processActivityCount} ` +
+                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                   `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
                 // the promise so the surrounding try/finally can await flush before
@@ -1063,13 +1318,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
         killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+        if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
+          processActivityMonitor.current = createCodexProcessActivityMonitor({
+            pid: meta.pid,
+            processGroupId: meta.processGroupId,
+            intervalMs: Math.min(
+              CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+              Math.max(1_000, Math.floor(resolvedMonitorTimeoutMs / 4)),
+            ),
+            onActivity: () => monitor.noteProcessActivity(),
+          });
+        }
         if (onSpawn) {
           await onSpawn(meta);
         }
       };
 
+      const consumeAccounting = createCodexJsonlParser();
+      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+        const parsed = consumeAccounting(stdout);
+        return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
+      });
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
           cwd,
           env,
           stdin: prompt,
@@ -1078,9 +1350,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onSpawn: wrappedOnSpawn,
           onRuntimeProgress: ctx.onRuntimeProgress,
           onLog: async (stream, chunk) => {
+            monitor?.noteOutputChunk(stream, chunk);
             if (stream === "stdout") {
-              monitor?.noteStdoutChunk(chunk);
-              await onLog(stream, chunk);
+              await accountingLog(stream, chunk);
               return;
             }
             const cleaned = stripCodexRolloutNoise(chunk);
@@ -1088,8 +1360,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
           localProcessSandbox,
         });
+        await accountingLog.flush();
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {
           proc: {
@@ -1098,6 +1372,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
           rawStderr: proc.stderr,
           parsed: parseCodexJsonl(proc.stdout),
+          pricingContext,
           monitor: monitorFired
             ? {
                 fired: true as const,
@@ -1108,6 +1383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : { fired: false as const },
         };
       } finally {
+        processActivityMonitor.current?.stop();
         monitor?.stop();
         if (sigkillTimer) {
           clearTimeout(sigkillTimer);
@@ -1122,9 +1398,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseCodexJsonl>;
+        pricingContext?: AdapterExecutionResult["pricingContext"];
         monitor?:
           | { fired: false }
           | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
@@ -1138,19 +1415,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: null,
           signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
           timedOut: false,
+          usageComplete: attempt.parsed.usageComplete,
+          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
           errorMessage,
           errorCode: "codex_output_inactivity_monitor",
           errorFamily: null,
-          usage: attempt.parsed.usage,
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: attempt.parsed.usageBasis,
           sessionId: null,
           sessionParams: null,
           sessionDisplayId: null,
           provider: "openai",
-          biller: resolveCodexBiller(effectiveEnv, billingType),
+          biller,
           model,
           billingType,
           costUsd: null,
+          pricingContext: attempt.pricingContext,
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -1170,6 +1450,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
+          usageComplete: attempt.parsed.usageComplete,
+          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+          usageBasis: "per_run",
+          provider: "openai",
+          biller,
+          model,
+          billingType,
+          costUsd: null,
+          pricingContext: attempt.pricingContext,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
@@ -1194,7 +1484,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } as Record<string, unknown>)
         : null;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
@@ -1232,36 +1522,57 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
+      const harnessCrash =
+        !authRefreshFailure &&
+        !providerQuota &&
+        !transientUpstream &&
+        isCodexHarnessCrash({
+          exitCode: attempt.proc.exitCode,
+          sawProtocolEvent: attempt.parsed.sawProtocolEvent,
+          sawProtocolTerminalEvent: attempt.parsed.sawProtocolTerminalEvent,
+        });
+      const errorFamily =
+        authRefreshFailure ??
+        (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
+        usageComplete: attempt.parsed.usageComplete,
+        costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
         errorMessage:
           (attempt.proc.exitCode ?? 0) === 0
             ? null
             : fallbackErrorMessage,
         errorCode:
-          authRefreshFailure
+          // Forward the transport-level error code from the run-disposition
+          // seam first. A lost duplex control channel surfaces the typed
+          // `duplex_channel_lost` code before any provider classification.
+          attempt.proc.errorCode
+            ? attempt.proc.errorCode
+            : authRefreshFailure
             ? authRefreshFailure
             : providerQuota
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"
+            : harnessCrash
+            ? "codex_harness_crash"
             : null,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-        usage: attempt.parsed.usage,
+        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
         usageBasis: attempt.parsed.usageBasis,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: "openai",
-        biller: resolveCodexBiller(effectiveEnv, billingType),
+        biller,
         model,
         billingType,
         costUsd: null,
+        pricingContext: attempt.pricingContext,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1275,11 +1586,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    let executionError: unknown = null;
     try {
       const initial = await runAttempt(sessionId);
       if (
         sessionId &&
         !initial.proc.timedOut &&
+        !initial.proc.signal &&
+        // A started session can emit stale-rollout warnings for other threads.
+        // After Ctrl-C those warnings must not restart the cancelled turn.
+        !initial.parsed.sessionId &&
         (initial.proc.exitCode ?? 0) !== 0 &&
         isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
@@ -1288,23 +1604,66 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true, true);
+        const retryResult = toResult(retry, true, true);
+        if (retryResult.errorMessage) {
+          executionError = new Error(retryResult.errorMessage);
+        }
+        return retryResult;
       }
 
-      return toResult(initial, false, false);
-    } finally {
-      if (paperclipBridge) {
-        await paperclipBridge.stop();
+      const result = toResult(initial, false, false);
+      if (result.errorMessage) {
+        executionError = new Error(result.errorMessage);
       }
-      if (restoreRemoteWorkspace) {
-        await onLog(
-          "stdout",
-          `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        await restoreRemoteWorkspace();
+      return result;
+    } catch (error) {
+      executionError = error;
+      throw error;
+    } finally {
+      try {
+        await providerStop.collectBeforeRestore();
+      } finally {
+        if (paperclipBridge) {
+          await paperclipBridge.stop();
+        }
+        if (restoreRemoteWorkspace) {
+          try {
+            await onLog(
+              "stdout",
+              `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+            );
+            await restoreRemoteWorkspace();
+          } catch (error) {
+            await Promise.resolve(
+              onLog(
+                "stderr",
+                `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                  executionTarget,
+                )}: ${error instanceof Error ? error.message : String(error)}\n`,
+              ),
+            ).catch(() => undefined);
+            // A provider failure remains the primary outcome. When provider work
+            // succeeded, however, silently accepting a failed copy-back can lose
+            // the only workspace edits before a replacement sandbox starts.
+            if (executionError === null) throw error;
+          }
+        }
       }
     }
   } finally {
+    // Remove the staged CODEX_HOME allowlist temp dir on every exit path
+    // (teardown AND error), never only the happy path. Cleanup failure is
+    // logged, not fatal — a leaked temp dir must not crash the run.
+    if (stagedCodexHomeDir) {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    }
     // Restore the managed config.toml so PAPERCLIP_CODEX_PROVIDERS changes
     // (or removal) between runs never leave stale provider routing behind. This
     // finally starts the moment prepareCodexRuntimeConfig returns, so a throw

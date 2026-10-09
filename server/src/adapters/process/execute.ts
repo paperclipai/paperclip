@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   asString,
@@ -5,6 +8,9 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
+  isForbiddenConfigEnvKey,
+  isPaperclipRuntimeEnvKey,
   buildInvocationEnvForLogs,
   ensurePathInEnv,
   resolveCommandForLogs,
@@ -12,6 +18,24 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  let spawned = false;
+  try {
+    return await executeProcess({ ...ctx, onSpawn: async (meta) => {
+      // Set this before metadata persistence: a failed callback cannot prove
+      // that the already-created process did no billable work.
+      spawned = true;
+      await ctx.onSpawn?.(meta);
+    } });
+  } catch (error) {
+    if (spawned) throw error;
+    return { exitCode: 1, signal: null, timedOut: false,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    };
+  }
+}
+
+async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
@@ -20,13 +44,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   for (const [k, v] of Object.entries(envConfig)) {
-    if (typeof v === "string") env[k] = v;
+    if (typeof v !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
+    // never accepted from config — the harness-minted run token is the only
+    // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
+    if (isForbiddenConfigEnvKey(k)) continue;
+    if (isPaperclipRuntimeEnvKey(k) && k in env) continue;
+    env[k] = v;
   }
   env.PAPERCLIP_RUN_ID = runId;
-  if (authToken && !env.PAPERCLIP_API_KEY?.trim()) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  // runtimeEnv is only used to resolve the command path and log HOME below;
+  // the child env is built inside runChildProcess from
+  // sanitizeInheritedPaperclipEnv(process.env) + env, so a PAPERCLIP_API_KEY
+  // on the server process never reaches the child.
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -48,14 +83,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
   }
 
-  const proc = await runChildProcess(runId, command, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const instructions = parseObject(ctx.context.connectionInstructions);
+  let instructionsDirectory: string | undefined;
+  // Override configured/inherited paths even when the connection was removed.
+  env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = "";
+  let proc: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    if (typeof instructions.text === "string" && instructions.text) {
+      instructionsDirectory = await mkdtemp(join(tmpdir(), "paperclip-connection-instructions-"));
+      const instructionsFile = join(instructionsDirectory, "instructions.json");
+      await writeFile(instructionsFile, JSON.stringify(instructions), { mode: 0o600 });
+      env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = instructionsFile;
+    }
+    proc = await runChildProcess(runId, command, args, {
+      cwd, env, timeoutSec, graceSec, onLog, onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    if (instructionsDirectory) await rm(instructionsDirectory, { recursive: true, force: true });
+  }
 
   if (proc.timedOut) {
     return {

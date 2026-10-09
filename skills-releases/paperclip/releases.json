@@ -1,0 +1,16 @@
+[
+  {
+    "id": "v0",
+    "releaseName": "V0 — Original",
+    "releasedAt": "2026-07-15T07:52:54-05:00",
+    "notes": "Original Paperclip core skill snapshot from upstream commit ea66ea81.",
+    "dir": "v0"
+  },
+  {
+    "id": "v7-roster",
+    "releaseName": "V7 — Roster champion",
+    "releasedAt": "2026-07-21",
+    "notes": "Adopted by PAP-14624 G3 confirmation card 9c304fc2. This frozen historical release predates three later master edits to SKILL.md, references/api-reference.md, and references/company-skills.md; the live default keeps the newer guidance.",
+    "dir": "v7-roster"
+  }
+]

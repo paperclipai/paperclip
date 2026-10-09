@@ -30,11 +30,77 @@ import {
 } from "@/components/timeline/WorkTimelineChart";
 import { formatDuration, TIMELINE_COLORS } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
+import { useLocation } from "@/lib/router";
+import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
+const TIMELINE_PAGE_LIMIT = 500;
+
 interface DateRangeState {
   fromDate: string;
   toDate: string;
+}
+
+function timelineEventKey(event: WorkTimelineResult["events"][number]) {
+  return `${event.actorId}\0${event.kind}\0${event.issueId}\0${event.at}`;
+}
+
+function timelineEdgeKey(edge: WorkTimelineResult["edges"][number]) {
+  return `${edge.fromActorId}\0${edge.toActorId}\0${edge.issueId}\0${edge.at}\0${edge.kind}`;
+}
+
+export async function loadTimelineWindow(
+  companyId: string,
+  params: WorkTimelineParams,
+  signal?: AbortSignal,
+): Promise<WorkTimelineResult> {
+  const actors = new Map<string, WorkTimelineResult["actors"][number]>();
+  const spans = new Map<string, WorkTimelineResult["spans"][number]>();
+  const events = new Map<string, WorkTimelineResult["events"][number]>();
+  const edges = new Map<string, WorkTimelineResult["edges"][number]>();
+  let offset = 0;
+  let firstPage: WorkTimelineResult | null = null;
+  let totalIssues = 0;
+  let capped = false;
+
+  while (true) {
+    const page = await workTimelineApi.get(companyId, {
+      ...params,
+      limit: TIMELINE_PAGE_LIMIT,
+      offset,
+    }, { signal });
+    firstPage ??= page;
+    totalIssues = Math.max(totalIssues, page.pagination.totalIssues);
+    capped ||= page.window.capped;
+
+    for (const actor of page.actors) actors.set(actor.id, actor);
+    for (const span of page.spans) spans.set(span.runId, span);
+    for (const event of page.events) events.set(timelineEventKey(event), event);
+    for (const edge of page.edges) edges.set(timelineEdgeKey(edge), edge);
+
+    if (!page.pagination.hasMore) break;
+    const nextOffset = page.pagination.offset + page.pagination.limit;
+    if (nextOffset <= offset) throw new Error("Timeline pagination did not advance");
+    offset = nextOffset;
+  }
+
+  if (!firstPage) throw new Error("Timeline response was empty");
+  return {
+    actors: Array.from(actors.values()),
+    spans: Array.from(spans.values()),
+    events: Array.from(events.values()),
+    edges: Array.from(edges.values()),
+    pagination: {
+      limit: TIMELINE_PAGE_LIMIT,
+      offset: 0,
+      totalIssues,
+      hasMore: false,
+    },
+    window: {
+      ...firstPage.window,
+      capped,
+    },
+  };
 }
 
 function dateInputValue(date: Date): string {
@@ -238,9 +304,15 @@ function TimelineSummaryStats({
   );
 }
 
-export function Timeline() {
+export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const location = useLocation();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const scopedProjectId = useMemo(
+    () => streamlinedUiEnabled ? new URLSearchParams(location.search).get("projectId") || undefined : undefined,
+    [location.search, streamlinedUiEnabled],
+  );
   const [zoom, setZoom] = useState<ZoomLevel>("day");
   const [zoomScale, setZoomScale] = useState<number | undefined>(undefined);
   const zoomTouched = useRef(false);
@@ -249,19 +321,21 @@ export function Timeline() {
   const [visibleWindow, setVisibleWindow] = useState<VisibleTimelineWindow | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Timeline" }]);
-  }, [setBreadcrumbs]);
+    if (!embedded) {
+      setBreadcrumbs([{ label: scopedProjectId ? "Project Timeline" : "Timeline" }]);
+    }
+  }, [embedded, scopedProjectId, setBreadcrumbs]);
 
   const dateRangeError = rangeError(dateRange);
   const params: WorkTimelineParams | null = useMemo(() => {
     const window = rangeWindow(dateRange);
     if (!window) return null;
-    return window;
-  }, [dateRange]);
+    return scopedProjectId ? { ...window, projectId: scopedProjectId } : window;
+  }, [dateRange, scopedProjectId]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate],
-    queryFn: () => workTimelineApi.get(selectedCompanyId!, params!),
+    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate, scopedProjectId ?? null],
+    queryFn: ({ signal }) => loadTimelineWindow(selectedCompanyId!, params!, signal),
     enabled: !!selectedCompanyId && !!params,
   });
 
@@ -287,8 +361,8 @@ export function Timeline() {
   if (!selectedCompanyId) {
     return (
       <>
-        <RequestCollapsedSidebar />
-        <EmptyState icon={GanttChartSquare} message="Select a company to view its work timeline." />
+        {!embedded && <RequestCollapsedSidebar />}
+        <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
       </>
     );
   }
@@ -296,7 +370,9 @@ export function Timeline() {
   const header = (
     <div className="flex items-center gap-2">
       <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
-      <h1 className="text-3xl font-semibold tracking-tight">Work Timeline</h1>
+      <h1 className="text-3xl font-semibold tracking-tight">
+        {scopedProjectId ? "Project Timeline" : "Work Timeline"}
+      </h1>
     </div>
   );
 
@@ -399,7 +475,7 @@ export function Timeline() {
 
   return (
     <div className="space-y-6">
-      <RequestCollapsedSidebar />
+      {!embedded && <RequestCollapsedSidebar />}
       {header}
       {toolbar}
 
@@ -427,7 +503,10 @@ export function Timeline() {
       {data && !isLoading && !dateRangeError && (
         data.spans.length === 0 ? (
           <div className="space-y-3">
-            <EmptyState icon={GanttChartSquare} message="No activity in this window." />
+            <EmptyState
+              icon={GanttChartSquare}
+              message={scopedProjectId ? "No project activity in this window." : "No activity in this window."}
+            />
             <div className="flex flex-wrap items-center justify-end gap-3">
               {rangeControls}
             </div>

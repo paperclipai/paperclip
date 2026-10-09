@@ -2,7 +2,7 @@ export type SmokeRunStepPath = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7";
 
 export type SmokeLabScenarioStatus = "ci_safe" | "headed_full";
 
-export type SmokeLabTransport = "remote_http" | "local_stdio" | "plugin" | "prosumer_import" | "gateway_session" | "governance";
+export type SmokeLabTransport = "mcp_remote" | "local_stdio" | "plugin" | "prosumer_import" | "gateway_session" | "governance";
 
 export interface SmokeLabLifecycleTool {
   name: string;
@@ -48,7 +48,7 @@ export const smokeLabScenarios: SmokeLabScenario[] = [
   {
     path: "P1",
     title: "Remote HTTP MCP connection, OAuth",
-    transport: "remote_http",
+    transport: "mcp_remote",
     authMode: "oauth",
     smokeService: "HTTP MCP fixture + fake OAuth provider",
     status: "ci_safe",
@@ -65,7 +65,7 @@ export const smokeLabScenarios: SmokeLabScenario[] = [
   {
     path: "P2",
     title: "Remote HTTP MCP connection, API key",
-    transport: "remote_http",
+    transport: "mcp_remote",
     authMode: "api_key",
     smokeService: "HTTP MCP fixture with static fixture credential",
     status: "ci_safe",

@@ -10,7 +10,7 @@ import {
   externalObjectLivenessOverlay,
 } from "../lib/status-colors";
 import {
-  externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectLivenessLabel,
   externalObjectIconForKey,
@@ -114,7 +114,7 @@ export function ExternalObjectPill({
   const providerLabel = externalObjectProviderLabel(object.providerKey);
   const typeLabel = externalObjectTypeLabel(object.objectType);
   const displayKey = externalObjectDisplayLabel(object.providerKey, object.objectType, object.displayKey);
-  const statusLabel = object.statusLabel ?? externalObjectCategoryLabel(object.statusCategory);
+  const statusLabel = externalObjectDisplayStatusLabel(object);
   const tone = externalObjectPillTone(object, statusLabel);
   const valueLabel = externalObjectValueLabel(object, displayKey, statusLabel);
   const statusIconKey = externalObjectStatusIconKey(object, statusLabel);

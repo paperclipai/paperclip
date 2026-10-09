@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
+  companyMemberships,
   createDb,
   documents,
   issueComments,
@@ -9,6 +10,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import {
+  COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE,
   COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
   companySearchExtractQuerySchema,
 } from "@paperclipai/shared";
@@ -17,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySearchExtractService } from "../services/company-search-extract.js";
+import { issueReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,15 +39,18 @@ describe("extract-search query validation", () => {
       status: "in_progress,in_review",
       limit: "200",
       offset: "5000",
+      matchesPerIssue: "200",
       updatedWithin: "30d",
     });
 
     expect(parsed.kind).toBe("url");
     expect(parsed.scope).toBe("comments");
     expect(parsed.status).toEqual(["in_progress", "in_review"]);
+    expect(parsed.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
     expect(() => companySearchExtractQuerySchema.parse({ contains: ".*", kind: "regex" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({ contains: "x" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({ contains: "needle", limit: "201" })).toThrow();
+    expect(() => companySearchExtractQuerySchema.parse({ contains: "needle", matchesPerIssue: "201" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({
       contains: "needle",
       updatedWithin: "30d",
@@ -69,6 +75,7 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -214,10 +221,10 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     expect(result.results.map((row) => row.issueId)).toEqual([recentId]);
   });
 
-  it("caps distinct matches per issue and marks truncation explicitly", async () => {
+  it("uses the default distinct-match cap and marks truncation explicitly", async () => {
     const companyId = await createCompany();
     const urls = Array.from(
-      { length: COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE + 1 },
+      { length: COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE + 1 },
       (_, index) => `https://github.com/paperclipai/paperclip/pull/${index + 1}`,
     );
     await createIssue(companyId, { description: urls.join(" ") });
@@ -227,9 +234,30 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
       kind: "url",
     }));
 
-    expect(result.results[0]?.matches).toHaveLength(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
+    expect(result.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE);
+    expect(result.results[0]?.matches).toHaveLength(COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE);
     expect(result.results[0]?.matchesTruncated).toBe(true);
     expect(result.truncated).toBe(true);
+  });
+
+  it("supports a bounded per-issue match cap for complete machine extraction", async () => {
+    const companyId = await createCompany();
+    const urls = Array.from(
+      { length: COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE + 1 },
+      (_, index) => `https://github.com/paperclipai/paperclip/pull/${index + 1}`,
+    );
+    await createIssue(companyId, { description: urls.join(" ") });
+
+    const result = await svc.extract(companyId, companySearchExtractQuerySchema.parse({
+      contains: "github.com/paperclipai/paperclip/pull",
+      kind: "url",
+      matchesPerIssue: COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
+    }));
+
+    expect(result.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
+    expect(result.results[0]?.matches).toHaveLength(urls.length);
+    expect(result.results[0]?.matchesTruncated).toBe(false);
+    expect(result.truncated).toBe(false);
   });
 
   it("does not return matching issues from another company", async () => {
@@ -240,5 +268,45 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     const result = await svc.extract(companyId, companySearchExtractQuerySchema.parse({ contains: "needle" }));
 
     expect(result.results).toEqual([]);
+  });
+
+  it("does not extract content from a private issue for a non-member", async () => {
+    const companyId = await createCompany();
+    const viewerId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: viewerId,
+      membershipRole: "operator",
+      status: "active",
+});
+    const visibleIssueId = await createIssue(companyId, {
+      identifier: "EXT-PUBLIC",
+      description: "privacy-leak-needle",
+    });
+    const privateIssueId = randomUUID();
+    await createIssue(companyId, {
+      id: privateIssueId,
+      identifier: "EXT-PRIVATE",
+      description: "privacy-leak-needle private payload",
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: randomUUID(),
+    });
+    const actor: AuthorizationActor = {
+      type: "board",
+      userId: viewerId,
+      source: "session",
+    };
+
+    const result = await svc.extract(
+      companyId,
+      companySearchExtractQuerySchema.parse({ contains: "privacy-leak-needle" }),
+      { issueReadCondition: await issueReadSqlCondition(db, actor) },
+    );
+
+    expect(result.results.map((row) => row.issueId)).toEqual([visibleIssueId]);
+    expect(JSON.stringify(result)).not.toContain(privateIssueId);
+    expect(JSON.stringify(result)).not.toContain("private payload");
   });
 });

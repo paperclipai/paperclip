@@ -44,6 +44,7 @@ function createApp(
   db?: Db,
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
+  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
 ) {
   const app = express();
   app.use(
@@ -55,6 +56,7 @@ function createApp(
       companyDeletionEnabled: true,
       serverInfo,
       databaseBackupHealth,
+      runtimeEnv,
     }),
   );
   return app;
@@ -68,13 +70,87 @@ describe("GET /health", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
   it("returns 200 with status ok", async () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
+
+  it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    const baseline = {
+      status: "ok",
+      version: serverVersion,
+      serverVersion,
+      commit: testServerInfo.git.fullSha,
+      serverInfo: testServerInfo,
+    };
+    expect(res.text).toBe(JSON.stringify(baseline));
+    expect(Object.prototype.hasOwnProperty.call(res.body, "cloud")).toBe(false);
+  });
+
+  it("exposes public stack metadata on cloud-simulated health", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_CLOUD_STACK_ID: "stack-1",
+      PAPERCLIP_STACK_SLUG: "acme",
+      PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID: "account-group-1",
+      PAPERCLIP_PRIMARY_HOST: "acme.paperclip.app",
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://app.paperclip.app",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.cloud).toEqual({
+      managed: true,
+      managedBy: "paperclip-cloud",
+      stackSlug: "acme",
+      cloudBaseUrl: "https://app.paperclip.app",
+    });
+  });
+
+  it("lists operator-hidden settings and drops unknown keys", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.adapters,instance.bogus",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.hiddenSettings).toEqual(["instance.plugins", "instance.adapters"]);
+  });
+
+  it("omits hiddenSettings entirely when nothing is hidden", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
+  });
+
+  it("publishes concrete wildcard restrictions to the UI and refreshes changed exceptions", async () => {
+    const env = { PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental.*,!instance.experimental.enableEnvironments" };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    const first = await request(app).get("/health");
+    expect(first.status).toBe(200);
+    expect(first.body.hiddenSettings).toContain("instance.plugins");
+    expect(first.body.hiddenSettings).toContain("instance.experimental.enableMemoryConnectors");
+    expect(first.body.hiddenSettings).not.toContain("instance.experimental.enableEnvironments");
+    expect(first.body.hiddenSettings.some((key: string) => key.includes("*") || key.startsWith("!"))).toBe(false);
+
+    env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental.*,!instance.experimental.enableMemoryConnectors";
+    const second = await request(app).get("/health");
+    expect(second.body.hiddenSettings).toContain("instance.experimental.enableEnvironments");
+    expect(second.body.hiddenSettings).not.toContain("instance.experimental.enableMemoryConnectors");
+  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
@@ -105,6 +181,8 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      serverVersion,
+      commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
       serverInfo: testServerInfo,
     });
@@ -129,6 +207,8 @@ describe("GET /health", () => {
         unavailableReason: "git_unavailable",
       },
     });
+    // With no git metadata baked in, the exposed commit is null (not omitted).
+    expect(res.body.commit).toBeNull();
   });
 
   it("surfaces a stale database backup warning in full health details", async () => {
@@ -279,6 +359,8 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      localAiLoginSupported: false,
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       databaseBackup: {
@@ -335,6 +417,8 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      localAiLoginSupported: false,
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -372,6 +456,8 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      localAiLoginSupported: false,
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -412,6 +498,7 @@ describe("GET /health", () => {
     expect(res.body).toMatchObject({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       authReady: true,
@@ -421,6 +508,79 @@ describe("GET /health", () => {
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
+    });
+  });
+
+  it("reports bootstrap_pending in authenticated mode when no instance admin exists", async () => {
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      bootstrapStatus: "bootstrap_pending",
+      bootstrapInviteActive: false,
+    });
+  });
+
+  it("reports bootstrapStatus ready for cloud-managed instances regardless of instance admin count", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-tenant-server-token");
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      bootstrapStatus: "ready",
+      bootstrapInviteActive: false,
     });
   });
 });

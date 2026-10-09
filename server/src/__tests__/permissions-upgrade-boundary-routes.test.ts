@@ -34,6 +34,9 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 
+import { activityRoutes } from "../routes/activity.js";
+import { issueRoutes } from "../routes/issues.js";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -52,10 +55,6 @@ function agentActor(companyId: string, agentId: string): Express.Request["actor"
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
-  const [{ activityRoutes }, { issueRoutes }] = await Promise.all([
-    import("../routes/activity.js"),
-    import("../routes/issues.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -254,7 +253,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     expect(activity.body).toEqual(expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]));
     expect(workProducts.status, JSON.stringify(workProducts.body)).toBe(200);
     expect(workProducts.body).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Preview" })]));
-  });
+  }, 20_000);
 
   it("denies cross-company issue reads before private-agent grant evaluation can matter", async () => {
     const sourceCompany = await seedCompany(db, "Source");

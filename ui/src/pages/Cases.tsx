@@ -4,7 +4,6 @@ import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, ListTree, Se
 import { Link, useCaseHref, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { useGeneralSettings } from "@/context/GeneralSettingsContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { casesApi, CASE_STATUSES, TERMINAL_CASE_STATUSES, type CaseStatus, type CaseSummary } from "@/api/cases";
 import { projectsApi } from "@/api/projects";
@@ -742,7 +741,6 @@ function CasesEmptyHero() {
 export function Cases() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const caseHref = useCaseHref();
@@ -807,8 +805,8 @@ export function Cases() {
     enabled: !!selectedCompanyId,
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId ?? ""),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId ?? "", { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const labelsQuery = useQuery({
@@ -1122,8 +1120,6 @@ export function Cases() {
   }
 
   useEffect(() => {
-    if (!keyboardShortcutsEnabled) return;
-
     function handleKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
       const target = event.target;
@@ -1183,7 +1179,7 @@ export function Cases() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [caseHref, keyboardNavItems, keyboardShortcutsEnabled, navigate, selectedIndex, viewState.treeView]);
+  }, [caseHref, keyboardNavItems, navigate, selectedIndex, viewState.treeView]);
 
   if (casesQuery.isLoading) return <PageSkeleton variant="list" />;
 
@@ -1272,7 +1268,7 @@ export function Cases() {
                           checked={viewState.projectFilters.includes(ALL)}
                           onCheckedChange={(checked) => toggleStringFilter("projectFilters", ALL, checked)}
                         />
-                        {(projectsQuery.data ?? []).map((project) => (
+                        {(projectsQuery.data ?? []).filter((project) => !project.archivedAt).map((project) => (
                           <FilterCheckboxRow
                             key={project.id}
                             label={project.name}

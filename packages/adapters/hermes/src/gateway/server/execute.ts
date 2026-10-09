@@ -3,14 +3,16 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import type { ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import {
   asNumber,
   asString,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
+  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
@@ -21,6 +23,7 @@ import {
 } from "../shared/constants.js";
 import {
   allowsInsecureRemoteHttp,
+  isLoopbackHostname,
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
@@ -37,6 +40,7 @@ type HermesHttpError = Error & {
   code?: string;
   retryNotBefore?: string | null;
   body?: unknown;
+  transportCause?: unknown;
 };
 
 type TerminalState = {
@@ -57,6 +61,72 @@ type ExecutionState = {
 };
 
 type TextRedactor = (value: string) => string;
+
+type GatewayConfigurationFailure = Extract<ConnectionFailure, { provider: "hermes_gateway"; operation: "configuration" }>;
+type GatewayRequestFailure = Extract<ConnectionFailure, { provider: "hermes_gateway"; operation: "create_run" }>;
+
+// Only errors observed at our outbound request boundary acquire this provenance.
+// A callback or remote payload cannot opt itself out of product error reporting.
+const requestConnectionFailures = new WeakMap<Error, GatewayRequestFailure>();
+const NETWORK_FAILURE_REASONS: Readonly<Record<string, GatewayRequestFailure["reason"]>> = {
+  ECONNREFUSED: "connection_refused",
+  ENOTFOUND: "dns_failure",
+  EAI_AGAIN: "dns_failure",
+  EHOSTUNREACH: "network_unreachable",
+  ENETUNREACH: "network_unreachable",
+  ECONNRESET: "connection_reset",
+  EPIPE: "connection_reset",
+  UND_ERR_SOCKET: "connection_reset",
+  ETIMEDOUT: "connection_timeout",
+  UND_ERR_CONNECT_TIMEOUT: "connection_timeout",
+  UND_ERR_HEADERS_TIMEOUT: "connection_timeout",
+  UND_ERR_BODY_TIMEOUT: "connection_timeout",
+  CERT_HAS_EXPIRED: "tls_failure",
+  CERT_NOT_YET_VALID: "tls_failure",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "tls_failure",
+  SELF_SIGNED_CERT_IN_CHAIN: "tls_failure",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "tls_failure",
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY: "tls_failure",
+  ERR_TLS_CERT_ALTNAME_INVALID: "tls_failure",
+};
+
+function gatewayConfigurationFailure(reason: GatewayConfigurationFailure["reason"]): GatewayConfigurationFailure {
+  return { schemaVersion: 1, provider: "hermes_gateway", operation: "configuration", reason };
+}
+
+function networkFailureReason(value: unknown, depth = 0): GatewayRequestFailure["reason"] | null {
+  const cause = asRecord(value);
+  if (!cause || depth > 2 || cause.name === "AbortError") return null;
+  const reason = typeof cause.code === "string" && Object.hasOwn(NETWORK_FAILURE_REASONS, cause.code)
+    ? NETWORK_FAILURE_REASONS[cause.code]!
+    : null;
+  if (cause.code !== undefined && !reason) return null;
+  if (cause.errors !== undefined) {
+    if (!Array.isArray(cause.errors) || cause.errors.length === 0 || cause.errors.length > 8) return null;
+    const reasons = cause.errors.map((error) => networkFailureReason(error, depth + 1));
+    const first = reasons[0];
+    return first && reasons.every((item) => item === first) && (!reason || reason === first) ? first : null;
+  }
+  return reason;
+}
+
+function rememberNetworkFailure(target: Error, error: unknown): void {
+  if (!(error instanceof Error) || error.name === "AbortError") return;
+  // Native fetch wraps transport errors in cause. Do not classify an arbitrary
+  // TypeError, its text, or remote JSON that happens to name a network error.
+  const reason = networkFailureReason(error.cause);
+  if (reason) requestConnectionFailures.set(target, {
+    schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason,
+  });
+}
+
+function httpFailureReason(status: number): GatewayRequestFailure["reason"] | null {
+  if (status === 401 || status === 403) return "authentication_failed";
+  if (status === 404) return "endpoint_not_found";
+  if (status === 429) return "rate_limited";
+  if (status >= 500 && status <= 599) return "remote_unavailable";
+  return null;
+}
 
 const CRITICAL_HEADERS = new Set([
   "authorization",
@@ -263,9 +333,25 @@ function buildHeaders(input: {
 }
 
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
-  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
-  const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
+  // Stable session keys (issue/agent strategy) resume the same remote Hermes
+  // conversation across runs; a stored session id from a prior run means that
+  // conversation already received the task brief, so pick the compact
+  // task-context variant under the shared resume rules.
+  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const resumedSession =
+    (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
+    Boolean(nonEmpty(ctx.runtime?.sessionId));
+  const { taskContextNote: taskMarkdown, wakePrompt } = selectPaperclipPromptSections(ctx.context, {
+    resumedSession,
+    // Hermes gateway owns the execution contract below; retain the old
+    // gateway prompt shape and avoid adding a second contract on resume.
+    includeExecutionContract: false,
+  });
+  const wakePayloadJson = paperclipWakeCommentsArePromptOwned(ctx.context)
+    ? null
+    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+        omitIssueDescription: Boolean(taskMarkdown),
+      });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   const lines = [
@@ -278,7 +364,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
-    ...(isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
+    ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
       ? []
       : [
           "Execution contract:",
@@ -307,7 +393,10 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const configuredInput = nonEmpty(payloadTemplate.input);
+  const input = configuredInput && ctx.context.conversationMode === true
+    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl)}`
+    : configuredInput ?? buildInput(ctx, paperclipApiUrl);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -357,9 +446,17 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   } catch (err) {
     const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
+    fetchErr.transportCause = err instanceof Error ? err.cause : undefined;
+    rememberNetworkFailure(fetchErr, err);
     throw fetchErr;
   }
-  const body = await readResponseJson(response);
+  let body: unknown;
+  try {
+    body = await readResponseJson(response);
+  } catch (err) {
+    if (err instanceof Error) rememberNetworkFailure(err, err);
+    throw err;
+  }
   if (!response.ok) {
     const classified = classifyHttpError(response.status);
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
@@ -367,6 +464,10 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     err.code = classified.code;
     err.retryNotBefore = response.headers.get("retry-after");
     err.body = body;
+    const reason = httpFailureReason(response.status);
+    if (reason) requestConnectionFailures.set(err, {
+      schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason,
+    });
     throw err;
   }
   return body;
@@ -738,13 +839,34 @@ function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSen
   return redactText(String(err));
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+function isConfiguredLoopbackRefusal(error: HermesHttpError, baseUrl: URL): boolean {
+  if (error.code !== "hermes_gateway_connect_failed" || !isLoopbackHostname(baseUrl.hostname)) return false;
+  const cause = asRecord(error.transportCause);
+  if (cause?.code !== "ECONNREFUSED") return false;
+  const port = Number(baseUrl.port || (baseUrl.protocol === "https:" ? 443 : 80));
+  const hostname = baseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const refusals = Array.isArray(cause.errors) ? cause.errors : [cause];
+  if (refusals.length === 0 || refusals.length > 8) return false;
+  return refusals.every((value) => {
+    const refusal = asRecord(value);
+    return refusal?.code === "ECONNREFUSED" && refusal.syscall === "connect" &&
+      refusal.port === port && typeof refusal.address === "string" &&
+      isLoopbackHostname(refusal.address) &&
+      (hostname === "localhost" || refusal.address.toLowerCase() === hostname);
+  });
+}
+
+function errorResult(err: unknown, baseUrl: URL, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const loopbackRefused = isConfiguredLoopbackRefusal(hermesError, baseUrl);
+  const connectionFailure = err instanceof Error ? requestConnectionFailures.get(err) : undefined;
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
-    : redactErrorMessage(err, redactText);
+    : loopbackRefused
+      ? `${redactErrorMessage(err, redactText)}. The configured loopback gateway refers to the Paperclip server, not an agent sandbox or your browser's machine. Check that the Hermes API server is running there, or set adapterConfig.apiBaseUrl to its address reachable from the Paperclip server. Hermes Gateway connects to an already-running gateway; use hermes_local if Paperclip should launch the local Hermes CLI.`
+      : redactErrorMessage(err, redactText);
   return {
     exitCode: 1,
     signal: null,
@@ -753,7 +875,11 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
     errorMessage,
+    ...(connectionFailure ? { resultJson: { connectionFailure } } : {}),
     errorMeta: {
+      // Diagnosis only: a redirected request may have received a response
+      // before refusing a later connection. This never proves non-dispatch.
+      ...(loopbackRefused ? { category: "gateway_loopback_connection_refused", phase: "create_run" } : {}),
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
     },
@@ -769,6 +895,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_missing",
       errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
+      resultJson: { connectionFailure: gatewayConfigurationFailure("endpoint_missing") },
     };
   }
 
@@ -780,6 +907,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+      resultJson: { connectionFailure: gatewayConfigurationFailure("endpoint_invalid") },
     };
   }
   if (isRemotePlainHttp(baseUrl) && !allowsInsecureRemoteHttp(ctx.config)) {
@@ -789,6 +917,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
+      resultJson: { connectionFailure: gatewayConfigurationFailure("insecure_transport") },
     };
   }
 
@@ -800,6 +929,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_key_missing",
       errorMessage: "Hermes gateway adapter requires apiKey.",
+      resultJson: { connectionFailure: gatewayConfigurationFailure("credentials_missing") },
     };
   }
 
@@ -857,6 +987,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let runId: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first
+    // remote create request is its dispatch boundary. Report it before the
+    // request can block so continuation gates may release their issue lock.
+    ctx.onDispatch?.();
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
@@ -874,7 +1008,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
   } catch (err) {
-    return errorResult(err, redactText);
+    return errorResult(err, baseUrl, redactText);
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);

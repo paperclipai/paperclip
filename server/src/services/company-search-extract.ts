@@ -3,7 +3,6 @@ import type { SQL, SQLWrapper } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueComments, issueDocuments, issues } from "@paperclipai/db";
 import {
-  COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
   type CompanySearchExtractIssueResult,
   type CompanySearchExtractMatch,
   type CompanySearchExtractQuery,
@@ -131,7 +130,7 @@ function extractMatches(sources: ExtractSource[], query: CompanySearchExtractQue
       const dedupeKey = occurrence.value.toLowerCase();
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
-      if (matches.length >= COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE) {
+      if (matches.length >= query.matchesPerIssue) {
         matchesTruncated = true;
         continue;
       }
@@ -152,7 +151,11 @@ function extractMatches(sources: ExtractSource[], query: CompanySearchExtractQue
 
 export function companySearchExtractService(db: Db) {
   return {
-    extract: async (companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse> => {
+    extract: async (
+      companyId: string,
+      query: CompanySearchExtractQuery,
+      options?: { issueReadCondition?: SQL<boolean> },
+    ): Promise<CompanySearchExtractResponse> => {
       const containsPattern = `%${escapeLikePattern(query.contains)}%`;
       const urlPattern = urlContainsPattern(query.contains);
       const scopeConditions: SQL[] = [];
@@ -199,6 +202,7 @@ export function companySearchExtractService(db: Db) {
         visibleIssueCondition(),
         or(...scopeConditions)!,
       ];
+      if (options?.issueReadCondition) conditions.push(options.issueReadCondition);
       if (query.status.length > 0) conditions.push(inArray(issues.status, query.status));
       const updatedWithin = updatedWithinStart(query.updatedWithin);
       if (updatedWithin) conditions.push(gte(issues.updatedAt, updatedWithin));
@@ -340,6 +344,7 @@ export function companySearchExtractService(db: Db) {
         scope: query.scope,
         limit: query.limit,
         offset: query.offset,
+        matchesPerIssue: query.matchesPerIssue,
         results,
         hasMore,
         truncated: hasMore || results.some((result) => result.matchesTruncated),
