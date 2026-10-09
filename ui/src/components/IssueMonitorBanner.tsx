@@ -3,7 +3,16 @@ import { Clock, X } from "lucide-react";
 import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
 
 import { Button } from "@/components/ui/button";
-import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "@/components/ui/alert-dialog";
+import {
+  AlertDialog,
+  AlertDialogTrigger,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { InlineBanner } from "@/components/InlineBanner";
 import { IssuePullRequestLinks } from "@/components/IssuePullRequestLinks";
 import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-requests";

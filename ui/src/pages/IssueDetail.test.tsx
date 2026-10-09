@@ -594,6 +594,7 @@ vi.mock("../components/Identity", () => ({
 }));
 
 vi.mock("@/components/ui/button", () => ({
+  buttonVariants: () => "",
   Button: ({
     children,
     disabled,

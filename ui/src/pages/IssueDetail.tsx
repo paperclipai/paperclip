@@ -4572,7 +4572,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     mutationKey: ["cancel-issue-monitor", issueId],
     mutationFn: async () => {
       const current = await issuesApi.get(issueId!);
-      const { monitor: _monitor, ...policy } = current.executionPolicy ?? {};
+      const { monitor: _monitor, ...policy } = current.executionPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] };
       return issuesApi.update(current.id, {
         executionPolicy: {
           ...policy,
