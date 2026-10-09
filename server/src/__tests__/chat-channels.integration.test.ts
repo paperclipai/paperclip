@@ -26541,11 +26541,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(chatActions.id, add.id));
       await service.processPendingReceiptReactions(1, add.id);
       expect(runtime.endpoints.get(endpoint.id)?.reactions).toHaveLength(1);
+      // This is a legacy connection: its final answer still publishes exactly
+      // once while the old eyes receipt is removed and cannot be re-added.
       expect(
         runtime.endpoints
           .get(endpoint.id)
           ?.posts.filter((post) => post.text === "GITHUB-RECEIPT-FINAL"),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
     } finally {
       await retirePublicationFixture(service, endpoint.id);
     }
@@ -26580,6 +26582,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               }
             : {}),
         });
+      // Pin the upgraded reply policy before admission. Changing it after the
+      // source arrives would correctly invalidate its saved authorization.
+      const currentEndpoint = await service.get(endpoint.id);
+      const [principal] = await db.insert(chatExternalPrincipals).values({
+        companyId: fixture.companyId,
+        provider: "github",
+        providerAccountId: currentEndpoint.providerAccountId!,
+        externalId: "42",
+        kind: "user",
+        displayName: "Octocat",
+        handle: "octocat",
+        isBot: false,
+      }).returning();
+      await db.insert(chatIdentityLinks).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        principalId: principal.id,
+        paperclipUserId: "owner-user",
+        status: "linked",
+        confirmedAt: new Date(),
+      });
+      const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
+      await db.insert(chatGitHubConfigurations).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        configuration: { ...config.configuration, toolsEnabled: true },
+        updatedByUserId: "owner-user",
+      });
+      await db.update(chatEndpoints).set({ allowGroupChats: true }).where(eq(chatEndpoints.id, endpoint.id));
       let activeService = service;
       const pins: ChatSdkEndpointRuntime[] = [];
       const calls: Array<{ method: string; path: string }> = [];
@@ -26728,6 +26759,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           body: "PINNED-GITHUB-RECEIPT-FINAL",
         });
         await db.update(heartbeatRuns).set({ resultJson: { presentationDecision: { authorizationReason: "internal_agent_write" } } }).where(eq(heartbeatRuns.id, runId));
+        // Model a terminal publication persisted before the tool-owned reply
+        // upgrade. Its suppression must still remove the old eyes receipt,
+        // including when the original add HTTP request has not settled yet.
+        await db.insert(chatPublications).values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          issueId: conversation.issueId!,
+          idempotencyKey: `run:${runId}:completed:${endpoint.id}`,
+          payload: { text: "PINNED-GITHUB-RECEIPT-FINAL", progressState: "completed" },
+          state: "pending",
+        });
         await enqueueChatRunMilestones(db);
         await service.processPendingPublications();
       };
@@ -26744,6 +26787,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           thread: thread.thread,
           message: makeMessage({
             id: "5603841952",
+            userId: "42",
+            userName: "octocat",
             text: "@maya answer exactly once",
             mentioned: true,
           }),
@@ -26761,19 +26806,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               .where(
                 and(
                   eq(chatPublications.endpointId, endpoint.id),
-                  eq(chatPublications.state, "cancelled"),
+                  eq(chatPublications.idempotencyKey, `run:${runId}:completed:${endpoint.id}`),
                 ),
               );
             expect(rows).toHaveLength(1);
           });
-          // Both the final and cleanup require the sender's credential lease;
-          // neither can overtake a still-active add HTTP request.
+          // Wait for durable staging, not settlement while the receipt owns
+          // the credential lease. Neither reply nor cleanup can overtake it.
           expect(
             originalRuntime.posts.filter(
               (post) => post.text === "PINNED-GITHUB-RECEIPT-FINAL",
             ),
           ).toHaveLength(0);
           expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+          release();
+          await Promise.all([deliveryWork, finalWork]);
           const pendingRemovals = await db
             .select({ id: chatActions.id })
             .from(chatActions)
@@ -26784,8 +26831,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               ),
             );
           expect(pendingRemovals).toHaveLength(1);
-          release();
-          await Promise.all([deliveryWork, finalWork]);
         } else {
           await deliveryWork;
           if (mode !== "final_before_add") await publish();
@@ -26817,6 +26862,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             thread: thread.thread,
             message: makeMessage({
               id: "5603841953",
+              userId: "42",
+              userName: "octocat",
               text: "A separate fresh queued question",
             }),
             trigger: "subscribed_message",
@@ -26848,6 +26895,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             })
             .where(eq(chatEndpoints.id, endpoint.id));
         }
+        const blocked = [
+          "unknown_bot",
+          "incomplete_page",
+          "connection_revoked",
+        ].includes(mode);
         await activeService.processPendingReceiptReactions(1, removal.id);
         if (mode === "remove_retry") {
           const [failed] = await db
@@ -26865,16 +26917,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             })
             .where(eq(chatActions.id, removal.id));
         }
-        await activeService.processPendingReceiptReactions(1, removal.id);
+        // Blocked operations retain their failed audit result. Retry only the
+        // explicit rate-limit case; successful cases also prove idempotency.
+        if (!blocked) await activeService.processPendingReceiptReactions(1, removal.id);
         const [result] = await db
           .select()
           .from(chatActions)
           .where(eq(chatActions.id, removal.id));
-        const blocked = [
-          "unknown_bot",
-          "incomplete_page",
-          "connection_revoked",
-        ].includes(mode);
         expect(result.status).toBe(
           mode === "rotation" ? "cancelled" : blocked ? "failed" : "processed",
         );
@@ -31318,6 +31367,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .select()
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, endpoint.id));
+      if (provider === "github") {
+        // This case exercises tool-owned replies; legacy coverage below keeps
+        // the generic final publication behavior without a saved configuration.
+        const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
+        await db.insert(chatGitHubConfigurations).values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          configuration: config.configuration,
+          updatedByUserId: "owner-user",
+        });
+      }
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
         id: runId,
@@ -43621,6 +43681,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, endpoint.id));
       if (!conversation) throw new Error("Expected GitHub conversation");
+      // Exercise the upgraded reply model after admitting the legacy fixture's
+      // root. Legacy connections deliberately continue publishing final prose.
+      const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
+      await db.insert(chatGitHubConfigurations).values({ companyId: fixture.companyId, endpointId: endpoint.id, configuration: config.configuration, updatedByUserId: "owner-user" });
       const sourceRunId = randomUUID();
       await db.insert(heartbeatRuns).values({
         id: sourceRunId,
@@ -58929,6 +58993,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     linkedOriginalActor = false,
     githubUnavailableFile = false,
   ) {
+    // Keep the policy under which the source was admitted. Inserting an
+    // upgraded GitHub policy after receipt correctly invalidates retry proof.
     const context = await safeNativeProgressFixture(
       provider,
       "91",
@@ -58936,6 +59002,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       externalActorId,
       linkedOriginalActor,
       githubUnavailableFile,
+      false,
     );
     const [issue] = await db
       .select()
@@ -60992,6 +61059,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     externalActorId?: string,
     linkedOriginalActor = false,
     githubUnavailableFile = false,
+    upgradedGitHub = true,
   ) {
     const fixture = await seedCompany();
     const configured =
@@ -61135,7 +61203,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     if (!providerRuntime) throw new Error("Expected safe-progress runtime");
 
-    if (provider === "github") {
+    if (provider === "github" && upgradedGitHub) {
       // These fixtures exercise upgraded bots' tool-owned reply model.
       const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
       await db.insert(chatGitHubConfigurations).values({ companyId: fixture.companyId, endpointId: endpoint.id, configuration: config.configuration, updatedByUserId: "owner-user" });
@@ -66936,6 +67004,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       false,
       githubUnavailableFile,
     );
+    if (provider === "github") {
+      const config = await githubChatManagementService(db).configuration(context.endpoint.id, "owner-user");
+      await db.insert(chatGitHubConfigurations).values({ companyId: context.fixture.companyId, endpointId: context.endpoint.id, configuration: config.configuration, updatedByUserId: "owner-user" });
+    }
     await beforeAcceptance?.(context);
     const contractId = randomUUID();
     const sessionId = randomUUID();
