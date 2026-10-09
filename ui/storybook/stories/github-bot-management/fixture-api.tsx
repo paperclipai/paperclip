@@ -137,6 +137,11 @@ export function FixtureApi({
               : repos;
         return Response.json({ items: rows });
       }
+      const reviewDetail = /^\/api\/chat-endpoints\/[^/]+\/github\/reviews\/([^/]+)$/.exec(path);
+      if (reviewDetail) {
+        const review = state === "empty" ? undefined : reviews.find((r) => r.id === decodeURIComponent(reviewDetail[1]));
+        return review ? Response.json(review) : Response.json({ error: "Review not found" }, { status: 404 });
+      }
       if (path.endsWith("/reviews"))
         return Response.json(state === "empty" ? [] : reviews);
       if (path.endsWith("/activity"))

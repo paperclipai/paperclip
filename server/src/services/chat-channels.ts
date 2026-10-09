@@ -14202,8 +14202,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const attemptCount = Number(candidate.result?.attemptCount ?? 0) + 1;
     const receiptDeclined = (row: typeof agentWakeupRequests.$inferSelect) =>
       ["skipped", "cancelled", "failed"].includes(row.status);
-    const settle = (status: string, result: Record<string, unknown>) =>
-      db.transaction(async (tx) => {
+    const settle = async (status: string, result: Record<string, unknown>) => {
+      const changed = await db.transaction(async (tx) => {
         const changed = await tx
           .update(chatActions)
           .set({ status, result, updatedAt: new Date() })
@@ -14233,7 +14233,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ),
             );
         }
+        return changed.length > 0;
       });
+      // A durable scheduler receipt must accept the work before GitHub shows
+      // it as working. This also covers acceptance after a maintenance retry.
+      if (changed && status === "processed") {
+        const [endpoint] = await db.select({ provider: chatEndpoints.provider })
+          .from(chatEndpoints).where(and(eq(chatEndpoints.id, claimed.endpointId),
+            eq(chatEndpoints.companyId, claimed.companyId)));
+        if (endpoint?.provider === "github")
+          await githubResponseCommentService(db, fetchImpl).tryAcknowledge(deliveryId);
+      }
+    };
     let request: ReturnType<typeof createDurableChatWakeupRequest> | null =
       null;
     const receipt = async () => {
@@ -15352,8 +15363,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // the retry resume here without duplicating the task or comment.
         if (addressed && !thread.isDM) await thread.subscribe();
         await acceptInboundWakeup(activeDelivery.id, attachmentResult);
-        if (endpoint.provider === "github")
-          await githubResponseCommentService(db, fetchImpl).tryAcknowledge(activeDelivery.id);
         if (!(await processInboundWakeup(activeDelivery.id))) return;
         const acceptedWake = await db
           .select({ status: chatActions.status })
@@ -16429,8 +16438,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // this idempotent subscription again before completing the delivery.
       if (addressed && !thread.isDM) await thread.subscribe();
       await acceptInboundWakeup(activeDelivery.id, attachmentResult);
-      if (endpoint.provider === "github")
-        await githubResponseCommentService(db, fetchImpl).tryAcknowledge(activeDelivery.id);
       if (!(await processInboundWakeup(activeDelivery.id))) return;
       const acceptedWake = await db
         .select({ status: chatActions.status })

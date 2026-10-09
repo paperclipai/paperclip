@@ -94,8 +94,7 @@ selected environment.
   disclosures. Repository-override editing is temporarily hidden in the UI;
   existing overrides and the configuration API remain supported. Changing
   defaults preserves saved overrides.
-- **Access:** choose enabled repositories, allowed people, and each person's
-  **Run automatically** setting. Repository switches save immediately. Other
+- **Access:** choose enabled repositories and allowed people. Repository switches save immediately. Other
   changes use **Save changes**. A linked account alone does not grant selected-member
   access. **Add external contributor** still requires a sponsor and restricted
   permissions. Bot tools are enabled during setup; a previously disabled connection
@@ -109,7 +108,7 @@ selected environment.
 
 Settings and Access share unsaved edits while you switch connection tabs. Save
 before reloading or leaving the connection. No permissions change merely by
-opening a tab or configuring an implicit linked member’s individual event settings.
+opening a tab.
 
 The repository list loads 20 rows at a time as you scroll. Search covers the
 entire connection. **Disable all** and **Enable all** also apply to the entire
@@ -124,14 +123,16 @@ connect and confirm their own accounts; an administrator cannot assert someone
 else's identity by entering a username.
 
 To admit an unlinked GitHub person, explicitly add their verified GitHub account,
-choose an active sponsor, and use the restricted guest profile. Automatic reviews
-for that person are a separate choice. Guests receive no company membership or
+choose an active sponsor, and use the restricted guest profile. Guests receive no company membership or
 sponsor credentials. Authority is checked again before tool calls and
 publication, so revocation also affects queued or ongoing work.
 
-**Run automatically** allows the person's authored PRs and issues to trigger
-the automatic events selected in Settings. Turning it off keeps authorized
-mentions available while avoiding work on every PR or issue.
+Choose automatic events and author filters in **Settings** to control which
+authored PRs and issues start work. Authorized mentions remain available with
+automatic events off and bypass automatic author filters. The shared external-
+contributor switch controls whether sponsored guests may start automatic work;
+there are no per-person automatic-run switches in Access. Legacy saved
+`automaticReviews` values are ignored.
 
 Automatic tasks use the configured responsible Paperclip member for accountability,
 not that member's personal GitHub credentials. A member named **Board** in a local

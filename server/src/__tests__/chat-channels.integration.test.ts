@@ -2438,11 +2438,60 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const session = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: conversation.issueId, runId: run.id };
       return { ...f, conversation, run, session };
     }
+    it("does not post a GitHub working comment when the scheduler declines the request", async () => {
+      const f = await reviewBotFixture();
+      f.wakeup.mockImplementation(async (agentId, opts) => {
+        const request = opts.durableChatRequest!;
+        await db.transaction(async tx => {
+          await request.authorize(tx as unknown as Parameters<typeof request.authorize>[0]);
+          await tx.insert(agentWakeupRequests).values({
+            id: request.id, companyId: request.companyId, agentId,
+            source: opts.source ?? "assignment", triggerDetail: opts.triggerDetail,
+            reason: "daily_limit", payload: opts.payload,
+            requestedByActorType: opts.requestedByActorType,
+            requestedByActorId: opts.requestedByActorId,
+            idempotencyKey: request.idempotencyKey, requestedAt: request.requestedAt,
+            status: "skipped",
+          });
+        });
+        return null;
+      });
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Are you there?", userId: "42", userName: "octocat", mentioned: true }) });
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "inbound_wakeup")));
+      expect(action).toMatchObject({ status: "failed", result: { code: "inbound_wakeup_skipped" } });
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      expect(f.responseWrites).toEqual([]);
+      expect(f.responseComments.size).toBe(0);
+    });
+    it("acknowledges a GitHub request after a durable scheduler retry succeeds", async () => {
+      const f = await reviewBotFixture();
+      f.wakeup.mockRejectedValueOnce(new Error("Temporary scheduler outage"));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Are you there?", userId: "42", userName: "octocat", mentioned: true }) });
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "inbound_wakeup")));
+      expect(action.status).toBe("issued");
+      expect(f.responseWrites).toEqual([]);
+      await db.update(chatActions).set({ result: { ...action.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, action.id));
+      await f.service.processPendingDeliveries(1, action.deliveryId!);
+      const [accepted] = await db.select().from(chatActions).where(eq(chatActions.id, action.id));
+      expect(accepted.status).toBe("processed");
+      expect(f.responseWrites.map(write => write.method)).toEqual(["POST"]);
+      expect([...f.responseComments.values()][0].body).toContain("Working on this");
+    });
     it("finalizes every working comment in a coalesced GitHub run", async () => {
       const f = await toolReplyFixture();
       const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
       await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
         trigger: "mention", message: makeMessage({ id: "41802", text: "And this too", userId: "42", userName: "octocat", mentioned: true }) });
+      // Acknowledgements use a best-effort publication lane. Establish both
+      // working comments before testing their coalesced completion cleanup.
+      await expect.poll(async () => {
+        await githubResponseCommentService(db, f.providerFetch).processPending();
+        return f.responseComments.size;
+      }, { timeout: 10_000 }).toBe(2);
       const links = await db.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.endpointId, f.endpoint.id), eq(chatMessageLinks.direction, "inbound")));
       const latest = await chatWakeContext({ endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802" });
       await db.update(heartbeatRuns).set({ contextSnapshot: { ...latest, wakeCommentIds: links.map(link => link.commentId) } }).where(eq(heartbeatRuns.id, f.run.id));

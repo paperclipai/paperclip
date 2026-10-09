@@ -713,7 +713,7 @@ test.describe.serial("native chat adapter UI", () => {
 
       await page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: "Conversations", exact: true }).click();
       await expect(
-        page.getByRole("heading", { name: "Conversations" }),
+        page.getByRole("list", { name: "Conversations", exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText(`Investigate ${provider.name} delivery`, { exact: true }),
