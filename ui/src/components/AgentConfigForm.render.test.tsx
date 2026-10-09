@@ -10,6 +10,8 @@ import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
+import { queryKeys } from "../lib/queryKeys";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -19,6 +21,7 @@ import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 
 const mockAgentsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -2108,6 +2111,53 @@ describe("AgentConfigForm environment selector", () => {
     await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
     const signInAfterSave = findButton(container, "Sign in");
     expect(signInAfterSave!.disabled).toBe(false);
+  });
+
+  it("keeps unsaved configuration while a lifecycle poll updates progress", async () => {
+    const saved = makeAgent({ lifecycleState: "preparing", lifecycleVersion: 1 });
+    mockAgentsApi.get.mockResolvedValue(saved);
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onSave = vi.fn();
+    function Harness() {
+      const lifecycle = useAgentLifecycleStatus(saved);
+      return <>
+        <AgentLifecycleStatus agent={lifecycle.data ?? saved} refreshError={lifecycle.isError} onRetry={() => {}} retryPending={false} />
+        <AgentConfigForm mode="edit" agent={saved} onSave={onSave} hidePromptTemplate showAdapterTypeField={false} />
+      </>;
+    }
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><ToastProvider><TooltipProvider><Harness /></TooltipProvider></ToastProvider></QueryClientProvider>));
+    await flushReact();
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!;
+    setInputValue(nameInput, "Unsaved name");
+    await flushReact();
+    let finishPoll!: (agent: Agent) => void;
+    mockAgentsApi.get.mockReturnValueOnce(new Promise<Agent>(resolve => { finishPoll = resolve; }));
+    let poll!: Promise<void>;
+    await act(async () => { poll = queryClient.refetchQueries({ queryKey: [...queryKeys.agents.detail(saved.id), "lifecycle"] }); });
+    // Editing can continue while the request is in flight.
+    setInputValue(nameInput, "Edited during poll");
+    await flushReact();
+    await act(async () => {
+      finishPoll({ ...saved, name: "Another saved name", lifecycleState: "verifying", lifecycleVersion: 2 });
+      await poll;
+    });
+    await flushReact();
+    expect(mockAgentsApi.get).toHaveBeenCalledWith(saved.id, saved.companyId);
+    expect(container.textContent).toContain("Verifying agent");
+    expect(nameInput.value).toBe("Edited during poll");
+    await act(async () => findButton(container, "Save")!.click());
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ name: "Edited during poll" }));
+    mockAgentsApi.get.mockRejectedValueOnce(new Error("Status unavailable"));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: [...queryKeys.agents.detail(saved.id), "lifecycle"] }); });
+    await flushReact();
+    expect(container.textContent).toContain("Could not refresh agent lifecycle status");
+    expect(nameInput.value).toBe("Edited during poll");
+    queryClient.clear();
   });
 
   it("keeps edits made while the bind save is pending after the agent refresh", async () => {

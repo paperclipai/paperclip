@@ -159,7 +159,9 @@ Use `lifecycleState` to distinguish the steps.
 The agent page shows preparation, verification, pause, resume, and cleanup
 progress from `lifecycleState`. Failed steps show the host error and a Retry
 action. The page refreshes pending steps every two seconds and other states
-every thirty seconds. It does not query plugins for a separate readiness state.
+every thirty seconds. The lifecycle query does not replace the agent record in
+editable forms, so background updates preserve unsaved settings. It does not
+query plugins for a separate readiness state.
 
 ## Required plugin work
 
