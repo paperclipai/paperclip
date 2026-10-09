@@ -13,7 +13,7 @@ import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
-import { syncSpekoVoiceTools, registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
+import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
 import { verifySpekoToolRequest } from "./speko-protocol.js";
 import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT } from "./voice-prompts.js";
 
@@ -340,11 +340,10 @@ export function voiceSessionService(db: Db, options: {
     return row ? { phoneNumber: row.phoneNumber, enabled: row.enabled } : null;
   }
   async function saveCallbackPreference(companyId: string, endpointId: string, caller: VoiceCaller, preference: { phoneNumber: string; enabled: boolean }) {
-    const endpoint = await endpointFor(companyId, endpointId);
+    await endpointFor(companyId, endpointId);
     await db.transaction(async tx => {
       await store.authorizeCaller(tx, companyId, caller);
       await tx.insert(chatVoiceCallbacks).values({ companyId, endpointId, userId: caller.id, ...preference }).onConflictDoUpdate({ target: [chatVoiceCallbacks.companyId, chatVoiceCallbacks.endpointId, chatVoiceCallbacks.userId], set: { ...preference, updatedAt: new Date() } });
-      await syncSpekoVoiceTools(tx, endpoint, caller.id);
       await tx.insert(activityLog).values({ companyId, actorType: "user", actorId: caller.id, action: "voice.callback.preference_updated", entityType: "chat_endpoint", entityId: endpointId, details: { enabled: preference.enabled } });
     });
     return preference;

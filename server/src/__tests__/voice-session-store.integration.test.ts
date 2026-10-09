@@ -1,3 +1,4 @@
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { documentService } from "../services/documents.js";
@@ -6,7 +7,7 @@ import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { chatActions, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { chatActions, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
@@ -22,7 +23,7 @@ import { liveVoiceExecutionGuidance } from "../services/voice/voice-execution-gu
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
-import { spekoToolsForSession, executeSpekoVoiceTool } from "../services/voice/speko-agent-tools.js";
+import { syncSpekoVoiceTools, spekoToolsForSession, executeSpekoVoiceTool } from "../services/voice/speko-agent-tools.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable Speko voice sessions", () => {
   let db: ReturnType<typeof createDb>;
@@ -229,6 +230,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await rejoin(otherCaller)).toMatchObject({ status: "pending", updates: [] });
   });
 
+  it.each(["dispatching", "unknown", "completed"])("does not recollect a prior call's %s delivery or accepted prefix on rejoin", async status => {
+    const f = await fixture(), publication = await f.publication();
+    await f.store.enqueuePublication(f.companyId, publication.id);
+    const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.sessionId));
+    await db.insert(chatActions).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
+      kind: "speko_voice_reply_push", providerActionId: `voice_reply_push:${reply.id}`, status,
+      payload: {sessionId: f.sessionId, replyId: reply.id, publicationId: publication.id, partIndex: 0, partCount: 2, questionNotification: false}});
+    await db.update(chatVoiceSessions).set({state: "ended", endedAt: new Date()}).where(eq(chatVoiceSessions.id, f.sessionId));
+    const reserved = await f.store.reserve({...f.request, idempotencyKey: randomUUID()});
+    await db.update(chatVoiceSessions).set({state: "active", providerSessionId: randomUUID()}).where(eq(chatVoiceSessions.id, reserved.session.id));
+    expect(await f.store.notification(f.companyId, reserved.session.id, f.callerId)).toBeNull();
+    await f.store.enqueuePublication(f.companyId, publication.id);
+    expect(await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, reserved.session.id))).toHaveLength(0);
+  });
   it("marks media active only after a valid session-scoped provider request", async () => {
     const f = await fixture();
     await db.update(chatVoiceSessions).set({ state: "connecting" }).where(eq(chatVoiceSessions.id, f.sessionId));
@@ -854,6 +869,21 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(history).toHaveLength(1); expect(history[0]).toMatchObject({id: call.id, state: "ended"});
     expect(JSON.stringify(history)).not.toContain("approvalCode"); expect(JSON.stringify(history)).not.toContain("toolToken");
   });
+  it("uses task-comment follow-ups for guest clarifications and rejects protected question waits", async () => {
+    const f = await inboundFixture(true);
+    await f.tool("submit_request", {text: "Draft a public inquiry"});
+    const taskId = f.call.intakeIssueId!;
+    expect(await liveVoiceExecutionGuidance(db, {companyId: f.companyId, issueId: taskId, agentId: f.agentId})).toContain("Do not use ask_user_questions");
+    for (const actor of [{agentId: f.agentId}, {systemId: "native-status-committer"}]) {
+      await expect(issueThreadInteractionService(db).create({companyId: f.companyId, id: taskId}, {
+        kind: "ask_user_questions", continuationPolicy: "wake_assignee", payload: {version: 1,
+          questions: [{id: "topic", prompt: "Which topic?", selectionMode: "single", required: true, options: [{id: "public", label: "Public inquiry"}]}]},
+      }, actor)).rejects.toMatchObject({status: 422, details: {code: "voice_guest_use_task_comment"}});
+    }
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, taskId))).toHaveLength(0);
+    expect(await f.tool("submit_request", {text: "Make it about shipping"})).toMatchObject({status: "accepted", authorization: "guest_intake"});
+    expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.call.sessionId!))).toHaveLength(2);
+  });
   it("retires guest authority after an assignment or line permission change", async () => {
     const f = await inboundFixture(true);
     await f.tool("submit_request", {text: "Please record a public inquiry"});
@@ -1121,6 +1151,9 @@ const support = await getEmbeddedPostgresTestSupport();
   async function phoneToolFixture() {
     const f = await nativeServiceFixture();
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    await db.insert(principalPermissionGrants).values({companyId: f.companyId, principalType: "user", principalId: f.callerId, permissionKey: "agents:configure"});
+    await db.transaction(tx => syncSpekoVoiceTools(tx, endpoint, f.callerId));
     await f.service.saveCallbackPreference(f.companyId, f.endpointId, f.request.caller, { phoneNumber: "+12015551234", enabled: true });
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "running", contextSnapshot: { issueId: f.issueId } });
@@ -1129,6 +1162,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const gatewaySession = await gateway.createSession({ companyId: f.companyId, agentId: f.agentId, runId, issueId: f.issueId });
     return { ...f, runId, gateway, gatewaySession };
   }
+  it("keeps personal callback preferences separate from authorized agent tool installation", async () => {
+    const f = await nativeServiceFixture();
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    for (const enabled of [false, true]) await f.service.saveCallbackPreference(f.companyId, f.endpointId, f.request.caller, {phoneNumber: "+12015551234", enabled});
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connectionId))).toHaveLength(0);
+    expect(await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.targetId, f.agentId))).toHaveLength(0);
+    await expect(db.transaction(tx => syncSpekoVoiceTools(tx, endpoint, f.callerId))).rejects.toMatchObject({status: 403});
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connectionId))).toHaveLength(0);
+    await db.insert(principalPermissionGrants).values({companyId: f.companyId, principalType: "user", principalId: f.callerId, permissionKey: "agents:configure"});
+    await db.transaction(tx => syncSpekoVoiceTools(tx, endpoint, f.callerId));
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connectionId))).toHaveLength(1);
+  });
   it("delivers Speko guidance to existing agents only while the connection remains assigned and enabled", async () => {
     const f = await phoneToolFixture();
     const binding = { companyId: f.companyId, agentId: f.agentId };
