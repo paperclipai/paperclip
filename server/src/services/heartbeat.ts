@@ -5466,6 +5466,8 @@ export function heartbeatService(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    // Missing-comment retries continue the original deliverable work, so they
+    // must not inherit the status-only mutation guards.
     const retryContextSnapshot = withRecoveryContext(
       {
         ...contextSnapshot,
@@ -5474,7 +5476,7 @@ export function heartbeatService(
         retryReason: "missing_issue_comment",
         missingIssueCommentForRunId: run.id,
       },
-      "status_only",
+      "normal_model",
     );
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
@@ -5513,7 +5515,7 @@ export function heartbeatService(
               retryOfRunId: run.id,
               retryReason: "missing_issue_comment",
             },
-            "status_only",
+            "normal_model",
           ),
           status: "queued",
           requestedByActorType: "system",
