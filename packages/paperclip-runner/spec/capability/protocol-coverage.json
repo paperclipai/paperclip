@@ -1234,7 +1234,8 @@
       "id": "manage_routine",
       "ownership": "optional_agent_tool",
       "surfaces": [
-        "scenario"
+        "scenario",
+        "live"
       ],
       "legacyAliases": [],
       "contractCase": "protocol-action:manage_routine",

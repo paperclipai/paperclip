@@ -4,7 +4,8 @@ export const manageRoutineAction = {
   "canonical": {
     "operationId": "manage_routine",
     "surfaces": [
-      "scenario"
+      "scenario",
+      "live"
     ],
     "placement": "optional_agent_tool",
     "optionalGroup": "routines",
@@ -18,22 +19,30 @@ export const manageRoutineAction = {
     "sideEffectClass": "admin",
     "idempotency": "required",
     "disabledByDefault": false,
-    "realBindingStatus": "scenario_mock",
-    "realServiceBinding": "unbound",
+    "realBindingStatus": "live_codex",
+    "realServiceBinding": "routineService.create/update/createTrigger/updateTrigger",
     "prpEvidence": "company admin/portability item event plus audit record",
-    "prpBindingStatus": "audit_pending",
+    "prpBindingStatus": "bound",
     "legacyAliases": [],
-    "note": "Scenario/eval-only mock extension."
+    "note": "Agent mutations are restricted to self-assigned routines."
   },
   "documentation": {
     "title": "Manage Routine",
-    "description": "Manage Routine through the Capability routines capability set.",
-    "note": "Scenario/eval-only mock extension."
+    "description": "Create, update, pause, or resume a Paperclip routine assigned to you. Read existing routines and revisions using the authorized read API before changing them. Reuse the idempotency key on retry. Paperclip owns scheduling, budgets, concurrency and task creation.",
+    "note": null
   },
   "examples": {
     "call": {
       "operationId": "manage_routine",
-      "input": {}
+      "input": {
+        "idempotencyKey": "daily-research",
+        "action": "create",
+        "title": "Daily research",
+        "schedule": {
+          "cronExpression": "0 9 * * 1-5",
+          "timezone": "America/Chicago"
+        }
+      }
     },
     "scenarioCall": {
       "operationId": "manage_routine",
@@ -54,7 +63,97 @@ export const manageRoutineAction = {
       }
     }
   },
-  "live": null,
+  "live": {
+    "order": 60,
+    "descriptor": {
+      "schema": "paperclip.semantic-tool.v1",
+      "operationId": "manage_routine",
+      "version": 1,
+      "title": "Manage routine",
+      "description": "Create, update, pause, or resume a Paperclip routine assigned to you. Read existing routines and revisions using the authorized read API before changing them. Reuse the idempotency key on retry. Paperclip owns scheduling, budgets, concurrency and task creation.",
+      "effect": "write",
+      "exposure": "optional",
+      "requiredClaims": [
+        "routines:write"
+      ],
+      "allowedModes": [
+        "standard",
+        "skill_test"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "action": {
+            "enum": [
+              "create",
+              "update",
+              "pause",
+              "resume"
+            ]
+          },
+          "routineId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baseRevisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "projectId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "schedule": {
+            "type": "object",
+            "properties": {
+              "triggerId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "cronExpression": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "timezone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              }
+            },
+            "required": [
+              "cronExpression",
+              "timezone"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
   "scenario": {
     "order": 29,
     "descriptor": {

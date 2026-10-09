@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
@@ -127,11 +127,19 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
-async function createApp(actor: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+let issueRoutes: typeof import("../routes/issues.js")["issueRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
+beforeAll(async () => {
+  // Route initialization belongs to the suite's setup deadline. The vote and
+  // flush assertions retain the ordinary per-test request deadline on CI.
+  [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+});
+
+async function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

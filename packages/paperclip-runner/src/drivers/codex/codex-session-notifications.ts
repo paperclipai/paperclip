@@ -29,6 +29,7 @@ import {
 } from "./codex-session-workspace.js";
 import {
   boundedText,
+  RUNNERD_CANONICAL_ITEM,
   differingJsonPaths,
   itemFromParams,
   itemText,
@@ -506,7 +507,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const deltaKind = deltaKinds[notification.method];
     if (deltaKind !== undefined) {
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
-      const methodChannel = channelForDelta(state, notification.method);
+      const methodChannel = channelForDelta(state, notification.method, params);
       const channel =
         methodChannel !== "unknown"
           ? methodChannel
@@ -581,8 +582,16 @@ function channelForStartedItem(
 function channelForDelta(
   state: CodexSessionState,
     method: string,
+    params: Record<string, unknown>,
   ): "progress" | "final" | "summary" | "detail" | "unknown" {
     if (method === "item/reasoning/summaryTextDelta") return "summary";
     if (method === "item/reasoning/textDelta") return "detail";
+    // Native ACPX may emit a delta without an item-start notification. Preserve
+    // its validated PRP channel through this compatibility facade. The local
+    // symbol cannot be forged by a provider's JSON message.
+    if (method === "item/agentMessage/delta"
+      && Reflect.get(params, RUNNERD_CANONICAL_ITEM) === true
+      && params.kind === "agentMessage"
+      && (params.channel === "progress" || params.channel === "final")) return params.channel;
     return "unknown";
   }

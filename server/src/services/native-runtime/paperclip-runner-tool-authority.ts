@@ -5,6 +5,7 @@ import { assertCanManageIssueMonitor, prepareIssueMonitorUpdate, setTaskMonitorS
 import { readTaskQuestionContext } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
 import { setIssueTitle } from "../issue-title.js";
+import { manageRoutine, manageRoutineInputSchema, lockOwnedRoutine } from "./manage-routine.js";
 import { externalObjectService } from "../external-objects.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
@@ -106,6 +107,7 @@ import {
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "submit_complaint", "submit_suggestion",
+  "manage_routine",
   "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title", "set_task_monitor",
@@ -485,6 +487,21 @@ export class PaperclipRunnerToolAuthority {
         return submitAgentCommentary(this.db, this.binding, {
           ...parsed.data, kind: call.tool === "submit_complaint" ? "complaint" : "suggestion",
         }, (tx) => this.#lockAuthorizedMutationContext(tx));
+      }
+      case "manage_routine": {
+        const parsed = manageRoutineInputSchema.parse(input);
+        let publications: Awaited<ReturnType<typeof persistActivity>>["publication"][] = [];
+        const result = await this.#withMutationReceipt("manage_routine", parsed.idempotencyKey, input, async tx => {
+          const changed = await manageRoutine(tx, this.binding, parsed);
+          publications = changed.publications;
+          return changed.result;
+        }, { beforeReceiptReplay: async (tx, context) => {
+          const prior = record(record(record(context.run.resultJson).semanticToolReceipts)[parsed.idempotencyKey]);
+          const routineId = parsed.routineId ?? requiredString(record(prior.result).routineId);
+          await lockOwnedRoutine(tx, this.binding, routineId);
+        } });
+        for (const publication of publications) publishActivity(publication);
+        return result;
       }
       case "read_agent_instructions":
       case "get_agent_instruction_history":

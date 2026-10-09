@@ -13,7 +13,10 @@ import {
 
 const cleanups: Array<() => Promise<void> | void> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+// Each case starts a real PostgreSQL instance. Keep the existing integration
+// deadline at suite scope; the independent file-writer tests retain the default.
+const describeEmbeddedPostgres = (name: string, factory: () => void) =>
+  (embeddedPostgresSupport.supported ? describe : describe.skip)(name, { timeout: 30_000 }, factory);
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));

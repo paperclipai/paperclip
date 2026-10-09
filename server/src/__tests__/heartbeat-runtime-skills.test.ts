@@ -110,9 +110,11 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Terminal status precedes the executor's final writes. Drain the owned
+    // executions before truncating tables they can still reference or lock.
+    await heartbeatService(db).drainActiveRunExecutions();
     capturedRuns.length = 0;
     await instanceSettingsService(db).updateExperimental({ enableBetaSkills: false });
-    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.execute(sql.raw(`
       TRUNCATE TABLE
         "activity_log",

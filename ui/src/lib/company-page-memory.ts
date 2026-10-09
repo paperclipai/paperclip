@@ -1,3 +1,4 @@
+import { isUuidLike } from "@paperclipai/shared";
 import {
   extractCompanyPrefixFromPath,
   normalizeCompanyPrefix,
@@ -10,8 +11,12 @@ export function isRememberableCompanyPath(path: string): boolean {
   const pathname = path.split("?")[0] ?? "";
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return true;
-  const [root] = segments;
+  const [root, entityId] = segments;
   if (GLOBAL_SEGMENTS.has(root!)) return false;
+  // UUID agent links can resolve to another accessible company. Remember the
+  // company-scoped alias after resolution, rather than replaying an unverified
+  // UUID when the operator switches back to the company in the original URL.
+  if (root === "agents" && isUuidLike(entityId)) return false;
   return true;
 }
 

@@ -820,8 +820,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
-  it("stands down while the latest run was cancelled by a board operator", async () => {
+  it.each(["idle", "paused", "error"] as const)("stands down after a board Stop when the assignee is %s", async (agentStatus) => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: agentStatus }).where(eq(agents.id, coderId));
     await db.insert(heartbeatRuns).values({
       id: randomUUID(),
       companyId,
@@ -843,6 +844,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result.operatorCancelExempted).toBe(1);
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(issue.status).toBe("in_progress");
+    expect(issue.assigneeAgentId).toBe(coderId);
   });
 
   it("stands down after an operator interrupt cancellation", async () => {

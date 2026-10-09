@@ -2046,8 +2046,9 @@ it("classifies each coalesced canonical delta without mixing reasoning into assi
 });
 
 it("restores provider identity and streamed text from a canonical delta", () => {
-  expect(rehydrateRunnerdDeltaNotification({ text: "Reading Gmail", itemId: "message-1", turnId: "controller-turn" }, "root-thread", "provider-turn"))
-    .toMatchObject({ threadId: "root-thread", turnId: "provider-turn", delta: "Reading Gmail", itemId: "message-1" });
+  const params = rehydrateRunnerdDeltaNotification({ kind: "agentMessage", channel: "progress", text: "Reading Gmail", itemId: "message-1", turnId: "controller-turn" }, "root-thread", "provider-turn");
+  expect(params).toMatchObject({ threadId: "root-thread", turnId: "provider-turn", delta: "Reading Gmail", itemId: "message-1", channel: "progress" });
+  expect(Reflect.get(params, RUNNERD_CANONICAL_ITEM)).toBe(true);
 });
 
 it("rehydrates a canonical agent item for the strict Codex facade", () => {

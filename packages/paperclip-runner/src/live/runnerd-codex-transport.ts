@@ -1873,6 +1873,7 @@ export function rehydrateRunnerdDeltaNotification(
   // turn is deliberately different from the provider's turn ID.
   return {
     ...rawParams,
+    [RUNNERD_CANONICAL_ITEM]: true,
     threadId: openedThreadId,
     turnId: activeTurnId,
     delta: rawParams.delta ?? rawParams.text,

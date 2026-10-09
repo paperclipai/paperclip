@@ -282,9 +282,7 @@ export function runnerPrpCoordinator(
         connectionLeaseTtlMs,
         onCommittedEvent: async (event) => {
           await nativeStore.appendEvent(event);
-          if (event.eventType === "runtime_request.created") {
-            await projectNativeRuntimeRequest({ db, binding: storeBinding, event });
-          }
+          await projectNativeRuntimeRequest({ db, binding: storeBinding, event });
           await nativeStore.reconcileTerminalEvent(event);
           if (event.eventType === "run.terminal") {
             const stored = await nativeStore.readCompletedRun();

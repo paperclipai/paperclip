@@ -113,9 +113,8 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(45);
-    expect(names).toContain("set_task_monitor");
-    expect(names).toEqual(expect.arrayContaining(["submit_complaint", "submit_suggestion"]));
+    expect(names).toHaveLength(46);
+    expect(names).toEqual(expect.arrayContaining(["set_task_monitor", "submit_complaint", "submit_suggestion", "manage_routine"]));
     expect(names).toContain("get_task_context");
     expect(names).toContain("finish_task");
     expect(names).not.toContain("checkout_task");

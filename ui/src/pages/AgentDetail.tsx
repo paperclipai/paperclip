@@ -31,6 +31,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { applyCompanyPrefix } from "../lib/company-routes";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
@@ -766,7 +767,7 @@ export function AgentDetail() {
     tab?: string;
     runId?: string;
   }>();
-  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -796,6 +797,7 @@ export function AgentDetail() {
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const previousSelectedCompanyId = useRef(selectedCompanyId);
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -817,6 +819,7 @@ export function AgentDetail() {
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
+  const agentCompany = companies.find((company) => company.id === agent?.companyId);
   const handleLegacyTabChange = useCallback((next: string) => {
     if (!prepareAgentNavigation()) return;
     navigate(`/agents/${canonicalAgentRef || routeAgentRef}/${next}`);
@@ -964,24 +967,45 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (!agentCompany) return;
+    const companyMismatch = companyPrefix?.toUpperCase() !== agentCompany.issuePrefix.toUpperCase();
+    if (routeAgentRef !== canonicalAgentRef) {
+      // Reuse the authorized response across the alias redirect. An empty
+      // alias query would unmount the selected run and discard its mutations.
+      // UUID lookups can return another accessible company's agent. Its alias
+      // belongs only to that company's cache, even if the URL used another scope.
+      queryClient.setQueryData(
+        [...queryKeys.agents.detail(canonicalAgentRef), agent.companyId],
+        agent,
+      );
+    }
     if (urlRunId) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
+      if (routeAgentRef !== canonicalAgentRef || companyMismatch) {
+        navigate(`/${agentCompany.issuePrefix}/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
       }
       return;
     }
     if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab || companyMismatch) {
+      navigate(`/${agentCompany.issuePrefix}${agentDetailHref(canonicalAgentRef, canonicalTab)}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate]);
+  }, [agent, agentCompany, companyPrefix, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, queryClient]);
 
   useEffect(() => {
+    const manualSelectionChanged = selectionSource === "manual"
+      && previousSelectedCompanyId.current !== selectedCompanyId;
+    previousSelectedCompanyId.current = selectedCompanyId;
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
+    // Yield only for the selection change itself. Later agent links and history
+    // navigation must follow the authorized company even if the source is manual.
+    if (manualSelectionChanged) return;
+    // The route owns selection until canonical navigation reaches this company.
+    // Competing with Layout's old-prefix selection can cause an update loop.
+    if (routeCompanyId && routeCompanyId !== agent.companyId) return;
     setSelectedCompanyId(agent.companyId, { source: "route_sync" });
-  }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
+  }, [agent?.companyId, routeCompanyId, selectedCompanyId, selectionSource, setSelectedCompanyId]);
 
   // Invoke / pause / resume / terminate / duplicate / reset live in the shared
   // AgentActionButtons component. The detail header keeps only "approve" here,
@@ -1155,10 +1179,10 @@ export function AgentDetail() {
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
   if (!urlRunId && legacyAuditSection) {
-    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
+    return <Navigate to={applyCompanyPrefix(agentScopedAuditHref(agent.id, legacyAuditSection), agentCompany?.issuePrefix)} replace />;
   }
   if (!urlRunId && !urlTab) {
-    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
+    return <Navigate to={applyCompanyPrefix(agentDetailHref(canonicalAgentRef), agentCompany?.issuePrefix)} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";

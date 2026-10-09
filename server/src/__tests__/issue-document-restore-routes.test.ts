@@ -171,6 +171,9 @@ function createRunContextDb(contextSnapshot: Record<string, unknown>) {
   };
 }
 
+let issueRoutes: typeof import("../routes/issues.js")["issueRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
 async function createApp(
   actor: Express.Request["actor"] = {
     type: "board",
@@ -181,10 +184,6 @@ async function createApp(
   },
   db: unknown = {},
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -197,7 +196,7 @@ async function createApp(
 }
 
 describe("issue document revision routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -282,7 +281,12 @@ describe("issue document revision routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue([companyId]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
-  });
+    // Load the cold route graph after this test's module mocks are installed.
+    [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 30_000);
 
   it("returns revision snapshots including title and format", async () => {
     const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);

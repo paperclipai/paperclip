@@ -250,7 +250,9 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  // The source CLI runs doctor and imports the cold server graph. Keep this
+  // health deadline inside the existing 60-second database/setup hook budget.
+  while (Date.now() - startedAt < 45_000) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,

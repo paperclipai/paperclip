@@ -4723,6 +4723,50 @@ export function issueThreadInteractionService(
       return expired;
     },
 
+    // A native callback is no longer answerable after its owned cancellation.
+    // Historical questions and answers committed concurrently retain their
+    // normal lifecycle. The bridge supplies the validated native identity.
+    expireCancelledNativeQuestion: async (input: {
+      companyId: string; issueId: string; sourceRunId: string; requestId: string;
+      idempotencyKey: string; agentId: string;
+    }) => {
+      const expired = await db.transaction(async (tx) => {
+        // Answering locks the task before the card. Use the same order so
+        // cancellation cannot deadlock a concurrent human response.
+        const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+        )).for("no key update").limit(1);
+        if (!issue) throw notFound("Issue not found");
+        const [row] = await tx.update(issueThreadInteractions).set({
+          status: "expired",
+          result: { version: 1, cancelled: true, cancellationReason: "Native question cancelled", answers: [], summaryMarkdown: null },
+          resolvedByRunId: input.sourceRunId, resolvedAt: new Date(), updatedAt: new Date(),
+        }).where(and(
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, input.issueId),
+          eq(issueThreadInteractions.sourceRunId, input.sourceRunId),
+          eq(issueThreadInteractions.idempotencyKey, input.idempotencyKey),
+          eq(issueThreadInteractions.kind, "ask_user_questions"),
+          eq(issueThreadInteractions.status, "pending"),
+          sql`${issueThreadInteractions.payload}->>'runtimeRequestId' = ${input.requestId}`,
+          sql`${issueThreadInteractions.payload}->'questionSet'->>'schema' = 'paperclip.question_set.v1'`,
+        )).returning();
+        if (!row) return null;
+        const interaction = hydrateInteraction(row) as AskUserQuestionsInteraction;
+        await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, interaction);
+        await touchIssue(tx, input.issueId);
+        await logActivity(tx as unknown as Db, {
+          companyId: input.companyId, actorType: "system", actorId: "native-runtime",
+          agentId: input.agentId, runId: input.sourceRunId, action: "issue.thread_interaction_expired",
+          entityType: "issue", entityId: input.issueId,
+          details: { interactionId: row.id, interactionKind: row.kind, interactionStatus: "expired", reason: "native_question_cancelled" },
+        });
+        return interaction;
+      });
+      if (expired) await emitInteractionResolvedTelemetry(db, expired);
+      return expired;
+    },
+
     expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
       const expired = await db.update(issueThreadInteractions).set({
         status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },

@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issueThreadInteractions } from "@paperclipai/db";
+import { heartbeatRuns, heartbeatRunEvents, issueThreadInteractions } from "@paperclipai/db";
 import type {
   AskUserQuestionsInteraction,
   RespondIssueThreadInteraction,
@@ -118,13 +118,55 @@ export async function projectNativeRuntimeRequest(input: {
   binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId" | "normalizedSessionId" | "runnerSourceInstanceId">;
   event: PrpEvent;
 }): Promise<AskUserQuestionsInteraction | null> {
-  if (input.event.eventType !== "runtime_request.created") return null;
+  if (!["runtime_request.created", "runtime_request.cancelled"].includes(input.event.eventType)) return null;
   if (
     input.event.runId !== input.binding.runId
     || input.event.normalizedSessionId !== input.binding.normalizedSessionId
     || input.event.sourceInstanceId !== input.binding.runnerSourceInstanceId
   ) {
     throw new Error("native_runtime_request_binding_mismatch");
+  }
+  if (input.event.eventType === "runtime_request.cancelled") {
+    const outcome = record(input.event.payload)!;
+    // Permission cards have their own privileged resolver. A provider-loss
+    // expiry is a durable handoff, not cancellation of a historical question.
+    if (outcome.requestKind !== "runtime" || outcome.requestType !== "input") return null;
+    if ((outcome.action !== undefined && outcome.action !== "cancel") || outcome.replayAllowed === true
+      || typeof outcome.requestId !== "string"
+      || !REQUEST_ID_PATTERN.test(outcome.requestId) || typeof input.event.turnId !== "string"
+      || outcome.turnId !== input.event.turnId || (outcome.itemId ?? null) !== (input.event.itemId ?? null)
+      || ["response", "answers", "answer", "replay"].some((key) => Object.hasOwn(outcome, key))) {
+      throw new Error("native_runtime_cancellation_invalid");
+    }
+    const [run] = await input.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.binding.runId), eq(heartbeatRuns.companyId, input.binding.companyId),
+      eq(heartbeatRuns.nativeIssueId, input.binding.issueId), eq(heartbeatRuns.agentId, input.binding.agentId),
+      eq(heartbeatRuns.nativeSessionId, input.binding.normalizedSessionId),
+      eq(heartbeatRuns.runtimeMode, "native"),
+    )).limit(1);
+    if (!run) throw new Error("native_runtime_cancellation_run_mismatch");
+    // Match the committed creation, including its turn and item. A run can
+    // contain several callbacks; its request ID alone must not retire another.
+    const [created] = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, input.binding.companyId),
+      eq(heartbeatRunEvents.runId, input.binding.runId),
+      eq(heartbeatRunEvents.eventType, "runtime_request.created"),
+      eq(heartbeatRunEvents.sourceInstanceId, input.binding.runnerSourceInstanceId),
+      sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->'request'->>'requestId' = ${outcome.requestId}`,
+      sql`${heartbeatRunEvents.sourceSeq} < ${input.event.sourceSeq}`,
+    )).limit(1);
+    const original = record(record(created?.payload)?.prpEvent);
+    const originalRequest = record(record(original?.payload)?.request);
+    if (!original || original.normalizedSessionId !== input.event.normalizedSessionId
+      || original.turnId !== input.event.turnId || (original.itemId ?? null) !== (input.event.itemId ?? null)
+      || originalRequest?.type !== "input" || originalRequest.requestKind !== "runtime") {
+      throw new Error("native_runtime_cancellation_creation_mismatch");
+    }
+    return issueThreadInteractionService(input.db).expireCancelledNativeQuestion({
+      companyId: input.binding.companyId, issueId: input.binding.issueId, agentId: input.binding.agentId,
+      sourceRunId: input.binding.runId, requestId: outcome.requestId,
+      idempotencyKey: `${QUESTION_KEY_PREFIX}${input.binding.runId}:${outcome.requestId}`,
+    });
   }
   const request = record(record(input.event.payload)?.request);
   if (

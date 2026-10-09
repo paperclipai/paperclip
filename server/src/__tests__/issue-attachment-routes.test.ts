@@ -154,11 +154,10 @@ function createStorageService(body = Buffer.from("test")): TestStorageService {
   };
 }
 
+let issueRoutes: typeof import("../routes/issues.js")["issueRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
 async function createApp(storage: StorageService, options?: { companyIds?: string[]; source?: string }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -224,7 +223,7 @@ describe("MAX_ATTACHMENT_BYTES", () => {
 });
 
 describe("issue attachment routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -257,7 +256,12 @@ describe("issue attachment routes", () => {
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
-  });
+    // Load the cold route graph after this test's module mocks are installed.
+    [{ errorHandler }, { issueRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 30_000);
 
   it("accepts zip uploads for issue attachments", async () => {
     const storage = createStorageService();

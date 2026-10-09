@@ -236,6 +236,111 @@ describeEmbeddedPostgres("native question bridge", () => {
     } } };
   }
 
+  async function savedRuntimeQuestion() {
+    const event = runtimeRequestEvent();
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+      eventType: event.eventType, sourceSeq: event.sourceSeq, sourceInstanceId: runnerInstanceId,
+      sourceEventId: event.sourceEventId, payload: { prpEvent: event } });
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    const cancelled: PrpEvent = { ...event, sourceEventId: "runtime-question-cancelled", sourceSeq: 2,
+      eventType: "runtime_request.cancelled", payload: { requestId: "request-1", requestKind: "runtime",
+        requestType: "input", turnId: event.turnId, itemId: event.itemId, action: "cancel", reason: "turn_terminal" } };
+    return { interaction: interaction!, cancelled };
+  }
+
+  it("expires only the cancelled native callback, idempotently, and rejects a late answer", async () => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    const unrelated = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+      kind: "ask_user_questions", payload: interaction.payload, sourceRunId: runId,
+      idempotencyKey: "ordinary-historical-question", continuationPolicy: "none",
+    }, { agentId, runId }, { supersedePendingSiblingInteractions: false });
+    const bridge = createLocalNativeQuestionBridge({ db, binding: binding(), resolve: vi.fn() });
+    await bridge.observe(cancelled);
+    await bridge.observe(cancelled);
+    const [expired] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(expired).toMatchObject({ status: "expired", result: { cancelled: true, answers: [] } });
+    const [historical] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, unrelated.id));
+    expect(historical.status).toBe("pending");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("in_progress");
+    const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(activity).toHaveLength(1);
+    await expect(issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, interaction.id,
+      { answers: [{ questionId: "color", optionIds: ["blue"] }] }, { userId: "operator-1" })).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+  });
+
+  it.each(["company", "issue", "agent", "run", "session", "runner", "turn", "item", "request"])("rejects cancellation with foreign %s identity", async (field) => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    const owner = binding();
+    if (field === "company") owner.companyId = randomUUID();
+    if (field === "issue") owner.issueId = randomUUID();
+    if (field === "agent") owner.agentId = randomUUID();
+    if (field === "run") cancelled.runId = randomUUID();
+    if (field === "session") cancelled.normalizedSessionId = randomUUID();
+    if (field === "runner") cancelled.sourceInstanceId = randomUUID();
+    if (field === "turn") cancelled.turnId = "foreign-turn";
+    if (field === "item") cancelled.itemId = "foreign-item";
+    if (field === "request") cancelled.payload.requestId = "foreign-request";
+    await expect(projectNativeRuntimeRequest({ db, binding: owner, event: cancelled })).rejects.toThrow(/native_runtime_/);
+    const [current] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(current.status).toBe("pending");
+  });
+
+  it("preserves a human answer that committed before native cancellation", async () => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, interaction.id,
+      { answers: [{ questionId: "color", optionIds: ["blue"] }] }, { userId: "operator-1" });
+    await projectNativeRuntimeRequest({ db, binding: binding(), event: cancelled });
+    const [current] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(current).toMatchObject({ status: "answered", result: { answers: [{ questionId: "color", optionIds: ["blue"] }] } });
+  });
+
+  it("settles concurrent native cancellation and human answer without replay or a deadlock", async () => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    const [stop, answer] = await Promise.allSettled([
+      projectNativeRuntimeRequest({ db, binding: binding(), event: cancelled }),
+      issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, interaction.id,
+        { answers: [{ questionId: "color", optionIds: ["blue"] }] }, { userId: "operator-1" }),
+    ]);
+    expect(stop.status).toBe("fulfilled");
+    const [current] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    if (answer.status === "fulfilled") {
+      expect(current.status).toBe("answered");
+      expect(current.result).toMatchObject({ answers: [{ questionId: "color", optionIds: ["blue"] }] });
+    } else {
+      expect(answer.reason).toMatchObject({ status: 409 });
+      expect(current).toMatchObject({ status: "expired", result: { cancelled: true, answers: [] } });
+    }
+  });
+
+  it("accepts the Rust ACPX cancellation payload without a redundant action field", async () => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    // Both Rust expire_runtime_requests and RuntimeRequestOutcome emit this
+    // envelope. Cancellation authority is its committed event type.
+    cancelled.payload = { provider: "acpx", requestId: "request-1", requestKind: "runtime", requestType: "input",
+      turnId: cancelled.turnId, itemId: cancelled.itemId, reason: "session_interrupted", replayAllowed: false,
+      adapter: "acpx-runtime-sidecar", request: { ...(runtimeRequestEvent().payload.request as Record<string, unknown>),
+        turnId: cancelled.turnId, itemId: cancelled.itemId } };
+    await projectNativeRuntimeRequest({ db, binding: binding(), event: cancelled });
+    const [current] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(current).toMatchObject({ status: "expired", result: { cancelled: true, answers: [] } });
+  });
+
+  it.each([{ action: "submit" }, { replayAllowed: true }, { response: { answers: {} } }])("rejects contradictory cancellation data %j", async (extra) => {
+    await seed();
+    const { interaction, cancelled } = await savedRuntimeQuestion();
+    Object.assign(cancelled.payload, extra);
+    await expect(projectNativeRuntimeRequest({ db, binding: binding(), event: cancelled })).rejects.toThrow("native_runtime_cancellation_invalid");
+    const [current] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(current.status).toBe("pending");
+  });
+
   it("commits and acknowledges an ACP permission, then queues only an admin's exact turn-bound decision", async () => {
     await seed();
     const event = permissionRequestEvent();

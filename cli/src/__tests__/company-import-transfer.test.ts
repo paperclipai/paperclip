@@ -67,6 +67,12 @@ describe("buildImportTransferManifest", () => {
   });
 });
 
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  return crc >>> 0;
+});
+
 // Minimal single-entry DEFLATE zip, byte-compatible with the shared reader —
 // the stored-zip helper cannot model a small-compressed/large-inflated entry.
 function buildDeflateZip(entryPath: string, text: string): Uint8Array {
@@ -75,8 +81,7 @@ function buildDeflateZip(entryPath: string, text: string): Uint8Array {
   const name = Buffer.from(entryPath, "utf8");
   let crc = 0xffffffff;
   for (const byte of raw) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ byte) & 0xff]!;
   }
   crc = (crc ^ 0xffffffff) >>> 0;
   const local = Buffer.alloc(30 + name.length);

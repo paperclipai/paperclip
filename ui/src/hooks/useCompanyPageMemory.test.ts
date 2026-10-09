@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getRememberedPathOwnerCompanyId,
+  isRememberableCompanyPath,
   sanitizeRememberedPathForCompany,
 } from "../lib/company-page-memory";
 
@@ -52,6 +53,25 @@ describe("getRememberedPathOwnerCompanyId", () => {
 });
 
 describe("sanitizeRememberedPathForCompany", () => {
+  it("does not remember an agent UUID before its company-scoped alias is resolved", () => {
+    expect(isRememberableCompanyPath("/agents/209d54ec-4f22-4897-b65d-517a49593023/overview")).toBe(false);
+    expect(isRememberableCompanyPath("/agents/maya/overview")).toBe(true);
+  });
+
+  it("falls back to dashboard for a legacy remembered agent UUID with unknown ownership", () => {
+    expect(sanitizeRememberedPathForCompany({
+      path: "/PAP/agents/209d54ec-4f22-4897-b65d-517a49593023/runs/run-1",
+      companyPrefix: "PAP",
+    })).toBe("/dashboard");
+  });
+
+  it("keeps canonical agent run paths and their query when switching companies", () => {
+    expect(sanitizeRememberedPathForCompany({
+      path: "/agents/maya/runs/run-1?mode=raw",
+      companyPrefix: "PAP",
+    })).toBe("/agents/maya/runs/run-1?mode=raw");
+  });
+
   it("keeps remembered issue paths that belong to the target company", () => {
     expect(
       sanitizeRememberedPathForCompany({

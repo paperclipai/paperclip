@@ -173,11 +173,10 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
+let agentRoutes: typeof import("../routes/agents.js").agentRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
 async function createApp(actorOverride: Record<string, unknown> = {}) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -332,6 +331,12 @@ describe("agent routes adapter validation", () => {
     }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    // These imports follow resetModules and the per-test mocks. Keep their cold
+    // setup cost in the existing 30-second hook, outside the request deadline.
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
   });
 
   afterEach(async () => {

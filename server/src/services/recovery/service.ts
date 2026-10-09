@@ -4493,6 +4493,14 @@ export function recoveryService(
         }
       }
 
+      // Stop remains authoritative even when cancellation accounting or an
+      // unrelated operator action has since paused the assignee. Check it
+      // before an uninvokable agent can be escalated as stranded work.
+      if (issue.status !== "in_review" && isOperatorCancelledRun(latestRun, agentId)) {
+        result.operatorCancelExempted += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       const agentInvokable =
         agent && agent.companyId === issue.companyId

@@ -42,8 +42,32 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { rehydrateRunnerdDeltaNotification } from "../../live/runnerd-codex-transport.js";
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["progress", "final"] as const)("preserves the trusted canonical %s delta channel without a preceding item start", async channel => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-canonical-delta-channel", normalizedSessionId: "session-canonical-delta-channel", workingDirectory: WORKSPACE,
+    });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Stream native commentary." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turnId, status: "inProgress" } });
+    transport.push("item/agentMessage/delta", rehydrateRunnerdDeltaNotification({
+      itemId: "native-message-1", kind: "agentMessage", channel, text: "Native message before steering.",
+    }, "thread-1", turnId));
+    transport.push("item/agentMessage/delta", {
+      threadId: "thread-1", turnId, itemId: "unmarked-message-1", kind: "agentMessage", channel,
+      delta: "Unmarked provider channel.", canonicalItem: true,
+    });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "interrupted", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find(event => event.eventType === "item.delta" && event.itemId === "native-message-1")?.payload)
+      .toMatchObject({ text: "Native message before steering.", channel });
+    expect(events.find(event => event.eventType === "item.delta" && event.itemId === "unmarked-message-1")?.payload)
+      .toMatchObject({ text: "Unmarked provider channel.", channel: "unknown" });
+    await session.close({ reason: "canonical delta channel verified" });
+  });
+
   it("admits a strictly bound semantic result from the durable runner", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

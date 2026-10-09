@@ -2,7 +2,7 @@ import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { upsertIssueDocumentSchema } from "@paperclipai/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -11,17 +11,23 @@ import {
   companies,
   companyMemberships,
   createDb,
+  documentAnnotationThreads,
   documents,
   heartbeatRuns,
   issueApprovals,
   issueComments,
   issueThreadInteractions,
   issues,
+  routines,
+  routineRuns,
+  routineTriggers,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
+import { documentAnnotationService } from "../document-annotations.js";
 import { issueService } from "../issues.js";
+import { routineService } from "../routines.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
@@ -96,6 +102,165 @@ describe("PaperclipRunnerToolAuthority", () => {
     await temporary?.cleanup();
   });
 
+  it("manages self-assigned routines with durable retry and revision protection", async () => {
+    const userId = "routine-owner";
+    await db.insert(authUsers).values({ id: userId, name: "Routine owner", email: "routine-owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
+    await db.update(issues).set({ responsibleUserId: userId }).where(eq(issues.id, issueId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const input = { idempotencyKey: "routine-create", action: "create", title: "Daily research",
+      schedule: { cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" } };
+    const created = await authority.execute({ tool: "manage_routine", callId: "routine-create", arguments: input }) as { routineId: string; baseRevisionId: string };
+    expect(created).toMatchObject({ status: "active", assigneeAgentId: agentId, schedules: [{ timezone: "America/Chicago" }] });
+    expect(await authority.execute({ tool: "manage_routine", callId: "retry", arguments: input })).toEqual(created);
+    expect(await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, created.routineId))).toHaveLength(1);
+    const paused = await authority.execute({ tool: "manage_routine", callId: "pause", arguments: {
+      idempotencyKey: "routine-pause", action: "pause", routineId: created.routineId, baseRevisionId: created.baseRevisionId,
+    } }) as { baseRevisionId: string };
+    expect(paused).toMatchObject({ status: "paused" });
+    const scheduler = routineService(db, { runtimeEnv: {}, heartbeat: { wakeup: async () => null } });
+    const due = new Date("2026-10-07T14:00:00Z");
+    await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.routineId, created.routineId));
+    expect(await scheduler.tickScheduledTriggers(due)).toEqual({ triggered: 0 });
+    await expect(authority.execute({ tool: "manage_routine", callId: "stale", arguments: {
+      idempotencyKey: "routine-stale", action: "resume", routineId: created.routineId, baseRevisionId: created.baseRevisionId,
+    } })).rejects.toThrow();
+    expect(await authority.execute({ tool: "manage_routine", callId: "resume", arguments: {
+      idempotencyKey: "routine-resume", action: "resume", routineId: created.routineId, baseRevisionId: paused.baseRevisionId,
+    } })).toMatchObject({ status: "active" });
+    await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.routineId, created.routineId));
+    expect(await scheduler.tickScheduledTriggers(due)).toEqual({ triggered: 1 });
+    expect(await scheduler.tickScheduledTriggers(due)).toEqual({ triggered: 0 });
+    const firings = await db.select().from(routineRuns).where(eq(routineRuns.routineId, created.routineId));
+    expect(firings).toMatchObject([{ status: "issue_created", source: "schedule" }]);
+    const [scheduledIssue] = await db.select().from(issues).where(eq(issues.id, firings[0]!.linkedIssueId!));
+    expect(scheduledIssue).toMatchObject({ companyId, assigneeAgentId: agentId, responsibleUserId: userId });
+    await db.update(routines).set({ assigneeAgentId: null }).where(eq(routines.id, created.routineId));
+    await expect(authority.execute({ tool: "manage_routine", callId: "reassigned-retry", arguments: input })).rejects.toThrow("assigned to themselves");
+    await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+  });
+
+  it("updates descriptions and schedules atomically, remaps annotations, and rejects stale retries", async () => {
+    const userId = "routine-edit-owner";
+    await db.insert(authUsers).values({ id: userId, name: "Routine edit owner", email: "routine-edit-owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
+    await db.update(issues).set({ responsibleUserId: userId }).where(eq(issues.id, issueId));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const execute = (input: Record<string, unknown>) => authority.execute({ tool: "manage_routine", callId: String(input.idempotencyKey), arguments: input });
+      const created = await execute({ idempotencyKey: "routine-edit-create", action: "create", title: "Before edit", description: "Alpha selected text omega",
+        schedule: { cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" } }) as { routineId: string; baseRevisionId: string; schedules: { triggerId: string }[] };
+      const service = routineService(db);
+      const originalDoc = (await service.getDescriptionDocument(created.routineId))!;
+      const thread = await documentAnnotationService(db).createRoutineThread(created.routineId, "description", {
+        baseRevisionId: originalDoc.latestRevisionId!, baseRevisionNumber: originalDoc.latestRevisionNumber,
+        selector: { quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 } },
+        body: "Keep this selection anchored",
+      }, { actorType: "user", actorId: userId, userId });
+      const update = { idempotencyKey: "routine-edit-update", action: "update", routineId: created.routineId, baseRevisionId: created.baseRevisionId,
+        title: "After edit", description: "Intro.\n\nAlpha selected text omega",
+        schedule: { triggerId: created.schedules[0]!.triggerId, cronExpression: "30 10 * * 1-5", timezone: "Europe/London" } };
+      const updated = await execute(update) as { baseRevisionId: string };
+      expect(updated).toMatchObject({ title: "After edit", schedules: [{ cronExpression: "30 10 * * 1-5", timezone: "Europe/London" }] });
+      const nextDoc = (await service.getDescriptionDocument(created.routineId))!;
+      expect(nextDoc.body).toBe(update.description);
+      const [remapped] = await db.select().from(documentAnnotationThreads).where(eq(documentAnnotationThreads.id, thread.id));
+      expect(remapped).toMatchObject({ currentRevisionId: nextDoc.latestRevisionId, currentRevisionNumber: nextDoc.latestRevisionNumber, anchorState: "active", selectedText: "selected text" });
+      expect(remapped!.normalizedStart).toBeGreaterThan(6);
+      const activities = () => db.select().from(activityLog).where(eq(activityLog.entityId, created.routineId));
+      expect(await activities()).toEqual(expect.arrayContaining([expect.objectContaining({ action: "routine.document_annotation_remapped", details: expect.objectContaining({ threadId: thread.id, documentId: nextDoc.id }) })]));
+      const before = await service.getDetail(created.routineId);
+      const beforeActivities = await activities();
+      expect(await execute(update)).toEqual(updated);
+      expect(await service.getDetail(created.routineId)).toEqual(before);
+      expect(await activities()).toEqual(beforeActivities);
+      await expect(execute({ ...update, idempotencyKey: "routine-edit-stale", title: "Stale description" })).rejects.toThrow();
+      await expect(execute({ ...update, idempotencyKey: "routine-edit-invalid", baseRevisionId: updated.baseRevisionId,
+        title: "Must roll back", description: "Changed selection", schedule: { ...update.schedule, cronExpression: "not a cron", timezone: "Europe/London" } })).rejects.toThrow();
+      expect(await service.getDetail(created.routineId)).toEqual(before);
+      expect(await service.getDescriptionDocument(created.routineId)).toEqual(nextDoc);
+      expect(await db.select().from(documentAnnotationThreads).where(eq(documentAnnotationThreads.id, thread.id))).toEqual([remapped]);
+      expect(await activities()).toEqual(beforeActivities);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const receipts = (run!.resultJson as { semanticToolReceipts: Record<string, unknown> }).semanticToolReceipts;
+      expect(receipts).not.toHaveProperty("routine-edit-stale");
+      expect(receipts).not.toHaveProperty("routine-edit-invalid");
+      expect(receipts).toHaveProperty("routine-edit-update");
+    } finally {
+      await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("rejects a contended routine edit, lets its scheduled firing finish, and retries exactly once", async () => {
+    const userId = "routine-concurrent-owner";
+    await db.insert(authUsers).values({ id: userId, name: "Routine concurrency owner", email: "routine-concurrent@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
+    await db.update(issues).set({ responsibleUserId: userId }).where(eq(issues.id, issueId));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const created = await authority.execute({ tool: "manage_routine", callId: "concurrent-create", arguments: {
+        idempotencyKey: "concurrent-create", action: "create", title: "Concurrent routine",
+        schedule: { cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" },
+      } }) as { routineId: string; baseRevisionId: string };
+      // A routine can outlive its original task. Avoid the parent's foreign-key
+      // lock so this exercises the agent/routine cycle independently.
+      await db.update(routines).set({ parentIssueId: null }).where(eq(routines.id, created.routineId));
+      const due = new Date("2026-10-07T14:00:00Z");
+      await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.routineId, created.routineId));
+      let enteredWake = false;
+      let releaseWake!: () => void;
+      const wakeGate = new Promise<void>(resolve => { releaseWake = resolve; });
+      const scheduler = routineService(db, { runtimeEnv: {}, heartbeat: { wakeup: async () => {
+        enteredWake = true;
+        await wakeGate;
+        // The real assignment path needs this agent row while holding the routine.
+        await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+        return null;
+      } } });
+      const firing = scheduler.tickScheduledTriggers(due);
+      void firing.catch(() => undefined);
+      const guardedDb = new Proxy(db, { get(target, key, receiver) {
+        if (key !== "transaction") return Reflect.get(target, key, receiver);
+        return (effect: (tx: unknown) => Promise<unknown>) => target.transaction(async tx => {
+          // Bound failure cleanup even on the old blocking implementation. The
+          // shorter race below must succeed before this diagnostic limit fires.
+          await tx.execute(sql`set local lock_timeout = '3000ms'`);
+          return effect(tx);
+        });
+      } });
+      const editingAuthority = new PaperclipRunnerToolAuthority(guardedDb, { companyId, agentId, issueId, runId });
+      const input = { idempotencyKey: "concurrent-edit", action: "update", routineId: created.routineId,
+        baseRevisionId: created.baseRevisionId, title: "After concurrent firing" };
+      let edit: Promise<unknown> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await vi.waitFor(() => expect(enteredWake).toBe(true), { timeout: 5000 });
+        edit = editingAuthority.execute({ tool: "manage_routine", callId: "concurrent-edit", arguments: input });
+        const outcome = await Promise.race([
+          edit.then(value => ({ kind: "applied", value }), error => ({ kind: "rejected", error })),
+          new Promise<{ kind: "timeout" }>(resolve => { timer = setTimeout(() => resolve({ kind: "timeout" }), 2000); }),
+        ]);
+        expect(outcome).toMatchObject({ kind: "rejected", error: { status: 409, details: { code: "routine_busy", retryable: true } } });
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect((run!.resultJson as { semanticToolReceipts: object }).semanticToolReceipts).not.toHaveProperty(input.idempotencyKey);
+      } finally {
+        clearTimeout(timer);
+        releaseWake();
+        await Promise.allSettled([firing, ...(edit ? [edit] : [])]);
+      }
+      expect(await firing).toEqual({ triggered: 1 });
+      const updated = await authority.execute({ tool: "manage_routine", callId: "concurrent-retry", arguments: input });
+      expect(updated).toMatchObject({ title: input.title });
+      expect(await authority.execute({ tool: "manage_routine", callId: "concurrent-replay", arguments: input })).toEqual(updated);
+      expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, created.routineId))).toMatchObject([
+        { status: "issue_created", source: "schedule" },
+      ]);
+    } finally {
+      await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+    }
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -103,7 +268,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(44);
+    expect(authority.definitions()).toHaveLength(45);
     expect(authority.definitions().map(tool => tool.name)).not.toContain("read_chat_attachment");
     expect(authority.definitions().map(tool => tool.name)).not.toContain("read_current_wake_comments");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
@@ -130,6 +295,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         "submit_suggestion",
         "request_human_input",
         "create_task",
+        "manage_routine",
         "set_dependencies",
         "set_task_monitor",
         "list_documents",
@@ -860,6 +1026,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   });
 
   it("writes a real revisioned document and replays the mutation receipt", async () => {
+    const before = await db.select().from(documents).where(eq(documents.companyId, companyId));
     const body = credentialDocumentBody;
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -898,7 +1065,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         .select()
         .from(documents)
         .where(eq(documents.companyId, companyId)),
-    ).toHaveLength(1);
+    ).toHaveLength(before.length + 1);
     expect(await documentService(db).getIssueDocumentByKey(issueId, "plan"))
       .toMatchObject({ body: credentialDocumentBody });
     const documentActivity = await db
@@ -1028,6 +1195,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
+    const initialChildCount = (await db.select().from(issues).where(eq(issues.parentId, issueId))).length;
     const wakes: Array<{ agentId: string; options: Record<string, unknown> }> =
       [];
     const authority = new PaperclipRunnerToolAuthority(db, {
@@ -1244,7 +1412,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(retryWakes).toHaveLength(0);
     expect(
       await db.select().from(issues).where(eq(issues.parentId, issueId)),
-    ).toHaveLength(3);
+    ).toHaveLength(initialChildCount + 3);
   });
 
   it("rejects mutations after reassignment, run replacement, or terminalization", async () => {

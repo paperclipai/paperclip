@@ -20,8 +20,8 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   it("pins the reconciled op-set relationship between the two catalogs", () => {
     const summary = capabilityCatalogReconciliation();
     expect(summary.scenarioCount).toBe(40);
-    expect(summary.liveCount).toBe(45);
-    expect(summary.sharedCount).toBe(28);
+    expect(summary.liveCount).toBe(46);
+    expect(summary.sharedCount).toBe(29);
     expect(summary.unionCount).toBe(57);
     // Any operation added to or removed from either catalog without a
     // reconciliation decision changes these exact sets and fails the gate.
@@ -53,7 +53,6 @@ describe("canonical semantic-catalog reconciliation authority", () => {
       "list_goals",
       "list_routines",
       "list_secret_metadata",
-      "manage_routine",
       "read_secret_value",
       "sync_company_skills",
       "upsert_case",
@@ -121,8 +120,8 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   it("classifies real binding status so generic_api_request is never product coverage", () => {
     const summary = capabilityCatalogReconciliation();
     expect(summary.byRealBindingStatus).toEqual({
-      live_codex: 44,
-      scenario_mock: 12,
+      live_codex: 45,
+      scenario_mock: 11,
       test_only: 1,
     });
     expect(capabilityCanonicalOperation("generic_api_request")?.realBindingStatus).toBe("test_only");

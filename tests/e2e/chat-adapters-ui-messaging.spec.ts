@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 
 import {
   fulfill,
@@ -1304,6 +1305,109 @@ test.describe("Exact failed chat run retry", () => {
     );
   });
 
+  test("a cross-company UUID redirect keeps same-name agent caches isolated", async ({
+    page,
+    request,
+  }, testInfo) => {
+    const other = await seedCompanyAndAgent(request);
+    const foreignTitle = "Foreign UUID agent cache sentinel";
+    const scopedTitle = "Company-scoped Maya cache sentinel";
+    const [foreignCompany, scopedCompany] = await Promise.all([
+      json<{ id: string; name: string }>(await request.get(`/api/companies/${other.companyId}`), "read foreign company"),
+      json<{ id: string; name: string }>(await request.get(`/api/companies/${seed.companyId}`), "read scoped company"),
+    ]);
+    expect(foreignCompany.id).toBe(other.companyId);
+    expect(scopedCompany.id).toBe(seed.companyId);
+    expect(foreignCompany.name).not.toBe(scopedCompany.name);
+    await json(await request.patch(`/api/agents/${other.agentId}`, {
+      data: { title: foreignTitle },
+    }), "set foreign agent title");
+    await json(await request.patch(`/api/agents/${seed.agentId}`, {
+      data: { title: scopedTitle },
+    }), "set scoped agent title");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let observed!: () => void;
+    const canonicalRead = new Promise<void>((resolve) => { observed = resolve; });
+    page.once("close", release);
+    await page.route("**/api/agents/maya?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("companyId") !== seed.companyId) {
+        await route.fallback();
+        return;
+      }
+      const response = await route.fetch();
+      const agent = await response.json();
+      expect(agent.id).toBe(seed.agentId);
+      observed();
+      await held;
+      await route.fulfill({ response });
+    });
+    try {
+      await page.goto(`/${seed.prefix}/agents/${other.agentId}/overview`);
+      await expect(page).toHaveURL(new RegExp(`/${other.prefix}/agents/maya/overview$`));
+      await expect(page.getByText(foreignTitle, { exact: true }).first()).toBeVisible();
+      await expect.poll(() => page.evaluate(() => localStorage.getItem("paperclip.selectedCompanyId")))
+        .toBe(other.companyId);
+      const dismissAnnouncement = page.getByRole("button", { name: "Dismiss announcement", exact: true });
+      if (await dismissAnnouncement.isVisible()) await dismissAnnouncement.click();
+      await page.getByRole("button", { name: `Open ${foreignCompany.name} organization switcher`, exact: true }).click();
+      const menuItems = await page.getByRole("menuitem").allTextContents();
+      const scopedOption = page.getByRole("menuitem").filter({ hasText: scopedCompany.name });
+      const chosenOption = await scopedOption.innerText();
+      const routeHistory: string[] = [];
+      page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) routeHistory.push(frame.url()); });
+      await scopedOption.click();
+      await writeFile(testInfo.outputPath("cross-company-menu-context.json"), JSON.stringify({
+        foreignCompany, scopedCompany, seed, other, menuItems, chosenOption, routeHistory,
+        afterSwitchUrl: page.url(),
+        afterSwitchSelectedCompany: await page.evaluate(() => localStorage.getItem("paperclip.selectedCompanyId")),
+      }, null, 2));
+      await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/dashboard$`));
+      // The feed can settle after either navigation. Dismiss the actual card
+      // through its normal control if it blocks either sidebar link.
+      const clickSidebarLink = async (name: string) => {
+        await expect(async () => {
+          if (await dismissAnnouncement.isVisible()) await dismissAnnouncement.click({ timeout: 1_000 });
+          await page.getByRole("link", { name, exact: true }).first().click({ timeout: 1_000 });
+        }).toPass({ timeout: 10_000 });
+      };
+      await clickSidebarLink("Agents");
+      await clickSidebarLink("Maya");
+      await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/agents/maya(?:/overview)?$`));
+      await expect(page.getByText(foreignTitle, { exact: true })).toHaveCount(0);
+      await Promise.race([
+        canonicalRead,
+        page.getByText("Paperclip hit an error", { exact: true }).waitFor({ timeout: 15_000 }).then(() => {
+          throw new Error("Cross-company canonical navigation reached the app error boundary");
+        }),
+      ]);
+      release();
+      await expect(page.getByText(scopedTitle, { exact: true }).first()).toBeVisible();
+      await expect(page.getByText(foreignTitle, { exact: true })).toHaveCount(0);
+      await expect(page.getByText("Paperclip hit an error", { exact: true })).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => localStorage.getItem("paperclip.selectedCompanyId")))
+        .toBe(seed.companyId);
+      await page.screenshot({ path: testInfo.outputPath("cross-company-canonical-agent.png") });
+      // A manual selection must not prevent a later history navigation from
+      // following the authorized agent's company in the sidebar as well.
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/agents/all$`));
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/dashboard$`));
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`/${other.prefix}/agents/maya/overview$`));
+      await expect(page.getByText(foreignTitle, { exact: true }).first()).toBeVisible();
+      await expect.poll(() => page.evaluate(() => localStorage.getItem("paperclip.selectedCompanyId")))
+        .toBe(other.companyId);
+      await expect(page.getByRole("button", { name: `Open ${foreignCompany.name} organization switcher`, exact: true }))
+        .toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("cross-company-history-selection.png") });
+    } finally {
+      release();
+    }
+  });
+
   for (const surface of ["agent run", "Inbox", "Legacy Inbox"] as const) {
     for (const outcome of ["queued", "deferred", "denied"] as const) {
       test(`${surface}: selected run ${outcome} preserves exact retry authority and truthful feedback`, async ({
@@ -1355,12 +1459,26 @@ test.describe("Exact failed chat run retry", () => {
           body: Record<string, unknown>;
         }> = [];
         const destinations: string[] = [];
+        let releaseCanonicalRead = () => {};
+        const canonicalRead = new Promise<void>((resolve) => {
+          releaseCanonicalRead = resolve;
+        });
+        page.once("close", releaseCanonicalRead);
         page.on("framenavigated", (frame) => {
           if (frame === page.mainFrame()) destinations.push(frame.url());
         });
         await page.route("**/api/**", async (route) => {
           const url = new URL(route.request().url());
           const pathname = url.pathname;
+          if (surface === "agent run" && outcome === "denied"
+            && pathname === "/api/agents/maya" && route.request().method() === "GET") {
+            // Canonical URL refresh must preserve the selected run and its
+            // retry feedback while the alias lookup is still pending.
+            const response = await route.fetch();
+            await canonicalRead;
+            if (!page.isClosed()) await route.fulfill({ response });
+            return;
+          }
           if (pathname === "/api/instance/settings/experimental") {
             await fulfill(route, {
               enableChatConnectors: true,
@@ -1455,6 +1573,10 @@ test.describe("Exact failed chat run retry", () => {
         });
         if (outcome === "denied") {
           await expect(page.getByText(denial, { exact: true })).toBeVisible();
+          if (surface === "agent run") {
+            await page.screenshot({ path: testInfo.outputPath("exact-retry-denied-during-canonical-refresh.png") });
+          }
+          releaseCanonicalRead();
           if (surface !== "agent run") {
             await expect(
               page.getByText("Run retry failed", { exact: true }),
