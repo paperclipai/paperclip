@@ -84,7 +84,9 @@ configuration instead; its `env` map is complete, so omitted bindings are
 removed and `null` is not a valid binding. Strict secret validation applies only
 to environment keys submitted by the current partial update, so callers do not
 need to read and resubmit existing bindings. A full replacement applies strict
-secret validation to every environment binding it supplies.
+secret validation to every environment binding it supplies. When changing the
+adapter type, an explicitly empty `env` map remains empty so adapter-specific
+credential bindings from the previous adapter are removed.
 
 ## Pause Agent
 

@@ -5777,10 +5777,13 @@ export function agentRoutes(
             && hasOwn(requestedAdapterConfig, "env")
             && !replaceAdapterConfig
           ) {
-            rawEffectiveAdapterConfig = mergeAdapterEnvPatch(
-              existingAdapterConfig,
-              rawEffectiveAdapterConfig,
-            );
+            const requestedEnv = asRecord(requestedAdapterConfig.env);
+            if (requestedEnv && Object.keys(requestedEnv).length > 0) {
+              rawEffectiveAdapterConfig = mergeAdapterEnvPatch(
+                existingAdapterConfig,
+                rawEffectiveAdapterConfig,
+              );
+            }
             continue;
           }
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
