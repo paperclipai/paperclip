@@ -29,15 +29,15 @@ Options:
   --help, -h             Show this help
 
 Examples:
-  scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  bash scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
     --title "Demo video render" \
     --summary "MP4 render for board review"
 
-  scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  bash scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
     --title "Walkthrough video" \
     --content-type video/webm
 
-  scripts/paperclip-upload-artifact.sh out/result.png \
+  bash scripts/paperclip-upload-artifact.sh out/result.png \
     --title "Generated image" \
     --chat-comment "Here is the requested image."
 EOF
@@ -113,6 +113,17 @@ sha256_text() {
   fi
 }
 
+helper_state_directory() {
+  printf '%s' "${PAPERCLIP_HELPER_STATE_DIR:-${PAPERCLIP_WORKSPACE_CWD:-$PWD}/.paperclip/artifact-helper}"
+}
+
+helper_response_file() {
+  local directory
+  directory="$(helper_state_directory)"
+  # TMPDIR can name a controller-owned directory outside a CLI sandbox.
+  (umask 077; mkdir -p "$directory" && mktemp "$directory/response.XXXXXX")
+}
+
 request_json() {
   local method="$1"
   local url="$2"
@@ -120,7 +131,7 @@ request_json() {
   local response_file
   local status_code
 
-  response_file="$(mktemp)"
+  response_file="$(helper_response_file)"
   if [[ -n "$body" ]]; then
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
@@ -159,10 +170,11 @@ upload_file() {
   local response_file
   local status_code
   local curl_status=0
+  local indeterminate=0
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
-  response_file="$(mktemp)"
+  response_file="$(helper_response_file)"
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
@@ -180,8 +192,13 @@ upload_file() {
     printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
     cat "$response_file" >&2
     printf '\n' >&2
+    # The bridge uses a structured 409 outcome after a possibly committed
+    # mutation. Keep the marker so the next invocation reconciles by listing.
+    if [[ "$status_code" == "409" ]] && jq -e '.outcome == "indeterminate"' "$response_file" >/dev/null 2>&1; then
+      indeterminate=1
+    fi
     rm -f "$response_file"
-    if [[ "$status_code" == "408" || "$status_code" -ge 500 ]]; then
+    if [[ "$status_code" == "408" || "$status_code" -ge 500 || "$indeterminate" == "1" ]]; then
       return 75
     fi
     return 1
@@ -217,7 +234,7 @@ acquire_operation_lock() {
   local attempts=0
 
   umask 077
-  operation_state_root="${PAPERCLIP_HELPER_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-upload-artifact}"
+  operation_state_root="$(helper_state_directory)"
   mkdir -p "$operation_state_root"
   operation_lock_path="$operation_state_root/$operation_key.lock"
   operation_lock_owner="$$|$(process_start_identity "$$" || true)"

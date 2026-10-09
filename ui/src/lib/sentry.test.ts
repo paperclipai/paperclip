@@ -111,11 +111,10 @@ describe("initBrowserErrorMonitoring", () => {
     const mocks = mockSentryPackage();
     const { initBrowserErrorMonitoring } = await importFreshSentry();
 
-    await initBrowserErrorMonitoring(DSN);
+    await initBrowserErrorMonitoring(DSN, "staging");
 
     expect(mocks.init).toHaveBeenCalledTimes(1);
-    const initOptions = mocks.init.mock.calls[0][0] as { dsn: string };
-    expect(initOptions.dsn).toBe(DSN);
+    expect(mocks.init.mock.calls[0][0]).toMatchObject({ dsn: DSN, environment: "staging" });
   });
 
   it("a second call starts no second client", async () => {
@@ -277,6 +276,107 @@ describe("captureBrowserException", () => {
 
     expect(mocks.captureException).toHaveBeenCalledWith(expect.any(Error));
   });
+
+  it("sends sanitized per-error context captured before the queue runs", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureBrowserException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    document.documentElement.classList.add("translated-ltr");
+    const error = new DOMException("insertBefore failed", "NotFoundError");
+    captureBrowserException(error, {
+      boundary: "route", componentStack: "\n    at TaskDetail (https://tenant.example/tasks/private-id?token=private-value:1:2)",
+    });
+    document.documentElement.classList.remove("translated-ltr");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.captureException).toHaveBeenCalledWith(error, {
+      tags: { react_error_boundary: "route" },
+      contexts: {
+        react: { componentStack: "\n    at TaskDetail" },
+        browser_state: expect.objectContaining({ translation_marker: true }),
+      },
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain("private-value");
+    captureBrowserException(new Error("unrelated error"));
+    // Initialization is idempotent and provides a barrier on the same queue.
+    await initBrowserErrorMonitoring(DSN);
+    expect(mocks.captureException).toHaveBeenLastCalledWith(expect.any(Error));
+  });
+
+  it("still captures the original error if component diagnostics fail", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureBrowserException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const error = new Error("original error");
+    expect(() => captureBrowserException(error, {
+      boundary: "app",
+      get componentStack(): string { throw new Error("diagnostic failure"); },
+    })).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.captureException).toHaveBeenCalledWith(error);
+  });
+});
+
+describe("browser error diagnostics with the real SDK", () => {
+  it("emits bounded component and translation context without page data or scope leakage", async () => {
+    const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
+    const events: Array<Record<string, unknown>> = [];
+    vi.doMock("@sentry/browser", () => ({
+      ...Sentry,
+      init: (options: Parameters<typeof Sentry.init>[0]) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: async (event, hint) => {
+          const enriched = await options?.beforeSend?.(event, hint) ?? event;
+          events.push(enriched as unknown as Record<string, unknown>);
+          return enriched;
+        },
+      }),
+    }));
+    const gate = await importFreshSentry();
+    await gate.initBrowserErrorMonitoring(DSN, "staging");
+    const previousPath = window.location.pathname + window.location.search;
+    window.history.replaceState({}, "", "/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability");
+    document.documentElement.classList.add("translated-ltr", "private-customer-class");
+    try {
+      gate.captureBrowserException(new DOMException("insertBefore failed", "NotFoundError"), {
+        boundary: "route",
+        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability:3:4)",
+      });
+      document.documentElement.classList.remove("translated-ltr");
+      gate.captureBrowserException(new Error("unrelated failure"));
+      await gate.initBrowserErrorMonitoring(DSN, "staging");
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        environment: "staging",
+        tags: { react_error_boundary: "route" },
+        contexts: {
+          react: { componentStack: "\n    at TaskDetail" },
+          browser_state: { translation_marker: true },
+        },
+      });
+      expect(events[1]).not.toHaveProperty("contexts.react");
+      expect(events[1]).toHaveProperty("contexts.browser_state.translation_marker", false);
+      expect(events[1]).not.toHaveProperty("tags.react_error_boundary");
+      for (const event of events) {
+        expect(event).not.toHaveProperty("request");
+        expect(event.breadcrumbs).toBeUndefined();
+      }
+      for (const secret of ["tenant.example", "sentry-fixture-secret-task-7fa83e", "private-capability", "private-customer-class"]) {
+        expect(JSON.stringify(events)).not.toContain(secret);
+      }
+      await gate.teardownBrowserErrorMonitoring();
+      gate.captureBrowserException(new Error("after sign-out"), { boundary: "app", componentStack: "\n    at TaskDetail" });
+      await gate.teardownBrowserErrorMonitoring();
+      expect(events).toHaveLength(2);
+    } finally {
+      await gate.teardownBrowserErrorMonitoring();
+      document.documentElement.classList.remove("translated-ltr", "private-customer-class");
+      window.history.replaceState({}, "", previousPath);
+    }
+  });
 });
 
 /**
@@ -296,6 +396,29 @@ function resolveIntegrations(
 }
 
 describe("buildBrowserSentryInitOptions", () => {
+  it("keeps the loaded bundle's release when the server version changes", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    vi.stubEnv("PAPERCLIP_BUILD_COMMIT", "abcdef0123456789abcdef0123456789abcdef01");
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBe(commit);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not invent a release for an unstamped bundle", async () => {
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", null);
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("sets the recorded built-in privacy options", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
@@ -305,12 +428,12 @@ describe("buildBrowserSentryInitOptions", () => {
     expect(options.tracesSampleRate).toBe(0);
   });
 
-  it("holds no beforeSend hook and no custom filter function", async () => {
+  it("adds diagnostics without a transaction filter", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
     const options = buildBrowserSentryInitOptions(DSN);
 
-    expect(options.beforeSend).toBeUndefined();
+    expect(options.beforeSend).toBeTypeOf("function");
     expect(options.beforeSendTransaction).toBeUndefined();
   });
 
@@ -348,24 +471,84 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
   /**
    * Initialize the real SDK with this module's exact options, plus a
    * transport stub so no event leaves the test process, plus `beforeSend`
-   * so the test can inspect the resolved event before it would have been
-   * sent. `beforeSend` here is test-only introspection — the shipped module
-   * adds no `beforeSend` of its own (see the "holds no beforeSend hook"
-   * test above).
+   * so the test can inspect the resolved event after the production diagnostic
+   * hook runs, before it would have been sent.
    */
-  async function initRealSentryForTest(onEvent: (event: Record<string, unknown>) => void) {
+  async function initRealSentryForTest(
+    onEvent: (event: Record<string, unknown>) => void,
+    environment?: string | null,
+  ) {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
     const Sentry = await import("@sentry/browser");
+    const options = buildBrowserSentryInitOptions(DSN, environment);
     Sentry.init({
-      ...buildBrowserSentryInitOptions(DSN),
+      ...options,
       transport: () => ({ send: async () => ({}), flush: async () => true }),
-      beforeSend: (event) => {
-        onEvent(event as unknown as Record<string, unknown>);
-        return event;
+      beforeSend: async (event, hint) => {
+        const enriched = await options.beforeSend?.(event, hint) ?? event;
+        onEvent(enriched as unknown as Record<string, unknown>);
+        return enriched;
       },
     });
     return Sentry;
   }
+
+  it("enriches an undefined global rejection without page data or suppression", async () => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, "staging");
+    const previousHandler = window.onunhandledrejection;
+    try {
+      expect(previousHandler).toBeTypeOf("function");
+      document.documentElement.classList.add("translated-ltr", "private-class");
+      window.onunhandledrejection?.call(window, { reason: undefined } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({
+        tags: { browser_rejection_kind: "undefined", browser_build_mode: "development" },
+        contexts: { browser_state: { translation_marker: true } },
+        exception: { values: [{ type: "UnhandledRejection" }] },
+      });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+      expect(JSON.stringify(captured)).not.toContain("private-class");
+    } finally {
+      document.documentElement.classList.remove("translated-ltr", "private-class");
+      await Sentry.close();
+    }
+  });
+
+  it.each([
+    ["staging", "staging"],
+    ["production", "production"],
+    [null, "production"],
+    [undefined, "production"],
+  ])("emits environment %s as %s without page context", async (environment, expected) => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, environment);
+    try {
+      Sentry.captureException(new Error("environment attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ environment: expected });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+    } finally {
+      await Sentry.close();
+    }
+  });
+
+  it("attaches the bundle release to an emitted event without page context", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    try {
+      let captured: Record<string, unknown> | null = null;
+      const Sentry = await initRealSentryForTest((event) => { captured = event; });
+      Sentry.captureException(new Error("bundle attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ release: commit });
+      expect(captured).not.toHaveProperty("request");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("an event from a page URL that holds a test capability value carries no request URL, no query string, and no referrer", async () => {
     window.history.pushState({}, "", "/dashboard?token=test-capability-value");

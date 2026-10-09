@@ -13,6 +13,7 @@ import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import {
   createPaperclipRunnerAuthorizedToolSet,
+  defaultCapabilityRunnerdBinary,
   type PaperclipSemanticToolDefinition,
 } from "../../vendor/paperclip-runner/index.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
@@ -171,19 +172,27 @@ function executableName(): string {
 export function resolvePaperclipRunnerBinary(
   configuredPath = process.env.PAPERCLIP_RUNNER_BINARY,
 ): string {
+  if (configuredPath && !isAbsolute(configuredPath)) {
+    throw new Error("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+  }
+  if (configuredPath) {
+    try {
+      accessSync(configuredPath, constants.R_OK | (process.platform === "win32" ? 0 : constants.X_OK));
+      return configuredPath;
+    } catch {
+      // Preserve the existing fallback for an unavailable configured path.
+    }
+  }
   const candidates = [
-    configuredPath,
-    resolve(moduleDirectory, "../../vendor/paperclip-runner/bin", executableName()),
-    resolve(moduleDirectory, "../../../../packages/paperclip-runner/dist/bin", executableName()),
+    // The runner owns its compiled/vendored root and verifies the target header.
+    // Never prefer a flat build-host executable over a staged release target.
+    defaultCapabilityRunnerdBinary(),
     resolve(
       moduleDirectory,
       "../../../../packages/paperclip-runner/runner/target/release",
       executableName(),
     ),
   ].filter((candidate): candidate is string => Boolean(candidate));
-  if (configuredPath && !isAbsolute(configuredPath)) {
-    throw new Error("PAPERCLIP_RUNNER_BINARY must be an absolute path");
-  }
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.R_OK | (process.platform === "win32" ? 0 : constants.X_OK));

@@ -1,11 +1,15 @@
 import express, { type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError, unprocessable } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import { chatChannelRoutes } from "./chat-channels.js";
+
+const settings = vi.hoisted(() => ({ getExperimental: vi.fn() }));
+vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => settings }));
+beforeEach(() => settings.getExperimental.mockResolvedValue({ enableChatConnectors: true }));
 
 const token = "synthetic-identity-preview-token-for-route-test";
 const preview = {
@@ -30,7 +34,10 @@ function fixture(
   },
 ) {
   const previewIdentityLink = vi.fn().mockResolvedValue(preview);
+  const confirmIdentityLink = vi.fn();
+  const requestIdentityAccess = vi.fn();
   const app = express();
+  app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
@@ -38,15 +45,26 @@ function fixture(
   app.use(
     "/api",
     chatChannelRoutes({} as Db, {
-      service: { previewIdentityLink } as unknown as ChatChannelService,
+      service: { previewIdentityLink, confirmIdentityLink, requestIdentityAccess } as unknown as ChatChannelService,
       heartbeat: { wakeup: vi.fn() },
     }),
   );
   app.use(errorHandler);
-  return { app, previewIdentityLink };
+  return { app, previewIdentityLink, confirmIdentityLink, requestIdentityAccess };
 }
 
 describe("chat identity-link preview authority", () => {
+  it.each([false, undefined])("blocks every identity API when chat rollout is disabled (%s)", async (enabled) => {
+    settings.getExperimental.mockResolvedValue({ enableChatConnectors: enabled });
+    const f = fixture();
+    await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(403);
+    await request(f.app).post("/api/chat-identity-links/confirm").send({ token }).expect(403);
+    await request(f.app).post("/api/chat-identity-links/request-access").send({ token }).expect(403);
+    expect(f.previewIdentityLink).not.toHaveBeenCalled();
+    expect(f.confirmIdentityLink).not.toHaveBeenCalled();
+    expect(f.requestIdentityAccess).not.toHaveBeenCalled();
+  });
+
   it("returns the preview to a Board member of its exact company", async () => {
     const { app, previewIdentityLink } = fixture();
     const response = await request(app)
@@ -54,7 +72,7 @@ describe("chat identity-link preview authority", () => {
       .query({ token });
     expect(response.status).toBe(200);
     expect(response.body).toEqual(preview);
-    expect(previewIdentityLink).toHaveBeenCalledExactlyOnceWith(token);
+    expect(previewIdentityLink).toHaveBeenCalledExactlyOnceWith(token, "viewer");
   });
 
   it.each([false, true])(

@@ -262,6 +262,19 @@ describe("SidebarRecentTasks", () => {
     expect(menu?.textContent).toContain("Pause/Restart");
   });
 
+  it("keeps an idle Slack conversation in recent history and labels it Idle", async () => {
+    const issue = {
+      id: "issue-1", companyId: "company-1", title: "Slack conversation", identifier: "PAP-1",
+      status: "in_review" as const, externalConversationState: "waiting" as const,
+      updatedAt: new Date(1), hiddenAt: null,
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    await render();
+    expect(container.textContent).toContain("Slack conversation");
+    expect(container.textContent).toContain("Idle");
+  });
+
   it("archives a task from the inbox without hiding or removing the recent task", async () => {
     const issue = {
       id: "issue-1",
@@ -489,6 +502,33 @@ describe("SidebarRecentTasks", () => {
     });
 
     expect(container.querySelector('a[href="/issues/issue-2"]')?.textContent).toContain("Cross-tab task");
+  });
+
+  it("preserves pending restart wake retries from before the snapshot storage migration", async () => {
+    const issue = {
+      id: "issue-1", companyId: "company-1", title: "Retry after upgrade", identifier: "PAP-1",
+      status: "in_progress" as const, assigneeAgentId: "agent-1", hiddenAt: null, updatedAt: new Date(1),
+    };
+    window.localStorage.setItem("paperclip.recentTasks:company-1:user-1", JSON.stringify([{ ...issue, recordedAt: 1 }]));
+    window.localStorage.setItem("paperclip.recentTasks:company-1:user-1:restart-wake-retry", JSON.stringify([issue.id]));
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
+    mockAgentsApi.wakeup.mockResolvedValue({ id: "run-1" });
+
+    await render();
+    await openActions("Retry after upgrade");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(mockIssuesApi.createTreeHold).not.toHaveBeenCalled();
+    expect(mockIssuesApi.releaseTreeHold).not.toHaveBeenCalled();
+    expect(mockAgentsApi.wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      reason: "recent_task_restart_retry",
+    }), "company-1");
+    expect(window.localStorage.getItem("paperclip.recentTasks:company-1:user-1:restart-wake-retry")).toBeNull();
   });
 
   it("prunes tasks that become hidden", async () => {

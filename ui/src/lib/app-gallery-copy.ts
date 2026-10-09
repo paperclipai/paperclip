@@ -66,9 +66,25 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Read and update pages in your workspace.",
     short: "Read and update pages in your workspace.",
   },
+  railway: {
+    tagline: "Inspect services, read logs, and manage deployments.",
+    short: "Connect Railway for deployments, logs, and container access.",
+  },
   posthog: {
     tagline: "Explore product usage, errors, flags, and experiments.",
     short: "Sign in with PostHog. Project pinning and access controls are optional.",
+  },
+  gauge: {
+    tagline: "Track your brand in AI answers and run content workflows.",
+    short: "Sign in with Gauge and pick an organization. API keys are optional.",
+  },
+  neon: {
+    tagline: "Manage Postgres projects, branches, and queries.",
+    short: "Sign in with Neon. Project pinning and read-only mode are optional.",
+  },
+  superagent: {
+    tagline: "Review security findings and run red-team checks.",
+    short: "Connect with a Superagent API key. Billable and destructive tools stay under action policies.",
   },
   linear: {
     tagline: "Create, update and read tickets.",

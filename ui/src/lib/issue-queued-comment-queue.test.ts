@@ -22,6 +22,12 @@ function comment(id: string, body: string) {
 }
 
 describe("normalizeIssueQueuedCommentQueue", () => {
+  it("retains the immutable response and fresh-turn requirement", () => {
+    const source = { kind: "interaction", interactionId: "approval-1", interactionKind: "request_confirmation", requiresFreshSession: true };
+    const normalized = normalizeIssueQueuedCommentQueue({ entries: [{ comment: comment("approval-1", "Accepted: Plan"), source,
+      canEdit: false, canDiscard: false }] }, "issue-1");
+    expect(normalized.entries[0]).toMatchObject({ source, canEdit: false, canDiscard: false });
+  });
   it("sorts, deduplicates, and drops malformed queue entries", () => {
     const queue = normalizeIssueQueuedCommentQueue(
       {
@@ -111,6 +117,18 @@ describe("normalizeIssueQueuedCommentQueue", () => {
         },
       ],
     });
+  });
+
+  it("keeps native steering while an empty queue snapshot predates the submitted message", () => {
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      protocol: "legacy", entries: [],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({
+      issueId: "issue-1", authoritativeQueue,
+      pendingComments: [{ comment: comment("optimistic-1", "Use the new model next turn"), targetRunId: "run-native" }],
+      fallbackProtocol: "paperclip_runner_v1",
+    });
+    expect(queue).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
   });
 
   it("deduplicates acknowledged entries and restores the authoritative queue identity", () => {

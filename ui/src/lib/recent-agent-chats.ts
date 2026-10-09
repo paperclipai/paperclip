@@ -4,6 +4,9 @@ const eventName = "paperclip:recent-agent-chats";
 const key = (company: string, user?: string | null) =>
   `paperclip.recentAgentChats:${company}:${user ?? "__local_board__"}`;
 const memory = new Map<string, string>();
+const issueKey = (company: string, user: string | null | undefined, agentId: string) =>
+  `paperclip.recentAgentChatIssue:${company}:${user ?? "__local_board__"}:${agentId}`;
+const rememberedIssues = new Map<string, string>();
 function read(storageKey: string): string {
   try {
     return (
@@ -29,6 +32,7 @@ export function recordAgentChatVisit(
   company: string,
   user: string | null | undefined,
   agentId: string,
+  issueId?: string | null,
 ) {
   const storageKey = key(company, user);
   const value = JSON.stringify(
@@ -43,7 +47,28 @@ export function recordAgentChatVisit(
   } catch {
     /* In-tab navigation still works without storage. */
   }
+  if (issueId !== undefined) {
+    const storageIssueKey = issueKey(company, user, agentId);
+    try {
+      if (issueId) window.localStorage.setItem(storageIssueKey, issueId);
+      else window.localStorage.removeItem(storageIssueKey);
+      // Storage is authoritative when available, including when another tab
+      // removes this key. Only retain a fallback after a failed write.
+      rememberedIssues.delete(storageIssueKey);
+    } catch {
+      if (issueId) rememberedIssues.set(storageIssueKey, issueId);
+      else rememberedIssues.delete(storageIssueKey);
+    }
+  }
   window.dispatchEvent(new Event(eventName));
+}
+export function recordedAgentChatIssueId(company: string, user: string | null | undefined, agentId: string): string | null {
+  const storageIssueKey = issueKey(company, user, agentId);
+  try {
+    return window.localStorage.getItem(storageIssueKey) ?? rememberedIssues.get(storageIssueKey) ?? null;
+  } catch {
+    return rememberedIssues.get(storageIssueKey) ?? null;
+  }
 }
 function subscribe(callback: () => void) {
   window.addEventListener(eventName, callback);
@@ -62,17 +87,21 @@ export function useRecentAgentChats(company: string, user?: string | null) {
     useSyncExternalStore(subscribe, getSnapshot, () => "[]"),
   );
 }
-export function orderChatAgents<T extends Pick<Agent, "id" | "name">>(
+export function orderChatAgents<T extends Pick<Agent, "id" | "name" | "createdAt">>(
   agents: T[],
   stars: string[],
   recent: string[],
 ) {
+  const firstAgent = [...agents].sort((a, b) =>
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id.localeCompare(b.id),
+  )[0];
   return [
     ...agents
       .filter((agent) => stars.includes(agent.id))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-    ...recent
-      .filter((id) => !stars.includes(id))
+    ...(firstAgent && !stars.includes(firstAgent.id) ? [firstAgent] : []),
+    ...[...new Set(recent)]
+      .filter((id) => !stars.includes(id) && id !== firstAgent?.id)
       .flatMap((id) => agents.filter((agent) => agent.id === id))
       .slice(0, 4),
   ];

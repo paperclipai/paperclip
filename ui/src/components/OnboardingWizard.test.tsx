@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +17,9 @@ const localHealth = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/api/health", () => ({ healthApi: localHealth }));
 const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
-  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
-  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as const })),
+  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", expiresAt: "2099-01-01T00:00:00Z" })),
+  submitLocalLoginCode: vi.fn(async () => ({ ok: true })),
+  checkLocalLogin: vi.fn(async (): Promise<LocalAiLoginStatus> => ({ status: "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   connectLocal: vi.fn(async () => ({ connectionId: "local-connection", grantId: "local-grant" })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
@@ -161,7 +163,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 // model/harness picker internals are out of scope here, so stub the adapter
 // layer entirely and drive it through this knob.
 const mockAdapterRegistry = vi.hoisted(() => ({
-  list: [] as Array<{ type: string }>,
+  list: [] as Array<{ type: string; recommended?: boolean }>,
   disabled: new Set<string>(),
 }));
 
@@ -198,7 +200,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     // then sat in the "Advanced settings" disclosure and was reachable anyway;
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
-    recommended: type === "claude_local" || type === "codex_local",
+    recommended: type === "claude_local" || type === "codex_local" || mockAdapterRegistry.list.some(entry => entry.type === type && entry.recommended),
     label: type,
     description: "",
     icon: () => null,
@@ -324,6 +326,12 @@ function isArcPrimary(text: string): boolean {
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
     localHealth.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    managedApi.checkLocalLogin.mockReset().mockResolvedValue({
+      status: "sign_in_required",
+      authorizationUrl: "https://claude.ai/oauth/authorize?code=true",
+      code: "TEST-CODE",
+    });
+    managedApi.connectLocal.mockReset().mockResolvedValue({ connectionId: "local-connection", grantId: "local-grant" });
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-b", userId: SESSION_USER_ID },
       user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
@@ -428,7 +436,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     async function clickByText(match: (text: string) => boolean) {
       const el = [...document.body.querySelectorAll("button")].find((b) =>
-        match(b.textContent?.trim() ?? ""),
+        match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
       )!;
       await act(async () => {
         el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -519,7 +527,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickText = async (match: (t: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -596,7 +604,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickText = async (match: (t: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -775,7 +783,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickByText = async (match: (text: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1050,9 +1058,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         secretId: "11111111-1111-1111-1111-111111111111",
         latestVersion: 1,
       });
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
+      const { root } = await openConnectStep();
+      // Selecting the provider automatically verifies the saved subscription.
+      await flushReact();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -1100,9 +1108,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAdapterBuild.buildAdapterConfig.mockReturnValue({
         env: { ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-configured" } },
       });
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
+      const { root } = await openConnectStep();
+      // Selecting the provider automatically verifies the saved subscription.
+      await flushReact();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // Discovery reads saved-login metadata once; the hire does not re-read
@@ -1125,9 +1133,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         secretId: "11111111-1111-1111-1111-111111111111",
         latestVersion: 1,
       });
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
+      const { root } = await openConnectStep();
+      // Selecting the provider automatically verifies the saved subscription.
+      await flushReact();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -1150,9 +1158,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         secretId: "11111111-1111-1111-1111-111111111111",
         latestVersion: 1,
       });
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
+      const { root } = await openConnectStep();
+      // Selecting the provider automatically verifies the saved subscription.
+      await flushReact();
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -1223,9 +1231,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           import("@paperclipai/shared").AdapterEnvironmentTestResult
         >,
       );
-      const { root, clickByText } = await openConnectStep();
-
-      await clickByText((t) => isArcPrimary(t));
+      const { root } = await openConnectStep();
+      // Selecting the provider automatically verifies the saved subscription.
+      await flushReact();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -2772,7 +2780,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // And the button goes on saying what is happening rather than going quiet.
       expect(
         [...document.body.querySelectorAll("button")].pop()?.textContent?.trim(),
-      ).toBe("Connecting");
+      ).toBe("Connecting…");
 
       await act(async () => finishHire({ agent: { id: "agent-1" }, approval: null }));
       for (let i = 0; i < 6; i++) await flushReact();
@@ -3061,7 +3069,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickByText = async (match: (text: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -3089,14 +3097,275 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("shows local Claude instructions and saves its connection before hiring", async () => {
+    describe("automatic subscription verification", () => {
+      const providers = [
+        ["claude_local", "anthropic", /Claude/],
+        ["codex_local", "openai", /OpenAI/],
+      ] as const;
+      const passed = { adapterType: "codex_local", status: "pass" as const, checks: [], testedAt: new Date().toISOString() };
+
+      beforeEach(() => {
+        localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+        mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+        mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      });
+
+      async function settle() {
+        for (let i = 0; i < 10; i++) await flushReact();
+      }
+      function button(label: string) {
+        const found = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim() === label);
+        expect(found, label).toBeTruthy();
+        return found!;
+      }
+      async function click(label: string) {
+        await act(async () => button(label).click());
+        await settle();
+      }
+      async function detected() {
+        managedApi.checkLocalLogin.mockResolvedValue({ status: "ready" });
+        await act(async () => window.dispatchEvent(new Event("focus")));
+        await settle();
+      }
+      function expectTesting() {
+        expect(button("Testing…").disabled).toBe(true);
+        expect(button("Testing…").querySelector("svg.animate-spin")).not.toBeNull();
+        expect([...document.body.querySelectorAll('[role="status"]')].some(e => e.textContent === "Testing connection…")).toBe(true);
+        expect(document.body.querySelector('[aria-label="Saved subscription"]')).toBeNull();
+        expect(document.body.textContent).not.toContain("Run this in a terminal");
+        expect(document.body.textContent).not.toContain("Start sign-in again");
+      }
+
+      it.each(providers)("automatically verifies detected %s once through connection refreshes and advances", async (adapterType, provider, label) => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await pickSource(label);
+          expect(document.body.textContent).toContain("Sign in to");
+          expect(document.body.textContent).not.toContain("Run this in a terminal");
+          expect(button("Connect").disabled).toBe(false);
+          await detected();
+          expectTesting();
+          // The saved account can become visible while its hello test is pending.
+          await act(async () => {
+            queryClient.setQueryData(["ai-connections", "company-new"], {
+              currentUserId: "user-1",
+              connections: [{ id: "local-connection", grantId: "local-grant", companyId: "company-new", provider, method: "subscription", name: "My subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
+            });
+            window.dispatchEvent(new Event("focus"));
+          });
+          await settle();
+          expectTesting();
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await act(async () => finish(passed));
+          await settle();
+          expect(document.body.textContent).toContain("is ready to work!");
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }) }));
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("automatically verifies a saved %s subscription only after selecting its provider", async (adapterType, provider, label) => {
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: [{ id: "saved", grantId: "grant", companyId: "company-new", provider, method: "subscription", name: "My subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
+          }));
+          await settle();
+          expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+          await pickSource(label);
+          await settle();
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(managedApi.connectLocal).not.toHaveBeenCalled();
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("prefers the personal default %s subscription over an earlier shared account", async (adapterType, provider, label) => {
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: [
+              { id: "shared", grantId: "shared-grant", companyId: "company-new", provider, method: "subscription", name: "Shared", ownership: "shared", status: "connected" },
+              { id: "personal", grantId: "personal-grant", companyId: "company-new", provider, method: "subscription", name: "Personal", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true },
+            ],
+          }));
+          await pickSource(label);
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({
+            runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }),
+          }));
+          expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("does not choose an arbitrary %s account when several shared subscriptions exist", async (adapterType, provider, label) => {
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: ["first", "second"].map(id => ({ id, grantId: `${id}-grant`, companyId: "company-new", provider, method: "subscription", name: id, ownership: "shared", status: "connected" })),
+          }));
+          await pickSource(label);
+          await settle();
+          expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          expect(document.body.textContent).toContain("Sign in to");
+          expect(button("Connect").disabled).toBe(false);
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("keeps %s verification pending through environment query updates", async (adapterType, _provider, label) => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await pickSource(label);
+          await detected();
+          expectTesting();
+          await act(async () => queryClient.setQueryData(queryKeys.environments.list("company-new"), [
+            { ...LOCAL_ENVIRONMENT, id: "new-local-default" },
+          ]));
+          await settle();
+          expectTesting();
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await act(async () => finish(passed));
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(["back", "unmount"] as const)("ignores an already-submitted hire response after %s", async navigation => {
+        let finishHire!: (value: { agent: { id: string }; approval: null }) => void;
+        mockAgentsApi.hire.mockReturnValueOnce(new Promise(resolve => { finishHire = resolve; }));
+        const { root } = await openStep4({ adapterType: "codex_local" });
+        let mounted = true;
+        try {
+          await pickSource(/OpenAI/);
+          await detected();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          if (navigation === "back") await click("Back");
+          else {
+            await act(async () => root.unmount());
+            mounted = false;
+          }
+          await act(async () => finishHire({ agent: { id: "agent-1" }, approval: null }));
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).not.toContain("is ready to work!");
+        } finally { if (mounted) await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("offers a manual retry after failed %s verification without signing in again", async (adapterType, _provider, label) => {
+        mockAgentsApi.testEnvironment.mockRejectedValueOnce(new Error("Provider request timed out. Try again."));
+        const { root } = await openStep4({ adapterType });
+        try {
+          await pickSource(label);
+          await detected();
+          expect(document.body.textContent).toContain("Provider request timed out. Try again.");
+          expect(button("Connect").disabled).toBe(false);
+          await detected();
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await click("Connect");
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("keeps Connect usable when %s detection has not completed", async (adapterType, _provider, label) => {
+        const { root } = await openStep4({ adapterType });
+        try {
+          await pickSource(label);
+          expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+          await click("Connect");
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it("shows Connecting while saving, then Testing while verifying", async () => {
+        let saved!: (result: { connectionId: string; grantId: string }) => void;
+        managedApi.connectLocal.mockReturnValue(new Promise(resolve => { saved = resolve; }));
+        mockAgentsApi.testEnvironment.mockReturnValue(new Promise(() => {}));
+        const { root } = await openStep4({ adapterType: "codex_local" });
+        try {
+          await pickSource(/OpenAI/);
+          await detected();
+          expect(button("Connecting…").disabled).toBe(true);
+          expect(document.body.textContent).not.toContain("Run this in a terminal");
+          await act(async () => saved({ connectionId: "local-connection", grantId: "local-grant" }));
+          await settle();
+          expectTesting();
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(["back", "provider", "company", "unmount"] as const)("ignores verification completion after %s navigation", async navigation => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const { root, queryClient } = await openStep4({ adapterType: "codex_local" });
+        let mounted = true;
+        try {
+          await pickSource(/OpenAI/);
+          await detected();
+          expectTesting();
+          if (navigation === "company") {
+            mockCompany.companies.push({ id: "company-other", name: "Other", issuePrefix: "OTH" });
+            mockDialog.onboardingOptions = { initialStep: 4, companyId: "company-other" };
+            managedApi.checkLocalLogin.mockResolvedValue({ status: "sign_in_required" });
+            await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+            await settle();
+          } else if (navigation === "unmount") {
+            await act(async () => root.unmount());
+            mounted = false;
+          } else {
+            await click("Back");
+            if (navigation === "provider") {
+              managedApi.checkLocalLogin.mockResolvedValue({ status: "sign_in_required" });
+              await pickSource(/Claude/);
+            }
+          }
+          await act(async () => finish(passed));
+          await settle();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          expect(document.body.textContent).not.toContain("is ready to work!");
+          if (navigation === "provider") expect(document.body.textContent).toContain("Preparing browser sign-in");
+        } finally { if (mounted) await act(async () => root.unmount()); }
+      });
+    });
+
+    it("keeps Gemini local login out of managed Claude subscription setup", async () => {
+      localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      mockAdapterRegistry.list.push({ type: "gemini_local", recommended: true });
+      const { root } = await openStep4({ adapterType: "gemini_local" });
+      try {
+        await pickSource(/Gemini|Google|gemini_local/);
+        expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+        expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        expect(document.body.textContent).not.toContain("claude auth login");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("shows the Claude browser sign-in card and saves its connection before hiring", async () => {
       localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
       mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       const { root } = await openStep4({ adapterType: "claude_local" });
       await pickSource(/Claude/);
-      expect(document.body.textContent).toContain("claude auth login");
-      expect(document.body.textContent).toContain("machine running Paperclip");
+      expect(document.body.textContent).toContain("Sign in to Claude then come back and enter authorization code");
+      expect(document.body.textContent).not.toContain("claude auth login");
       expect(document.body.textContent).not.toContain("No managed sandbox");
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
       const connect = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith("Connect"));

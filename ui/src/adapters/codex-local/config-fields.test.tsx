@@ -1,12 +1,33 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { createRoot } from "react-dom/client";
+import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { CodexLocalConfigFields } from "./config-fields";
 
-function renderRunner(config: Record<string, unknown>): string {
-  return renderToStaticMarkup(
+beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
+
+async function renderMarkup(node: ReactNode, expand?: string): Promise<string> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>{node}</QueryClientProvider>));
+  if (expand) await act(async () => {
+    container.querySelector(`[aria-label="${expand}"]`)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  const html = document.body.innerHTML;
+  await act(async () => root.unmount());
+  container.remove();
+  return html;
+}
+
+async function renderRunner(config: Record<string, unknown>, expand?: string, openAiDotEnabled = false): Promise<string> {
+  return renderMarkup(
     <TooltipProvider>
       <CodexLocalConfigFields
         mode="edit"
@@ -19,18 +40,39 @@ function renderRunner(config: Record<string, unknown>): string {
         mark={() => undefined}
         models={[]}
         hideInstructionsFile
+        openAiDotEnabled={openAiDotEnabled}
       />
     </TooltipProvider>,
+    expand,
   );
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it("exposes all qualified provider choices", () => {
-    const html = renderRunner({ provider: "codex" });
+  it("keeps Dot out of the general harness picker and hides that picker for Dot", async () => {
+    expect(await renderRunner({ provider: "codex" }, "Harness", true)).not.toContain("OpenAI Dot");
+    const dot = await renderRunner({ provider: "openai_dot" });
+    expect(dot).not.toContain('aria-label="Harness"');
+    expect(dot).toContain("Dot connection");
+    expect(dot).toContain("Allow externally billed provider");
+  });
+  it.each([
+    [undefined, "Full auto (approve all)"],
+    ["approve-paperclip", "Automatic Paperclip actions"],
+    ["approve-reads", "Allow Paperclip reads"],
+    ["deny-all", "Deny all"],
+  ])("displays Grok's default or saved permission mode %s", async (acpxPermissionMode, label) => {
+    const html = await renderRunner({ provider: "acpx", acpxAgent: "grok", acpxPermissionMode });
+    expect(html).toContain('Grok Build');
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain(label);
+  });
 
-    expect(html).toContain('<option value="codex" selected="">Codex</option>');
-    expect(html).toContain("OpenCode 1.18.29");
-    expect(html).toContain("ACPX");
+  it("exposes all qualified provider choices", async () => {
+    const html = await renderRunner({ provider: "codex" }, "Harness");
+
+    expect(html).toContain('aria-label="Harness"');
+    expect(html).toContain("OpenCode 1.18.34");
+    expect(html).toContain('ACP agents');
     expect(html).not.toContain("Permission mode");
     expect(html).not.toContain("Ask when requested");
     expect(html).not.toContain("Ask for untrusted operations");
@@ -39,14 +81,14 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Bypass sandbox");
   });
 
-  it("renders OpenCode's bounded permission modes", () => {
-    const html = renderRunner({
+  it("renders OpenCode's bounded permission modes", async () => {
+    const html = await renderRunner({
       provider: "opencode",
       opencodePermissionMode: "allow",
     });
 
     expect(html).toContain(
-      '<option value="opencode" selected="">OpenCode 1.18.29</option>',
+      'OpenCode 1.18.34',
     );
     expect(html).toContain("Full auto (allow)");
     expect(html).toContain('aria-label="Permission mode"');
@@ -54,23 +96,29 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("offers ACPX Claude without a redundant agent selector", () => {
-    const html = renderRunner({
+  it("offers qualified Claude and keeps candidate ACP agents visibly disabled", async () => {
+    const html = await renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
       acpxPermissionMode: "approve-reads",
-    });
+    }, "ACP agent");
 
-    expect(html).toContain('<option value="acpx" selected="">ACPX Claude</option>');
-    expect(html).not.toContain("ACP agent");
+    expect(html).toContain('ACP agents');
+    expect(html).toContain("ACP agent");
+    expect(html).toContain('aria-label="ACP agent"');
+    expect(html.match(/role="option"[^>]*data-disabled=""/g)).toHaveLength(2);
+    expect(html).toContain('Cursor');
+    expect(html).not.toContain('Cursor — qualification pending');
+    expect(html).toContain('GitHub Copilot — qualification pending');
+    expect(html).toContain('Pi — qualification pending');
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");
-    expect(html).toContain("Conservative (fail closed)");
+    expect(html).toContain("Allow Paperclip reads");
   });
 
-  it("falls back to the fail-closed Codex permission mode", () => {
-    const html = renderRunner({ codexPermissionMode: "unrestricted" });
+  it("falls back to the fail-closed Codex permission mode", async () => {
+    const html = await renderRunner({ codexPermissionMode: "unrestricted" });
 
     expect(html).toContain("Unsupported saved mode — select a qualified mode");
     expect(html).toContain("cannot start or recover a Paperclip Runner run");
@@ -78,12 +126,12 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Full auto (never ask)");
   });
 
-  it("shows a bounded idle timeout only for warm sessions", () => {
-    const warmHtml = renderRunner({
+  it("shows a bounded idle timeout only for warm sessions", async () => {
+    const warmHtml = await renderRunner({
       lifecycleMode: "warm",
       idleTimeoutMs: 45_000,
     });
-    const turnHtml = renderRunner({
+    const turnHtml = await renderRunner({
       lifecycleMode: "per_turn",
       idleTimeoutMs: 45_000,
     });

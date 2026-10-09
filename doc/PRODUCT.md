@@ -30,6 +30,15 @@ Example: A CEO agent's adapter config tells it to "review what your executives a
 
 Then you define who reports to the CEO: a CTO managing programmers, a CMO managing the marketing team, and so on. Every agent in the tree gets their own adapter configuration.
 
+Each person also has a personal primary agent per company. Their first human-created
+agent becomes primary automatically; they can choose another from its profile.
+An existing primary is replaced only after confirmation. The crown appears on the
+profile and roster, while the primary stays first in the Agents sidebar without a
+sidebar crown. Stars remain independent. Task drafts, explicit assignments, and
+recent choices take precedence over the primary; Chat similarly reopens a valid
+recent conversation before falling back to the primary. Opening Chat does not
+start execution. This preference does not change the org chart or permissions.
+
 ### Agent Execution
 
 Paperclip supports several ways to run an agent's heartbeat:
@@ -65,6 +74,13 @@ Company skills are shared operating capabilities, not privileged objects by defa
 The governing rule is: **skill permissions are opt-in restrictions, not opt-in capabilities**. Missing skill grants never create a denial in an otherwise unconfigured company, and ordinary skill work does not require board confirmation, a draft-only workflow, or an activation approval.
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
+
+GitHub repositories are first-class sources within Skills. People import selected
+skills through their existing GitHub connection and manually refresh installed
+snapshots. The source records repository, branch, path, and installed commit;
+the connection supplies caller-authorized access. Originals remain viewable and
+testable, with independent editable copies. New upstream skills require selection,
+and deselection, source disconnection, or upstream removal retains installed content.
 
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 
@@ -128,7 +144,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. Paperclip now has authenticated mode, company memberships, instance roles, and permission grants, but fine-grained enterprise governance should remain secondary to the core company control plane.
-- Do not interpret agent-level privacy flags as a project/issue privacy feature in V1; work visibility stays company-scoped.
+- Do not interpret agent-profile privacy flags as project/issue privacy. Work remains company-open by default, while explicitly private issues and projects use their own task ACLs.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
@@ -192,3 +208,45 @@ Chat instructions require selecting a suitable project, reusing an existing one 
 The `create_project` runtime tool uses the normal project API with durable idempotency. `list_projects` and `list_project_repositories` support selection. Multiple `repositoryIds` select authorized catalog entries; multiple HTTPS GitHub `repositoryUrls` register existing repositories absent from the catalog. IDs and URLs may be combined, but cannot accompany an explicit `workspace`. URLs do not create repositories on GitHub or grant credentials. Execution uses normal repository access rules. Repository IDs are revalidated against the authenticated run's responsible user and connection grants. Agents should consider proper available repositories, clarify material ambiguity, and use repository-free projects when appropriate for non-code work.
 
 Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
+
+### In-app announcements
+
+An optional announcement card shares product news with board users on opening
+or returning to Paperclip. Dismissals persist per user across companies and
+browsers within an instance. Operators can disable fetching independently of
+telemetry. See [Announcements](ANNOUNCEMENTS.md).
+
+### Agent chat discovery
+
+With Agent Chat enabled, Chat is the first row of the Work section and opens a
+secondary sidebar beside the primary nav. It lists every agent you can chat
+with: the open conversation first, then your other conversations by recent
+activity, then the rest of the roster alphabetically. Terminated agents and
+agents you have left are omitted unless you have history with them. Search
+filters by name, title, or role; **+** starts or reopens a conversation.
+Selecting an agent opens their persistent conversation; it does not reset history
+or create a task until the existing first-write flow requires one.
+
+Beside a conversation, the side panel opens on the agent's tasks: one card per
+task the agent created, was assigned, commented on, or acted on, newest first,
+with the task list's filters and a sort control. The agent's artifacts are a
+second card stack available from the panel's **+** menu. Both open in a new tab
+so the conversation stays open.
+
+### Combined Inbox + Task List
+
+An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
+to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
+Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
+Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+carry a task filter open All. Old `/inbox` links redirect to the matching view.
+
+### CSV file previews
+
+Task attachment and workspace file tabs render CSV files as tables by default.
+The first record supplies column headers. Row numbers, row and column counts,
+and sticky headers help operators scan exports. Rendered and raw view icons
+remain next to download; raw view preserves the original source. The table
+shows up to 500 data rows and 100 columns, with a notice when the preview is
+limited. Download retains the complete file.

@@ -1,3 +1,4 @@
+import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -108,6 +109,7 @@ import type {
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
+  validatePaperclipRunnerDotConfig,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
@@ -702,6 +704,7 @@ type ProjectLike = {
   targetDate: string | null;
   color: string | null;
   icon: string | null;
+  appearance?: import("@paperclipai/shared").AgentAppearance | null;
   status: string;
   env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -3080,6 +3083,16 @@ function readAgentSkillRefs(frontmatter: Record<string, unknown>) {
   ));
 }
 
+/** Uploaded avatars belong to one company/agent; portable packages retain the preset fallback. */
+function portableAgentAppearance(value: unknown, warnings: string[], slug: string) {
+  const appearance = agentAppearanceSchema.parse(value);
+  if (appearance.customAvatarAssetId) {
+    delete appearance.customAvatarAssetId;
+    warnings.push(`Agent ${slug} uploaded avatar was omitted because image assets are instance-local. Upload it again after import.`);
+  }
+  return appearance;
+}
+
 function buildManifestFromPackageFiles(
   files: Record<string, CompanyPortabilityFileEntry>,
   opts?: { sourceLabel?: { companyId: string; companyName: string } | null },
@@ -3238,6 +3251,7 @@ function buildManifestFromPackageFiles(
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
       title,
       icon: asString(extension.icon),
+      appearance: extension.appearance == null ? undefined : portableAgentAppearance(extension.appearance, warnings, slug),
       capabilities: asString(extension.capabilities),
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
@@ -3546,7 +3560,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
   const assetRecords = assetService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
   const access = accessService(db);
   const projects = projectService(db);
   const issues = issueService(db);
@@ -3597,6 +3611,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType === "paperclip_runner") {
       let profile;
       try {
+        if (adapterConfig.provider === "openai_dot") {
+          validatePaperclipRunnerDotConfig(adapterConfig, false);
+          return;
+        }
         profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
       } catch (error) {
         if (error instanceof PaperclipRunnerProviderProfileError) {
@@ -4254,6 +4272,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const extension = stripEmptyValues({
           role: agent.role !== "agent" ? agent.role : undefined,
           icon: agent.icon ?? null,
+          appearance: agent.appearance == null ? undefined : portableAgentAppearance(agent.appearance, warnings, slug),
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
@@ -5244,19 +5263,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           .filter((entry) => entry.action !== "skip")
           .map((entry) => entry.slug),
       );
-      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+      const runnerSelections = sourceManifest.agents.filter((agent) =>
         importedAgentSlugs.has(agent.slug)
         && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
           === "paperclip_runner",
       );
-      if (
-        selectsNativeRunner
-        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
-      ) {
-        throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
-          { code: "paperclip_runner_rollout_disabled" },
-        );
+      if (runnerSelections.length > 0) {
+        const experimental = await instanceSettingsService(db).getExperimental();
+        for (const agent of runnerSelections) {
+          const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
+          if (config.provider === "openai_dot") {
+            if (experimental.enableOpenAiDot !== true) throw unprocessable(
+              "OpenAI Dot is experimental and disabled on this instance.",
+              { code: "paperclip_runner_dot_disabled" },
+            );
+          } else if (experimental.enableNativeRunner !== true) {
+            throw unprocessable(
+              "Paperclip Runner is experimental and disabled on this instance.",
+              { code: "paperclip_runner_rollout_disabled" },
+            );
+          }
+        }
       }
     }
 
@@ -5592,6 +5619,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             role: manifestAgent.role,
             title: manifestAgent.title,
             icon: manifestAgent.icon,
+            ...(manifestAgent.appearance ? { appearance: portableAgentAppearance(manifestAgent.appearance, warnings, manifestAgent.slug) } : {}),
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
@@ -5666,7 +5694,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...patch,
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          });
+          }, { createdByUserId: actorUserId });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,

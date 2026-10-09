@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/discord.svg"
+    "logoUrl": "/brands/apps/discord.svg",
+    "darkLogoUrl": "/brands/apps/discord-dark.svg"
   },
   "urlPatterns": [
     "https://discord.com/*"

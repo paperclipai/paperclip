@@ -6,7 +6,9 @@ import { WebSocketServer } from "ws";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  costEvents,
   activityLog,
+  authUsers,
   agentWakeupRequests,
   agentRuntimeState,
   agents,
@@ -49,6 +51,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
@@ -101,6 +104,7 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
     await db.delete(activityLog);
     try {
       await db.delete(heartbeatRunEvents);
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;
@@ -852,6 +856,32 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
 
+    async function readGatewayWakePayload(
+      payload: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> {
+      const message = String(payload.message ?? "");
+      if (message.includes("```json\n")) {
+        return parseWakePayloadFromMessage(message);
+      }
+      const runId = typeof payload.idempotencyKey === "string"
+        ? payload.idempotencyKey
+        : null;
+      if (!runId) throw new Error("Gateway payload did not include its run id");
+      const run = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      const context = run?.contextSnapshot;
+      const wake = context && typeof context === "object" && !Array.isArray(context)
+        ? (context as Record<string, unknown>).paperclipWake
+        : null;
+      if (!wake || typeof wake !== "object" || Array.isArray(wake)) {
+        throw new Error("Gateway payload omitted JSON without a structured wake context");
+      }
+      return wake as Record<string, unknown>;
+    }
+
     beforeAll(async () => {
       tempDb = await startEmbeddedPostgresTestDatabase(
         "paperclip-low-trust-red-team-routes-",
@@ -888,6 +918,7 @@ describeEmbeddedPostgres(
       await db.delete(agentRuntimeState);
       await db.delete(principalPermissionGrants);
       await db.delete(companyMemberships);
+      await db.delete(authUsers);
       await db.delete(agents);
       await db.delete(projects);
       await deleteCompanySkillsAfterLateHeartbeatWritesDrain(db);
@@ -895,6 +926,113 @@ describeEmbeddedPostgres(
 
     afterAll(async () => {
       await tempDb?.cleanup();
+    });
+
+    it("allows the human-requested run through HTTP while rejecting attribution-only authority", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
+      // The fixture already occupies the agent's sole execution slot. Let the
+      // real board route enqueue work, then bind its queued run for HTTP checks.
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, fixture.agents.lowTrust.id));
+      const board = createApp(db, boardActor(fixture));
+      const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: "Human assigned outside intake", status: "todo", assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const queued = () => db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, fixture.company.id),
+        eq(agentWakeupRequests.agentId, fixture.agents.lowTrust.id),
+      )).then(rows => rows.find(row => row.payload?.issueId === created.body.id && row.runId));
+      await waitFor(async () => Boolean(await queued()));
+      const wake = (await queued())!;
+      expect(wake).toMatchObject({ requestedByActorType: "user", requestedByActorId: "board-user" });
+      const [directRun] = await db.update(heartbeatRuns).set({ status: "running" })
+        .where(eq(heartbeatRuns.id, wake.runId!)).returning();
+      await db.update(issues).set({ status: "in_progress", checkoutRunId: directRun.id, executionRunId: directRun.id })
+        .where(eq(issues.id, created.body.id));
+      const directedAgent = createApp(db, { ...agentActor(fixture), runId: directRun.id });
+      const read = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect(read.status, JSON.stringify(read.body)).toBe(200);
+      const reply = await request(directedAgent).post(`/api/issues/${created.body.id}/comments`)
+        .send({ body: "I can work on this human-directed task" });
+      expect(reply.status, JSON.stringify(reply.body)).toBe(201);
+      expect(reply.body.sourceTrust).toMatchObject({ preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined" });
+      const updated = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
+        .send({ description: "Completed the requested analysis" });
+      expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+      expect(updated.body.description).toBe("Completed the requested analysis");
+      // The human requester does not authorize reads outside this run's task.
+      const foreignRead = await request(directedAgent).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}`);
+      expect([403, 404]).toContain(foreignRead.status);
+      expectNoCanary(foreignRead.body, fixture.canaries.issueSibling);
+
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "agent", requestedByActorId: fixture.agents.collaborator.id })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      const forgedRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect([403, 404]).toContain(forgedRead.status);
+
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "user", requestedByActorId: "board-user" })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      const handoff = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user", comment: "Ready for human review" });
+      expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
+      expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+      const returned = await request(board).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
+      expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+      // Reassignment back does not revive the cancelled run's human request.
+      const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect([403, 404]).toContain(staleRead.status);
+
+    });
+
+    it("retains a board backlog assignment and rejects plugin-attributed wakes with forged board payloads", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, fixture.agents.lowTrust.id));
+      const board = createApp(db, boardActor(fixture));
+      const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: "Human backlog assignment", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.company.id));
+      expect(receipts.filter(w => w.payload?.issueId === created.body.id)).toEqual([expect.objectContaining({
+        reason: "issue_human_assignment", status: "completed", runId: null, requestedByActorId: "board-user",
+      })]);
+      await issueService(db).update(created.body.id, { status: "todo" });
+      const systemRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        source: "automation", reason: "issue_ready", requestedByActorType: "system",
+        payload: { issueId: created.body.id }, contextSnapshot: { issueId: created.body.id, source: "automatic_promotion" },
+      });
+      expect(systemRun).toBeTruthy();
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, systemRun!.id));
+      const worker = createApp(db, { ...agentActor(fixture), runId: systemRun!.id });
+      expect((await request(worker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
+      // These are the same service calls used by plugin issues.update; no HTTP
+      // cancellation is involved, and the run is deliberately left running.
+      await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.collaborator.id });
+      await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.lowTrust.id });
+      expect([403, 404]).toContain((await request(worker).get(`/api/issues/${created.body.id}`)).status);
+      const pluginRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board-user",
+        payload: { issueId: created.body.id, _paperclipWakeContext: { source: "issue.comment" } },
+        contextSnapshot: { issueId: created.body.id, source: "plugin:example" },
+      });
+      expect(pluginRun).toBeTruthy();
+      const pluginWake = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, pluginRun!.id)))
+        .find(w => w.requestedByActorType === "user")!;
+      expect(pluginWake.payload?._paperclipWakeContext).toMatchObject({ source: "plugin:example" });
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, pluginRun!.id));
+      const pluginWorker = createApp(db, { ...agentActor(fixture), runId: pluginRun!.id });
+      expect([403, 404]).toContain((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status);
+      // Authenticated reassignment while still in backlog also retains direction.
+      const assigned = await request(board).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
+      expect((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
@@ -1230,10 +1368,8 @@ describeEmbeddedPostgres(
       expect(
         unmentionedComment.status,
         JSON.stringify(unmentionedComment.body),
-      ).toBe(403);
-      expect(unmentionedComment.body.details.code).toBe(
-        "issue_write_actor_class_excluded",
-      );
+      ).toBe(404);
+      expect(unmentionedComment.body).toEqual({ error: "Issue not found" });
     });
 
     it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
@@ -1535,20 +1671,20 @@ describeEmbeddedPostgres(
             ),
         },
         {
-          id: "LT-26 child",
+          id: "LT-26 child with unauthorized assignee",
           req: () =>
             request(app)
               .post(`/api/issues/${fixture.issues.assignedReview.id}/children`)
-              .send({ title: `child ${fixture.canaries.issueSibling}` }),
+              .send({ title: `child ${fixture.canaries.issueSibling}`, assigneeAgentId: fixture.agents.cto.id }),
         },
         {
-          id: "LT-26 company issue",
+          id: "LT-26 company issue outside boundary",
           req: () =>
             request(app)
               .post(`/api/companies/${fixture.company.id}/issues`)
               .send({
                 title: `child ${fixture.canaries.issueSibling}`,
-                parentId: fixture.issues.assignedReview.id,
+                projectId: fixture.projects.outOfScope.id,
               }),
         },
         {
@@ -1600,7 +1736,7 @@ describeEmbeddedPostgres(
         const before = await snapshot(db);
         const res = await attempt.req();
         expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(
-          403,
+          ["LT approvals", "LT-15/16", "LT-19", "LT-26 child", "LT-26 child with unauthorized assignee", "LT-26 company issue", "LT-26 interaction", "LT-06 resume", "LT-06 blocker mutation"].includes(attempt.id) ? 403 : 404,
         );
         expectNoCanary(res.body, ...forbiddenMarkers);
         const after = await snapshot(db);
@@ -1743,7 +1879,7 @@ describeEmbeddedPostgres(
       for (const attempt of attempts) {
         const res = await attempt.req();
         expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(
-          403,
+          404,
         );
         expectNoCanary(res.body, ...forbiddenMarkers);
       }
@@ -1978,7 +2114,7 @@ describeEmbeddedPostgres(
         // The gateway rejects unknown root params, so the wake context rides in the
         // generated message rather than a top-level `paperclip` field.
         expect(payload.paperclip).toBeUndefined();
-        const wake = parseWakePayloadFromMessage(payload.message);
+        const wake = await readGatewayWakePayload(payload);
         // Security-critical: low-trust quarantined output is redacted to the sanitized
         // stub before it reaches the higher-trust wake/continuation context. The raw
         // body must never appear (asserted by expectNoCanary below). The sourceTrust
@@ -2014,6 +2150,8 @@ describeEmbeddedPostgres(
         expect(String(payload.message ?? "")).toContain(
           "## Paperclip Wake Payload",
         );
+        expect(String(payload.message ?? "")).toContain(LOW_TRUST_QUARANTINED_BODY);
+        expect(String(payload.message ?? "")).toContain("Continue from the sanitized quarantine stub only.");
         expectNoCanary(payload, fixture.canaries.raw);
         gateway.releaseFirstWait();
         await waitFor(async () => {

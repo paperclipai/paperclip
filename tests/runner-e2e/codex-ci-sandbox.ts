@@ -2,6 +2,13 @@ import { execFileSync } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import type { MatrixExecution } from "./types.js";
+
+export function requiresCodexCiSandbox(execution: MatrixExecution): boolean {
+  return execution.environment.id === "local"
+    && execution.profile.generation === "native"
+    && (execution.profile.provider === "codex" || execution.profile.id === "runner-acpx-codex");
+}
 
 /** Probe the existing Linux sandbox before spending provider credentials.
  * Host policy is provisioned by the trusted workflow, never by target test code.

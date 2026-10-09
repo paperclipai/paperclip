@@ -158,7 +158,18 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     commentIds: string[];
   }): Promise<{ allSelfAuthored: boolean }>;
+  /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
+  isCompletedDelegationMention(input: {
+    companyId: string;
+    issueId: string;
+    finishingRunId: string;
+    wakeAgentId: string;
+    commentIds: string[];
+  }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  /** Verifies a Done onboarding parent's completion wake against its own completed children. */
+  isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
+    reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
   /**
    * Atomically claims the wake for promotion, guarded on its current
    * `deferred_issue_execution` status. Call this before any other write in

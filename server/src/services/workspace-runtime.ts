@@ -68,6 +68,11 @@ import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import {
+  MANAGED_GIT_WORKTREE_REASON_CODES,
+  readManagedGitInspectionDiagnostic,
+  type ManagedGitInspectionDiagnostic,
+} from "./workspace-validation-diagnostics.js";
+import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
   readWorktreeInstancePointer,
@@ -2606,13 +2611,8 @@ type GitWorktreeListEntry = {
 export type ManagedGitWorktreeBranchInspection = {
   valid: boolean;
   reason: string | null;
-  reasonCode:
-    | "missing_worktree"
-    | "not_a_git_checkout"
-    | "not_registered"
-    | "wrong_repository_root"
-    | "branch_mismatch"
-    | null;
+  reasonCode: typeof MANAGED_GIT_WORKTREE_REASON_CODES[number] | null;
+  inspectionDiagnostic?: ManagedGitInspectionDiagnostic;
   repoRoot: string | null;
   worktreePath: string;
   expectedBranchName: string | null;
@@ -2735,16 +2735,33 @@ async function resolvePathForWorktreeComparison(value: string): Promise<string> 
   return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
 }
 
-async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
-  const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
+  { paths: Set<string>; diagnostic?: never } | { paths?: never; diagnostic: ManagedGitInspectionDiagnostic }
+> {
+  let proc: Awaited<ReturnType<typeof executeProcess>>;
+  try {
+    proc = await executeProcess({ command: "git", args: ["worktree", "list", "--porcelain"], cwd: repoRoot });
+  } catch (error) {
+    return { diagnostic: readManagedGitInspectionDiagnostic({
+      command: "worktree_list", failure: "spawn_failed", errorCode: (error as NodeJS.ErrnoException)?.code,
+    })! };
+  }
+  if (proc.code !== 0) {
+    return { diagnostic: readManagedGitInspectionDiagnostic({
+      command: "worktree_list", failure: "nonzero_exit", exitCode: proc.code,
+    })! };
+  }
+  if (proc.stdoutTruncated) {
+    return { diagnostic: { command: "worktree_list", failure: "output_truncated" } };
+  }
   const paths = new Set<string>();
-  for (const line of output.split("\n")) {
+  for (const line of proc.stdout.split("\n")) {
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;
     paths.add(await resolvePathForWorktreeComparison(worktree));
   }
-  return paths;
+  return { paths };
 }
 
 export async function inspectManagedGitWorktreeBranch(input: {
@@ -2783,8 +2800,18 @@ export async function inspectManagedGitWorktreeBranch(input: {
     };
   }
 
-  const listedWorktrees = await listLinkedGitWorktreePaths(repoRoot).catch(() => null);
-  if (!listedWorktrees?.has(worktreePath)) {
+  const listedWorktrees = await listLinkedGitWorktreePaths(repoRoot);
+  if (listedWorktrees.diagnostic) {
+    return {
+      ...base,
+      valid: false,
+      reason: "could not inspect the complete git worktree registration list",
+      reasonCode: "git_inspection_failed",
+      repoRoot,
+      inspectionDiagnostic: listedWorktrees.diagnostic,
+    };
+  }
+  if (!listedWorktrees.paths.has(worktreePath)) {
     return {
       ...base,
       valid: false,
@@ -2841,6 +2868,7 @@ async function validateLinkedGitWorktree(input: {
     reason: string;
     reasonCode: Exclude<ManagedGitWorktreeBranchInspection["reasonCode"], null>;
     actualBranchName?: string | null;
+    inspectionDiagnostic?: ManagedGitInspectionDiagnostic;
   }
 > {
   const inspection = await inspectManagedGitWorktreeBranch({
@@ -2855,6 +2883,7 @@ async function validateLinkedGitWorktree(input: {
         reason: inspection.reason ?? "unknown git worktree mismatch",
         reasonCode: inspection.reasonCode ?? "not_a_git_checkout",
         actualBranchName: inspection.actualBranchName,
+        ...(inspection.inspectionDiagnostic ? { inspectionDiagnostic: inspection.inspectionDiagnostic } : {}),
       };
 }
 
@@ -2867,6 +2896,7 @@ export function formatManagedGitWorktreeBranchInspection(input: ManagedGitWorktr
     worktreePath: input.worktreePath,
     expectedBranchName: input.expectedBranchName,
     actualBranchName: input.actualBranchName,
+    ...(input.inspectionDiagnostic ? { inspectionDiagnostic: input.inspectionDiagnostic } : {}),
   };
 }
 
@@ -3756,6 +3786,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
             reasonCode: validation.reasonCode,
             worktreePath: reuseWorktreePath,
             executionWorkspaceId: input.workspace.id ?? null,
+            ...(validation.inspectionDiagnostic ? { inspectionDiagnostic: validation.inspectionDiagnostic } : {}),
           },
         },
       );
@@ -5114,21 +5145,35 @@ export async function waitForRuntimeServiceReadiness(input: {
   const now = input.now ?? Date.now;
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = now() + timeoutSec * 1000;
+  const startedAt = now();
+  const deadline = startedAt + timeoutSec * 1000;
   let lastError = "service did not become ready";
+  let lastCause: unknown;
+  let probes = 0;
   while (now() < deadline) {
     const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, deadline - now()));
+    probes += 1;
     try {
       const response = await fetchImpl(readinessUrl, { signal: AbortSignal.timeout(probeBudgetMs) });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
+      lastCause = undefined;
     } catch (err) {
+      lastCause = err;
       lastError = err instanceof Error ? err.message : String(err);
+      // Node fetch hides connection errors behind "fetch failed". Retain the
+      // transport cause so a refused port is distinguishable from a timeout.
+      if (err instanceof Error && err.cause instanceof Error) {
+        lastError += `: ${err.cause.message}`;
+      }
     }
     if (now() >= deadline) break;
     await delay(Math.min(intervalMs, Math.max(0, deadline - now())));
   }
-  throw new Error(`Readiness check failed for ${readinessUrl}: ${lastError}`);
+  throw new Error(
+    `Readiness check failed for ${readinessUrl}: ${lastError} (${probes} probes over ${now() - startedAt}ms)`,
+    { cause: lastCause },
+  );
 }
 
 async function waitForAllocatedPortBind(input: {
@@ -5748,6 +5793,7 @@ export function resolveRuntimeProvisionCommand(input: {
   if (input.workspace.strategy !== "git_worktree") return "";
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
+  if (existsSync(path.join(stateDir, "seed-empty"))) return "";
   const manifestPath = path.join(stateDir, "seed-manifest.json");
   const provisionScript = path.join(
     input.workspace.baseCwd,

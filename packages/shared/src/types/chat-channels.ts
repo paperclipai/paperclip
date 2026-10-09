@@ -181,15 +181,37 @@ export interface ChatEndpointCallbackSurfaces {
   slashCommands: ChatEndpointCallbackSurfaceState;
 }
 
+export interface SlackAppConfiguration {
+  appName: string;
+  botName: string;
+  command: string;
+}
+
 export interface ChatEndpointSetupState {
+  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
+  /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
+  slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
+  slackAccount?: import("../slack-app-manifest.js").SlackAccountState;
+  slackOAuthCallbackUri?: string | null;
+  github?: {
+    stage: "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
+    appSlug?: string;
+    installationUrl?: string;
+    managementUrl?: string;
+    registrationStatus?: "pending" | "completed" | "failed";
+  };
   step: "choose_agent" | "provider_setup" | "test" | "complete";
   /** Server-generated boundary; only provider events at or after this time can complete setup. */
   testStartedAt?: string | null;
+  /** Onboarding was finished without requiring a full conversation test. */
+  testSkipped?: boolean;
   /** Set only after the provider has delivered a signed callback challenge. */
   webhookVerifiedAt?: string | null;
   authorizationUrl?: string | null;
   providerUrl?: string | null;
   command?: string | null;
+  slackApp?: SlackAppConfiguration;
   webhookUrl?: string | null;
   messagingEndpoint?: string | null;
   /** Safe presence signal only; the secret value is returned once by its generation endpoint. */
@@ -208,6 +230,8 @@ export type ChannelPublicationMode = "automatic" | "explicit";
 export type ExternalMessageExecutionPolicy = "restricted" | "agent";
 
 export interface ChatEndpoint {
+  /** Additional presentation instructions captured only for newly created tasks. */
+  communicationInstructions?: string;
   id: string;
   companyId: string;
   connectionId: string;
@@ -279,6 +303,8 @@ export interface ChatIdentityLink {
   companyId: string;
   endpointId: string;
   principalId: string;
+  /** Latest discovery-only connect command received by this endpoint. */
+  lastConnectAt?: string | null;
   externalLabel: string;
   externalDetail?: string | null;
   paperclipUserId?: string | null;
@@ -459,9 +485,13 @@ export interface CreateChatEndpointInput {
   assignedAgentId: string;
   applicationId?: string;
   name?: string;
+  slackApp?: SlackAppConfiguration;
 }
 
 export interface UpdateChatEndpointInput {
+  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackApp?: SlackAppConfiguration;
+  communicationInstructions?: string;
   allowDirectMessages?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople?: boolean;

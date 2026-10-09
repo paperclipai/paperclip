@@ -736,6 +736,37 @@ describe("useLiveRunTranscripts", () => {
     }
   });
 
+  it("keeps HTTP log polling when the socket constructor fails and retries later", async () => {
+    vi.useFakeTimers();
+    globalThis.WebSocket = class {
+      constructor() { throw new TypeError("WebSocket is not a constructor"); }
+    } as unknown as typeof WebSocket;
+    const runs = [{ id: "run-1", status: "running", adapterType: "codex_local" }];
+    function Harness() {
+      useLiveRunTranscripts({ companyId: "company-1", runs });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness />));
+      expect(logMock).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(logMock.mock.calls.length).toBeGreaterThan(1);
+      globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+      await act(async () => vi.advanceTimersByTimeAsync(15_000));
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      await act(async () => FakeWebSocket.instances[0].triggerOpen());
+      // Cleanup must not depend on the global constructor remaining available.
+      globalThis.WebSocket = undefined as unknown as typeof WebSocket;
+    } finally {
+      await act(async () => root.unmount());
+    }
+    const calls = logMock.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(logMock).toHaveBeenCalledTimes(calls);
+    expect(FakeWebSocket.instances[0].closeCalls).toHaveLength(1);
+  });
+
   it("backs off exponentially when the live event socket keeps failing", async () => {
     vi.useFakeTimers();
     try {

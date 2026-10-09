@@ -7,7 +7,7 @@ import type {
   ToolConnection,
   ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
-import { credentialConfigPath, getAvailableConnectionMethod, humanizeConnectionDisplayName } from "@paperclipai/shared";
+import { connectionCredentialConfigPath, credentialConfigPath, getAvailableConnectionMethod, humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +30,6 @@ export function AdvancedPanel({
   connection,
   appName,
   galleryEntry,
-  childConnectionCount,
   removing,
   onRemove,
   onReplaced,
@@ -47,7 +46,6 @@ export function AdvancedPanel({
   onRevokeIdentity,
 }: Pick<AppDetailSectionProps, "connection" | "appName" | "galleryEntry"> & {
   removing: boolean;
-  childConnectionCount?: number;
   onRemove: () => void;
   onReplaced: () => void;
   canReplaceCredential?: boolean;
@@ -69,7 +67,6 @@ export function AdvancedPanel({
         appName={appName}
         connection={connection}
         galleryEntry={galleryEntry}
-        childConnectionCount={childConnectionCount}
         removing={removing}
         onRemove={onRemove}
         onReplaced={onReplaced}
@@ -213,7 +210,7 @@ export function ReconnectCard({
   const methodUnavailable = connectionMethodUnavailable(connection, galleryEntry);
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
           {methodUnavailable ? "Connection no longer supported" : oauth ? "Reconnect required" : "This app needs reconnecting"}
@@ -292,25 +289,33 @@ function ReconnectForm({
   const method = galleryEntry && Array.isArray(galleryEntry.methods)
     ? getAvailableConnectionMethod(galleryEntry, methodKey)
     : null;
-  const fields = (method?.credentialFields ?? []).map((field) => ({
+  const galleryFields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
-    configPath: credentialConfigPath(field),
+    configPath: credentialConfigPath(field, method),
     helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
   }));
+  const fields = galleryFields.length > 0 ? galleryFields : (connection.credentialRefs ?? [])
+    .filter((ref) => ref.placement === "header" || ref.placement === "url")
+    .map((ref) => ({
+      configPath: connectionCredentialConfigPath(ref),
+      label: ref.placement === "url" ? "MCP server URL" : ref.prefix === "Bearer " ? "App key" : ref.key ?? ref.name,
+      helpUrl: "",
+      required: true,
+    }));
   const [values, setValues] = useState<Record<string, string>>({});
   const [single, setSingle] = useState("");
-  const usesGallery = fields.length > 0 && !!galleryEntry;
+  const usesFields = fields.length > 0;
 
   const reconnect = useMutation({
     mutationFn: () => {
-      const credentialValues = usesGallery
+      const credentialValues = usesFields
         ? values
         : { "credentials.authorization": single.trim() };
       return toolsApi.reconnectConnection(connection.id, credentialValues);
     },
     onSuccess: (result) => {
       const healthy =
-        result.connection.healthStatus === "healthy" || result.connection.healthStatus === "unknown";
+        result.connection.healthStatus === "ok" || result.connection.healthStatus === "healthy" || result.connection.healthStatus === "unknown";
       if (healthy) {
         pushToast({
           title: "Reconnected",
@@ -334,7 +339,7 @@ function ReconnectForm({
       }),
   });
 
-  const filled = usesGallery
+  const filled = usesFields
     ? fields.every((f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0)
     : single.trim().length > 0;
 
@@ -348,12 +353,13 @@ function ReconnectForm({
 
   return (
     <div className="space-y-3">
-      {usesGallery ? (
+      {usesFields ? (
         fields.map((field) => (
           <div key={field.configPath}>
             <label className="text-xs font-medium text-foreground">{field.label}</label>
             <Input
               type="password"
+              aria-label={field.label}
               autoComplete="off"
               value={values[field.configPath] ?? ""}
               onChange={(e) => setValues({ ...values, [field.configPath]: e.target.value })}
@@ -375,6 +381,7 @@ function ReconnectForm({
       ) : (
         <Input
           type="password"
+          aria-label="App key"
           autoComplete="off"
           value={single}
           onChange={(e) => setSingle(e.target.value)}
@@ -427,7 +434,6 @@ export function DangerZone({
   appName,
   connection,
   galleryEntry = null,
-  childConnectionCount = 0,
   removing,
   onRemove,
   onReplaced,
@@ -446,7 +452,6 @@ export function DangerZone({
   appName: string;
   connection?: ToolConnection;
   galleryEntry?: AppDefinition | null;
-  childConnectionCount?: number;
   removing: boolean;
   onRemove: () => void;
   onReplaced?: () => void;
@@ -567,9 +572,7 @@ export function DangerZone({
               <div>
                 <p className="text-sm font-medium text-foreground">Remove this app</p>
                 <p className="text-xs text-muted-foreground">
-                  {childConnectionCount > 0
-                    ? `Deletes credentials for ${appName} and ${childConnectionCount} connected ${childConnectionCount === 1 ? "service" : "services"}.`
-                    : `Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
+                  {`Deletes credentials for ${appName} and removes agent access. Reconnecting requires a new sign-in or key.`}
                 </p>
               </div>
               {confirming ? (

@@ -72,6 +72,13 @@ export class CodexHarnessSession
     }
   }
 
+  turnControlCapabilities() {
+    if (this.driverKind === "acpx_runtime") {
+      return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
+    }
+    return { steering: this.capabilities.steering, queuedFollowUp: false };
+  }
+
   ids(): ReturnType<HarnessSession["ids"]> {
     return {
       driverSessionId: this.opened.threadId,
@@ -137,6 +144,8 @@ export class CodexHarnessSession
 
   async startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;
@@ -160,10 +169,15 @@ export class CodexHarnessSession
       );
     }
     const dispositionOnlyRecovery = this.dispositionOnlyRecoveryAvailable;
+    // A native continuation already carries just new events and the current
+    // completion IDs. Do not wrap it in the prior task objective/constraints
+    // or re-invoke a skill whose instructions are already in this session.
+    const continuationTurn = input.continuation === true;
+    const turnSkills = continuationTurn ? [] : this.skillInputs;
     const taskText =
-      this.conversationMode === "direct"
+      this.conversationMode === "direct" || this.conversationMode === "prepared"
         ? input.message.text
-        : dispositionOnlyRecovery
+        : dispositionOnlyRecovery || continuationTurn
           ? input.message.text
           : JSON.stringify({
               task: this.taskEnvelope,
@@ -192,6 +206,7 @@ export class CodexHarnessSession
     this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
+      ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
       requestedCollaborationMode:
         input.requestedCollaborationMode ?? effectiveCollaborationMode,
       effectiveCollaborationMode,
@@ -206,6 +221,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
@@ -215,7 +231,15 @@ export class CodexHarnessSession
         ...(this.opened.collaborationMode === null
           ? {}
           : { collaborationMode: this.opened.collaborationMode }),
-        input: [userInput({ role: "user", text: taskText })],
+        input: [
+          userInput({
+            role: "user",
+            text: turnSkills.length
+              ? `${turnSkills.map((skill) => `$${skill.name}`).join(" ")}\n\n${taskText}`
+              : taskText,
+          }),
+          ...turnSkills,
+        ],
         ...(this.conversationMode === "direct"
           ? {}
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
@@ -284,18 +308,23 @@ export class CodexHarnessSession
   }
 
   async steer(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void> {
     this.assertProtocolIntegrity();
-    this.requireCapability("steering");
+    const controls = this.turnControlCapabilities();
+    if (!(input.mode === "follow_up" ? controls.queuedFollowUp : controls.steering)) {
+      throw this.unsupported("steering", "requested turn control was not negotiated");
+    }
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
       const acknowledgedTurnId = this.acknowledgedSteeringCorrelations.get(
         input.correlationId,
       );
       if (acknowledgedTurnId) {
+        if (this.driverKind === "acpx_runtime") throw new Error("ACP turn control correlation was already acknowledged");
         if (acknowledgedTurnId !== input.turnId)
           throw new HarnessOperationAlreadyTerminalError("steering");
         return;
@@ -307,6 +336,7 @@ export class CodexHarnessSession
         input: [userInput(input.message)],
         expectedTurnId: input.turnId,
         correlationId: input.correlationId,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
       });
       if (this.activeTurnId !== input.turnId) {
         throw new HarnessOperationAlreadyTerminalError("steering");
@@ -321,7 +351,8 @@ export class CodexHarnessSession
         "item.completed",
         {
           kind: "steering_acknowledgement",
-          text: "Steering acknowledged for the active turn.",
+          text: input.mode === "follow_up" ? "Follow-up queued by the active provider." : "Steering acknowledged for the active turn.",
+          ...(this.driverKind === "acpx_runtime" ? { mode: input.mode ?? "steer" } : {}),
           status: "acknowledged",
         },
         {
@@ -373,6 +404,7 @@ export class CodexHarnessSession
       await this.transport.request("turn/interrupt", {
         threadId: this.opened.threadId,
         turnId,
+        ...(reason ? { reason: boundedText(reason) } : {}),
       });
       if (this.activeTurnId !== turnId) {
         throw new HarnessOperationAlreadyTerminalError("interruption");

@@ -156,6 +156,7 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "lifecycleMode",
   "mode",
   "outcome",
+  "operation",
   "provider",
   "reason",
   "runtime",

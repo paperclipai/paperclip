@@ -63,7 +63,11 @@ export interface PersistedNativeSession {
   terminal?: PrpTerminalState | null;
   activeTurnId?: string | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
-  /** Durable at-most-once marker for a resultless terminal recovery turn. */
+  /** Control-plane disposition bound to the exact committed tool event. It is
+   * independent of the interaction's later answer and proves no provider terminal. */
+  governedWait?: { sourceEvent: PrpEvent; result: PrpStructuredRunResult };
+
+  /** At-most-once marker for resultless disposition repair or restart continuation. */
   dispositionOnlyRecoveryConsumed?: boolean;
   dispositionOnlyRecoveryTurnId?: string | null;
   pendingRuntimeRequests?: HarnessRuntimeRequest[];
@@ -75,6 +79,31 @@ export interface NativeSessionRecoveryResult {
   recovered: boolean;
   session?: NativeSession;
   reason?: string;
+}
+
+/** Runner-owned cause: the process was restored, but its active turn was lost. */
+export const NATIVE_RESTART_INTERRUPTION_CODE = "provider_turn_lost_on_restore";
+
+export function isNativeRestartInterruption(error: unknown): boolean {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+  const failure = error as Record<string, unknown>;
+  return failure.code === NATIVE_RESTART_INTERRUPTION_CODE && failure.recoverable === true;
+}
+
+/** The terminal fingerprint survives a crash between interruption and continuation. */
+export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
+  "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
+>): string | null {
+  if (snapshot.driverKind !== "codex_app_server" || snapshot.activeTurnId != null ||
+      snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
+      snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
+  const terminal = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
+  if (!terminal || typeof terminal.fingerprint !== "string" || !terminal.turnId) return null;
+  try {
+    const fingerprint = JSON.parse(terminal.fingerprint);
+    return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
+      isNativeRestartInterruption(fingerprint.error) ? terminal.turnId : null;
+  } catch { return null; }
 }
 
 /**
@@ -93,11 +122,26 @@ export interface NativeSessionSnapshotOptions {
   signal: AbortSignal;
 }
 
+/** A dispatched operation may have taken effect, but has no proven result. */
+export class SemanticToolOutcomeUnknownError extends Error {
+  readonly code = "semantic_tool_outcome_unknown";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SemanticToolOutcomeUnknownError";
+  }
+}
+
+export function isSemanticToolOutcomeUnknownError(error: unknown): error is SemanticToolOutcomeUnknownError {
+  // Match across the server's vendored and source-mode runtime boundaries.
+  return error instanceof Error && "code" in error && error.code === "semantic_tool_outcome_unknown";
+}
+
 /** The exact close owner has torn down its controller without proving suspension. */
 export class NativeSessionCloseUnrecoverableError extends Error {
   readonly code = "native_session_close_unrecoverable";
 
-  constructor() {
+  constructor(readonly settlement?: Record<string, unknown>) {
     super(
       "provider_transport_failed: runner did not durably suspend before checkpoint",
     );
@@ -146,17 +190,23 @@ export interface NativeSession {
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
   startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
   }>;
   steer?(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void>;
   interrupt?(input: { turnId?: string; reason?: string }): Promise<void>;
+  /** Revoke publication synchronously while the control plane journals a wait.
+   * Does not interrupt the provider; cancel owns the subsequent passive cleanup. */
+  revokeTurnPublication?(): void;
   /** Commit cancellation synchronously; the returned promise owns cleanup only. */
   cancel?(input: {
     reason: string;
@@ -202,6 +252,8 @@ export interface NativeSession {
 
 /** Normalized control-plane boundary shared by runner and hosted backends. */
 export interface NativeSessionBackend {
+  /** Existing task rules at user-message priority, for prepared native envelopes. */
+  readonly preparedTaskConstraints?: readonly string[];
   descriptor(): Promise<NativeSessionBackendDescriptor>;
   openSession(input: OpenNativeSessionInput): Promise<NativeSession>;
   /** Open a fresh provider session after an explicitly governed continuity break. */

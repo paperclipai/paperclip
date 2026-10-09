@@ -1,16 +1,40 @@
+import { AnimatedDialogContent } from "@/components/AnimatedDialogContent";
+import { ExternalAgentPresetPicker, DotConnectionChecks } from "@/components/new-agent/ExternalAgentInviteContent";
+import { AgentMailApiKeyField } from "@/features/connections/AgentMailApiKeyField";
+import { TaskBrowserFooter } from "@/components/task-side-panel/TaskBrowserFooter";
+import { TaskBrowserActivity } from "@/components/task-side-panel/TaskBrowserActivity";
+import type { TaskBrowser } from "@paperclipai/shared";
+import { DispositionRecoveryNotice } from "../components/DispositionRecoveryNotice";
+import { CloudSignIn } from "../components/CloudSignIn";
+import { CloudAccessError } from "../components/CloudAccessGate";
+import { SetupPrompt } from "./apps/chat/SetupPrompt";
+import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
+
+import { SkillSourceTree } from "./skills/SkillSourceTree";
+import { SkillBinaryFile } from "../components/SkillBinaryFile";
+import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
+import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
+import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/RemoteMcpDesignExample";
+import { AgentConversationSidebar } from "@/components/AgentConversationSidebar";
+import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
+import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
+import { AnnouncementCard } from "@/components/AnnouncementCard";
+import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentCharacter } from "@/components/AgentCharacter";
+import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { ComposerAddMenu, ComposerModeChip } from "@/components/task-chat/ComposerAddMenu";
+import type { IssueWorkMode } from "@paperclipai/shared";
 import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
-import { ServicesList } from "./apps/app-detail/ServicesPanel";
-import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
-import type { ComposioServiceRow } from "./apps/composio-services";
 import {
   BookOpen,
   Bot,
@@ -150,6 +174,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
@@ -264,58 +289,6 @@ const DESIGN_GUIDE_TASK = {
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
 /* ------------------------------------------------------------------ */
-
-/**
- * Composio service rows for the design guide (PAP-17865). One row per state, so
- * a reader can compare all four side by side rather than connecting a real
- * Composio project to see them.
- */
-const DESIGN_GUIDE_COMPOSIO_ROWS: ComposioServiceRow[] = [
-  {
-    toolkitSlug: "github",
-    name: "GitHub",
-    description: "Issues, pull requests, and repository actions",
-    logoUrl: null,
-    state: "connected",
-    connectedAccountStatus: "ACTIVE",
-    childConnectionId: "design-guide-child",
-    toolCount: 42,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "hubspot",
-    name: "HubSpot",
-    description: "CRM contacts and deals",
-    logoUrl: null,
-    state: "attention",
-    connectedAccountStatus: "EXPIRED",
-    childConnectionId: "design-guide-child-2",
-    toolCount: 18,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "slack",
-    name: "Slack",
-    description: "Channels and messages",
-    logoUrl: null,
-    state: "pending",
-    connectedAccountStatus: "INITIALIZING",
-    childConnectionId: null,
-    toolCount: 12,
-    noAuth: false,
-  },
-  {
-    toolkitSlug: "gmail",
-    name: "Gmail",
-    description: "Read and send mail",
-    logoUrl: null,
-    state: "not_connected",
-    connectedAccountStatus: null,
-    childConnectionId: null,
-    toolCount: 9,
-    noAuth: false,
-  },
-];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -478,7 +451,55 @@ function TaskExecutionControlsExample() {
   </div>;
 }
 
+function TaskPendingInputExample() {
+  const [open, setOpen] = useState(true);
+  const [pending, setPending] = useState(true);
+  return <div className="max-w-xl">
+    <TaskChatComposer
+      onAdd={async () => {}}
+      workMode="standard"
+      takeover={pending && open ? {
+        id: "design-question",
+        label: "Question",
+        pendingCount: 1,
+        content: <div className="space-y-3 text-sm">
+          <p>Should the agent use the existing draft?</p>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => setPending(false)}>Use draft</Button>
+            <Button size="sm" variant="outline" onClick={() => setPending(false)}>Start fresh</Button>
+          </div>
+        </div>,
+        onDismiss: () => setOpen(false),
+        onSkip: () => setPending(false),
+      } : null}
+      pendingTakeover={pending ? { count: 1, label: "Question", onOpen: () => setOpen(true) } : null}
+    />
+  </div>;
+}
+
+function AgentChatPickerExample() {
+  const [state, setState] = useState<"closed" | "empty" | "loading" | "error">("closed");
+  return <div className="flex flex-wrap gap-2">
+    <Button variant="outline" onClick={() => setState("empty")}>Empty picker</Button>
+    <Button variant="outline" onClick={() => setState("loading")}>Loading picker</Button>
+    <Button variant="outline" onClick={() => setState("error")}>Failed picker</Button>
+    <AgentChatPicker agents={[]} open={state !== "closed"} onOpenChange={(open) => { if (!open) setState("closed"); }} onSelect={() => {}}
+      loading={state === "loading"} error={state === "error" ? new Error("Unavailable") : null} onRetry={() => setState("empty")} />
+  </div>;
+}
+
+function ComposerActionsExample() {
+  const [mode, setMode] = useState<IssueWorkMode>("standard");
+  return <div className="flex max-w-xl items-center gap-2 rounded-xl border border-border bg-card p-3">
+    <ComposerAddMenu mode={mode} onModeChange={setMode} onAttachFile={() => {}} onGoal={() => {}} />
+    <ComposerModeChip mode={mode} onRemove={() => setMode("standard")} />
+    <span className="ml-auto text-xs text-muted-foreground">Plus menu · removable mode chip</span>
+  </div>;
+}
+
 export function DesignGuide() {
+  const [agentmailDemoKey, setAgentmailDemoKey] = useState("");
+  const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -549,8 +570,20 @@ export function DesignGuide() {
         </div>
       </Section>
 
+      <Section title="Announcements">
+        <div className="grid gap-4 md:grid-cols-2">
+          <AnnouncementCard announcement={announcementAnimationPreview} imageSrc="/announcement-preview.svg" animationSrc={announcementAnimationPreviewSrc} onDismiss={() => {}} />
+          <AnnouncementCard announcement={announcementPreview} imageSrc="/announcement-preview.svg" onDismiss={() => {}} />
+          <AnnouncementCard announcement={{ ...announcementPreview, image: undefined, secondaryLink: undefined }} onDismiss={() => {}} />
+        </div>
+      </Section>
+
       <Section title="Task Execution Controls">
         <TaskExecutionControlsExample />
+      </Section>
+
+      <Section title="Composer actions">
+        <ComposerActionsExample />
       </Section>
 
       <Section title="Task Collection">
@@ -780,6 +813,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Idle Slack conversation">
+          <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
+          <IssueStatusBadge status="in_review" externalConversationState="waiting" />
+        </SubSection>
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
@@ -858,6 +895,19 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+
+        <SubSection title="LockedIssueChip">
+          <p className="text-xs text-muted-foreground">
+            Existence-only reference to a private task shown from a surface the viewer can see
+            (a blocker edge, a mention). Mono id + lock, dashed muted border,{" "}
+            <strong>no title, never a link</strong>. Falls back to &quot;Private&quot; when even the
+            identifier is withheld.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <LockedIssueChip identifier="PAP-1234" />
+            <LockedIssueChip identifier={null} />
           </div>
         </SubSection>
       </Section>
@@ -996,6 +1046,7 @@ export function DesignGuide() {
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
       <Section title="Select">
+        <p className="mb-4 text-sm text-muted-foreground">Native single-value dropdowns share an inset, theme-aware caret and reserve room for it in the base stylesheet. Multiple-selection lists and controls with a custom icon keep their own appearance.</p>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Default size">
             <Select value={selectValue} onValueChange={setSelectValue}>
@@ -1485,20 +1536,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
+      <Section title="Agent personas">
+        <SubSection title="Stable palette identities">
+          <div className="flex flex-wrap gap-3">{AGENT_PALETTE_IDS.map(palette => <AgentAvatar key={palette} appearance={appearanceForPalette(palette)} size={48} label={palette} />)}</div>
+        </SubSection>
+        <SubSection title="Onboarding and live character">
+          <p className="text-sm text-muted-foreground">Place one live character beside the agent name. Onboarding uses a larger padded frame. Onboarding and agent headers follow the pointer across the page; other placements track within their region. Full-page examples are in Storybook under Agents / Personas / Full pages.</p>
+          <div className="flex gap-4"><AgentCharacter muted state="sleepy" motion="still" size={128} /><AgentCharacter size={128} /></div>
+        </SubSection>
+      </Section>
+      <Section title="Human identity">
         <SubSection title="Sizes">
           <div className="flex items-center gap-6">
-            <Identity name="Agent Alpha" size="sm" />
-            <Identity name="Agent Alpha" />
-            <Identity name="Agent Alpha" size="lg" />
+            <Identity name="Alex Morgan" size="sm" />
+            <Identity name="Alex Morgan" />
+            <Identity name="Alex Morgan" size="lg" />
           </div>
         </SubSection>
 
         <SubSection title="Initials derivation">
           <div className="flex flex-col gap-2">
-            <Identity name="CEO Agent" size="sm" />
+            <Identity name="Casey Jordan" size="sm" />
             <Identity name="Alpha" size="sm" />
-            <Identity name="Quality Assurance Lead" size="sm" />
+            <Identity name="Quinn Lee" size="sm" />
           </div>
         </SubSection>
 
@@ -1656,11 +1716,32 @@ export function DesignGuide() {
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
+        <SubSection title="Independent MCP connections">
+          <p className="text-sm text-muted-foreground">Zapier, Arcade, Composio and Executor each own a connection. Their controlled setup views share Access → Connect. Tool discovery completes setup. Saved connections reuse the standard Permissions action list and per-action Test dialog. Storybook’s Apps / Connections groups use in-memory provider fixtures.</p>
+          <RemoteMcpDesignExample />
+        </SubSection>
+        <SubSection title="Setup wizard">
+          <p className="text-sm text-muted-foreground">Shared by connection setup and trigger previews. Setup navigation takes over the section sidebar; each step owns a single footer.</p>
+          <div className="max-w-sm space-y-6">
+            <SetupWizardNavigation inline labels={["Choose trigger", "Configure", "Review"]} step={wizardStep} availableStep={2} onSelect={setWizardStep} />
+            <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>Continue</Button></SetupWizardFooter>
+          </div>
+        </SubSection>
+        <SubSection title="Agent chat picker">
+          <AgentChatPickerExample />
+          <SubSection title="Agent conversation sidebar">
+            <div className="flex flex-wrap gap-4">
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} onSelect={() => {}} onBrowse={() => {}} /></div>
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} loading /></div>
+              <div className="h-96 w-60"><AgentConversationSidebar agents={[]} error={new Error("Unavailable")} onRetry={() => {}} /></div>
+            </div>
+          </SubSection>
+        </SubSection>
         <SubSection title="Sidebar nav items">
           <p className="text-sm text-muted-foreground">
             Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
             Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
-            Starred agent conversations precede recent conversations without a divider. Stars appear on hover or keyboard focus. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
+            The Chats section shows starred agents, the earliest-created agent when unstarred, then four recent agents without duplicates. Compose and star controls share a vertical column. Compose appears on hover or keyboard focus and remains visible on touch; starred icons remain visible. The picker searches all company agents by name or role without a subtitle, count, continuation labels, or footer. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
           </p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
@@ -2143,47 +2224,10 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
-      <Section title="Composio Services">
-        <p className="text-sm text-muted-foreground">
-          A broker connection (Composio) fronts many services, so its detail page lists toolkits
-          with per-service state instead of one credential. Row state comes from Composio's own
-          account status, which is why there is a fourth <code>attention</code> state alongside the
-          three the design asks for: an expired credential is neither connected nor still settling.
-        </p>
-        <SubSection title="Row states">
-          <ServicesList
-            rows={DESIGN_GUIDE_COMPOSIO_ROWS}
-            busySlug={null}
-            onConnect={() => {}}
-            onRecheck={() => {}}
-            onDisconnect={() => {}}
-          />
-        </SubSection>
-        <SubSection title="Busy row">
-          <ServicesList
-            rows={[DESIGN_GUIDE_COMPOSIO_ROWS[2]!]}
-            busySlug={DESIGN_GUIDE_COMPOSIO_ROWS[2]!.toolkitSlug}
-            onConnect={() => {}}
-            onRecheck={() => {}}
-            onDisconnect={() => {}}
-          />
-        </SubSection>
-        <SubSection title="Provenance chip">
-          <p className="mb-2 text-xs text-muted-foreground">
-            Shown wherever a brokered child connection appears, so the parent/child coupling is
-            legible. Links to the broker's Services tab when the parent is known.
-          </p>
-          <div className="flex items-center gap-3">
-            <ComposioProvenanceChip
-              connection={{
-                config: { provider: "composio", parentConnectionId: "parent-1", toolkitSlug: "github" },
-              }}
-            />
-            <ComposioProvenanceChip
-              connection={{ config: { provider: "composio", toolkitSlug: "gmail" } }}
-            />
-          </div>
-        </SubSection>
+      <Section title="GitHub skill sources">
+        <p className="text-sm text-muted-foreground">The shared FileTree explorer layout puts disclosure controls beside selection, with compact folder chains, equal-height rows, inline skill descriptions, and trailing status badges. Folders select descendant packages; package checkboxes select only that package, independently of nested skills. Included files use aligned rows without individual checkboxes (`getCheckboxState` returns null); package rows use `renderNodeExtra` for file counts and inspection. Use arrow keys to navigate and Space to select.</p>
+        <SkillSourceTreeShowcase />
+        <SkillBinaryFile file={{ skillId: "example", path: "assets/example.bin", kind: "asset", content: "AAECAw==", encoding: "base64", language: null, markdown: false, editable: false }} />
       </Section>
 
       <Section title="Source Repositories">
@@ -2229,6 +2273,18 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="Disposition recovery notice">
+        <SubSection title="Needs attention, with inspectable details">
+          <DispositionRecoveryNotice snapshot={{ kind: "disposition_repair_escalated", actionId: "design-recovery", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null }} defaultExpanded />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Storybook’s Recovery notice stories show the actionable, pending, acknowledged, unavailable, failed, and mobile states using this production component.</p>
+      </Section>
+
+      <Section title="Pending task input above composer">
+        <p className="mb-3 text-sm text-muted-foreground">A decision card sits above the ordinary message composer. Dismiss the card to keep a reopen control, or resolve it to clear the pending state.</p>
+        <TaskPendingInputExample />
+      </Section>
+
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
           Recovery runs in the background. Task lists keep their ordinary status without
@@ -2238,10 +2294,30 @@ export function DesignGuide() {
         </p>
       </Section>
 
+      <Section title="Cloud sign-in unavailable">
+        <CloudSignIn cloud={{ managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: null, stackSlug: null }} returnTo="/" />
+      </Section>
+
       <Section title="Saved provider API keys">
         <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
+      </Section>
+
+      <Section title="External agent invitation">
+        <p className="text-sm text-muted-foreground">Match the harness picker with provider cards. Connection checks reflect confirmed server evidence. AnimatedDialogContent resizes to its content using motion tokens and respects reduced motion.</p>
+        <ExternalAgentPresetPicker onSelect={() => {}} />
+        <DotConnectionChecks state={{ phase: "testing" }} />
+        <Dialog><DialogTrigger asChild><Button variant="outline">Preview invitation modal</Button></DialogTrigger>
+          <AnimatedDialogContent><div className="space-y-4 p-6"><DialogTitle>Invite an external agent</DialogTitle><DialogDescription>Choose an agent you already use.</DialogDescription><ExternalAgentPresetPicker onSelect={() => {}} /></div></AnimatedDialogContent>
+        </Dialog>
+      </Section>
+
+      <Section title="Browser setup prompt">
+        <p className="text-sm text-muted-foreground">Use AgentSetupPrompt for prompts handed to an external agent: connections, webhook setup, onboarding, and task handoffs. One click copies the complete prompt, opens its preview, and confirms success inline; clipboard failures offer selectable text.</p>
+        <SetupPrompt prompt="Design guide example. This is a preview, not a real provider setup request." />
+        <p className="text-sm text-muted-foreground">For a named recipient, pass the optional agent name and logo. The same copy feedback, preview, and manual clipboard recovery apply.</p>
+        <SetupPrompt prompt="Design guide example for Dot. No live pairing code." label="Copy setup prompt" title="Connect your Dot" agent={{ name: "Dot", src: "/brands/adapters/openai-dot.svg" }} />
       </Section>
 
       <Section title="Connection Intent">
@@ -2251,7 +2327,8 @@ export function DesignGuide() {
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
           Pending connections stay in the timeline beside a usable composer. The independently
           addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
-          layouts, completion, and historical outcomes.
+          layouts, completion, and historical outcomes. AgentMail uses an inline API-key field
+          with fixed access defaults; its field and direct key-page link are shared with Apps setup.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard
@@ -2266,6 +2343,14 @@ export function DesignGuide() {
             interaction={connectedConnectionIntentInteraction}
             currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
           />
+        </div>
+      </Section>
+
+      <Section title="AgentMail API key">
+        <p className="text-sm text-muted-foreground">AgentMail setup has two steps: pick an agent, then pick an email address. Ask for the API key alongside the agent only when needed. Keep address errors beside the field and additional settings under Advanced options.</p>
+        <p className="text-sm text-muted-foreground">Preview only. This field does not save or submit a credential.</p>
+        <div className="max-w-md">
+          <AgentMailApiKeyField value={agentmailDemoKey} onChange={setAgentmailDemoKey} />
         </div>
       </Section>
 
@@ -2302,6 +2387,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
       {/* ============================================================ */}
+      <Section title="Webhook URL warnings">
+        <div className="space-y-3">
+          {["http://localhost:3100", "https://paperclip.internal", "https://paperclip.example-tailnet.ts.net", "http://paperclip.example.com", "not-a-url"].map((url) => <WebhookUrlWarning key={url} url={url} />)}
+        </div>
+      </Section>
+
       <Section title="Inline Banner">
         <p className="text-sm text-muted-foreground">
           Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
@@ -2344,6 +2435,68 @@ export function DesignGuide() {
         </div>
       </Section>
 
+      <Section title="Text attachment tabs">
+        <p className="text-sm text-muted-foreground">Uploaded text opens in a named task tab. Markdown offers Rendered and Raw icon controls; every text file has a download action.</p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextAttachmentPreview title="README.md" text={"# Project notes\n\nReview the **original** file."} markdown downloadUrl="data:text/markdown,%23%20Project%20notes" />
+          <TextAttachmentPreview title="notes.txt" text="Plain text stays literal: <example>" markdown={false} downloadUrl="data:text/plain,Plain%20text" />
+        </div>
+      </Section>
+
+      <Section title="Connection recovery">
+        <SubSection title="Waiting for server">
+          <CloudAccessError temporary retrying={false} onRetry={() => undefined} />
+        </SubSection>
+        <SubSection title="Checking connection">
+          <CloudAccessError temporary retrying onRetry={() => undefined} />
+        </SubSection>
+        <SubSection title="Access check failed">
+          <CloudAccessError temporary={false} retrying={false} onRetry={() => undefined} />
+        </SubSection>
+      </Section>
+
+      <Section title="Browser session footer">
+        <p className="text-sm text-muted-foreground">Fit to pane follows the visible panel. Fixed viewport presets and session actions live in the footer menu. Costs stay in task reporting. The idle countdown appears only in the final five minutes. Full panel, activity, and settings states are in Storybook under Browser Use.</p>
+        {(["running", "idle", "closing-soon", "closed"] as const).map((state) => (
+          <SubSection key={state} title={state === "closing-soon" ? "Closing soon" : state}>
+            <TaskBrowserFooter
+              browser={{
+                id: "design-browser", sessionId: "design-session", issueId: "design-task",
+                status: state === "closing-soon" ? "idle" : state,
+                runStatus: "completed", progress: null, error: null, costCents: 15,
+                idleDeadline: new Date(state === "closing-soon" ? 282000 : 600000).toISOString(),
+                expiresAt: null, createdAt: new Date(0).toISOString(),
+              } satisfies TaskBrowser}
+              now={0}
+              onControl={() => {}}
+              onReconnect={() => {}}
+              onResize={() => {}}
+            />
+          </SubSection>
+        ))}
+      </Section>
+
+      <Section title="Browser activity in the task feed">
+        <p className="text-sm text-muted-foreground">Each browser appears once at its opening time among the task messages. Its status updates in place; the action opens its side-panel tab.</p>
+        {(["starting", "running", "idle", "closed", "failed"] as const).map((status) => (
+          <SubSection key={status} title={status}>
+            <TaskBrowserActivity browser={{
+              id: `design-${status}`, sessionId: `design-${status}`, issueId: "design-task", status,
+              runStatus: "completed", progress: null, error: null, costCents: 0,
+              idleDeadline: null, expiresAt: null, createdAt: new Date(0).toISOString(),
+            }} onOpen={() => {}} />
+          </SubSection>
+        ))}
+      </Section>
+
+      <Section title="Media artifacts">
+        <p className="text-sm text-muted-foreground">Images and videos use gallery tiles. The whole tile opens the task gallery; files and links keep compact, fully clickable rows. Task/Artifact Gallery in Storybook covers playable videos, mixed files, narrow panels, and unavailable previews.</p>
+        <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
+          <MediaArtifactCard id="design-image" title="Launch artwork" contentPath="/announcement-preview.svg" contentType="image/svg+xml" originalFilename="launch.svg" detail="Image" />
+          <MediaArtifactCard id="design-video" title="Video preview unavailable" contentPath="" contentType="video/mp4" originalFilename="preview.mp4" detail="Video" />
+        </div>
+      </Section>
+
       <Section title="AI Connections">
         <AiConnectionDesignExamples />
       </Section>
@@ -2368,4 +2521,18 @@ export function DesignGuide() {
       </Section>
     </div>
   );
+}
+
+function SkillSourceTreeShowcase() {
+  const candidates = [
+    { path: ".agents/review/SKILL.md", name: "Review", description: "Review changes before release.", error: null, inspection: { requirements: null, references: [], warnings: [], files: [
+      { path: "SKILL.md", kind: "skill", sizeBytes: 120, encoding: "utf8" as const, executable: false },
+      { path: "scripts/check.sh", kind: "script", sizeBytes: 45, encoding: "utf8" as const, executable: true },
+    ] } },
+    { path: ".agents/review/nested/SKILL.md", name: "Nested skill", description: "An independently selected package.", error: null, note: "New skill" },
+    { path: "broken/SKILL.md", name: "Needs attention", description: null, error: "Missing required description." },
+  ];
+  const [selected, setSelected] = useState(new Set(candidates.map(skill => skill.path)));
+  const [excluded, setExcluded] = useState<string[]>([]);
+  return <SkillSourceTree candidates={candidates} selected={selected} excludedFolders={excluded} onChange={(paths, folders) => { setSelected(paths); setExcluded(folders); }} />;
 }

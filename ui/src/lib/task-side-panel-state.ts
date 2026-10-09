@@ -4,10 +4,39 @@ import type { SidePanelTabRecord, SidePanelTabsState } from "@/components/side-p
 const STORAGE_VERSION = 1;
 const MAX_TASK_STATES = 50;
 
+export function shouldSuppressTaskPanelUntilPlan(input: {
+  deferredPlanAvailable: boolean;
+  panelBeforePlanOverride: boolean;
+}) {
+  return !input.deferredPlanAvailable && !input.panelBeforePlanOverride;
+}
+
+export interface OpenSkillPanelState {
+  skill: { id: string; name: string };
+  panelBeforePlanOverrideIssueId: string | null;
+}
+
+export function openSkillPanelState(
+  current: Pick<OpenSkillPanelState, "panelBeforePlanOverrideIssueId">,
+  skill: { id: string; name: string },
+  issueId: string | null,
+  panelSuppressedUntilPlan: boolean,
+): OpenSkillPanelState {
+  return {
+    skill,
+    panelBeforePlanOverrideIssueId:
+      panelSuppressedUntilPlan && issueId ? issueId : current.panelBeforePlanOverrideIssueId,
+  };
+}
+
 export type TaskSidePanelTabPayload =
+  | { kind: "browser"; browserId: string }
   | { kind: "properties" }
   | { kind: "subtasks" }
   | { kind: "artifacts" }
+  | { kind: "agent-tasks" }
+  | { kind: "attachment"; attachmentId: string }
+  | { kind: "skill"; skillId: string }
   | { kind: "issue-document"; documentKey: string }
   | {
       kind: "files-browser";
@@ -62,9 +91,17 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   const input = record(value);
   if (!input) return null;
   const kind = input.kind;
+  if (kind === "browser") return typeof input.browserId === "string" && /^[0-9a-f-]{36}$/i.test(input.browserId) ? { kind, browserId: input.browserId } : null;
   if (kind === "properties") return { kind };
   if (kind === "subtasks") return { kind };
   if (kind === "artifacts") return { kind };
+  if (kind === "agent-tasks") return { kind };
+  if (kind === "attachment") {
+    return typeof input.attachmentId === "string" && input.attachmentId.length > 0 ? { kind, attachmentId: input.attachmentId } : null;
+  }
+  if (kind === "skill") {
+    return typeof input.skillId === "string" && input.skillId.length > 0 ? { kind, skillId: input.skillId } : null;
+  }
   if (kind === "issue-document") {
     return typeof input.documentKey === "string" && input.documentKey.length > 0
       ? { kind, documentKey: input.documentKey }
@@ -190,8 +227,17 @@ export function taskPanelSubtasksTab(): SidePanelTabRecord<TaskSidePanelTabPaylo
   return { id: "subtasks", type: "subtasks", label: "Subtasks", closable: true, contentMode: "padded", payload: { kind: "subtasks" } };
 }
 
+/** Agent chats only: every task the conversation's agent has worked on. */
+export function taskPanelAgentTasksTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: "agent-tasks", type: "agent-tasks", label: "Tasks", closable: true, contentMode: "padded", payload: { kind: "agent-tasks" } };
+}
+
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: "artifacts", type: "artifacts", label: "Artifacts", closable: true, contentMode: "padded", payload: { kind: "artifacts" } };
+}
+
+export function taskPanelSkillTab(skillId: string, label = "Skill"): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `skill:${skillId}`, type: "skill", label, closable: true, contentMode: "prose", payload: { kind: "skill", skillId } };
 }
 
 export function taskPanelDocumentTab(documentKey: string, label: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
@@ -244,4 +290,12 @@ export function taskPanelWorkspaceFileTab(input: {
       column: input.column ?? null,
     },
   };
+}
+
+export function taskPanelAttachmentTab(attachmentId: string, title: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `attachment:${attachmentId}`, type: "attachment", label: title, closable: true, contentMode: "full-bleed", payload: { kind: "attachment", attachmentId } };
+}
+
+export function taskPanelBrowserTab(browserId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `browser:${browserId}`, type: "browser", label: "Browser", closable: true, contentMode: "full-bleed", payload: { kind: "browser", browserId } };
 }

@@ -1,73 +1,20 @@
 import { describe, expect, it } from "vitest";
-import {
-  CONNECTION_INTENT_AGENT_GUIDANCE,
-  CONNECTION_REQUEST_TOOL_DESCRIPTION,
-  CONNECTION_RUNTIME_TOOL_NAMES,
-  CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
-} from "./connection-intent-guidance.js";
-
-describe("connection intent agent guidance", () => {
-  it.each([
-    [
-      "explicit connect request",
-      "explicitly asks to connect",
-      "connections_search",
-    ],
-    [
-      "implicit service dependency",
-      "implicitly depends on that service",
-      "connections_search",
-    ],
-    [
-      "already-ready service",
-      "returns `ready`",
-      "do not create a connection intent",
-    ],
-    [
-      "available service",
-      "returns `available` or `needs_user_action`",
-      "connection_request",
-    ],
-    [
-      "unavailable service",
-      "returns `unavailable`",
-      "do not call `connection_request`",
-    ],
-    ["arbitrary MCP URL", "arbitrary MCP URLs", "Do not use connection tools"],
-    [
-      "pending user action",
-      "returns `needs_user_action`",
-      "finish any independent work, then yield in a waiting posture",
-    ],
-    [
-      "continuation run",
-      "On a continuation run",
-      "instead of requesting it again",
-    ],
-  ])("gives an explicit instruction for %s", (_scenario, trigger, action) => {
-    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain(trigger);
-    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain(action);
+import { CONNECTION_INTENT_AGENT_GUIDANCE, CONNECTION_REQUEST_TOOL_DESCRIPTION, CONNECTION_RUNTIME_TOOL_NAMES, CONNECTIONS_SEARCH_TOOL_DESCRIPTION } from "./connection-intent-guidance.js";
+describe("connection result guidance", () => {
+  it("delegates route decisions to trusted tool output instead of a provider decision tree", () => {
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("follow the returned `instruction`");
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("Respect recorded user choices");
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).not.toMatch(/Composio|Arcade|Executor|Zapier/);
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).not.toMatch(/https?:\/\/|bearer/);
   });
-
-  it("names the canonical tools without embedding secrets or authorization URLs", () => {
-    expect(CONNECTION_RUNTIME_TOOL_NAMES).toEqual([
-      "connections_search",
-      "connection_request",
-    ]);
-    expect(CONNECTION_INTENT_AGENT_GUIDANCE).not.toMatch(
-      /bearer|credential value|https?:\/\//i,
-    );
+  it("retains waiting, credential, and arbitrary URL boundaries", () => {
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("yield without retrying or polling");
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("never invent access or ask for credentials in comments");
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("arbitrary MCP URLs");
   });
-
-  it("keeps MCP descriptions aligned with the guidance decision points", () => {
-    expect(CONNECTIONS_SEARCH_TOOL_DESCRIPTION).toContain(
-      "usable access is uncertain",
-    );
-    expect(CONNECTIONS_SEARCH_TOOL_DESCRIPTION).toContain("arbitrary MCP URLs");
-    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain(
-      "available or needs_user_action",
-    );
-    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("finish independent work, then yield");
-    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("without retrying");
+  it("describes exact questions and saved selection proof", () => {
+    expect(CONNECTIONS_SEARCH_TOOL_DESCRIPTION).toContain("exact providerQuestion");
+    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("saved provider-selection interaction ID");
+    expect(CONNECTION_RUNTIME_TOOL_NAMES).toEqual(["connections_search","connection_request"]);
   });
 });

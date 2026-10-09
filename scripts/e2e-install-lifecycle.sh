@@ -68,7 +68,8 @@ if corepack pnpm install --frozen-lockfile > "$HOME/e2e-bootstrap-install.log" 2
 else
   tail -40 "$HOME/e2e-bootstrap-install.log"; fail_ "1b bootstrap pnpm install"; exit 1
 fi
-if bash scripts/build-npm.sh --skip-checks --skip-typecheck > "$HOME/e2e-bootstrap-build.log" 2>&1; then
+if PAPERCLIP_README_ASSET_REF="$E2E_REF" \
+    bash scripts/build-npm.sh --skip-checks --skip-typecheck > "$HOME/e2e-bootstrap-build.log" 2>&1; then
   pass "1c bootstrap build-npm.sh"
 else
   tail -40 "$HOME/e2e-bootstrap-build.log"; fail_ "1c bootstrap build-npm.sh"; exit 1

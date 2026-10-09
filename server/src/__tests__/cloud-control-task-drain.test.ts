@@ -211,6 +211,12 @@ describe("cloudControlMiddleware", () => {
     app.all("/api/instance/task-drain", (req, res) => {
       res.json({ actor: req.actor });
     });
+    app.all("/api/instance/lifecycle", (req, res) => {
+      res.json({ actor: req.actor });
+    });
+    app.all("/api/instance/lifecycle/unarchive-primary", (req, res) => {
+      res.json({ actor: req.actor });
+    });
     app.get("/api/instance/settings", (req, res) => {
       res.json({ actor: req.actor });
     });
@@ -261,6 +267,38 @@ describe("cloudControlMiddleware", () => {
       .set(CLOUD_CONTROL_HEADER, freshAssertion("task-drain:read"));
     expect(res.status).toBe(401);
     expect(res.body.error).toBe("invalid_cloud_control_assertion");
+  });
+
+  it("authorizes the lifecycle endpoints, each bound to its own action", async () => {
+    const app = createApp();
+    const read = await request(app)
+      .get("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(read.status).toBe(200);
+    expect(read.body.actor).toMatchObject({ type: "board", isInstanceAdmin: true, source: "cloud_control" });
+
+    const unarchive = await request(app)
+      .post("/api/instance/lifecycle/unarchive-primary")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:unarchive-primary"));
+    expect(unarchive.status).toBe(200);
+    expect(unarchive.body.actor).toMatchObject({ source: "cloud_control" });
+
+    // Cross-binding: a task-drain assertion opens no lifecycle door, a
+    // read assertion cannot unarchive, and lifecycle endpoints accept no
+    // extra methods.
+    const crossAction = await request(app)
+      .get("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("task-drain:read"));
+    expect(crossAction.status).toBe(401);
+    const readAsWrite = await request(app)
+      .post("/api/instance/lifecycle/unarchive-primary")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(readAsWrite.status).toBe(401);
+    const wrongMethod = await request(app)
+      .post("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(wrongMethod.status).toBe(400);
+    expect(wrongMethod.body.error).toBe("cloud_control_wrong_endpoint");
   });
 
   it("accepts the conventional trailing-slash form of the endpoint", async () => {

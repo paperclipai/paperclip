@@ -1,3 +1,4 @@
+import { GENERATED_RUNTIME_ENVIRONMENT_KEYS } from "../vendor/paperclip-runner/index.js";
 import { createHash } from "node:crypto";
 import type { RuntimeSecretManifestEntry } from "./secrets.js";
 
@@ -66,7 +67,6 @@ export interface EffectiveRunConfigFingerprintDiff {
 const OMIT = Symbol("omit-from-effective-run-config-fingerprint");
 const REDACTED_VALUE: EffectiveRunConfigCanonicalValue = { type: "redacted", present: true };
 
-const GENERATED_RUNTIME_ENV_KEY_RE = /^PAPERCLIP_/;
 const SENSITIVE_CONFIG_KEY_RE =
   /(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|cookie|credential|jwt|password|passwd|private[_-]?key|secret|token)$/i;
 const VOLATILE_CONFIG_KEYS = new Set([
@@ -276,7 +276,7 @@ function canonicalizeEnvRecord(
   if (!isPlainObject(envValue)) return {};
   const canonicalEnv: Record<string, EffectiveRunConfigCanonicalValue> = {};
   for (const key of Object.keys(envValue).sort()) {
-    if (GENERATED_RUNTIME_ENV_KEY_RE.test(key)) continue;
+    if (GENERATED_RUNTIME_ENVIRONMENT_KEYS.has(key)) continue;
     const manifestEntry = context.secrets.byConfigPath.get(`env.${key}`) ?? context.secrets.byEnvKey.get(key);
     if (manifestEntry) {
       canonicalEnv[key] = canonicalSecretMetadata(manifestEntry);

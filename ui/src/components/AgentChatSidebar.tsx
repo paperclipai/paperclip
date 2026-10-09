@@ -1,19 +1,17 @@
-import { useState } from "react";
-import { Star, Users } from "lucide-react";
-import { SidebarSection } from "@/components/SidebarSection";
+import { Star, SquarePen } from "lucide-react";
 import { SidebarNavItem } from "@/components/SidebarNavItem";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
-import { Link } from "@/lib/router";
 import { useSidebar } from "@/context/SidebarContext";
 import type { Agent } from "@paperclipai/shared";
-import { agentRouteRef } from "@/lib/utils";
+import { agentRouteRef, cn } from "@/lib/utils";
 import { orderChatAgents } from "@/lib/recent-agent-chats";
 export function AgentChatSidebar({
   activeId,
   starredIds,
   recentIds,
   onToggleStar,
+  onOpenChat,
   agents,
   href = (id: string) =>
     `/chats/${encodeURIComponent(agentRouteRef(agents.find((agent) => agent.id === id)!))}`,
@@ -24,9 +22,9 @@ export function AgentChatSidebar({
   starredIds: string[];
   recentIds: string[];
   onToggleStar: (id: string) => void;
+  onOpenChat: () => void;
 }) {
-  const [open, setOpen] = useState(true);
-  const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
+  const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const ordered = orderChatAgents(agents, starredIds, recentIds);
   const row = (agent: Agent) => {
@@ -54,11 +52,11 @@ export function AgentChatSidebar({
               event.stopPropagation();
               onToggleStar(agent.id);
             }}
-            className="absolute right-2 top-(--pct-50) -translate-y-(--pct-50) text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/agent-chat:opacity-100 focus-visible:opacity-100"
+            className={cn("absolute right-2 top-(--pct-50) -translate-y-(--pct-50) text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/agent-chat:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100", pinned && "opacity-100")}
           >
             <Star
               aria-hidden="true"
-              className={pinned ? "fill-current" : undefined}
+              className={cn("size-3.5", pinned && "fill-current")}
             />
           </Button>
         )}
@@ -66,24 +64,22 @@ export function AgentChatSidebar({
     );
   };
   return (
-    <>
-      <SidebarSection
-        label="Agents"
-        collapsible={{ open, onOpenChange: setOpen }}
-      >
-        {ordered.map((agent) => row(agent))}
-        <Link
-          to="/agents/all"
-          className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="See all agents"
-          onClick={() => {
-            if (isMobile) setSidebarOpen(false);
-          }}
+    <section aria-label="Chats" className="group/chats flex flex-col gap-0.5">
+      <div className="relative flex min-h-9 items-center px-4 py-1.5">
+        <span className={cn("font-mono text-(length:--text-nano) font-medium uppercase tracking-widest text-muted-foreground/60", rail && "sr-only")}>Chats</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Chat with an agent"
+          title="Chat with an agent"
+          onClick={onOpenChat}
+          className="absolute right-2 top-(--pct-50) -translate-y-(--pct-50) text-muted-foreground opacity-0 group-hover/chats:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
         >
-          <Users className="h-4 w-4 shrink-0" />
-          {!rail && <span>See all agents</span>}
-        </Link>
-      </SidebarSection>
-    </>
+          <SquarePen aria-hidden="true" className="size-3.5" />
+        </Button>
+      </div>
+      {ordered.map(row)}
+    </section>
   );
 }

@@ -13,7 +13,7 @@ import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -29,6 +29,8 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalFailureClassification,
+  AcpxTerminalSessionFailure,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
@@ -38,7 +40,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -47,6 +49,7 @@ import {
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel } from "./cli-version.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -164,17 +167,16 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
  * Codex remote managed-home seed + auth copy-back for the runner-backed remote
  * sandbox ACP lane. Mirrors the codex CLI lane (`codex-local/execute.ts`): stage
  * the managed `CODEX_HOME` (auth.json + config.toml + skills) into the sandbox
- * as the `home` asset — carrying the inbound auth-merge `provision` and the
- * outbound `restore` copy-back seams — then repoint `CODEX_HOME` onto the
- * in-sandbox `assetDirs.home` path. The copy-back rides the asset `restore`,
- * which fires inside `restoreWorkspace()` at teardown.
+ * as the `home` asset, then repoint `CODEX_HOME` onto the in-sandbox
+ * `assetDirs.home` path. Subscription runs also use inbound auth merge and
+ * outbound copy-back through `restoreWorkspace()` at teardown.
  *
  * The engine already resolved+seeded the host managed Codex home and set
  * `env.CODEX_HOME` to it (a HOST path) before this seam runs, so `env.CODEX_HOME`
- * is exactly the home to stage. Seed inbound and copy-back outbound land together
- * (never seed-without-copy-back): Codex refresh tokens are single-use, so a
- * refreshed sandbox token that is never copied back would spend the host's token
- * and corrupt the host credential.
+ * is exactly the home to stage. Subscription auth merge and copy-back stay
+ * paired: Codex refresh tokens are single-use, so a refreshed sandbox token
+ * that is never copied back would spend the host's token. API-key runs skip
+ * both auth seams and never touch the shared subscription credential.
  */
 async function prepareCodexRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
@@ -187,6 +189,12 @@ async function prepareCodexRemoteManagedHome(
     // workspace with no home asset, identical to the no-seam fallback.
     return { stagedRuntime: await input.stage([]) };
   }
+  // API-key runs do not rotate a subscription refresh token. Keep their
+  // sandbox auth out of the shared subscription copy-back path altogether.
+  const apiKeyAuth = Boolean(
+    env.OPENAI_API_KEY?.trim() || env.CODEX_API_KEY?.trim()
+    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim(),
+  );
   // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
   let stagedRuntime;
@@ -196,14 +204,13 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Inbound (host→sandbox) auth-merge: keeps whichever credential is newer
-        // when the sandbox image already carries a Codex auth.json.
-        provision: buildCodexAuthInboundProvision(),
-        // Outbound (sandbox→host) copy-back at teardown, under the same
+        // Subscription-only inbound auth merge keeps the newer credential.
+        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
         // (the symlink source managed homes point at), never an in-sandbox copy.
-        restore: async ({ assetDir, readFile }) =>
+        restore: apiKeyAuth ? undefined : async ({ assetDir, readFile }) =>
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
             hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
@@ -222,7 +229,7 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
-    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // Subscription copy-back fires on EVERY run's teardown (including a compatible
     // resume that reuses this staged runtime). It reads the sandbox auth.json /
     // workspace live and copies back to the host; it does NOT remove the staged
     // in-sandbox home, so re-running it across resumes can't leave a later run
@@ -236,7 +243,9 @@ async function prepareCodexRemoteManagedHome(
     teardown: createWorkspaceRestoreTeardown({
       stagedRuntime,
       onLog,
-      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      startMessage: apiKeyAuth
+        ? "[paperclip] Restoring workspace changes from the sandbox.\n"
+        : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
       failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
     }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
@@ -257,10 +266,31 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
+export function classifyCodexTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // ACP's `limit` also covers context, turn, rate and configured budget limits.
+  // Require explicit usage exhaustion; the CLI's broader capacity matcher would
+  // also match a context/storage capacity limit and defer the wrong failure.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  if (!/\b(?:you(?:'|’)ve hit your usage limit|usage limit (?:reached|exceeded))\b/i.test(surface.errorMessage)) {
+    return null;
+  }
+  const retryNotBefore = extractCodexRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyCodexTerminalSessionFailure,
     ...options,
     adapterType: "codex_local",
     moduleDir,
@@ -301,6 +331,8 @@ export function resolveCodexAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+  if (managedBilling) return managedBilling;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -615,6 +647,32 @@ export async function testCodexAcpEnvironment(
         hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
+  }
+
+  if (targetIsRemote && commandResolvable) {
+    // The ACP server spawns the shared `codex` installed in the environment.
+    // Models with a verified CLI floor are checked against that executable so
+    // a stale sandbox image is named here, before a run fails on every turn
+    // with the backend's "not supported when using Codex with a ChatGPT
+    // account" rejection. Models without a floor skip the probe.
+    //
+    // Remote ACP runs receive the adapter's string-valued env entries (see
+    // buildCodexAcpConfig), so the probe gets the same ones. An agent that
+    // selects its Codex install through PATH is then measured against that
+    // install rather than the image default.
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId: `codex-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      model: asString(config.model, ""),
+      command: "codex",
+      target,
+      cwd: resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd()),
+      env: probeEnv,
+    });
+    if (versionCheck) checks.push(versionCheck.check);
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

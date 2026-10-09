@@ -5,7 +5,7 @@ scripts/release*.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release-*.mjs @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/create-github-release.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/rollback-latest.sh @cryppadotta @devinfoley @nickyleach @forgottendev
-doc/RELEASING.md @cryppadotta @devinfoley @nickyleach @forgottendev
+doc/RELEASING.md @cryppadotta @devinfoley @nickyleach @forgottendev @tonio-alucema @scotttong
 doc/PUBLISHING.md @cryppadotta @devinfoley @nickyleach @forgottendev
 doc/RELEASE-AUTOMATION-SETUP.md @cryppadotta @devinfoley @nickyleach @forgottendev
 skills/** @cryppadotta @devinfoley @nickyleach @forgottendev

@@ -117,6 +117,12 @@ vi.mock("./PropertiesPanel", () => ({
   PropertiesPanel: () => null,
 }));
 
+// Overlay account/company lifecycle has its own integration test. These tests
+// exercise route navigation with intentionally minimal context providers.
+vi.mock("./PluginAppShellOverlays", () => ({
+  PluginAppShellOverlays: () => null,
+}));
+
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
 }));
@@ -143,6 +149,10 @@ vi.mock("./KeyboardShortcutsCheatsheet", () => ({
 
 vi.mock("./ToastViewport", () => ({
   ToastViewport: () => null,
+}));
+
+vi.mock("./AnnouncementWell", () => ({
+  AnnouncementWell: () => <div data-announcement-well />,
 }));
 
 vi.mock("./MobileBottomNav", () => ({
@@ -308,7 +318,7 @@ describe("Layout", () => {
       version: "1.2.3",
     });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
+      censorUsernameInLogs: false,
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
@@ -348,6 +358,7 @@ describe("Layout", () => {
     expect(mockHealthApi.get).toHaveBeenCalled();
     expect(container.textContent).toContain("Breadcrumbs");
     expect(container.textContent).toContain("Outlet content");
+    expect(container.querySelectorAll("[data-announcement-well]")).toHaveLength(1);
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Authenticated private");
     expect(container.textContent).not.toContain(

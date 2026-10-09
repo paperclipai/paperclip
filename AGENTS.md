@@ -74,6 +74,11 @@ pnpm dev
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
 
+Explicit exception: announcement dismissals are instance-wide user preferences,
+keyed by user and announcement so they persist across companies. Their audit
+context must still validate company membership. The announcement publication-ID
+registry is instance-level feed metadata; it contains no company or user data.
+
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
 - `packages/db` schema and exports
@@ -147,6 +152,10 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
+[feature-map/README.md](feature-map/README.md) is an optional reference for user
+entry points, verification recipes, and coverage gaps. The map records coverage
+scope, not proof that a live journey passed.
+
 Default local/agent test path:
 
 ```sh
@@ -193,6 +202,7 @@ When adding endpoints:
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
+- Form and wizard footers: keep Save & exit (or Cancel/Back) left and the primary action right in the same vertically aligned row. Each step owns the entire footer; never append Save & exit as a separate row. See `DESIGN.md`.
 
 ## 10. Pull Request Requirements
 

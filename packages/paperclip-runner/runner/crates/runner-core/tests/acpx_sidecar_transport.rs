@@ -214,3 +214,89 @@ fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
         assert!(!message.contains(sensitive));
     }
 }
+
+#[test]
+fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets() {
+    const CHILD: &str = "PAPERCLIP_TEST_MCP_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PAPERCLIP_NATIVE_MCP_NAME", "paperclip-assigned")
+            .env("PAPERCLIP_NATIVE_MCP_URL", "http://127.0.0.1:3100/mcp")
+            .env(
+                "PAPERCLIP_NATIVE_MCP_TOKEN",
+                "fixture-token-never-returned-in-test-output",
+            )
+            .env("UNRELATED_EVAL_SECRET", "must-not-cross-boundary")
+            .env(
+                "PAPERCLIP_ACPX_CREDENTIAL_BINDING",
+                "controller-session-binding",
+            )
+            .envs(
+                [
+                    "ANTHROPIC_API_KEY",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                    "OPENAI_API_KEY",
+                    "CODEX_API_KEY",
+                    "OPENROUTER_API_KEY",
+                    "CURSOR_API_KEY",
+                    "CURSOR_AUTH_TOKEN",
+                    "COPILOT_GITHUB_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_TOKEN",
+                ]
+                .into_iter()
+                .map(|key| (key, "fixture-credential")),
+            )
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated gateway environment test failed");
+        return;
+    }
+    for agent in ["claude", "codex", "pi", "cursor", "copilot"] {
+        let mut sidecar = AcpxSidecarTransport::start_for_agent(
+            &AcpxSidecarTransportConfig {
+                command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+                args: vec!["--mode".into(), "mcp-environment".into()],
+                verified_launch: None,
+                request_timeout: Duration::from_secs(2),
+                shutdown_grace: Duration::from_millis(50),
+            },
+            agent,
+        )
+        .unwrap();
+        let response = sidecar
+            .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+            .unwrap();
+        assert_eq!(response["name"], "paperclip-assigned");
+        assert_eq!(response["url"], "http://127.0.0.1:3100/mcp");
+        assert_eq!(
+            response["hasToken"], true,
+            "assigned gateway credential was dropped"
+        );
+        assert_eq!(response["hasUnrelatedSecret"], false);
+        let expected = match agent {
+            "claude" => vec!["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+            "codex" => vec!["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "pi" => vec!["OPENROUTER_API_KEY"],
+            "cursor" => vec!["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "copilot" => vec!["COPILOT_GITHUB_TOKEN"],
+            _ => unreachable!(),
+        };
+        assert_eq!(response["credentialKeys"], json!(expected));
+        assert_eq!(
+            response["credentialBinding"],
+            if matches!(agent, "pi" | "cursor" | "copilot") {
+                json!("controller-session-binding")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        sidecar.shutdown().unwrap();
+    }
+}

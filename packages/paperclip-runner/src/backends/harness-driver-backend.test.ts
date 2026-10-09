@@ -97,6 +97,24 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it("refreshes negotiated controls after a warm handshake and separates follow-ups", async () => {
+    let controls = { steering: false, queuedFollowUp: false };
+    const steer = vi.fn(async () => {});
+    const session = Object.assign(new FakeHarnessSession(), { steer, turnControlCapabilities: () => ({ ...controls }) });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect(await opened.capabilities()).toMatchObject({ steering: false, queuedFollowUp: false });
+    controls = { steering: false, queuedFollowUp: true };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "steer" }, correlationId: "c-1" })).toThrow();
+    await opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-2", mode: "follow_up" });
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ mode: "follow_up" }));
+    controls = { steering: true, queuedFollowUp: false };
+    expect(await opened.capabilities()).toMatchObject(controls);
+    expect(() => opened.steer!({ turnId: "turn-1", message: { role: "user", text: "follow" }, correlationId: "c-3", mode: "follow_up" })).toThrow();
+  });
   it.each([false, true])("honors driver steering support even when the transport exposes a steer method (%s)", async supported => {
     const steer = vi.fn(async () => { throw new Error("provider does not support steering"); });
     const session = Object.assign(new FakeHarnessSession(), { steer });
@@ -954,6 +972,42 @@ describe("HarnessDriverBackend", () => {
     await iterator.next();
     await iterator.next();
     await expect(iterator.next()).rejects.toThrow("provider transport lost after resolution");
+  });
+
+  it.each([false, true])("retains final usage without accepting late output (journal boundary only: %s)", async journalOnly => {
+    class AccountingAfterCancelSession extends FakeHarnessSession {
+      async interrupt() {}
+      override async *events() {
+        yield prpEvent(1, "item.completed", { kind: "agentMessage", text: "late answer" });
+        yield prpEvent(2, "item.completed", { kind: "usage", usage: { runDelta: { inputTokens: 7, outputTokens: 3 }, runDeltaComplete: true } });
+        yield prpEvent(3, "turn.completed", { status: "completed" });
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new AccountingAfterCancelSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" }, workingDirectory: "/workspace",
+    });
+    if (journalOnly) session.revokeTurnPublication();
+    else await session.cancel({ reason: "durable governed wait", signal: new AbortController().signal }).cleanup;
+    const events = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.filter(event => event.payload.kind === "agentMessage")).toHaveLength(0);
+    expect(events.find(event => event.payload.kind === "usage")?.payload.usage).toMatchObject({ runDelta: { inputTokens: 7, outputTokens: 3 } });
+    expect(events.some(event => event.eventType === "turn.cancelled")).toBe(true);
+  });
+
+  it("does not start provider work when Stop arrives before the first turn", async () => {
+    const provider = new FakeHarnessSession();
+    const start = vi.spyOn(provider, "startTurn");
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return provider; } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+      workingDirectory: "/workspace",
+    });
+    await session.cancel({ reason: "user stop during startup", signal: new AbortController().signal }).cleanup;
+    await expect(session.startTurn({ message: { role: "user", text: "cancelled work" } }))
+      .rejects.toThrow("native_session_cancelled");
+    expect(start).not.toHaveBeenCalled();
   });
 
   it("does not synthesize a fallback after explicit run cancellation", async () => {

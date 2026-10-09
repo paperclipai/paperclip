@@ -13,6 +13,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 
 export interface ErrorContext {
   error: {
@@ -85,10 +86,10 @@ function sanitizeSecretSensitiveResponse(
 }
 
 /** Report a server-side crash to every error sink. */
-function reportCrash(error: Error): void {
+function reportCrash(error: Error, reportToSentry = true): void {
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
-  captureException(error);
+  if (reportToSentry) captureException(error);
 }
 
 function getPaperclipDb(req: Request): Db | null {
@@ -176,7 +177,7 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError);
+      reportCrash(reportableError, !isExpectedMcpConnectionFailure(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&
@@ -233,6 +234,18 @@ export function errorHandler(
       error: "Validation error",
       details: sanitizeSecretSensitiveResponse(req, zodIssues),
     });
+    return;
+  }
+
+  // Only body-parser's malformed-JSON errors are client input failures.
+  // Parser messages can quote request bytes; return a constant response and
+  // keep the raw error out of crash reporting and HTTP error context.
+  if (
+    err instanceof SyntaxError &&
+    "status" in err && err.status === 400 &&
+    "type" in err && err.type === "entity.parse.failed"
+  ) {
+    res.status(400).json({ error: "Invalid JSON body" });
     return;
   }
 

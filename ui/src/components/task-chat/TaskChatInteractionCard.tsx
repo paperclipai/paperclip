@@ -5,6 +5,7 @@ import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionC
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
+import { CircleHelp, ChevronRight } from "lucide-react";
 import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
@@ -18,6 +19,7 @@ type InteractionCardProps = Omit<
 export interface TaskChatInteractionCardProps extends InteractionCardProps {
   item: TaskChatInteractionItem;
   onReviewRequest?: (interactionId: string) => void;
+  showUnansweredQuestion?: boolean;
   planDocument?: IssueDocument | null;
   showPlanPreview?: boolean;
   presentation?: "timeline" | "takeover";
@@ -35,6 +37,7 @@ export interface TaskChatInteractionCardProps extends InteractionCardProps {
 export function TaskChatInteractionCard({
   item,
   onReviewRequest,
+  showUnansweredQuestion = false,
   planDocument,
   showPlanPreview = true,
   presentation = "timeline",
@@ -42,6 +45,24 @@ export function TaskChatInteractionCard({
   ...cardProps
 }: TaskChatInteractionCardProps) {
   const interaction = item.interaction;
+  if (presentation === "timeline" && showUnansweredQuestion && !shouldHideInteractionCard(interaction) && interaction.kind === "ask_user_questions" && interaction.status === "pending") {
+    const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? "Question";
+    return (
+      <button
+        type="button"
+        id={`interaction-${interaction.id}`}
+        data-testid="task-chat-unanswered-question"
+        aria-label={`Answer question: ${prompt}`}
+        disabled={!onReviewRequest}
+        onClick={() => onReviewRequest?.(interaction.id)}
+        className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1"><span className="block text-xs">Unanswered question</span><span className="block truncate">{prompt}</span></span>
+        <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+      </button>
+    );
+  }
   if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
     const action = interaction.payload.toolAction;
     if (presentation === "takeover") {

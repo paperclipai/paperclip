@@ -32,7 +32,7 @@ import {
   readClaudeCommandVersion,
 } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
@@ -203,15 +203,18 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
     });
+  } else if (config.managedAiRouting) {
+    checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
-      level: config.managedAiConnection ? "info" : "warn",
+      level: selectedApiKey ? "info" : "warn",
       message:
-        config.managedAiConnection ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
+        selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: config.managedAiConnection ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -265,9 +268,9 @@ export async function testEnvironment(
       code: "claude_cli_version_probe_mismatch",
       level: "warn",
       message:
-        "Skipped Fable 5.1 readiness probing because the runtime PATH selects a different Claude executable than the trusted local Test probe.",
+        `Skipped ${configuredModel} readiness probing because the runtime PATH selects a different Claude executable than the trusted local Test probe.`,
       hint:
-        "Ensure the runtime-selected Claude Code is 2.1.251 or newer. Execution will verify that exact executable before launch.",
+        `Ensure the runtime-selected Claude Code is ${minimumCliVersion} or newer. Execution will verify that exact executable before launch.`,
     });
   } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
     const versionProbeEnv = localProbe?.env ?? env;
@@ -288,7 +291,7 @@ export async function testEnvironment(
       checks.push({
         code: "claude_cli_version_incompatible",
         level: "error",
-        message: `Claude Fable 5.1 requires Claude Code ${minimumCliVersion} or newer on the CLI lane.`,
+        message: `${configuredModel} requires Claude Code ${minimumCliVersion} or newer on the CLI lane.`,
         detail: detectedCliVersion
           ? `Detected Claude Code ${detectedCliVersion}.`
           : "Could not determine the installed Claude Code version.",
@@ -321,6 +324,7 @@ export async function testEnvironment(
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox }));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;

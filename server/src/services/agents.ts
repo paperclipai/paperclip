@@ -1,8 +1,13 @@
+import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
+import type { ActivityPublication } from "./activity-log.js";
+import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  assets,
   toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
@@ -11,11 +16,13 @@ import {
   agentWakeupRequests,
   activityLog,
   costEvents,
+  budgetReservations,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
   issues,
   issueComments,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -37,12 +44,15 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
-import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope, normalizeAgentPermissions, permissionsImplyLowTrust } from "./agent-permissions.js";
+import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   CLAUDE_LOCAL_ADAPTER_TYPE,
+  readClaudeOAuthBinding,
   secretService,
   type ClaudeOAuthBindingInvariantDecision,
 } from "./secrets.js";
@@ -52,6 +62,9 @@ import {
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+
+import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
+import { agentIdentityService } from "./agent-identity.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -66,6 +79,7 @@ const CONFIG_REVISION_FIELDS = [
   "role",
   "title",
   "icon",
+  "appearance",
   "reportsTo",
   "capabilities",
   "adapterType",
@@ -98,12 +112,20 @@ interface RevisionMetadata {
  * from that actor. The path binds the fixed reference to the owner stored value
  * with no login round trip. It is distinct from `allowInternalBindingOverride`,
  * which does no ownership check.
+ *
+ * The `inheritedFromAgentId` field is the hire-inheritance path. The route
+ * sets it only for an authenticated agent actor whose hire request inherited
+ * the fixed reference from that named parent. The service re-reads the parent
+ * agent inside the write transaction and binds the fixed reference only when
+ * the parent exists, is in the same company, is a `claude_local` agent, and
+ * already holds the exact fixed binding.
  */
 interface ClaudeLoginContext {
   storedSessionId?: string | null;
   ownerUserId?: string | null;
   allowInternalBindingOverride?: boolean;
   applyExistingWithoutClaim?: boolean;
+  inheritedFromAgentId?: string | null;
 }
 
 interface UpdateAgentOptions {
@@ -114,7 +136,8 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
-  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
+  createdByUserId?: string | null;
+  aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -157,6 +180,7 @@ function buildConfigSnapshot(
     role: row.role,
     title: row.title,
     icon: row.icon,
+    appearance: row.appearance,
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
@@ -192,6 +216,7 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
   const patch: Partial<typeof agents.$inferInsert> = {};
   if (typeof payload.name === "string") patch.name = payload.name;
   if (typeof payload.role === "string") patch.role = payload.role;
+  if (payload.appearance != null) patch.appearance = agentAppearanceSchema.parse(payload.appearance);
   if (Object.prototype.hasOwnProperty.call(payload, "title")) {
     patch.title = typeof payload.title === "string" ? payload.title : null;
   }
@@ -324,7 +349,7 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db) {
+export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const secretsSvc = secretService(db);
 
   function currentUtcMonthWindow(now = new Date()) {
@@ -364,8 +389,11 @@ export function agentService(db: Db) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
+      const appearance = resolveAgentAppearance(row.appearance, row.id);
       return {
         ...base,
+        appearance,
+        avatarUrl: agentAvatarUrl(appearance),
         orgChainHealth: getAgentWorkEligibility({
           agent: toEligibilityAgent(row),
           agents: eligibilityAgents,
@@ -559,6 +587,23 @@ export function agentService(db: Db) {
    * owner or a missing stored value raises the same fixed claim error, so the
    * caller cannot tell the reasons apart.
    *
+   * The hire-inheritance path (`inheritedFromAgentId`) binds the fixed
+   * reference with no login round trip and no stored owner value, because the
+   * owning user resolves per run, not from a value stored against this agent.
+   * The route copies the parent's reference onto the child before this
+   * transaction starts, so a concurrent version change on the parent can
+   * leave the child holding a stale version. The gate re-reads the named
+   * parent agent inside this transaction and permits the bind only when the
+   * parent exists, is in the same company, is a `claude_local` agent, and its
+   * current reference matches the child's copied reference exactly, including
+   * the version selector. The gate locks the parent row with `SELECT ...
+   * FOR UPDATE` before it reads the reference. The lock blocks a concurrent
+   * credential rotation on the same parent row until this transaction
+   * commits or rolls back, so the compare-and-bind check stays atomic with
+   * the parent's current state. The route derives the parent identifier
+   * from the authenticated agent actor, never from the request body, so the
+   * gate treats it as a claim to verify, not a trusted value.
+   *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
    * before the caller runs the declaration synchronization, so the synchronized
@@ -572,6 +617,13 @@ export function agentService(db: Db) {
       consume: boolean;
       environmentId: string | null;
       claudeLogin?: ClaudeLoginContext;
+      /**
+       * The adapter config the write is about to persist. The
+       * `inheritedFromAgentId` path reads the child's copied
+       * `CLAUDE_CODE_OAUTH_TOKEN` reference from it, to compare against the
+       * parent's current reference.
+       */
+      childAdapterConfig?: unknown;
     },
   ): Promise<void> {
     const ownerUserId = input.claudeLogin?.ownerUserId ?? null;
@@ -588,6 +640,34 @@ export function agentService(db: Db) {
           ownerUserId,
         );
         if (!stored) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (input.claudeLogin?.inheritedFromAgentId) {
+        // The hire-inheritance path. Re-read the named parent inside this
+        // transaction; a caller-supplied identifier never binds on its own.
+        // Compare the parent's current reference against the reference
+        // already copied onto the child, including the version selector, so
+        // a concurrent version change on the parent cannot leave the child
+        // bound to a stale version.
+        const parentId = input.claudeLogin.inheritedFromAgentId;
+        const parent = await txDb
+          .select({
+            companyId: agents.companyId,
+            adapterType: agents.adapterType,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(eq(agents.id, parentId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const parentBinding = readClaudeOAuthBinding(parent?.adapterConfig ?? null);
+        const childBinding = readClaudeOAuthBinding(input.childAdapterConfig ?? null);
+        if (
+          !parent ||
+          parent.companyId !== input.companyId ||
+          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
+        ) {
           throw claudeOAuthClaimRejectedError();
         }
       } else if (!input.consume) {
@@ -676,6 +756,15 @@ export function agentService(db: Db) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
 
+    if (data.appearance?.customAvatarAssetId) {
+      const [asset] = await db.select().from(assets).where(and(
+        eq(assets.id, data.appearance.customAvatarAssetId), eq(assets.companyId, existing.companyId),
+        eq(assets.createdByAgentId, id),
+      ));
+      if (!asset || asset.contentType !== "image/png" || !asset.objectKey.startsWith(`${existing.companyId}/agent-avatars/${id}/`)) {
+        throw unprocessable("Use the avatar upload endpoint to set this agent's image");
+      }
+    }
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
@@ -718,7 +807,17 @@ export function agentService(db: Db) {
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
-    const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+    const applyUpdate = async (txDb: Db, publications: ActivityPublication[] = []): Promise<AgentUpdateResult> => {
+      const current = data.status !== undefined
+        ? await txDb.select().from(agents).where(eq(agents.id, id)).for("update").then(rows => rows[0] ?? null)
+        : existing;
+      if (!current) return null;
+      if (current.status === "terminated" && data.status && data.status !== "terminated") {
+        throw conflict("Terminated agents cannot be resumed");
+      }
+      if (current.status === "pending_approval" && data.status && data.status !== "pending_approval" && data.status !== "terminated") {
+        throw conflict("Pending approval agents cannot be activated directly");
+      }
       const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -726,6 +825,12 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      if (updated.status === "terminated") {
+        await clearPrimaryAgent(txDb, updated.companyId, id);
+      }
+      if (data.status !== undefined) {
+        await recordAgentStatusEvent(txDb, updated.companyId, id, current.status, updated.status);
+      }
 
       const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
       const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
@@ -757,6 +862,11 @@ export function agentService(db: Db) {
         );
       }
 
+      if (normalizedPatch.budgetMonthlyCents !== undefined) {
+        await budgetServiceInTransaction(txDb, publications).upsertPolicy(existing.companyId, {
+          scopeType: "agent", scopeId: id, amount: normalizedPatch.budgetMonthlyCents, isActive: normalizedPatch.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
+        }, options?.recordRevision?.createdByUserId ?? null);
+      }
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
       if (!normalizedUpdated) {
         throw notFound("Agent not found");
@@ -783,6 +893,12 @@ export function agentService(db: Db) {
       return normalizedUpdated;
     };
 
+    if (normalizedPatch.budgetMonthlyCents !== undefined) {
+      const result = await withAccountingTransaction(db, existing.companyId, applyUpdate);
+      await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
+      return result;
+    }
+
     const transaction = (db as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
     }).transaction;
@@ -807,6 +923,7 @@ export function agentService(db: Db) {
     getById,
 
     create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">, options?: CreateAgentOptions) => {
+      if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
       assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
@@ -844,12 +961,14 @@ export function agentService(db: Db) {
           consume: true,
           environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
           claudeLogin: options?.claudeLogin,
+          childAdapterConfig: adapterConfig,
         });
         const created = await tx
           .insert(agents)
           .values({
             ...data,
             name: uniqueName,
+            appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
             companyId,
             role,
             adapterType,
@@ -859,14 +978,37 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
+        // New standard agents receive the standard direct grants at activation.
+        // Low-trust and bundled agents keep their explicit, narrower grants.
+        if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&
+            !readBuiltInAgentMarker(created.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId,
+              principalType: "agent" as const,
+              principalId: created.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, created.id),
+            })),
+          ).onConflictDoNothing();
+        }
         if (options?.aiConnectionInstall) {
-          await tx.insert(toolConnectionInstalls).values({
-            companyId, connectionId: options.aiConnectionInstall.connectionId,
-            targetType: "agent", targetId: created.id,
-            createdByUserId: options.aiConnectionInstall.createdByUserId,
-          }).onConflictDoNothing();
+          const install = options.aiConnectionInstall;
+          const connectionIds = [...new Set([install.connectionId, ...(install.memberConnectionIds ?? [])])];
+          await tx.insert(toolConnectionInstalls).values(connectionIds.map(connectionId => ({
+            companyId, connectionId,
+            targetType: "agent" as const, targetId: created.id,
+            createdByUserId: install.createdByUserId,
+          }))).onConflictDoNothing();
         }
         await syncAgentSecretBindings(created, txDb);
+        if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
+          await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
+        }
+        if (created.status !== "pending_approval" && created.status !== "terminated") {
+          await recordResourceCreationEvent(txDb, companyId, "agent", created.id);
+        }
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
@@ -882,19 +1024,12 @@ export function agentService(db: Db) {
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "paused",
-          pauseReason: reason,
-          pausedAt: new Date(),
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "paused",
+        pauseReason: reason,
+        pausedAt: new Date(),
+        errorReason: null,
+      });
     },
 
     resume: async (id: string) => {
@@ -905,19 +1040,12 @@ export function agentService(db: Db) {
         throw conflict("Pending approval agents cannot be resumed");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "idle",
+        pauseReason: null,
+        pausedAt: null,
+        errorReason: null,
+      });
     },
 
     clearError: async (id: string) => {
@@ -954,23 +1082,19 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
+      return db.transaction(async tx => {
+        const txDb = tx as unknown as Db;
+        const updated = await agentService(txDb).update(id, {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
           updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
-
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
-
-      return getById(id);
+        });
+        if (!updated) return null;
+        await tx.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
+        return updated;
+      });
     },
 
     remove: async (id: string) => {
@@ -985,7 +1109,14 @@ export function agentService(db: Db) {
         });
       }
 
-      return db.transaction(async (tx) => {
+      return withAccountingTransaction(db, existing.companyId, async (tx) => {
+        const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+          eq(budgetReservations.companyId, existing.companyId), eq(budgetReservations.agentId, id),
+          eq(budgetReservations.state, "held"), sql`${budgetReservations.decisionInvocationId} is not null`,
+        )).limit(1);
+        if (decisionHold) throw conflict("Wait for active decisions or resolve their unknown charges in Costs before deleting this agent", {
+          code: "agent_decision_accounting_pending",
+        });
         await tx
           .select({ id: agents.id })
           .from(agents)
@@ -1012,6 +1143,11 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx.delete(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, existing.companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, id),
+        ));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
@@ -1079,6 +1215,18 @@ export function agentService(db: Db) {
           });
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId: updated.companyId,
+              principalType: "agent" as const,
+              principalId: updated.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, updated.id),
+            })),
+          ).onConflictDoNothing();
+        }
+        await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");

@@ -1,8 +1,10 @@
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { and, asc, eq, gt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -38,10 +40,14 @@ export interface PaperclipControlPlaneBinding {
   controlPlaneSourceInstanceId: string;
 }
 
+const IDENTITY_DELTA_RETRY_WINDOW = 1_024;
+const IDENTITY_DELTA_RETRY_BYTES = 4 * 1024 * 1024;
+
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
     "paperclip.prp.event.v1",
     "paperclip.prp.event.v2",
+    "paperclip.prp.event.v3",
   ].includes(value.schema);
 }
 
@@ -70,8 +76,12 @@ function assertTerminal(value: unknown): asserts value is PrpTerminalState {
 /** Production implementation of the runner package's deliberately narrow persistence port. */
 export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #db: Db;
+  readonly #identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
+  readonly #redactedDeltas = new Map<string, { event: PrpEvent; originalSha: string; bytes: number }>();
+  #redactedDeltaBytes = 0;
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
+  readonly #assertControllerActive?: () => void;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
@@ -79,14 +89,25 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     db: Db,
     binding: PaperclipControlPlaneBinding,
     options: {
+      /** Runtime-only secret; never part of the persisted binding. */
+      privateKeyPem?: string;
+      /** Synchronous revocation fence for a controller handing off on restart. */
+      assertControllerActive?: () => void;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
+    this.#assertControllerActive = options.assertControllerActive;
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onDuplicateEvent = options.onDuplicateEvent;
+  }
+
+  #assertActive(options?: { signal: AbortSignal }): void {
+    this.#assertControllerActive?.();
+    options?.signal.throwIfAborted();
   }
 
   #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
@@ -101,6 +122,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
+    this.#assertControllerActive?.();
     const identity = input.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -123,6 +145,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!run || !this.#matchesPersistedBinding(run)) {
       throw new Error("native_open_run_not_authorized");
     }
+    this.#assertControllerActive?.();
     this.#sessionId = identity.sessionId;
   }
 
@@ -149,7 +172,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return structuredClone(snapshot as PersistedNativeSession);
   }
 
-  async checkpointSession(snapshot: PersistedNativeSession): Promise<void> {
+  async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
+    snapshot = this.#identityRedactor.redact(snapshot);
     const identity = snapshot.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -162,6 +187,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
+      this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
       }
@@ -175,14 +201,16 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         nativePhaseUpdatedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
-    const event = validated.event;
+    let event = this.#identityRedactor.redact(validated.event);
     if (event.runId !== this.#binding.runId || (this.#sessionId && event.normalizedSessionId !== this.#sessionId)) {
       throw new Error("native_event_binding_mismatch");
     }
@@ -192,22 +220,61 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
     }
-    const persisted = await appendHeartbeatRunEvent(this.#db, {
-      companyId: this.#binding.companyId,
-      runId: this.#binding.runId,
-      agentId: this.#binding.agentId,
-      eventType: event.eventType,
-      stream: "system",
-      level: event.eventType.includes("failed") ? "error" : "info",
-      payload: { prpEvent: event as unknown as Record<string, unknown> },
-      nativeSource: {
-        sourceInstanceId: event.sourceInstanceId,
-        sourceEventId: event.sourceEventId,
-        sourceSeq: event.sourceSeq,
-        protocolSchemaVersion: event.schemaVersion,
-        canonicalPayload: event as unknown as Record<string, unknown>,
-      },
+    const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
+    const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
+    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
+      const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
+      const cached = this.#redactedDeltas.get(key);
+      const originalSha = nativeSha256(validated.event);
+      if (cached) {
+        if (cached.originalSha !== originalSha) throw new Error("native_event_source_payload_conflict");
+        event = cached.event;
+      } else {
+        const stream = `${event.sourceInstanceId}:${event.turnId}:${event.itemId}`;
+        event = { ...event, payload: event.eventType === "item.delta"
+          ? this.#identityRedactor.delta(stream, validated.event.payload, event.itemId)
+          : this.#identityRedactor.settleDeltas(
+            terminalTurn ? (event.eventType.startsWith("session.") ? `${event.sourceInstanceId}:` : `${event.sourceInstanceId}:${event.turnId}:`) : stream,
+            event.payload, terminalTurn,
+          ),
+        };
+        // Retries must use the same redacted payload without consuming a delta twice.
+        const bytes = Buffer.byteLength(JSON.stringify(event));
+        this.#redactedDeltas.set(key, { event, originalSha, bytes });
+        this.#redactedDeltaBytes += bytes;
+        // Match the bounded runner transcript retry window; large tool output
+        // also has a byte cap so long runs cannot retain another full transcript.
+        while (this.#redactedDeltas.size > IDENTITY_DELTA_RETRY_WINDOW || this.#redactedDeltaBytes > IDENTITY_DELTA_RETRY_BYTES) {
+          const oldest = this.#redactedDeltas.keys().next().value!;
+          this.#redactedDeltaBytes -= this.#redactedDeltas.get(oldest)!.bytes;
+          this.#redactedDeltas.delete(oldest);
+        }
+      }
+    }
+    const persisted = await this.#db.transaction(async tx => {
+      this.#assertActive(options);
+      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
+        companyId: this.#binding.companyId,
+        runId: this.#binding.runId,
+        agentId: this.#binding.agentId,
+        eventType: event.eventType,
+        stream: "system",
+        level: event.eventType.includes("failed") ? "error" : "info",
+        payload: { prpEvent: event as unknown as Record<string, unknown> },
+        nativeSource: {
+          sourceInstanceId: event.sourceInstanceId,
+          sourceEventId: event.sourceEventId,
+          sourceSeq: event.sourceSeq,
+          protocolSchemaVersion: event.schemaVersion,
+          canonicalPayload: event as unknown as Record<string, unknown>,
+        },
+      });
+      // The nested append has no publication side effects. Revocation rolls
+      // back its event and sequence allocation before the outer commit.
+      this.#assertActive(options);
+      return receipt;
     });
+    this.#assertActive(options);
     if (persisted.disposition === "committed") {
       publishChatPublicationCommitSignal({
         companyId: this.#binding.companyId,
@@ -262,7 +329,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return { events, highestContiguousSourceSeq: cursor };
   }
 
-  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {
+  async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
+    this.#assertActive(options);
+    value = this.#identityRedactor.redact(value);
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
     // legacy/non-actionable attention payloads. They are operator evidence,
@@ -288,9 +357,16 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
 
     await this.#db.transaction(async (tx) => {
+      // Result insertion checks the task foreign key. Acquire that parent lock
+      // before the run, matching task mutations that subsequently update a run.
+      // Otherwise concurrent chat/status writes can deadlock after generation.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);
+      this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_result_binding_mismatch");
       }
@@ -302,6 +378,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         .where(and(eq(nativeRunResults.runId, this.#binding.runId), or(...callerConditions)))
         .limit(1).then((rows) => rows[0] ?? null);
       if (existing) {
+        this.#assertActive(options);
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
         return;
       }
@@ -354,6 +431,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         },
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
+      this.#assertActive(options);
     });
   }
 }

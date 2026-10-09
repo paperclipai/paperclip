@@ -41,10 +41,17 @@ export function normalizeIssueQueuedCommentQueue(
         typeof entry?.position === "number" && Number.isFinite(entry.position)
           ? entry.position
           : sourcePosition;
+      const response = record(entry?.source);
       return [
         {
           comment: comment as unknown as IssueComment,
           position,
+          ...(response?.kind === "interaction" && typeof response.interactionId === "string"
+            && typeof response.interactionKind === "string" ? { source: {
+              kind: "interaction" as const, interactionId: response.interactionId,
+              interactionKind: response.interactionKind,
+              requiresFreshSession: response.requiresFreshSession === true,
+            } } : {}),
           canEdit: entry?.canEdit === true,
           canDiscard: entry?.canDiscard === true,
         },
@@ -127,8 +134,11 @@ export function mergePendingIssueQueuedComments(params: {
   const fallbackTargetRunId =
     params.pendingComments.find((entry) => entry.targetRunId)?.targetRunId ??
     null;
-  const protocol =
-    params.authoritativeQueue?.protocol ?? params.fallbackProtocol;
+  // An empty snapshot predating this submission does not own its runtime.
+  // Use the active run until the server acknowledges an actual queue.
+  const protocol = authoritativeOwnsQueue
+    ? params.authoritativeQueue!.protocol
+    : params.fallbackProtocol;
   const targetRunId = authoritativeOwnsQueue
     ? (params.authoritativeQueue?.targetRunId ?? null)
     : fallbackTargetRunId;
@@ -144,7 +154,7 @@ export function mergePendingIssueQueuedComments(params: {
     revision: params.authoritativeQueue?.revision ?? "awaiting-server",
     protocol,
     steeringDisposition:
-      params.authoritativeQueue?.steeringDisposition ??
+      (authoritativeOwnsQueue ? params.authoritativeQueue?.steeringDisposition : undefined) ??
       (protocol === "paperclip_runner_v1" && targetRunId
         ? "temporarily_unavailable"
         : "unsupported"),

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use paperclip_runner_core::acpx_provider_session::{
-    AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
+    AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession, AcpxProviderSessionConfig,
+    AcpxProviderSessionIdentity,
 };
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand as GoalCommand;
@@ -44,8 +45,11 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         normalized_session_id: "session-1".to_owned(),
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
         expected_identity: None,
     }
@@ -63,6 +67,7 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         requested_model: "gpt-5.6-sol".to_owned(),
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        mode: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
@@ -129,8 +134,12 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
 #[test]
 fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_agent = config("bootstrap");
-    invalid_agent.agent = "pi".to_owned();
-    assert!(start_error(&invalid_agent).contains("claude or codex"));
+    invalid_agent.agent = "unknown".to_owned();
+    assert!(start_error(&invalid_agent).contains("known immutable profile"));
+
+    let mut missing_policy = config("bootstrap");
+    missing_policy.agent = "copilot".to_owned();
+    assert!(start_error(&missing_policy).contains("explicit provider read-only policy"));
 
     let mut unpinned = config("bootstrap");
     unpinned.permission_mode_pinned = false;
@@ -148,26 +157,19 @@ fn validates_qualified_policy_and_tool_catalog_before_spawning() {
 }
 
 #[test]
-fn admits_custom_claude_models_and_legacy_codex_profile() {
-    for (agent, model) in [
-        ("codex", "gpt-5.6-sol"),
-        ("claude", "claude-sonnet-5"),
-        ("claude", "claude-opus-5"),
-        ("claude", "custom-provider-model"),
-    ] {
-        let mut qualified = config("bootstrap");
-        qualified.agent = agent.to_owned();
-        qualified.model = model.to_owned();
-        qualified.validate().unwrap();
+fn bootstraps_unlisted_models_confirmed_by_the_sidecar_for_every_agent() {
+    for agent in ["claude", "codex", "pi", "grok", "cursor", "copilot"] {
+        let mut selected = config("bootstrap");
+        selected.agent = agent.to_owned();
+        selected.model = "custom/model[context=272k,reasoning=medium]".to_owned();
+        selected.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+        let mut session = AcpxProviderSession::start(&selected).unwrap();
+        assert_eq!(session.identity().requested_model, selected.model);
+        assert_eq!(session.identity().effective_model, selected.model);
+        session
+            .shutdown("model verification test complete")
+            .unwrap();
     }
-
-    let mut drifted = config("bootstrap");
-    drifted.model = "custom-codex-model".to_owned();
-    assert!(drifted
-        .validate()
-        .unwrap_err()
-        .to_string()
-        .contains("exact model"));
 }
 
 #[test]
@@ -216,4 +218,109 @@ fn rejects_non_utf8_directories_before_spawning() {
     let error = start_error(&invalid);
 
     assert!(error.contains("must be valid UTF-8"), "{error}");
+}
+
+/// Exercise the subprocess transport, real event decoder/reducer and tool bridge.
+/// The command journal distinguishes no admission from a late sidecar rejection.
+fn check_tool_receiver_admission(oversized: bool) {
+    let root = std::env::temp_dir().join(format!("acpx-admission-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let journal = root.join("commands.jsonl");
+    let mut fixture = config(if oversized {
+        "admission-tool-oversized"
+    } else {
+        "admission-tool"
+    });
+    fixture
+        .transport
+        .args
+        .extend(["--journal".to_owned(), journal.to_str().unwrap().to_owned()]);
+    let mut session = AcpxProviderSession::start(&fixture).unwrap();
+    session
+        .start_turn("turn-admission", "Read the issue", &std::env::temp_dir())
+        .unwrap();
+    let result = paperclip_runner_core::provider_bridge::ToolResult {
+        call_id: "call-admission".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!({"id":"issue-1"}),
+        is_error: false,
+    };
+    if oversized {
+        let error = session
+            .poll_event(Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("256 KiB admission limit"), "{error}");
+        assert!(!session.state().has_pending_tools());
+        assert!(session.state().pending_tool("call-admission").is_none());
+        // Rejection cannot be bypassed by supplying a matching callback result.
+        assert!(session.deliver_tool_result(&result).is_err());
+    } else {
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(session.state().pending_tool("call-admission").is_some());
+        let mut foreign = result.clone();
+        foreign.call_id = "another-call".to_owned();
+        assert!(session.deliver_tool_result(&foreign).is_err());
+        assert!(session.state().pending_tool("call-admission").is_some());
+        session.deliver_tool_result(&result).unwrap();
+        assert!(!session.state().has_pending_tools());
+        // An exact durable delivery replay is acknowledged without a second
+        // sidecar resolution. The command journal below proves that boundary.
+        session.deliver_tool_result(&result).unwrap();
+        let mut changed = result.clone();
+        changed.result = json!({"id":"different-issue"});
+        assert!(session.deliver_tool_result(&changed).is_err());
+        changed = result.clone();
+        changed.operation_id = "issues.update".to_owned();
+        assert!(session.deliver_tool_result(&changed).is_err());
+    }
+    session.shutdown("admission test complete").unwrap();
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let emitted: Vec<_> = rows.iter().filter_map(|row| row.get("emitted")).collect();
+    assert_eq!(emitted.len(), 1);
+    let frame = emitted[0];
+    assert_eq!(frame["eventType"], "runtime.tool_called");
+    let payload_bytes = serde_json::to_vec(&frame["payload"]).unwrap().len();
+    let frame_bytes = serde_json::to_vec(frame).unwrap().len() + 1;
+    assert!(
+        frame_bytes < 1024 * 1024,
+        "must reach payload admission, not the line limit"
+    );
+    assert_eq!(payload_bytes > 256 * 1024, oversized);
+    let resolutions: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.get("request"))
+        .filter(|request| request["command"] == "tool.resolve")
+        .collect();
+    if oversized {
+        assert!(
+            resolutions.is_empty(),
+            "rejected event must never send tool.resolve"
+        );
+    } else {
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(
+            resolutions[0]["params"],
+            json!({
+                "callId":"call-admission","turnId":"turn-admission",
+                "result":{"id":"issue-1"},"error":null,
+            })
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn receiver_rejects_sub_megabyte_tool_event_before_pending_admission_or_resolution() {
+    check_tool_receiver_admission(true);
+}
+
+#[test]
+fn receiver_admits_normal_tool_event_and_resolves_only_correlated_call_once() {
+    check_tool_receiver_admission(false);
 }

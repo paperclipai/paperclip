@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build the real Docker target on two fresh builders using an exported cache.
 # Export only metadata, avoiding a multi-gigabyte test image in the daemon.
+# External access: the baseline build anonymously reads the public BuildKit
+# cache at ghcr.io/paperclipai/paperclip:buildcache-{amd64,arm64} (see
+# RUNNER_CHECK_SEED_CACHE below). No credentials are used or required, and
+# nothing is pushed.
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-runner-cache.XXXXXX")"
@@ -34,7 +38,27 @@ build_proof() {
   docker buildx build --builder "$builder" --file "$probe_dir/cache-probe.Dockerfile" --target cache-proof-export --output "type=local,dest=$probe_dir/$result" --progress plain "$@" . 2>&1 | tee "$probe_dir/$result.log"
 }
 docker buildx create --name "$baseline_builder" --driver docker-container
-build_proof baseline "$baseline_builder" --cache-to "type=local,dest=$probe_dir/cache,mode=max"
+# Seed only the baseline with the public BuildKit cache that docker.yml
+# refreshes on every master push. The rust stages consume none of that
+# build's args, so their layer keys match, and mode=max re-exports the
+# imported layers into $probe_dir/cache — the verification build below
+# still proves what it always proved from this run's exported cache
+# alone, on a fresh builder. Anonymous pull only, nothing is pushed; a
+# missing or unreachable ref is a BuildKit warning and the baseline
+# degrades to the previous cold compile. Set RUNNER_CHECK_SEED_CACHE to
+# another ref, or to the empty string to force the cold path.
+if [[ -z "${RUNNER_CHECK_SEED_CACHE+x}" ]]; then
+  case "$(uname -m)" in
+    x86_64) RUNNER_CHECK_SEED_CACHE="ghcr.io/paperclipai/paperclip:buildcache-amd64" ;;
+    aarch64 | arm64) RUNNER_CHECK_SEED_CACHE="ghcr.io/paperclipai/paperclip:buildcache-arm64" ;;
+    *) RUNNER_CHECK_SEED_CACHE="" ;;
+  esac
+fi
+seed_args=()
+if [[ -n "$RUNNER_CHECK_SEED_CACHE" ]]; then
+  seed_args=(--cache-from "type=registry,ref=${RUNNER_CHECK_SEED_CACHE}")
+fi
+build_proof baseline "$baseline_builder" ${seed_args[@]+"${seed_args[@]}"} --cache-to "type=local,dest=$probe_dir/cache,mode=max"
 # Removing the first builder proves the second build cannot use daemon-local
 # state, and releases its disk space before importing the exported cache.
 docker buildx rm "$baseline_builder"

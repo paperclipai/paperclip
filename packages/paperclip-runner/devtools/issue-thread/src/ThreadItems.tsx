@@ -172,6 +172,7 @@ function ProviderActivity({ item, callbacks }: {
         {children.length > 0 ? <ul className="pit-provider-tree">{children.map((child, index) => <li key={String(child.childId ?? index)}><strong>{String(child.role ?? "Child agent")}</strong><span>{String(child.status ?? "unknown")}</span><small>{String(child.summary ?? "")}</small></li>)}</ul> : null}
         {sources.length > 0 ? <ul className="pit-provider-sources">{sources.map((source, index) => { const url = typeof source.url === "string" && /^https?:\/\//.test(source.url) ? source.url : null; return <li key={String(source.sourceId ?? index)}>{url === null ? <span>{String(source.title ?? "Unavailable source")}</span> : <a href={url} target="_blank" rel="noreferrer">{String(source.title ?? url)}</a>}<small>Provider-reported</small></li>; })}</ul> : null}
         {output.length > 0 ? <pre className="pit-provider-output" aria-label="Command output">{output}</pre> : null}
+        {item.family === "provider_notice" && Array.isArray(payload.details) ? <dl className="pit-provider-fields">{payload.details.slice(0, 64).map((value, index) => { const detail = valueRecord(value); return <div key={index}><dt>{String(detail.name ?? "Detail")}</dt><dd>{String(detail.value ?? "")}</dd></div>; })}</dl> : null}
         {item.family === "model_identity" ? <dl className="pit-provider-fields"><dt>Requested</dt><dd>{String(payload.requestedModel ?? "—")}</dd><dt>Effective</dt><dd>{String(payload.effectiveModel ?? "—")}</dd></dl> : null}
         {item.family === "artifact" && typeof payload.reference === "string" ? <button type="button" className="pit-link-button">Open {payload.reference}</button> : null}
         <button type="button" className="pit-link-button" onClick={() => callbacks.onOpenEvidence(item.evidenceRef.section, item.evidenceRef.recordId)}>View in Evidence</button>
@@ -585,8 +586,9 @@ export function TurnGroup({
     <section className="pit-turn" data-turn-id={turn.id} aria-label={`Turn ${turn.ordinal}`}>
       <h2 className="pit-turn-header">
         <span className="pit-turn-label">
-          Turn {turn.ordinal} · {turn.mode} · {turn.toolCallCount} tool call
-          {turn.toolCallCount === 1 ? "" : "s"} ·{" "}
+          Turn {turn.ordinal} · {turn.mode} · {turn.mode === "replay" && turn.toolCallCount === 0
+            ? "no recorded tool calls"
+            : `${turn.toolCallCount} tool call${turn.toolCallCount === 1 ? "" : "s"}`} ·{" "}
           {new Date(turn.at).toISOString().slice(11, 19)}
         </span>
         {turn.stoppedByUser ? (

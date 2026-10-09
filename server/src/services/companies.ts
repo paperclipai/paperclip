@@ -1,3 +1,5 @@
+import { publishAccountingActivities } from "./accounting-transaction.js";
+import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,7 +19,10 @@ import {
   runIdentityContexts,
   heartbeatRunEvents,
   costEvents,
+  decisionInvocations,
   financeEvents,
+  budgetPolicies,
+  budgetIncidents,
   issueReadStates,
   approvalComments,
   approvals,
@@ -36,6 +41,7 @@ import {
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { notifyCloudOfPrimaryCompanyLifecycleChange } from "./cloud-lifecycle-sync.js";
 import {
   MAX_ISSUE_PREFIX_ATTEMPTS,
   deriveIssuePrefixBase,
@@ -46,7 +52,7 @@ import {
 } from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
 
@@ -65,7 +71,7 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db) {
+export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
@@ -331,12 +337,16 @@ export function companyService(db: Db) {
       data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
+      const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
@@ -430,6 +440,13 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await budgetServiceInTransaction(tx as unknown as Db, budgetPublications).upsertPolicy(id, {
+            scopeType: "company", scopeId: id, amount: data.budgetMonthlyCents, isActive: data.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
+          }, actor.actorType === "user" ? actor.actorId : null);
+          const [budgetUpdated] = await tx.select().from(companies).where(eq(companies.id, id));
+          Object.assign(updated, budgetUpdated);
+        }
         const [hydrated] = await hydrateCompanySpend([{
           ...updated,
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
@@ -442,10 +459,22 @@ export function companyService(db: Db) {
           company: enrichCompany(hydrated),
           reactivated: shouldLogReactivation ? { agentsRestored } : null,
           archiveCascade,
+          unarchived: willReactivate && existing.status === "archived",
           issuePrefixRederived,
         };
       });
       if (!result) return null;
+      publishAccountingActivities(id, budgetPublications);
+      if (data.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, id);
+      // Post-commit, fire-and-forget, and BEFORE any finalization that
+      // could throw: a Cloud-pinned primary company that crossed the
+      // archived boundary (either direction) rings the harness so the
+      // stack itself can converge. The status transaction has already
+      // committed, so a later cascade or activity-log failure must not
+      // leave Cloud unaware of a company that is in fact archived.
+      if (result.archiveCascade || result.unarchived) {
+        void notifyCloudOfPrimaryCompanyLifecycleChange(id);
+      }
       if (result.issuePrefixRederived) {
         await logActivity(db, {
           companyId: id,
@@ -514,7 +543,10 @@ export function companyService(db: Db) {
       });
       if (!result) return null;
 
+      // Same doorbell rule as update(): the archive is committed, so ring
+      // before finalization, which can throw without undoing it.
       if (result.cascade) {
+        void notifyCloudOfPrimaryCompanyLifecycleChange(id);
         await finalizeArchive(id, actor, result.cascade);
       }
 
@@ -523,6 +555,19 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        // Exclude accounting writers before taking child locks. KEY SHARE must
+        // remain compatible: native writers can already hold a child row while
+        // saving a company-scoped result. FOR UPDATE would deadlock that save.
+        const [existing] = await tx.select({ id: companies.id }).from(companies)
+          .where(eq(companies.id, id)).for("no key update");
+        if (!existing) return null;
+        // Finance can reference costs and both can reference runs. Incidents
+        // reference policies and approvals; delete these dependents first.
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(decisionInvocations).where(eq(decisionInvocations.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
         // Delete from child tables in dependency order
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
@@ -543,8 +588,6 @@ export function companyService(db: Db) {
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));

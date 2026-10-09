@@ -11,6 +11,7 @@ import {
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
+  parseObject,
 } from "../domain/values.js";
 import type {
   AdmitWakeBehindIssueExecutionResult,
@@ -167,6 +168,34 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
+    // A lead can post its closing comment before committing Done. Check
+    // again when the source run releases its queue, using every original
+    // comment ID so coalesced human or unrelated input is never hidden.
+    if (
+      issue.status === "done" &&
+      run.agentId === issue.assigneeAgentId &&
+      run.contextSnapshot?.issueId === issue.id &&
+      !candidate.authorizedFailedChatRetry &&
+      !candidate.preservesIndependentContinuation &&
+      candidate.payload.mutation !== "interaction" &&
+      (candidate.wakeReason ?? candidate.reason) === "issue_comment_mentioned" &&
+      await ports.transaction.isCompletedDelegationMention({
+        companyId: run.companyId,
+        issueId: issue.id,
+        finishingRunId: run.id,
+        wakeAgentId: candidate.agentId,
+        commentIds: [...new Set([...candidate.queuedCommentIds, ...candidate.deferredCommentIds])],
+      })
+    ) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: candidate.id,
+        reason: "Delegation closing note refers to completed child work",
+        now: input.now,
+      });
+      continue;
+    }
+
     const ordinaryTaskComment = !candidate.authorizedFailedChatRetry && candidate.payload.mutation !== "interaction" &&
       !candidate.preservesIndependentContinuation && candidate.queuedCommentIds.length > 0 &&
       ["issue_commented", "issue_reopened_via_comment"].includes(candidate.wakeReason ?? candidate.reason ?? "");
@@ -314,15 +343,26 @@ async function promoteDeferredWake(
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
-        workingCandidate.wakeReason === "issue_reopened_via_comment");
+        workingCandidate.wakeReason === "issue_reopened_via_comment" ||
+        (currentIssue.status === "done" &&
+          workingCandidate.agentId === currentIssue.assigneeAgentId &&
+          workingCandidate.requestedByActorType === "agent" &&
+          workingCandidate.deferredContextSeed.resumeIntent === true &&
+          workingCandidate.queuedCommentIds.length > 0));
   }
 
-  // Agent continuations can outlive the work they addressed. Only a human
-  // reopen can revive assignee execution; other agents may still receive
-  // notifications about the closed task. Cancel before claiming promotion so
+  // Agent continuations can outlive the work they addressed. Live,
+  // non-self feedback with an explicit resume intent must still be read
+  // after completion; it cannot revive a cancelled task. Other stale
+  // continuations cannot revive assignee execution. Cancel before claiming promotion so
   // the compare-and-set still sees the deferred wake.
+  const onboardingResultReport = currentIssue.status === "done" && currentIssue.originKind === "onboarding_first_task" &&
+    await ports.transaction.isCompletedOnboardingHandoffWake({ companyId: run.companyId, issueId: currentIssue.id,
+      agentId: workingCandidate.agentId, reason: workingCandidate.wakeReason ?? workingCandidate.reason,
+      contextSnapshot: workingCandidate.deferredContextSeed });
   if (
     !shouldReopen &&
+    !onboardingResultReport &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled") &&
     workingCandidate.agentId === currentIssue.assigneeAgentId
   ) {
@@ -788,8 +828,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
       }));
+    // Each resolved card has its own immutable decision and continuation. Never
+    // merge it with comments or another card, in either arrival order.
+    const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: input.allowRunCoalescing,
+      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId
+        ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
@@ -831,7 +875,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
     const existingDeferred =
-      input.allowRunCoalescing === false
+      (interactionReceipt || input.allowRunCoalescing === false)
         ? null
         : await deps.reader.findExistingDeferredWake(scope, {
             companyId: input.companyId,
@@ -847,7 +891,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
               : {}),
           });
 
-    if (existingDeferred) {
+    if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
       const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
         existingDeferred.deferredContext,
         input.contextSnapshot,

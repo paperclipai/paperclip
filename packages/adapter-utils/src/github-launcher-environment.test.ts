@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { githubBrokerEnvironment } from "./github-launcher.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
@@ -66,6 +67,50 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it.each(["module", "commonjs"])("runs managed GitHub launchers inside a %s project", async (type) => {
+    const fixture = await sandbox("usr/bin");
+    const packageJson = JSON.stringify({ type });
+    await writeFile(path.join(fixture.root, "package.json"), packageJson);
+    // Exercise real Git; gh uses the fixture CLI because it need not be installed.
+    await rm(path.join(fixture.bin, "git"));
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-package-type", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    for (const cli of ["git", "gh"]) {
+      const result = await fixture.runner.execute({
+        command: path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, cli), args: ["--version"], env,
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(cli === "git" ? /^git version / : /^gh started\n$/);
+    }
+    expect(await readFile(path.join(fixture.root, "package.json"), "utf8")).toBe(packageJson);
+  });
+
+  it("clears empty identity overrides in sandbox shells and preserves a captured identity", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-git-identity", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({ GIT_AUTHOR_NAME: "Host Author" }, { url: "", token: "" }),
+    });
+    const readIdentity = `node -e 'process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => /^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/.test(key)))))'`;
+    const shell = await fixture.runner.execute({ command: "bash", args: ["--noprofile", "--norc", "-c", readIdentity], env });
+    expect(shell.exitCode, shell.stderr).toBe(0);
+    expect(JSON.parse(shell.stdout)).toEqual({});
+
+    const identity = { GIT_AUTHOR_NAME: "Captured Author", GIT_AUTHOR_EMAIL: "author@example.test",
+      GIT_COMMITTER_NAME: "Captured Committer", GIT_COMMITTER_EMAIL: "committer@example.test" };
+    for (const profile of [".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"]) {
+      const script = await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, profile), "utf8");
+      for (const captured of [false, true]) {
+        const result = await fixture.runner.execute({ command: "sh", args: ["-c", `${script}\n${readIdentity}`],
+          env: { ...env, ...(captured ? identity : {}) } });
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(captured ? identity : {});
+      }
+    }
+  });
+
   it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {
     const fixture = await sandbox("usr/bin");
     const env = await prepareGitHubExecutionEnvironment({

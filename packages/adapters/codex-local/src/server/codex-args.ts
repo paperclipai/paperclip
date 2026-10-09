@@ -1,6 +1,7 @@
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   isCodexLocalFastModeSupported,
   normalizeCodexModel,
 } from "../index.js";
@@ -48,20 +49,21 @@ export function buildCodexExecArgs(
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
-  const bypass = asBoolean(
-    record.dangerouslyBypassApprovalsAndSandbox,
-    asBoolean(record.dangerouslyBypassSandbox, false),
-  );
   const extraArgs = readExtraArgs(record);
-
-  const args = ["exec", "--json"];
-  // `codex exec` otherwise defaults to read-only/never, which cannot perform
-  // Paperclip work. Keep the sandbox, but make unattended workspace work and
-  // API calls possible. Explicit operator modes/profiles retain their meaning.
+  // Explicit CLI modes/profiles remain deliberate overrides. An omitted
+  // setting uses the same full-auto default as agent creation and onboarding.
   const explicitSandbox = extraArgs.some((arg) =>
     /^(--sandbox(?:=|$)|-s|--profile(?:=|$)|-p|--full-auto$|--yolo$|--dangerously-bypass-approvals-and-sandbox$)/.test(arg)
     || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
   );
+  const explicitPermissionRestriction = extraArgs.some((arg) =>
+    /^(?:(?:--config=|-c=?)\s*)?(?:approval_policy\s*=|sandbox_workspace_write\.network_access\s*=\s*false)/.test(arg),
+  );
+  const bypass = asBoolean(
+    record.dangerouslyBypassApprovalsAndSandbox,
+    asBoolean(record.dangerouslyBypassSandbox, !explicitSandbox && !explicitPermissionRestriction && options.networkAccess !== false && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX),
+  );
+  const args = ["exec", "--json"];
   if (!bypass && !explicitSandbox) {
     args.push("-c", 'sandbox_mode="workspace-write"');
     args.push("-c", `sandbox_workspace_write.network_access=${options.networkAccess !== false}`);

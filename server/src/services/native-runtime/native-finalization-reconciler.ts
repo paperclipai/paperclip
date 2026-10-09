@@ -1,3 +1,5 @@
+import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
+import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -32,6 +34,7 @@ import {
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -59,6 +62,7 @@ export type NativeReconciliationFacts = {
   undeliveredEffectCount?: number;
   authoritativeStatusChanged?: boolean;
   newEvidenceSatisfiesContract?: boolean;
+  hasPendingChildCompletion?: boolean;
   dependencyResolved?: boolean;
   authorizedResume?: boolean;
   statusVersionAdvanced?: boolean;
@@ -121,6 +125,17 @@ export function resolveNativeReconciliationStatus(input: {
     ]);
   }
   if (input.facts.newEvidenceSatisfiesContract) {
+    if (input.facts.hasPendingChildCompletion) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "in_progress",
+        toStatus: "in_progress",
+        reasonCode: "native_child_completion_pending",
+        unblockDescriptor: null,
+        // The existing child-result wake owns the continuation.
+        effects: [{ kind: "release_checkout" }],
+      };
+    }
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "done",
@@ -238,7 +253,7 @@ export function reconcileRetainedNativeSessionCleanups(
             ),
             // The accepted-result projector preserves a recovered close failure
             // privately after clearing the visible successful run's stale error.
-            sql`coalesce(${heartbeatRuns.errorCode}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'errorCode') = 'adapter_failed'`,
+            sql`coalesce(${heartbeatRuns.errorCode}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'errorCode') in ('adapter_failed', 'provider_transport_failed')`,
             sql`coalesce(${heartbeatRuns.error}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'error') = 'provider_transport_failed: runner did not durably suspend before checkpoint'`,
             sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_runner_epoch"}]'::jsonb)`,
             sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_source_archive","phase":"operator_required"}]'::jsonb)`,
@@ -461,7 +476,11 @@ export async function claimNativeSessionResumptions(input: {
             : "Persisted native session state is ambiguous and cannot be resumed safely",
           updatedAt: now,
         }).where(eq(heartbeatRuns.id, row.run.id)).returning();
-        terminalRunToEmit = updatedRun ?? null;
+        // Only a genuine transition into "failed" is a new terminal failure.
+        // A candidate that is already "failed" (the filter above admits
+        // both "running" and "failed") must not send a second Sentry event.
+        terminalRunToEmit =
+          updatedRun && updatedRun.status !== row.run.status ? updatedRun : null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
           { status: "blocked" },
@@ -520,6 +539,7 @@ export async function claimNativeSessionResumptions(input: {
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
       void emitAgentTaskRun(input.db, terminalRunToEmit);
+      void reportRunFailure(input.db, terminalRunToEmit);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }
@@ -540,6 +560,9 @@ export async function reconcileNativeFinalizations(
     }) => Promise<void>;
   } = {},
 ) {
+  await recoverLegacyUnsafeWorkspaceExports(db, runIds).catch((err) => {
+    logger.warn({ err }, "Historical unsafe export recovery remains pending");
+  });
   await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
@@ -564,6 +587,7 @@ export async function reconcileNativeFinalizations(
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
@@ -766,6 +790,12 @@ export async function reconcileNativeFinalizations(
             eq(workspaceOperations.heartbeatRunId, row.runId), eq(workspaceOperations.phase, "workspace_finalize")))
           .orderBy(desc(workspaceOperations.createdAt)).limit(1).then((entries) => entries[0]) : null;
         if (reviewBarrier && reviewBarrier.status !== "succeeded") continue;
+        const childCompletionRecipient = {
+          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, runId: row.runId,
+          sourceIntentId: typeof record(row.contextSnapshot).nativeStatusWakeIntentId === "string"
+            ? record(row.contextSnapshot).nativeStatusWakeIntentId as string : null,
+        };
+        const hasPendingChildCompletion = await hasPendingNativeChildCompletion(db, childCompletionRecipient);
         const reassessmentRow = await recordNativeWorkAssessment({
           db,
           companyId: row.companyId,
@@ -785,6 +815,7 @@ export async function reconcileNativeFinalizations(
         });
         const decision = retiredAutomaticReview && currentIssue
           ? resolveNativeFinalizerStatus({
+              hasPendingChildCompletion,
               assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
               governanceGate: await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
                 runId: row.runId, executionState: record(currentIssue.executionState) }),
@@ -794,7 +825,8 @@ export async function reconcileNativeFinalizations(
               priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
             })
           : resolveNativeReconciliationStatus({
-              facts, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
+              facts: { ...facts, hasPendingChildCompletion },
+              priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
             });
         let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
         try {
@@ -808,6 +840,7 @@ export async function reconcileNativeFinalizations(
             priorStatusVersion: Number(row.issueStatusVersion),
             priorDecisionId: row.issueDecisionId,
             decision,
+            requireNoPendingChildCompletion: decision.statusAction === "done" ? childCompletionRecipient : undefined,
             supersedesCommittedDecisionId: row.coordinatorPhase === "committed"
               ? row.decisionId ?? undefined
               : undefined,
@@ -849,6 +882,8 @@ export async function reconcileNativeFinalizations(
         runId: row.runId,
         environmentRuntime: options.environmentRuntime,
       });
+      // Busy is ownership, not another failed export or retry-budget debit.
+      if (!operation) continue;
       const workspaceFinalizeStatus =
         operation.status === "succeeded" ? "succeeded" : "failed";
       if (workspaceFinalizeStatus === "failed") {

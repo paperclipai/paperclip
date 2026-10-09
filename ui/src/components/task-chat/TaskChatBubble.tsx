@@ -1,3 +1,8 @@
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { isTextAttachment } from "@/lib/issue-attachments";
+import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
+import { isVideoLikeOutput } from "@/lib/issue-output";
+import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import { useCallback, useContext, useState, type ReactNode } from "react";
 import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
@@ -9,9 +14,6 @@ import {
   ImageGalleryModal,
   type GalleryMediaItem,
 } from "@/components/ImageGalleryModal";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { AgentIcon } from "@/components/AgentIconPicker";
-import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
   Attachment,
   AttachmentContent,
@@ -75,37 +77,19 @@ function initialsForName(name: string) {
 export function TaskChatAgentIdentity({
   agentName,
   agentIcon,
-  onBehalfOfUserName,
+  agent,
 }: {
   agentName: string;
   agentIcon?: string | null;
-  onBehalfOfUserName?: string;
+  agent?: AvatarAgent;
 }) {
   return (
     <span
       className="flex items-center gap-2 px-1"
       data-testid="task-chat-agent-identity"
     >
-      <Avatar
-        size="sm"
-        className="shrink-0"
-        data-testid="task-chat-agent-avatar"
-      >
-        {agentIcon ? (
-          <AvatarFallback>
-            <AgentIcon icon={agentIcon} className="h-3.5 w-3.5" />
-          </AvatarFallback>
-        ) : (
-          <AvatarFallback>{initialsForName(agentName)}</AvatarFallback>
-        )}
-      </Avatar>
+      <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
       <span className="text-sm font-semibold text-foreground">{agentName}</span>
-      {onBehalfOfUserName ? (
-        <CommentAttributionChip
-          agentName={agentName}
-          userName={onBehalfOfUserName}
-        />
-      ) : null}
     </span>
   );
 }
@@ -116,7 +100,7 @@ export function TaskChatAgentIdentity({
  * surface with an avatar author header (the agent's assigned icon + name);
  * system notices are centered and recede.
  */
-function galleryItemForImage(
+function galleryItemForMedia(
   src: string,
   name?: string,
   attachment?: ReturnType<typeof hydrateAttachmentRefs>[number],
@@ -158,6 +142,7 @@ function TaskChatBubbleContent({
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -218,16 +203,17 @@ function TaskChatBubbleContent({
     ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
     ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
   ]);
+  const mediaRefs = [...imageRefs, ...attachmentRefs.filter((ref) => isVideoLikeOutput(ref.contentType, ref.name))];
   const galleryItems: GalleryMediaItem[] =
-    lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
+    lightboxSrc !== null && !mediaRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
         // single-item lightbox rather than nothing.
-        [galleryItemForImage(lightboxSrc)]
-      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name, ref));
+        [galleryItemForMedia(lightboxSrc)]
+      : mediaRefs.map((ref) => galleryItemForMedia(ref.url, ref.name, ref));
   const lightboxIndex =
     lightboxSrc === null
       ? -1
-      : Math.max(0, imageRefs.findIndex((ref) => ref.url === lightboxSrc));
+      : Math.max(0, mediaRefs.findIndex((ref) => ref.url === lightboxSrc));
   return (
     <div
       className={cn(
@@ -241,7 +227,7 @@ function TaskChatBubbleContent({
         <TaskChatAgentIdentity
           agentName={item.authorName}
           agentIcon={item.agentIcon}
-          onBehalfOfUserName={item.onBehalfOfUserName}
+          agent={item.agent}
         />
       ) : null}
       {bodyText.length > 0 ? (
@@ -328,10 +314,11 @@ function TaskChatBubbleContent({
               const kind = fileKindForAttachment(ref);
               const KindIcon = kind.icon;
               const size = formatFileSize(ref.byteSize);
+              const video = isVideoLikeOutput(ref.contentType, ref.name);
               return (
                 <Attachment key={ref.url} size="sm">
-                  <AttachmentMedia>
-                    <KindIcon aria-hidden />
+                  <AttachmentMedia className={video ? "aspect-video group-data-[size=sm]/attachment:w-20" : undefined}>
+                    {video ? <ArtifactPreview artifact={{ title: ref.name, contentPath: ref.openPath ?? ref.url, mediaKind: "video" }} /> : <KindIcon aria-hidden />}
                   </AttachmentMedia>
                   <AttachmentContent>
                     <AttachmentTitle className="max-w-48">
@@ -343,9 +330,15 @@ function TaskChatBubbleContent({
                   </AttachmentContent>
                   <AttachmentTrigger
                     aria-label={`Open ${ref.name}`}
-                    render={
+                    onClick={video ? () => openImage(ref.url) : undefined}
+                    render={video ? <button type="button" /> :
                       <a
                         href={ref.openPath ?? ref.url}
+                        onClick={(event) => {
+                          if (openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+                            event.preventDefault(); openText(ref.id, ref.name);
+                          }
+                        }}
                         target="_blank"
                         rel="noreferrer"
                       />

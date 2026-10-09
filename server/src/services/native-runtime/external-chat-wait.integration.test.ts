@@ -1114,6 +1114,34 @@ describe("native external-chat response wait", () => {
     },
   );
 
+  it.each(["valid", "wrong_task", "revoked_identity", "wrong_answer_actor"] as const)(
+    "attests legacy Slack question continuations only with the durable source binding: %s",
+    async (condition) => {
+      const fixture = await seedAnsweredChatTurn("slack");
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.sourceRunId));
+      const context = source!.contextSnapshot as Record<string, unknown>;
+      await db.update(heartbeatRuns).set({
+        runtimeMode: "legacy", nativeIssueId: null,
+        contextSnapshot: { ...context, paperclipWake: {
+          ...(context.paperclipWake as Record<string, unknown>),
+          issue: { id: condition === "wrong_task" ? randomUUID() : fixture.issueId },
+        } },
+      }).where(eq(heartbeatRuns.id, fixture.sourceRunId));
+      if (condition === "revoked_identity") {
+        await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.principalId, fixture.principalId));
+      }
+      if (condition === "wrong_answer_actor") {
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "another-user" }).where(eq(agentWakeupRequests.id, fixture.wakeId));
+      }
+      expect(await attestReviewedExternalChatRun({ db, ...fixture, contextSnapshot: fixture.context })).toBe(condition === "valid");
+      if (condition === "valid") {
+        expect(fixture.context.paperclipExternalChatQuestionResponse).toMatchObject({ interactionId: fixture.interactionId });
+      } else {
+        expect(fixture.context.paperclipExternalChatQuestionResponse).toBeUndefined();
+      }
+    },
+  );
+
   async function attestAnswer(
     fixture:
       | Awaited<ReturnType<typeof seedAnsweredChatTurn>>
@@ -2088,11 +2116,13 @@ describe("native external-chat response wait", () => {
           .update(agentWakeupRequests)
           .set({ requestedByActorId: "another-user" })
           .where(eq(agentWakeupRequests.id, parent.wakeId));
-      if (kind === "different_parent_issue")
-        await db
-          .update(heartbeatRuns)
-          .set({ nativeIssueId: fixture.sourceRunId })
-          .where(eq(heartbeatRuns.id, parent.runId));
+      if (kind === "different_parent_issue") {
+        // Deliberately corrupt historical data; normal writes reject this rebind.
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`set local session_replication_role = replica`);
+          await tx.update(heartbeatRuns).set({ nativeIssueId: fixture.sourceRunId }).where(eq(heartbeatRuns.id, parent.runId));
+        });
+      }
       if (kind === "source_cycle") {
         const [wake] = await db
           .select()

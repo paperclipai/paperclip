@@ -20,6 +20,7 @@ import type { AdapterAuthSignal } from "@paperclipai/shared";
 export type OnboardingEnvironmentState =
   /** A cloud tenant as it should be: one managed sandbox, sign-in reachable. */
   | "managed-sandbox"
+  | "local"
   /** The broken shape seen on staging — the step can offer no place to test. */
   | "none";
 
@@ -32,6 +33,12 @@ interface FixtureState {
   savedApiKeys: boolean;
   savedClaudeLogin: boolean;
   savedCodexLogin: boolean;
+  localLoginStatus: "sign_in_required" | "ready";
+  savedManagedSubscription: "anthropic" | "openai" | null;
+  connectPending: boolean;
+  testDelayMs: number;
+  testPending: boolean;
+  testFailuresRemaining: number;
 }
 
 /**
@@ -44,6 +51,12 @@ export const onboardingFixtureState: FixtureState = {
   savedApiKeys: false,
   savedClaudeLogin: false,
   savedCodexLogin: false,
+  localLoginStatus: "sign_in_required",
+  savedManagedSubscription: null,
+  connectPending: false,
+  testDelayMs: 0,
+  testPending: false,
+  testFailuresRemaining: 0,
 };
 
 export function setOnboardingFixtureState(next: Partial<FixtureState>): void {
@@ -56,6 +69,12 @@ export function resetOnboardingFixtureState(): void {
   onboardingFixtureState.savedApiKeys = false;
   onboardingFixtureState.savedClaudeLogin = false;
   onboardingFixtureState.savedCodexLogin = false;
+  onboardingFixtureState.localLoginStatus = "sign_in_required";
+  onboardingFixtureState.savedManagedSubscription = null;
+  onboardingFixtureState.connectPending = false;
+  onboardingFixtureState.testDelayMs = 0;
+  onboardingFixtureState.testPending = false;
+  onboardingFixtureState.testFailuresRemaining = 0;
 }
 
 /**
@@ -66,6 +85,10 @@ export function resetOnboardingFixtureState(): void {
  */
 export function storybookEnvironments(): unknown[] {
   if (onboardingFixtureState.environments === "none") return [];
+  if (onboardingFixtureState.environments === "local") return [{
+    id: "environment-storybook-local", name: "This computer", driver: "local",
+    status: "active", config: {}, metadata: { defaultForInstance: true },
+  }];
   return [
     {
       id: STORYBOOK_SANDBOX_ENVIRONMENT_ID,

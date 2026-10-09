@@ -159,7 +159,7 @@ function SessionGoalStates() {
 }
 
 const meta = {
-  title: "Product/Agent session goals",
+  title: "Composer/Session goals",
   component: SessionGoalStates,
   parameters: {
     docs: {

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, bigint, index } from "drizzle-orm/pg-core";
+import { numeric, pgTable, uuid, text, timestamp, jsonb, bigint, index } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 
@@ -15,7 +15,7 @@ export const agentRuntimeState = pgTable(
     totalInputTokens: bigint("total_input_tokens", { mode: "number" }).notNull().default(0),
     totalOutputTokens: bigint("total_output_tokens", { mode: "number" }).notNull().default(0),
     totalCachedInputTokens: bigint("total_cached_input_tokens", { mode: "number" }).notNull().default(0),
-    totalCostCents: bigint("total_cost_cents", { mode: "number" }).notNull().default(0),
+    totalCostCents: numeric("total_cost_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

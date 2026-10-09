@@ -1,3 +1,4 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
 import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestKind,
@@ -70,7 +71,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
   ) {
     return "file_approval";
   }
-  if (method === "item/permissions/requestApproval")
+  if (method === "item/permissions/requestApproval" || method === "session/request_permission")
     return "permission_approval";
   if (
     method === "item/tool/requestUserInput" ||
@@ -78,7 +79,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
   ) {
     return "user_input";
   }
-  if (method === "mcpServer/elicitation/request") return "elicitation";
+  if (method === "mcpServer/elicitation/request" || isAcpxCanonicalInputMethod(method)) return "elicitation";
   return null;
 }
 
@@ -89,6 +90,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
  * degrading back to the legacy textarea presentation.
  */
 export function hasCodexQuestionForm(method: string, params: Record<string, unknown>): boolean {
+  if (isAcpxCanonicalInputMethod(method)) return "questionSet" in params;
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     return "questions" in params;
   }
@@ -266,6 +268,7 @@ export function normalizeCodexQuestionSet(
   params: Record<string, unknown>,
   responseContext: CodexQuestionResponseContext,
 ): PaperclipQuestionSet | null {
+  if (isAcpxCanonicalInputMethod(method)) return parsePaperclipQuestionSet(params.questionSet);
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     if (!Array.isArray(params.questions) || params.questions.length === 0) return null;
     if (params.questions.length > 64) throw new Error("Codex question form exceeds 64 questions");
@@ -445,6 +448,9 @@ export function normalizeCodexQuestionSet(
 }
 
 export function runtimeRequestProtocolPayload(request: HarnessRuntimeRequest): Record<string, unknown> {
+  if (request.method === "session/request_permission") {
+    return { ...request, schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2, type: "permission", choices: request.details.choices };
+  }
   if (request.input !== undefined) {
     return {
       schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
@@ -550,6 +556,9 @@ export function runtimeRequestResponse(
   resolution: HarnessRuntimeRequestResolution,
   responseContext: CodexQuestionResponseContext,
 ): Record<string, unknown> {
+  // The durable transport sends this canonical resolution to the ACPX sidecar,
+  // which owns conversion back to the original provider form values.
+  if (isAcpxCanonicalInputMethod(request.method) || request.method === "session/request_permission") return structuredClone(resolution);
   if (
     request.requestKind === "command_approval" ||
     request.requestKind === "file_approval"

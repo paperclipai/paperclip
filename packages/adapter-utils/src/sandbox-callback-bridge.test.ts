@@ -164,14 +164,16 @@ describe("sandbox callback bridge", () => {
       path: string;
       query: string;
       headers: Record<string, string>;
-      body: string;
+      body: string | Buffer;
     }> = [];
 
     const worker = await startSandboxCallbackBridgeWorker({
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
       queueDir,
       authorizeRequest: async (request) =>
-        ["/api/agents/me", "/runtime-tools/github/credentials"].includes(request.path) ? null : `Route not allowed: ${request.method} ${request.path}`,
+        ["/api/agents/me", "/runtime-tools/github/credentials"].includes(request.path) ? null
+          : request.path.endsWith("/agent-commentary") ? authorizeSandboxCallbackBridgeRequestWithRoutes(request)
+          : `Route not allowed: ${request.method} ${request.path}`,
       handleRequest: async (request) => {
         seenRequests.push({
           method: request.method,
@@ -283,6 +285,15 @@ describe("sandbox callback bridge", () => {
       headers: { "x-paperclip-github-capability": "test-run-scoped-capability" },
     });
     expect(seenRequests[1]?.headers.authorization).toBeUndefined();
+
+    const feedbackBody = JSON.stringify({ kind: "complaint", body: "😭".repeat(5000), idempotencyKey: "bridge-feedback" });
+    const feedbackResponse = await fetch(`${bridge.baseUrl}/api/companies/company-1/agent-commentary`, {
+      method: "POST", headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" }, body: feedbackBody,
+    });
+    expect(feedbackResponse.status).toBe(200);
+    await feedbackResponse.arrayBuffer();
+    expect(seenRequests[2]).toMatchObject({ method: "POST", path: "/api/companies/company-1/agent-commentary", body: feedbackBody });
+    expect(seenRequests[2]?.headers.authorization).toBeUndefined();
 
   });
 
@@ -433,6 +444,8 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => { signalStarted = resolve; });
 
     const worker = await startSandboxCallbackBridgeWorker({
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
@@ -440,6 +453,7 @@ describe("sandbox callback bridge", () => {
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
         processed.push(request.id);
+        signalStarted();
         await new Promise((resolve) => setTimeout(resolve, 100));
         return {
           status: 200,
@@ -475,9 +489,9 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
-    for (let attempt = 0; attempt < 50 && processed.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    // Begin the short drain deadline only after the first handler has started.
+    // A fixed 250ms polling window can expire during a loaded test run.
+    await started;
 
     await worker.stop({ drainTimeoutMs: 10 });
 
@@ -1376,6 +1390,7 @@ describe("sandbox callback bridge", () => {
 
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
     const allowed: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/agent-commentary" },
       { method: "POST", path: "/runtime-tools/github/credentials" },
       { method: "GET", path: "/api/agents/me" },
       { method: "GET", path: "/api/agents/me/inbox-lite" },
@@ -1455,6 +1470,8 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/companies/co-1/agent-commentary" },
+      { method: "POST", path: "/api/companies/co-1/agent-commentary/other" },
       { method: "POST", path: "/api/companies/co-1/email/inboxes" },
       { method: "POST", path: "/api/companies/co-1/email/connections" },
       { method: "POST", path: "/api/companies/co-1/email/inspect" },
@@ -1495,9 +1512,9 @@ describe("sandbox callback bridge", () => {
       );
     }
 
-    // The HTTP/2 route list adds the two binary attachment routes on top of
-    // the documented heartbeat surface.
+    // Both transports admit the full attachment workflow.
     const http2Allowed: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/issues/issue-1/attachments" },
       { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
       { method: "GET", path: "/api/attachments/att-1/content" },
     ];
@@ -1522,15 +1539,113 @@ describe("sandbox callback bridge", () => {
     }
   });
 
-  it("denies both attachment routes on the default (queue) route list", () => {
+  it("admits listing, uploads and downloads on the default queue route list", () => {
     const attachmentRequests: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/issues/issue-1/attachments" },
       { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
       { method: "GET", path: "/api/attachments/att-1/content" },
     ];
     for (const request of attachmentRequests) {
-      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
-        `Route not allowed: ${request.method} ${request.path}`,
-      );
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBeNull();
+    }
+  });
+
+  it.each([
+    [4 * 60 * 60 * 1000, 30_000],
+    [250, 250],
+  ])("bounds a hung bridge read configured for %i ms to %i ms", async (configuredMs, expectedMs) => {
+    vi.useFakeTimers();
+    try {
+      const runner = { execute: vi.fn(() => new Promise<RunProcessResult>(() => {})) };
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner, remoteCwd: "/workspace", timeoutMs: configuredMs,
+      });
+      let error: unknown;
+      const read = client.readTextFile("/workspace/events/1.json").catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(expectedMs - 1);
+      expect(error).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(error).toEqual(new Error(`Sandbox bridge control command timed out after ${expectedMs}ms.`));
+      await read;
+      expect(runner.execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        timeoutMs: expectedMs, bypassSession: true,
+      }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons a timed-out upload without replaying it or continuing after a late response", async () => {
+    vi.useFakeTimers();
+    try {
+      const success: RunProcessResult = {
+        exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null,
+        startedAt: new Date().toISOString(),
+      };
+      let finishAppend!: (result: RunProcessResult) => void;
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[] }) => {
+          if (input.args?.[1]?.startsWith("printf")) {
+            return new Promise<RunProcessResult>((resolve) => { finishAppend = resolve; });
+          }
+          return success;
+        }),
+      };
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner, remoteCwd: "/workspace", timeoutMs: 4 * 60 * 60 * 1000,
+      });
+      let error: unknown;
+      const write = client.writeTextFile("/workspace/stdin/1.json", "sensitive-input")
+        .catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await write;
+      finishAppend(success);
+      await vi.advanceTimersByTimeAsync(0);
+      const scripts = runner.execute.mock.calls.map(([input]) => input.args?.[1] ?? "");
+      expect(scripts.filter((script) => script.startsWith("printf"))).toHaveLength(1);
+      expect(scripts.some((script) => script.startsWith("base64 -d"))).toBe(false);
+      expect(scripts.at(-1)).toMatch(/^rm -f .*paperclip-upload/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["start", "stop"])("bounds a hung callback bridge %s while preserving its launch environment", async (stage) => {
+    vi.useFakeTimers();
+    try {
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[]; env?: Record<string, string> }) => {
+          const script = input.args?.[1] ?? "";
+          if ((stage === "start" && script.includes("nohup")) ||
+              (stage === "stop" && script.includes('kill "$pid"'))) {
+            return new Promise<RunProcessResult>(() => {});
+          }
+          return {
+            exitCode: 0, signal: null, timedOut: false, stderr: "", pid: null,
+            startedAt: new Date().toISOString(), stdout: JSON.stringify({ port: 3101 }),
+          };
+        }),
+      };
+      let error: unknown;
+      const operation = startSandboxCallbackBridgeServer({
+        runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+        queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 4 * 60 * 60 * 1000,
+      }).then(async (bridge) => { if (stage === "stop") await bridge.stop(); })
+        .catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await operation;
+      expect(runner.execute.mock.calls[0]?.[0].env).toMatchObject({
+        PAPERCLIP_BRIDGE_TOKEN: "private-bridge-token",
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      });
+      expect(runner.execute).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -3576,6 +3691,83 @@ describe("sandbox callback bridge", () => {
     expect(response.headers.get("x-paperclip-bridge-outcome")).toBeNull();
   }, 15_000);
 
+  async function startQueueGatewayForFileTest(options: {
+    maxBodyBytes: number;
+    client?: SandboxCallbackBridgeQueueClient;
+    handleRequest: Parameters<typeof startSandboxCallbackBridgeWorker>[0]["handleRequest"];
+  }) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-file-codec-"));
+    cleanupDirs.push(root);
+    const asset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(asset.cleanup);
+    const queueDir = path.join(root, "queue");
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: options.client ?? createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      maxBodyBytes: options.maxBodyBytes, handleRequest: options.handleRequest, pollIntervalMs: 10,
+    });
+    cleanupFns.push(() => worker.stop());
+    const gateway = await startSandboxCallbackBridgeServer({
+      runner: createExecRunner(), remoteCwd: root, assetRemoteDir: asset.localDir,
+      queueDir, bridgeToken, maxBodyBytes: options.maxBodyBytes, pollIntervalMs: 10,
+    });
+    cleanupFns.push(() => gateway.stop());
+    return { ...gateway, bridgeToken, queueDir };
+  }
+
+  it.each(["queue", "http2"])("preserves multipart bytes at the configured limit on %s and rejects overflow before forwarding", async mode => {
+    const maxBodyBytes = 1024;
+    const bytes = Buffer.alloc(maxBodyBytes, 0xff);
+    const handled = vi.fn(async (request: { body?: string | Buffer }) => ({
+      status: 200, headers: { "content-type": "application/octet-stream" }, body: Buffer.from(request.body ?? ""),
+    }));
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const gateway = mode === "queue"
+      ? await startQueueGatewayForFileTest({ maxBodyBytes, handleRequest: handled })
+      : { ...await startHttp2GatewayForTest({ bridgeToken, maxBodyBytes, forwardRequest: handled }), bridgeToken };
+    const post = (body: Buffer) => fetch(`${gateway.baseUrl}/api/companies/c/issues/i/attachments`, {
+      method: "POST", headers: { authorization: `Bearer ${gateway.bridgeToken}`, "content-type": "multipart/form-data; boundary=exact-boundary" }, body: new Uint8Array(body),
+    });
+    const response = await post(bytes);
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(handled.mock.calls[0][0]).toMatchObject({ headers: { "content-type": "multipart/form-data; boundary=exact-boundary" } });
+    const overflow = await post(Buffer.alloc(maxBodyBytes + 1));
+    expect(overflow.status).toBeGreaterThanOrEqual(400);
+    expect(handled).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed queue encodings without forwarding a mutation", async () => {
+    const handled = vi.fn(async () => ({ status: 200, body: "ok" }));
+    const gateway = await startQueueGatewayForFileTest({ maxBodyBytes: 1024, handleRequest: handled });
+    const directories = sandboxCallbackBridgeDirectories(gateway.queueDir);
+    for (const [id, bodyEncoding, body] of [["bad-base64", "base64", "YR=="], ["bad-encoding", "hex", "00"], ["too-big", "base64", Buffer.alloc(1025).toString("base64")]]) {
+      await createFileSystemSandboxCallbackBridgeQueueClient().writeTextFile(path.join(directories.requestsDir, `${id}.json`), JSON.stringify({
+        id, method: "POST", path: "/api/companies/c/issues/i/attachments", query: "", headers: {}, bodyEncoding, body,
+      }));
+      const responsePath = path.join(directories.responsesDir, `${id}.json`);
+      await vi.waitFor(async () => expect(JSON.parse(await readFile(responsePath, "utf8")).status).toBe(400));
+    }
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it("reports a corrupted upload response as indeterminate and never forwards twice", async () => {
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
+    const writeResponse = client.writeResponseFile!.bind(client);
+    client.writeResponseFile = (destination, body, options) => writeResponse(destination,
+      JSON.stringify({ ...JSON.parse(body), bodyEncoding: "base64", body: "invalid" }), options);
+    const handled = vi.fn(async () => ({ status: 201, body: Buffer.from("saved") }));
+    const gateway = await startQueueGatewayForFileTest({ client, maxBodyBytes: 1024, handleRequest: handled });
+    const response = await fetch(`${gateway.baseUrl}/api/companies/c/issues/i/attachments`, {
+      method: "POST", headers: { authorization: `Bearer ${gateway.bridgeToken}`, "content-type": "multipart/form-data; boundary=boundary" }, body: Buffer.from([0xff]),
+    });
+    expect(response.status).toBe(409);
+    expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+    await expect(response.json()).resolves.toMatchObject({ retryable: false, outcome: "indeterminate" });
+    expect(handled).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a request body over maxBodyBytes on the queue path before it writes the queue file", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-queue-maxbody-"));
     cleanupDirs.push(rootDir);
@@ -3656,7 +3848,7 @@ describe("sandbox callback bridge", () => {
     const bridgeToken = createSandboxCallbackBridgeToken();
     const requestBodyText = JSON.stringify({ note: "café" });
 
-    const seenRequests: Array<{ body: string }> = [];
+    const seenRequests: Array<{ body: string | Buffer }> = [];
     const worker = await startSandboxCallbackBridgeWorker({
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
       queueDir,

@@ -125,6 +125,9 @@ function undeliveredSuffix(delivered: string, final: string): string {
   if (!final) return "";
   if (delivered.length === 0) return final;
   if (final.startsWith(delivered)) return final.slice(delivered.length);
+  // Some providers retain only the last 4 MiB while streaming the full output.
+  // Replaying that captured tail would count its usage receipts a second time.
+  if (delivered.endsWith(final)) return "";
   return final;
 }
 

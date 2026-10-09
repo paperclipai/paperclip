@@ -1,8 +1,28 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { Identity } from "@/components/Identity";
+import { SlackSetupAdvanced } from "./SlackAppDetails";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { SlackToolsSettings, SlackSearchAccess } from "./SlackToolSettings";
+import { defaultSlackAppName } from "./slack-app-name";
+import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
+import { SlackAvatarSettings } from "./SlackAvatarStep";
+import { agentsApi } from "@/api/agents";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+import { resolveAgentAppearance } from "@paperclipai/shared";
+import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
 import { EmailEndpointSettings } from "./EmailEndpointSetup";
+import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
+import { emailApi } from "@/api/email";
+import { toolsApi } from "@/api/tools";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  ChevronDown,
+  Check,
+  Activity as ActivityIcon,
   Copy,
   ExternalLink,
   Loader2,
@@ -31,9 +51,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { PageTabBar } from "@/components/PageTabBar";
+import { AppLogo } from "../AppLogo";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Tabs } from "@/components/ui/tabs";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/utils";
@@ -41,7 +60,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useNavigate, useParams } from "@/lib/router";
 
-const tabs = ["settings", "access", "conversations", "activity"] as const;
+const tabs = ["settings", "access", "reviews", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
 const tabItems = tabs.map((value) => ({
   value,
@@ -229,6 +248,11 @@ export function ChatEndpointDetail() {
   });
   const endpoint = endpointQuery.data;
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const agentQuery = useQuery({
+    queryKey: queryKeys.agents.detail(endpoint?.assignedAgentId ?? ""),
+    queryFn: () => agentsApi.get(endpoint!.assignedAgentId, endpoint!.companyId),
+    enabled: Boolean(endpoint?.assignedAgentId),
+  });
 
   useEffect(() => {
     if (!endpoint || !activeTab) return;
@@ -267,20 +291,28 @@ export function ChatEndpointDetail() {
         </Button>
       </div>
     );
-  if (endpoint.provider === "agentmail") return <EmailEndpointSettings endpointId={endpoint.id} companyId={endpoint.companyId} />;
+  if (endpoint.provider === "agentmail" && activeTab === "settings")
+    return <EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} />;
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
+    !(endpoint.provider === "slack" && endpoint.setup?.step === "test") &&
     ["draft", "verifying", "attention", "revoked"].includes(endpoint.status);
+  const slackUrl = endpoint.provider === "slack" && endpoint.providerAccountId && endpoint.botExternalId
+    ? `https://app.slack.com/client/${encodeURIComponent(endpoint.providerAccountId)}/user/${encodeURIComponent(endpoint.botExternalId)}`
+    : null;
 
   return (
     <div className="max-w-5xl space-y-6 pb-12">
       <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="flex min-w-0 items-center gap-3">
+          <AgentAvatar agent={agentQuery.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={48} />
+          <div>
           <h1 className="text-xl font-bold">
-            {endpoint.assignedAgentName} in {providerNames[endpoint.provider]}
+            {endpoint.assignedAgentName}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {endpoint.providerAccountLabel ?? "Chat connection"}
+          <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+            <AppLogo name={providerNames[endpoint.provider]} brandKey={endpoint.provider} size={16} compact />
+            {endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
           </p>
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -293,7 +325,9 @@ export function ChatEndpointDetail() {
             </div>
           )}
         </div>
+        </div>
         <div className="flex items-center gap-2">
+          {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
             <Button
               variant="outline"
@@ -306,29 +340,23 @@ export function ChatEndpointDetail() {
               Continue setup
             </Button>
           ) : null}
-          <StatusBadge status={endpoint.status} />
+          {["paused", "attention", "revoked"].includes(endpoint.status) && <StatusBadge status={endpoint.status} />}
         </div>
       </header>
-      <Tabs
-        value={activeTab}
-        onValueChange={(next) => navigate(`/apps/chat/${endpoint.id}/${next}`)}
-      >
-        <PageTabBar
-          items={tabItems}
-          value={activeTab}
-          onValueChange={(next) =>
-            navigate(`/apps/chat/${endpoint.id}/${next}`)
-          }
-          align="start"
-        />
-      </Tabs>
       {activeTab === "settings" && (
-        <Settings endpointId={endpoint.id} endpoint={endpoint} />
+        <>
+{endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="settings" />}
+{endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
+</>
       )}
-      {activeTab === "access" && (
+      {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} />}
+{activeTab === "access" && endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="access" />}
+{activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
+{activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
         <Access
           endpointId={endpoint.id}
           allowUnlinked={endpoint.allowUnlinkedPeople}
+          endpoint={endpoint}
         />
       )}
       {activeTab === "conversations" && (
@@ -341,6 +369,32 @@ export function ChatEndpointDetail() {
   );
 }
 
+function EmailAccess({ endpoint }: { endpoint: ChatEndpoint }) {
+  const connection = useQuery({
+    queryKey: queryKeys.tools.connection(endpoint.connectionId ?? ""),
+    queryFn: () => toolsApi.getConnection(endpoint.connectionId!),
+    enabled: Boolean(endpoint.connectionId),
+  });
+  const agents = useQuery({
+    queryKey: queryKeys.agents.list(endpoint.companyId),
+    queryFn: () => agentsApi.list(endpoint.companyId),
+  });
+  if (!endpoint.connectionId || agents.isError || connection.isError) return (
+    <div className="space-y-3">
+      <p role="alert" className="text-sm text-destructive">Connection access could not be loaded.</p>
+      <Button variant="outline" onClick={() => { void agents.refetch(); void connection.refetch(); }}>Try again</Button>
+    </div>
+  );
+  if (agents.isPending || connection.isPending) return <p role="status" className="text-sm text-muted-foreground">Loading access…</p>;
+  const sourceId = connection.data.config?.credentialConnectionId;
+  const credentialId = typeof sourceId === "string" ? sourceId : endpoint.connectionId;
+  return <section className="max-w-3xl space-y-4">
+    <h2 className="text-lg font-semibold">Access</h2>
+    {credentialId !== endpoint.connectionId && <p className="text-sm text-muted-foreground">These settings apply to the saved AgentMail account and all inboxes using it.</p>}
+    <EmailConnectionAccess key={credentialId} companyId={endpoint.companyId} connectionId={credentialId} agents={agents.data} />
+  </section>;
+}
+
 function Settings({
   endpointId,
   endpoint,
@@ -350,9 +404,17 @@ function Settings({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [messageCopied, setMessageCopied] = useState(false);
+  const avatarAgent = useQuery({
+    queryKey: queryKeys.agents.detail(endpoint.assignedAgentId),
+    queryFn: () => agentsApi.get(endpoint.assignedAgentId, endpoint.companyId),
+    enabled: endpoint.provider === "slack",
+  });
+  const mentionMessage = `@${(endpoint.botUsername ?? endpoint.botLabel ?? endpoint.assignedAgentName).replace(/^@/, "")} you there?`;
   const resourcesQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.resources(endpointId),
     queryFn: () => chatEndpointsApi.listResources(endpointId),
+    ...(endpoint.provider === "slack" ? liveChatQueryOptions : {}),
   });
   const saveResources = useMutation({
     mutationFn: (resource: Pick<ChatEndpointResource, "id" | "enabled">) =>
@@ -393,22 +455,6 @@ function Settings({
   return (
     <section className="max-w-3xl space-y-7">
       {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled." : "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work."}</p>}
-      {endpoint.provider === "slack" && endpoint.setup?.command && (
-        <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Slack command</h2>
-          <div className="rounded-lg border border-border p-3 text-sm">
-            <code>{endpoint.setup.command}</code>
-            <p className="mt-2 text-muted-foreground">
-              Start work with{" "}
-              <code>{endpoint.setup.command} investigate this</code>. In a
-              direct message, use <code>{endpoint.setup.command} status</code>,{" "}
-              <code>{endpoint.setup.command} new</code>, or{" "}
-              <code>{endpoint.setup.command} close</code>. Slack&apos;s bare{" "}
-              <code>/status</code> command is not a Paperclip control.
-            </p>
-          </div>
-        </div>
-      )}
       {endpoint.provider === "telegram" && (
         <div className="space-y-2">
           <h2 className="text-lg font-semibold">Telegram group command</h2>
@@ -426,20 +472,13 @@ function Settings({
           </div>
         </div>
       )}
-      <div>
-        <h2 className="text-lg font-semibold">Where this agent can work</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Provider membership makes a destination available. Paperclip responds
-          only where you enable it.
-        </p>
-      </div>
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Destinations</h3>
-        {resourcesQuery.isLoading ? (
+        <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
+        {resourcesQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn't load channels. <button className="underline" onClick={() => void resourcesQuery.refetch()}>Try again</button></p> : resourcesQuery.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
-        ) : destinationResources.length === 0 ? (
+        ) : destinationResources.length === 0 && endpoint.provider !== "slack" ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-            No provider destinations have been discovered yet.
+            No destinations yet.
           </p>
         ) : (
           <div className="divide-y divide-border border-y border-border">
@@ -449,11 +488,11 @@ function Settings({
                   <p className="truncate text-sm font-medium">
                     {resource.label}
                   </p>
-                  <p className="text-xs text-muted-foreground">
+                  {(resource.availability !== "available" || resource.detail) && <p className="text-xs text-muted-foreground">
                     {resource.availability === "available"
-                      ? (resource.detail ?? resource.type)
+                      ? resource.detail
                       : "Unavailable at the provider"}
-                  </p>
+                  </p>}
                   {resource.participants?.length ? <p className="mt-1 break-words text-xs text-muted-foreground">Participants: {resource.participants.join(", ")}</p> : null}
                 </div>
                 <ToggleSwitch
@@ -470,18 +509,22 @@ function Settings({
                 />
               </div>
             ))}
+            {endpoint.provider === "slack" && (
+              <p className="py-3 text-sm text-muted-foreground">
+                Invite {endpoint.assignedAgentName} to a channel to add it
+              </p>
+            )}
           </div>
         )}
       </div>
       {endpoint.provider !== "github" && (
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold">Private conversations</h3>
           <SettingToggle
             label="Allow direct messages"
             detail={
               endpoint.provider === "discord"
                 ? "People must also enable Direct Messages in their shared Discord server’s Privacy Settings."
-                : "People can start or continue a task in a direct conversation."
+                : undefined
             }
             checked={endpoint.allowDirectMessages ?? false}
             pending={updateEndpoint.isPending}
@@ -502,6 +545,35 @@ function Settings({
           )}
         </div>
       )}
+      {endpoint.provider === "slack" && <ChatCommunicationInstructions
+        key={endpoint.id}
+        value={endpoint.communicationInstructions ?? ""}
+        onSave={async (communicationInstructions) => {
+          const next = await chatEndpointsApi.update(endpointId, { communicationInstructions });
+          queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
+        }}
+      />}
+      {endpoint.provider === "slack" && (
+        <SlackSetupAdvanced label="Message in a channel"><div className="space-y-2 text-sm">
+          <p>Invite the bot to a channel, then mention it to start a conversation.</p>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+            <code>{mentionMessage}</code>
+            <Button size="icon" variant="ghost" aria-label={messageCopied ? "Message copied" : "Copy message"} onClick={() => {
+              void copyTextToClipboard(mentionMessage).then(() => setMessageCopied(true), () => pushToast({ title: "Couldn’t copy the message", body: "Select and copy it manually.", tone: "error" }));
+            }}>{messageCopied ? <Check className="size-4" /> : <Copy className="size-4" />}</Button>
+          </div>
+        </div></SlackSetupAdvanced>
+      )}
+      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Agent avatar">
+        {avatarAgent.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
+          : avatarAgent.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void avatarAgent.refetch()}>Try again</button></p>
+          : <SlackAvatarSettings
+              agentName={avatarAgent.data?.name ?? endpoint.assignedAgentName}
+              appName={endpoint.setup?.slackApp?.appName ?? defaultSlackAppName(avatarAgent.data?.name ?? endpoint.assignedAgentName)}
+              avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest", false, "paperclip-dark")}
+            />}
+      </SlackSetupAdvanced>}
+      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Slack tools"><SlackToolsSettings companyId={endpoint.companyId} endpointId={endpointId} connectionId={endpoint.connectionId} /></SlackSetupAdvanced>}
     </section>
   );
 }
@@ -514,7 +586,7 @@ function SettingToggle({
   onChange,
 }: {
   label: string;
-  detail: string;
+  detail?: string;
   checked: boolean;
   pending: boolean;
   onChange: (value: boolean) => void;
@@ -523,7 +595,7 @@ function SettingToggle({
     <div className="flex items-center gap-3 border-y border-border py-3">
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+        {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
       </div>
       <ToggleSwitch
         aria-label={label}
@@ -538,16 +610,23 @@ function SettingToggle({
 function Access({
   endpointId,
   allowUnlinked,
+  endpoint,
 }: {
   endpointId: string;
   allowUnlinked: boolean;
+  endpoint: ChatEndpoint;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [confirmationUrl, setConfirmationUrl] = useState<string | null>(null);
+  const [joinCommandCopied, setJoinCommandCopied] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [confirmationFor, setConfirmationFor] = useState<string | null>(null);
+  const joinCommand = `${endpoint.setup?.slackApp?.command ?? endpoint.setup?.command ?? "/paperclip"} connect`;
   const linksQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
+    refetchInterval: 5000,
   });
   const updatePolicy = useMutation({
     mutationFn: (value: boolean) =>
@@ -557,6 +636,7 @@ function Access({
         queryKeys.chatEndpoints.detail(endpointId),
         next,
       ),
+    onError: (error) => pushToast({ title: "Couldn’t update access", body: error instanceof Error ? error.message : "Try again.", tone: "error" }),
   });
   const createIntent = useMutation({
     mutationFn: (principalId: string) =>
@@ -565,11 +645,7 @@ function Access({
       setConfirmationUrl(
         new URL(confirmationUrl, window.location.origin).toString(),
       );
-      pushToast({
-        title: "Private identity-link URL created",
-        body: "Send it only to the person whose provider identity is shown.",
-        tone: "success",
-      });
+
     },
     onError: (error) =>
       pushToast({
@@ -581,31 +657,46 @@ function Access({
   const revoke = useMutation({
     mutationFn: (principalId: string) =>
       chatEndpointsApi.revokeLink(endpointId, principalId),
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.chatEndpoints.principals(endpointId),
-      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.principals(endpointId) }),
+    onError: (error) => pushToast({ title: "Couldn't disconnect account", body: error instanceof Error ? error.message : "Try again.", tone: "error" }),
   });
   const links = linksQuery.data ?? [];
   return (
     <section className="max-w-3xl space-y-7">
-      <div>
-        <h2 className="text-lg font-semibold">External identity access</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Linked identities act as their current Paperclip user. Unlinked
-          people, when allowed, receive a fixed restricted profile.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">People</h2>
+        {endpoint.provider === "slack" && <Dialog>
+          <DialogTrigger asChild><Button>Invite people</Button></DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Invite people to talk to {endpoint.assignedAgentName}</DialogTitle>
+              <DialogDescription>Share these instructions with someone in your Slack workspace.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              <ol className="list-decimal space-y-3 pl-5">
+                <li>Send <code className="font-mono">{joinCommand}</code> in Slack.</li>
+                <li>Open the bot’s private link and sign in to Paperclip to confirm your Slack account.</li>
+                <li>If you’re new to this organization, request access and wait for an admin to approve.</li>
+              </ol>
+              <p className="text-muted-foreground">The confirmation link is personal and expires after 15 minutes.</p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <Button variant="ghost" onClick={() => {
+                  void copyTextToClipboard(joinCommand).then(() => setJoinCommandCopied(true), () => pushToast({ title: "Couldn't copy the command", tone: "error" }));
+                }}>{joinCommandCopied ? <Check className="size-4" /> : <Copy className="size-4" />}{joinCommandCopied ? "Copied" : "Copy command"}</Button>
+                <Button onClick={() => {
+                  const workspace = endpoint.providerAccountId ? `https://app.slack.com/client/${encodeURIComponent(endpoint.providerAccountId)}` : "https://app.slack.com/";
+                  void copyTextToClipboard(`Talk to ${endpoint.assignedAgentName} in Slack: ${workspace}\nSend ${joinCommand}, then open the bot’s private link and sign in to Paperclip to confirm your account. If you’re new to the organization, request access for an admin to approve.`).then(() => setInviteCopied(true), () => pushToast({ title: "Couldn't copy invitation", tone: "error" }));
+                }}>{inviteCopied ? <Check className="size-4" /> : <Copy className="size-4" />}{inviteCopied ? "Invitation copied" : "Copy invitation"}</Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>}
       </div>
-      <SettingToggle
-        label="Allow unlinked people"
-        detail="They are restricted guests. Their tasks run only with an isolated workspace and sandbox environment; otherwise Paperclip safely refuses the request. They cannot approve, hire, spend, manage access, or reassign agents."
-        checked={allowUnlinked}
-        pending={updatePolicy.isPending}
-        onChange={(value) => updatePolicy.mutate(value)}
-      />
+      <p className="text-sm text-muted-foreground">People with linked accounts use their own Paperclip permissions. <Link className="underline underline-offset-4" to="/company/settings/members">Manage members</Link></p>
       {confirmationUrl && (
         <div className="space-y-2 border-y border-border py-3">
-          <p className="text-sm font-medium">Private confirmation link</p>
+          <p className="text-sm font-medium">Confirm {confirmationFor ?? "this account"}</p>
+          <p className="text-xs text-muted-foreground">Share only with this person. They must sign in and confirm their own account.</p>
           <p className="break-all text-xs text-muted-foreground">
             {confirmationUrl}
           </p>
@@ -634,25 +725,25 @@ function Access({
         </div>
       )}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Identity links</h3>
-        {links.length === 0 ? (
+        {linksQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading people…</p> : linksQuery.isError ? <p role="alert" className="text-sm text-destructive">Couldn't load people. <button className="underline" onClick={() => void linksQuery.refetch()}>Try again</button></p> : links.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-            External people appear here after they message the agent.
+            No linked accounts yet. Invite someone to connect.
           </p>
         ) : (
-          <div className="divide-y divide-border border-y border-border">
+          <div role="list" aria-label="People" className="divide-y divide-border border-y border-border">
             {links.map((link) => (
               <div
                 key={link.id}
+                role="listitem"
                 className="flex flex-wrap items-center gap-3 py-3"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{link.externalLabel}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {link.paperclipUserLabel
-                      ? `Linked to ${link.paperclipUserLabel}`
-                      : (link.externalDetail ?? "Not linked")}
-                  </p>
+                  <Identity name={link.paperclipUserLabel ?? link.externalLabel} size="default" className="gap-2" />
+                  {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="pl-10 text-xs text-muted-foreground">
+                    {link.status === "revoked" ? "Disconnected" : link.status === "linked"
+                      ? link.externalLabel
+                      : "Waiting for account confirmation"}
+                  </p>}
                 </div>
                 {link.status === "linked" ? (
                   <Button
@@ -662,16 +753,16 @@ function Access({
                     onClick={() => revoke.mutate(link.principalId)}
                   >
                     <Unlink />
-                    Revoke
+                    Disconnect
                   </Button>
                 ) : (
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={createIntent.isPending}
-                    onClick={() => createIntent.mutate(link.principalId)}
+                    onClick={() => { setConfirmationUrl(null); setConfirmationFor(link.externalLabel); createIntent.mutate(link.principalId); }}
                   >
-                    Create private link
+                    Create confirmation link
                   </Button>
                 )}
               </div>
@@ -679,6 +770,12 @@ function Access({
           </div>
         )}
       </div>
+      <SlackSetupAdvanced label="Guest access">
+        <SettingToggle label="Allow unlinked people"
+          detail="People without linked accounts can start isolated tasks. They cannot approve actions, spend, or manage access. Requests are refused when isolation is unavailable."
+          checked={allowUnlinked} pending={updatePolicy.isPending} onChange={value => updatePolicy.mutate(value)} />
+      </SlackSetupAdvanced>
+      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Personal Slack search"><SlackSearchAccess companyId={endpoint.companyId} endpointId={endpointId} /></SlackSetupAdvanced>}
     </section>
   );
 }
@@ -701,47 +798,34 @@ function Conversations({
       <div>
         <h2 className="text-lg font-semibold">Conversations</h2>
       </div>
-      {rows.length === 0 ? (
+      {query.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading conversations…</p> : query.isError ? (
+        <div className="space-y-3">
+          <p role="alert" className="text-sm text-destructive">Conversations could not be loaded.</p>
+          <Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>
+        </div>
+      ) : rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-          No conversations yet. Address the agent in an enabled destination to
-          start one.
+          {provider === "agentmail"
+            ? "No email conversations yet. Send an email to this agent’s address to start one."
+            : "No conversations yet. Message the agent to start one."}
         </p>
       ) : (
-        <div className="divide-y divide-border border-y border-border">
+        <ul aria-label="Conversations" className="divide-y divide-border overflow-x-auto border-y border-border">
           {rows.map((row) => (
-            <div key={row.id} className="grid gap-3 py-4 md:grid-cols-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {row.externalLabel}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {providerNames[provider]}
-                </p>
+            <li key={row.id} className="flex flex-wrap items-center gap-3 px-2 py-3 text-sm transition-colors hover:bg-accent/50">
+              <AppLogo name={providerNames[provider]} brandKey={provider} compact className="size-5! rounded-sm bg-transparent" />
+              <div className="flex min-w-0 max-w-56 items-center gap-2">
+                {row.externalUrl ? <a href={row.externalUrl} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 font-medium hover:underline"><span className="truncate">{row.externalLabel}</span><ExternalLink className="size-3 shrink-0" /></a> : <span className="truncate font-medium">{row.externalLabel}</span>}
               </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {row.issueIdentifier ? `${row.issueIdentifier} · ` : ""}
-                  {row.issueTitle ?? "Waiting for task"}
-                </p>
-                <StatusBadge status={row.state} />
+              <span aria-hidden="true" className="hidden text-muted-foreground sm:inline">·</span>
+              <div className="order-last flex min-w-0 basis-full items-center gap-2 pl-8 sm:order-none sm:flex-1 sm:basis-0 sm:pl-0">
+                {row.issueId ? <Link to={`/issues/${row.issueId}`} className="line-clamp-2 hover:underline sm:truncate" title={row.issueTitle ?? undefined}>{row.issueTitle ?? row.issueIdentifier ?? "View task"}</Link> : <span className="truncate text-muted-foreground">Waiting for task</span>}
               </div>
-              <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                {row.externalUrl && (
-                  <Button asChild size="sm" variant="outline">
-                    <a href={row.externalUrl} target="_blank" rel="noreferrer">
-                      Open {providerNames[provider]} <ExternalLink />
-                    </a>
-                  </Button>
-                )}
-                {row.issueId && (
-                  <Button asChild size="sm" variant="outline">
-                    <Link to={`/issues/${row.issueId}`}>Open task</Link>
-                  </Button>
-                )}
-              </div>
-            </div>
+              <span className="hidden shrink-0 text-xs text-muted-foreground xl:inline">{row.issueIdentifier}</span>
+              {row.state !== "active" && <StatusBadge status={row.state} />}
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </section>
   );
@@ -761,10 +845,14 @@ function Activity({
   const [resolutionItem, setResolutionItem] = useState<ChatActivityItem | null>(
     null,
   );
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const cursor = cursors[cursors.length - 1];
+  useEffect(() => setCursors([undefined]), [endpointId]);
   const query = useQuery({
-    queryKey: queryKeys.chatEndpoints.activity(endpointId),
-    queryFn: () => chatEndpointsApi.listActivity(endpointId),
+    queryKey: [...queryKeys.chatEndpoints.activity(endpointId), cursor ?? null],
+    queryFn: () => chatEndpointsApi.listActivityPage(endpointId, cursor),
     ...liveChatQueryOptions,
+    refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
@@ -847,20 +935,25 @@ function Activity({
       }),
   });
   const lifecycle = useMutation({
-    mutationFn: (action: "pause" | "resume" | "remove") =>
-      chatEndpointsApi.setup(endpointId, { action }),
+    mutationFn: async (action: "pause" | "resume" | "remove") =>
+      endpoint.provider === "agentmail"
+        ? emailApi.control(endpointId, action)
+        : chatEndpointsApi.setup(endpointId, { action }),
     onSuccess: async (next, action) => {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.chatEndpoints.list(next.companyId),
       });
+      if (endpoint.provider === "agentmail") {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["email-inboxes", next.companyId] }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.chatEndpoints.detail(endpointId) }),
+        ]);
+      }
       if (action === "remove") {
         navigate("/apps");
         return;
       }
-      queryClient.setQueryData(
-        queryKeys.chatEndpoints.detail(endpointId),
-        next,
-      );
+      if (endpoint.provider !== "agentmail") queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
       pushToast({
         title: action === "pause" ? "Connection paused" : "Connection resumed",
         tone: "success",
@@ -873,7 +966,7 @@ function Activity({
         tone: "error",
       }),
   });
-  const rows = query.data ?? [];
+  const rows = query.data?.items ?? [];
   const { status } = endpoint;
   const health = connectionHealthPresentation(endpoint);
   const lifecycleAction = lifecycle.variables;
@@ -887,7 +980,7 @@ function Activity({
   return (
     <section className="space-y-5">
       <h2 className="text-lg font-semibold">Connection activity</h2>
-      {(health.message || health.error) && (
+      {((status !== "active" && health.message) || health.error) && (
         <div
           className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${status === "attention" || status === "revoked" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-border bg-muted/30 text-foreground"}`}
         >
@@ -911,21 +1004,30 @@ function Activity({
           </div>
         </div>
       )}
+      <details className="group rounded-lg border border-border">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-sm font-medium chat-connection-health-summary">
+          <span>Connection health and controls</span>
+          <span className="flex items-center gap-2">
+            {endpoint.setup?.callbacksNeedUpdate && <span className="text-xs text-(--status-task-blocked)">Callback URLs need attention</span>}
+            <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+          </span>
+        </summary>
+        <div className="space-y-5 border-t border-border p-4">
       {endpoint.provider === "slack" && callbackSurfaceRows.length > 0 && (
         <div
-          className={`rounded-lg border p-3 text-sm ${endpoint.setup?.callbacksNeedUpdate ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/30"}`}
+          className="space-y-3 text-sm"
         >
           <p className="font-medium">Slack callback health</p>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {endpoint.setup?.callbacksNeedUpdate
               ? "Slack callback URLs need an update. Save the current App Manifest, then exercise Events, Interactivity, and the registered command again."
               : "Paperclip records each callback surface independently after Slack successfully calls it."}
           </p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div className="divide-y divide-border border-y border-border">
             {callbackSurfaceRows.map(([label, surface]) => (
-              <div key={label} className="rounded-md border border-border p-2">
+              <div key={label} className="flex flex-wrap items-center justify-between gap-3 py-2">
                 <p className="text-xs font-medium">{label}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {surface.status === "current"
                     ? "Current"
                     : surface.status === "stale"
@@ -933,7 +1035,7 @@ function Activity({
                       : "Not observed"}
                 </p>
                 {surface.observedAt && (
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     Last observed{" "}
                     <time
                       dateTime={surface.observedAt}
@@ -952,7 +1054,7 @@ function Activity({
         </div>
       )}
       {status !== "archived" && (
-        <div className="space-y-2 border-y border-border py-3">
+        <div className="space-y-3 pt-2">
           <div className="flex flex-wrap items-center gap-2">
             {status === "active" && (
               <Button
@@ -995,7 +1097,9 @@ function Activity({
                 disabled={lifecycle.isPending}
                 onClick={() =>
                   navigate(
-                    `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}${status === "draft" || status === "verifying" ? "" : "&reconnect=1"}`,
+                    endpoint.provider === "agentmail" && status !== "draft" && status !== "verifying"
+                      ? `/apps/chat/${endpoint.id}/settings`
+                      : `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}${status === "draft" || status === "verifying" ? "" : "&reconnect=1"}`,
                   )
                 }
               >
@@ -1022,10 +1126,18 @@ function Activity({
           )}
         </div>
       )}
+        </div>
+      </details>
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">
-          Delivery and publication history
+          Recent activity
         </h3>
+        {endpoint.provider === "agentmail" && rows.some((item) => item.kind === "publication" && item.status === "delivery_unknown") && (
+          <p className="text-sm text-muted-foreground">
+            Review unconfirmed email delivery in the{" "}
+            <Link to={`/apps/chat/${endpointId}/conversations`} className="underline underline-offset-4">conversation’s task</Link>.
+          </p>
+        )}
         <div className="divide-y divide-border border-y border-border">
           {query.isLoading && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
@@ -1052,23 +1164,20 @@ function Activity({
             rows.map((item) => (
               <div
                 key={item.id}
-                className="flex flex-wrap items-start gap-3 py-3"
+                className="flex items-start gap-3 px-2 py-3 transition-colors hover:bg-accent/50"
               >
+                <span className="mt-0.5 text-muted-foreground" aria-hidden="true">
+                  {item.kind === "delivery" ? <ArrowDownLeft className="size-4" /> : item.kind === "publication" ? <ArrowUpRight className="size-4" /> : <ActivityIcon className="size-4" />}
+                </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {activityKindLabels[item.kind]}
-                    </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <p className="min-w-0 flex-1 text-sm font-medium">{item.summary}</p>
                     <StatusBadge status={item.status} />
-                    <time
-                      dateTime={item.createdAt}
-                      title={item.createdAt}
-                      className="font-mono text-xs text-muted-foreground"
-                    >
+                    <time dateTime={item.createdAt} title={item.createdAt} className="shrink-0 text-xs tabular-nums text-muted-foreground">
                       {formatDateTime(item.createdAt, { includeSeconds: true })}
                     </time>
                   </div>
-                  <p className="mt-2 text-sm font-medium">{item.summary}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{activityKindLabels[item.kind]}</p>
                   {item.fileTransfer && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {item.fileTransfer.filename} —{" "}
@@ -1084,7 +1193,7 @@ function Activity({
                     </p>
                   )}
                 </div>
-                {isReplayEligible(item) && (
+                {endpoint.provider !== "agentmail" && isReplayEligible(item) && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1100,7 +1209,7 @@ function Activity({
                     Replay
                   </Button>
                 )}
-                {isResolutionEligible(item) && (
+                {endpoint.provider !== "agentmail" && isResolutionEligible(item) && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1118,6 +1227,13 @@ function Activity({
           )}
         </div>
       </div>
+      <nav aria-label="Activity pagination" className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">Page {cursors.length}</span>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors((pages) => pages.slice(0, -1))}>Previous</Button>
+          <Button size="sm" variant="outline" disabled={!query.data?.nextCursor || query.isFetching || query.isError} onClick={() => { if (query.data?.nextCursor) setCursors((pages) => [...pages, query.data.nextCursor!]); }}>Next</Button>
+        </div>
+      </nav>
       <AlertDialog
         open={resolutionItem !== null}
         onOpenChange={(open) => !open && setResolutionItem(null)}
@@ -1218,6 +1334,14 @@ function Activity({
               {` ${providerNames[endpoint.provider]}`}. Existing Paperclip tasks
               remain available.{" "}
               {providerLifecycleGuidance[endpoint.provider].remove}
+              {endpoint.provider === "slack" && (
+                <> <a
+                  href={endpoint.setup?.slackRegistration?.managementUrl ?? "https://api.slack.com/apps"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-4"
+                >Open Slack app settings</a> to manage or delete the Slack app.</>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

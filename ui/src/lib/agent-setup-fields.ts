@@ -1,4 +1,6 @@
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
+import { grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { codexReasoningEffortOptions } from "./codex-reasoning-effort";
 import { PROVIDER_ENV_KEYS } from "./provider-credential";
 
@@ -27,7 +29,7 @@ export function setupProviderKeys(adapter: string) {
 export function setupEfforts(adapter: string, model = ""): string[] {
   switch (adapter) {
     case "claude_local":
-      return ["low", "medium", "high"];
+      return [...claudeLocalReasoningEffortsForModel(model || DEFAULT_CLAUDE_LOCAL_MODEL)];
     case "codex_local":
       return codexReasoningEffortOptions(model || DEFAULT_CODEX_LOCAL_MODEL)
         .map((option) => option.value)
@@ -35,7 +37,7 @@ export function setupEfforts(adapter: string, model = ""): string[] {
     case "pi_local":
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
     case "grok_local":
-      return ["low", "medium", "high"];
+      return [...grokLocalReasoningEffortsForModel(model)];
     default:
       return [];
   }

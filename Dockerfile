@@ -128,20 +128,36 @@ COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
+# Both the browser bundle and server stamp need the source commit. Declare it
+# after the stable dependency layers, before either application build.
+ARG PAPERCLIP_BUILD_COMMIT=""
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
-# next RUN as an environment variable, so declare it here — in the build
-# stage — before the server build. The production stage below declares the
+# next RUN as an environment variable. The production stage below declares the
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
-ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
+
+# Remote OpenCode and ACPX runs require a controller-owned provider pack to
+# verify the sandbox installation or stage matching assets. Ship it in the
+# standard image so downstream Cloud compositions inherit the same artifacts.
+# Grok's native executable stays an external sandbox prerequisite; this pack
+# contains only its launcher.
+FROM build AS runner-provider-pack
+# Unstamped local builds remain usable, but cannot qualify a remote pack.
+# Never invent a source revision to make an unqualified pack look verified.
+RUN mkdir -p /provider-pack \
+  && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
+    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack; \
+  else \
+    echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
+  fi
 
 FROM base AS production
 ARG USER_UID=1000
@@ -167,6 +183,17 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY --chown=node:node --from=build /app /app
+
+COPY --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+# Managed deployments can remap node's UID at startup. This immutable pack
+# contains public code and integrity metadata, never credentials; it must remain
+# readable afterward.
+# Keep it root-owned and verify access as an unrelated unprivileged UID.
+RUN chmod -R a+rX /opt/paperclip-runner/provider-pack \
+  && if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
+    gosu 65534:65534 node -e 'const fs = require("node:fs"); const path = require("node:path"); const root = "/opt/paperclip-runner/provider-pack"; const manifest = JSON.parse(fs.readFileSync(path.join(root, "provider-pack.json"), "utf8")); for (const artifact of Object.values(manifest.payload.artifacts)) fs.readFileSync(path.join(root, artifact.path)); fs.accessSync(path.join(root, manifest.payload.artifacts.nodeCommand.path), fs.constants.X_OK);'; \
+  fi
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
 
 # Declare per-build metadata after the stable RUN layers. Docker includes
 # in-scope ARG values in a RUN's environment even when its command does not
@@ -212,8 +239,8 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # dist/ to exist in the image — the default image ships only their source,
 # so auto-install logs "bundle not present" and skips. The plugins are
 # built in this separate target so the default (self-hosted) image stays
-# lean; CI pins the default build to `--target production`, which is
-# byte-identical to before this stage existed.
+# lean; CI pins the default build to `--target production`. Both targets
+# inherit the build-owned remote provider pack from the standard image.
 #
 # The sandbox providers are intentionally excluded from the pnpm workspace
 # (see pnpm-workspace.yaml), so each installs standalone exactly as its

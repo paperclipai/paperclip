@@ -59,6 +59,37 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
   return event?.eventType === LOCAL_PROCESS_STOPPED;
 }
 
+/** Pre-receipt native runs can retain an exact suspended session after their
+ * mutable process fields were cleared. This is admission evidence for a new
+ * user turn only, never permission to replay the old run or infer its outcomes.
+ * The caller must hold the run/controller locks and verify local lease cleanup.
+ */
+export async function hasHistoricalSuspendedNativeSession(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  if (run.runtimeMode !== "native" || run.processPid || run.processGroupId ||
+      !run.nativeSessionId || !run.runnerInstanceId || !run.nativeIssueId) return false;
+  const [modernProcessEvidence] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).limit(1);
+  // A newer launch invalidates an old stop receipt. Never bypass that fence
+  // with a suspended file that could belong to the earlier process generation.
+  if (modernProcessEvidence) return false;
+  const checkpoint = run.runnerProfileJson?.sessionCheckpoint as Record<string, unknown> | undefined;
+  if (checkpoint?.providerSessionId != null && (typeof checkpoint.providerSessionId !== "string" ||
+      !checkpoint.providerSessionId.trim())) return false;
+  const { nativeFailedRunRetryStateIsSafe } = await import("./native-runtime/native-session-executor.js");
+  return nativeFailedRunRetryStateIsSafe({
+    execution: run.runnerProfileJson?.nativeExecutionInput,
+    companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, runId: run.id,
+    nativeSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId,
+    processPid: null, processGroupId: null,
+    providerSessionId: typeof checkpoint?.sessionId === "string" ? checkpoint.sessionId : null,
+    providerBackendSessionId: typeof checkpoint?.providerSessionId === "string" ? checkpoint.providerSessionId : null,
+    recoveryMode: "exact_checkpoint_resume", allowVerifiedBackup: false,
+  });
+}
+
 /** Recover the exact stopped identity after the mutable run fields were cleared. */
 export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
   const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })

@@ -7,6 +7,14 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps OpenAI Dot opt-in and persists its setting independently of its prerequisites", () => {
+    expect(normalizeExperimentalSettings({}).enableOpenAiDot).toBe(false);
+    const enabled = applyExperimentalSettingsPatch({}, { enableOpenAiDot: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)))).toMatchObject({
+      enableOpenAiDot: true, enablePublicMcp: false,
+    });
+    expect(applyExperimentalSettingsPatch(enabled, { enableOpenAiDot: false }).enableOpenAiDot).toBe(false);
+  });
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
     for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
       expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
@@ -20,6 +28,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
       enableNativeRunner: false,
+      enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
@@ -35,13 +44,20 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
+      enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
       enableStreamlinedLeftNavigation: true,
       enableStreamlinedUi: true,
       enableApps: true,
+    enableMcpAggregators: true,
       enableAgentChat: false,
+      enablePublicMcp: false,
+      enableOpenAiDot: false,
+      enableCombinedInboxTasks: false,
       enableChatConnectors: false,
+      enableMemoryConnectors: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,

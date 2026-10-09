@@ -9,7 +9,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Uses the actual production Layout (Sidebar, BreadcrumbBar, PropertiesPanel), TaskChatThread (TaskChatComposer, harness activity, thinking/tool disclosures, responses), and TaskSidePanel (plans, artifacts, subtasks). Agent shortcuts compose the existing sidebar rows and sections: starred agents first, then recent conversations, plus a See all link to the existing Agents page and a gear link to the existing agent configuration page. The task surfaces differ only in breadcrumb/title and initially open panel tabs. All data is fixture data; sends append locally and unsupported mutations fail explicitly.",
+          "Uses the actual production Layout (Sidebar, BreadcrumbBar, PropertiesPanel), TaskChatThread (TaskChatComposer, harness activity, thinking/tool disclosures, responses), and TaskSidePanel (plans, artifacts, subtasks). Agent shortcuts compose the existing sidebar rows and sections: starred agents first, the first-created agent as a default, then recent conversations. The compose button opens a searchable picker for every agent, and the gear link opens agent configuration. The task surfaces differ only in breadcrumb/title and initially open panel tabs. All data is fixture data; sends append locally and unsupported mutations fail explicitly.",
       },
     },
   },

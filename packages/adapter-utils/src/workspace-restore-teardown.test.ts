@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createWorkspaceRestoreTeardown } from "./workspace-restore-teardown.js";
+import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep } from "./workspace-restore-diagnostics.js";
 
 // One row per adapter's two message strings, taken verbatim from
 // claude-local, codex-local, and gemini-local. The factory's contract must
@@ -24,6 +25,32 @@ const ADAPTER_MESSAGE_PAIRS = [
 ];
 
 describe.each(ADAPTER_MESSAGE_PAIRS)("createWorkspaceRestoreTeardown ($adapter)", ({ startMessage, failurePrefix }) => {
+  it("keeps concurrent settlements separate when a provider reuses an error", async () => {
+    const error = Object.assign(new Error("private-restore-path"), { code: 1 });
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const first = createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace: () => withWorkspaceRestoreDiagnostics("workspace", () =>
+        withWorkspaceRestoreStep("git_import", async () => { throw error; }), async () => { started(); await gate; }) },
+      onLog: async () => {}, startMessage, failurePrefix,
+    })();
+    await waiting;
+    const second = await createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace: () => withWorkspaceRestoreDiagnostics("asset", () =>
+        withWorkspaceRestoreStep("asset_restore", async () => { throw error; })) },
+      onLog: async () => {}, startMessage, failurePrefix,
+    })();
+    release();
+    expect(await first).toEqual({ ok: false, code: "restore_failed", diagnostic: {
+      phase: "workspace", step: "git_import", errorCode: "unknown", exitCode: 1,
+    } });
+    expect(second).toEqual({ ok: false, code: "restore_failed", diagnostic: {
+      phase: "asset", step: "asset_restore", errorCode: "unknown", exitCode: 1,
+    } });
+  });
+
   it("logs the start message to stdout and returns ok on a clean restore", async () => {
     const logLines: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
     const teardown = createWorkspaceRestoreTeardown({

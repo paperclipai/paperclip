@@ -1,6 +1,8 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
 /**
  * Bundled plugin auto-provisioning.
@@ -62,6 +64,11 @@ export interface BundledPluginCatalogEntry {
  */
 export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
   {
+    key: "createos",
+    pluginKey: "paperclip.createos-sandbox-provider",
+    relativePath: "sandbox-providers/createos",
+  },
+  {
     key: "cloudflare",
     pluginKey: "paperclip.cloudflare-sandbox-provider",
     relativePath: "sandbox-providers/cloudflare",
@@ -118,6 +125,8 @@ export interface ResolvedBundledPlugin {
   pluginKey: string;
   /** Absolute path handed to `loader.installPlugin({ localPath })`. */
   localPath: string;
+  /** Image-owned entries require exact manifest identity/version matching. */
+  distribution?: DistributionPlugin;
 }
 
 /**
@@ -156,16 +165,23 @@ export function resolveBundledPluginInstalls(
     catalogRoot: string;
     env: Record<string, string | undefined>;
     enforceCatalogRoot: boolean;
+    distributionPlugins?: readonly DistributionPlugin[];
   },
 ): ResolvedBundledPlugin[] {
   const resolved: ResolvedBundledPlugin[] = [];
   const seen = new Set<string>();
   const canonicalRoot = canonicalize(opts.catalogRoot);
+  const distributionPlugins = opts.distributionPlugins ?? readDistributionPluginCatalog(opts.catalogRoot, BUNDLED_PLUGIN_CATALOG);
   for (const key of keys) {
     if (seen.has(key)) continue;
     seen.add(key);
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) => candidate.key === key);
     if (!entry) {
+      const distribution = distributionPlugins.find((candidate) => candidate.key === key);
+      if (distribution) {
+        resolved.push({ key, pluginKey: distribution.pluginKey, localPath: distribution.localPath, distribution });
+        continue;
+      }
       const known = BUNDLED_PLUGIN_CATALOG.map((candidate) => candidate.key).join(", ");
       throw new Error(
         `bundled plugin auto-install key "${key}" is not in the bundled catalog (known keys: ${known}); refusing to start`,
@@ -193,6 +209,7 @@ interface RegistryPluginRow {
   status: string;
   version: string;
   manifestJson: PaperclipPluginManifestV1;
+  packagePath?: string | null;
   lastError?: string | null;
 }
 
@@ -201,7 +218,7 @@ export interface BundledPluginProvisionerDeps {
     getByKey(pluginKey: string): Promise<RegistryPluginRow | null>;
     update(
       id: string,
-      data: { version?: string; manifest?: PaperclipPluginManifestV1 },
+      data: { version?: string; manifest?: PaperclipPluginManifestV1; packagePath?: string; status?: "upgrade_pending" },
     ): Promise<unknown>;
     updateStatus(id: string, input: { status: "ready"; lastError: string | null }): Promise<unknown>;
   };
@@ -231,7 +248,9 @@ function defaultBundleManifestExists(localPath: string): boolean {
  * Reconcile a present bundled plugin's persisted manifest with the shipped
  * bundle. The bundle is part of the release image, so its manifest is the
  * source of truth. When the bundle declares a version that differs from the
- * persisted version, update the stored manifest and version. This propagates
+ * persisted version, update the stored manifest and version. Distribution
+ * entries also adopt the image's package path, including same-version installs.
+ * This propagates
  * a manifest change (for example a new driver capability) to an existing
  * install that the auto-install path skips.
  *
@@ -244,24 +263,42 @@ async function reconcileBundledPluginManifest(
   install: ResolvedBundledPlugin,
   deps: BundledPluginProvisionerDeps,
   bundleManifestExists: (localPath: string) => boolean,
-): Promise<void> {
+  verifiedManifest?: PaperclipPluginManifestV1,
+): Promise<"upgrade_pending" | undefined> {
   try {
-    if (!bundleManifestExists(install.localPath)) return;
-    const bundleManifest = await deps.loader.loadManifest(install.localPath);
+    // Managed reinstalls take the install path instead; this branch means the
+    // operator's uninstall must be retained, including its status.
+    if (install.distribution && existing.status === "uninstalled") return;
+    if (!verifiedManifest && !bundleManifestExists(install.localPath)) return;
+    const bundleManifest = verifiedManifest ?? await deps.loader.loadManifest(install.localPath);
     if (!bundleManifest) return;
-    if (bundleManifest.version === existing.version) return;
+    let requiresApproval = false;
+    if (install.distribution) {
+      assertDistributionManifestCapabilities(bundleManifest);
+      const approved = new Set(existing.manifestJson.capabilities ?? []);
+      requiresApproval = bundleManifest.capabilities.some((capability) => !approved.has(capability));
+    }
+    const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
+    const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
+    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
       manifest: bundleManifest,
+      ...(rebindPackage ? { packagePath: install.localPath } : {}),
+      // Persist the replacement and its approval gate in one write. A crash
+      // between separate manifest/status updates must never grant capabilities.
+      ...(requiresApproval ? { status: "upgrade_pending" as const } : {}),
     });
     deps.logger.info(
       {
         pluginKey: install.pluginKey,
         fromVersion: existing.version,
         toVersion: bundleManifest.version,
+        ...(rebindPackage ? { packagePath: install.localPath } : {}),
       },
       "reconciled bundled plugin manifest to the shipped bundle version",
     );
+    if (requiresApproval) return "upgrade_pending";
   } catch (err) {
     deps.logger.error(
       { err, pluginKey: install.pluginKey },
@@ -352,16 +389,25 @@ export async function ensureBundledPlugins(
   const bundleManifestExists = deps.bundleManifestExists ?? defaultBundleManifestExists;
   for (const install of installs) {
     try {
+      let verifiedManifest: PaperclipPluginManifestV1 | undefined;
+      if (install.distribution) {
+        const manifest = await deps.loader.loadManifest(install.localPath);
+        if (manifest?.id !== install.pluginKey || manifest.version !== install.distribution.version) {
+          throw new Error("Distribution manifest does not match its catalog identity/version");
+        }
+        verifiedManifest = manifest;
+      }
       const existing = await deps.registry.getByKey(install.pluginKey);
       if (existing && (existing.status !== "uninstalled" || !opts.reinstallUninstalled)) {
         // The bundle ships with the release image, so its manifest is the
         // source of truth for a present plugin. Reconcile the persisted
-        // manifest when the shipped bundle declares a newer version. Without
+        // manifest when the shipped bundle declares a different version. Without
         // this step a manifest capability added to a bundle never reaches an
         // existing install, because the auto-install below skips a present
-        // plugin. The reconcile updates only the stored manifest row; the
-        // running worker already runs the shipped code.
-        await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists);
+        // plugin. Distribution entries also replace a legacy/npm package path
+        // before loadAll resolves the worker. Configuration and status stay put.
+        const reconciledStatus = await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest);
+        if (reconciledStatus === "upgrade_pending") continue;
         if (existing.status === "error") {
           await reenableErroredBundledPlugin(existing, install, deps);
           continue;
@@ -374,7 +420,7 @@ export async function ensureBundledPlugins(
       }
       // Skip silently when the bundle is absent (e.g. local dev or an image
       // built without the plugin). Not an error condition.
-      if (!bundleManifestExists(install.localPath)) {
+      if (!verifiedManifest && !bundleManifestExists(install.localPath)) {
         deps.logger.info(
           { pluginKey: install.pluginKey, pluginPath: install.localPath },
           "bundled plugin bundle not present; skipping auto-install",

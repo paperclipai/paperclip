@@ -1,17 +1,26 @@
+import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { companies, type Db } from "@paperclipai/db";
 import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { conflict, forbidden } from "../errors.js";
+import {
+  cloudTenantPrimaryCompanyId,
+  getCloudStackContext,
+  isCloudManagedInstance,
+} from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
+  companyService,
   heartbeatService,
   instanceSettingsService,
   logActivity,
@@ -101,7 +110,7 @@ function assertCanManageInstanceSettings(req: Request) {
 let taskDrainTransitionQueue: Promise<void> = Promise.resolve();
 
 function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
-  const turn = taskDrainTransitionQueue.then(run);
+  const turn = trackIdleWork(taskDrainTransitionQueue.then(run));
   // Normalize to a settled void promise for the next caller in line, so a
   // rejected transition (a failed audit write, for example) cannot wedge
   // every later transition behind it.
@@ -112,7 +121,7 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -181,7 +190,7 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/general", async (req, res) => {
-    // General settings (e.g. keyboardShortcuts) are readable by any
+    // General settings (e.g. feedbackDataSharingPreference) are readable by any
     // authenticated org member or instance admin. Only PATCH requires instance-admin.
     assertBoardOrgAccess(req);
     res.json(await svc.getGeneral());
@@ -292,6 +301,25 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.idleSleepSafety === "1") {
+      // The report covers every company in this process. Ordinary company
+      // members may read process counters, but not instance-wide work state.
+      assertCanManageInstanceSettings(req);
+      // A checkpoint performs platform-owned backup work. Tenant owners can
+      // have instance-admin elevation, but that must not grant the manual
+      // backup authority which managed instances deliberately withhold.
+      if (prepareIdleDatabaseBackup && isCloudManagedInstance() && req.actor.source !== "cloud_control") {
+        throw forbidden("Backup checkpoints are platform-managed on cloud-managed instances", {
+          code: "database_backups_platform_managed",
+        });
+      }
+      const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
+        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
+        () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup);
+      res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
+      return;
+    }
     res.json(heartbeat.getTaskDrainStatus());
   });
 
@@ -310,7 +338,12 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        const computed = heartbeat.computeTaskDrain({ ttlMs });
+        const prior = heartbeat.getTaskDrainStatus();
+        if (prior?.ownerId || (req.body.purpose === "idle" && prior?.draining)) {
+          throw conflict("Another task drain is already active");
+        }
+        const computed = heartbeat.computeTaskDrain({ ttlMs,
+          ...(req.body.purpose === "idle" ? { purpose: "idle" as const } : {}) });
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
         // partial activity history behind — either every company gets the
@@ -334,6 +367,7 @@ export function instanceSettingsRoutes(db: Db) {
                 details: {
                   startedAt: computed.startedAt,
                   expiresAt: computed.expiresAt,
+                  ...(computed.ownerId ? { purpose: "idle", ownerId: computed.ownerId } : {}),
                 },
               }, postCommitActivityPublications),
             ),
@@ -364,6 +398,10 @@ export function instanceSettingsRoutes(db: Db) {
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
       const priorStatus = heartbeat.getTaskDrainStatus();
+      if ((priorStatus.ownerId || req.query.ownerId !== undefined) &&
+          (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) {
+        throw conflict("Task drain ownership changed");
+      }
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
       // separate reads would otherwise make the two values disagree.
@@ -392,6 +430,7 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       heartbeat.stopTaskDrain();
+      pluginWorkers?.releaseIdleSleep?.();
       // See the POST handler above for why a publish failure here is
       // swallowed instead of failing the route: the audit record already
       // committed, so a publish failure here must not undo a drain-stop
@@ -401,6 +440,79 @@ export function instanceSettingsRoutes(db: Db) {
       return wasActive;
     });
     res.json({ wasActive });
+  });
+
+  // Cloud lifecycle read-back: the harness answers a tenant's archive
+  // doorbell by asking this instance what the Cloud-pinned primary
+  // company's status actually is, so the shared-token doorbell can stay a
+  // hint (see cloud-lifecycle-sync.ts). Reached by the harness with a
+  // `lifecycle:read` Cloud control assertion. Instance-admin only for
+  // humans: the response summarizes lifecycle state across EVERY company
+  // on the instance, which a board member scoped to one company must not
+  // be able to infer.
+  router.get("/instance/lifecycle", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const stackId = getCloudStackContext()?.stackId;
+    if (!stackId) {
+      res.status(404).json({ error: "not_cloud_managed" });
+      return;
+    }
+    const primaryCompanyId = cloudTenantPrimaryCompanyId(stackId);
+    const rows = await db
+      .select({ id: companies.id, status: companies.status })
+      .from(companies);
+    const primary = rows.find((row) => row.id === primaryCompanyId);
+    res.json({
+      primaryCompanyId,
+      primaryCompanyStatus: primary?.status ?? "missing",
+      otherUnarchivedCompanyCount: rows.filter(
+        (row) => row.id !== primaryCompanyId && row.status !== "archived",
+      ).length,
+    });
+  });
+
+  // Cloud restore counterpart: "Resume organization" on a stack that was
+  // archived because its primary company was archived must bring the
+  // company back too, or the tenant's next doorbell would re-archive the
+  // stack the customer just resumed. Idempotent: a primary company that is
+  // not archived reports changed:false. Reached by the harness with a
+  // `lifecycle:unarchive-primary` control assertion; instance admins hold
+  // the same power through PATCH /api/companies/:id already.
+  router.post("/instance/lifecycle/unarchive-primary", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const stackId = getCloudStackContext()?.stackId;
+    if (!stackId) {
+      res.status(404).json({ error: "not_cloud_managed" });
+      return;
+    }
+    const primaryCompanyId = cloudTenantPrimaryCompanyId(stackId);
+    const companySvc = companyService(db);
+    const existing = await companySvc.getById(primaryCompanyId);
+    if (!existing) {
+      res.status(404).json({ error: "primary_company_not_found" });
+      return;
+    }
+    if (existing.status !== "archived") {
+      res.json({ status: existing.status, changed: false });
+      return;
+    }
+    // Attribution: only the harness's synthetic cloud_control actor logs
+    // as the Cloud system identity; a human instance admin calling this
+    // endpoint is recorded as themselves, exactly like an in-product
+    // unarchive.
+    const actor = req.actor.source === "cloud_control"
+      ? { actorType: "system" as const, actorId: "paperclip-cloud", agentId: null, runId: null }
+      : (() => {
+          const info = getActorInfo(req);
+          return {
+            actorType: info.actorType,
+            actorId: info.actorId,
+            agentId: info.agentId,
+            runId: info.runId,
+          };
+        })();
+    const updated = await companySvc.update(primaryCompanyId, { status: "active" }, actor);
+    res.json({ status: updated?.status ?? "active", changed: true });
   });
 
   return router;

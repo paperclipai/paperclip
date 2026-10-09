@@ -15,6 +15,8 @@ export interface RunnerSelectorOptions {
   ui: boolean;
   debug: boolean;
   maxParallel: number;
+  maxAutomaticRetries: number;
+  connectionConfig?: string;
 }
 
 export class RunnerSelectorError extends Error {}
@@ -44,6 +46,7 @@ export function parseRunnerSelectors(
     ui: false,
     debug: false,
     maxParallel: Number(process.env.PAPERCLIP_E2E_MAX_PARALLEL ?? "1"),
+    maxAutomaticRetries: 1,
   };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
@@ -53,10 +56,18 @@ export function parseRunnerSelectors(
     else if (flag === "--headed") options.headed = true;
     else if (flag === "--ui") options.ui = true;
     else if (flag === "--debug") options.debug = true;
+    else if (flag === "--connection-config") {
+      options.connectionConfig = valueFor(args, index, flag);
+      index += 1;
+    }
     else if (flag === "--max-parallel") {
       const value = valueFor(args, index, flag);
       index += 1;
       options.maxParallel = Number(value);
+    } else if (flag === "--max-automatic-retries") {
+      const value = valueFor(args, index, flag);
+      index += 1;
+      options.maxAutomaticRetries = Number(value);
     } else if (
       [
         "--id",
@@ -82,6 +93,11 @@ export function parseRunnerSelectors(
 
   if (!Number.isInteger(options.maxParallel) || options.maxParallel < 1) {
     throw new RunnerSelectorError("--max-parallel must be a positive integer");
+  }
+  if (![0, 1].includes(options.maxAutomaticRetries)) {
+    throw new RunnerSelectorError(
+      "--max-automatic-retries must be 0 or 1",
+    );
   }
 
   const hasDimensions =
@@ -157,6 +173,7 @@ export function selectRunnerExecutions(
 
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
+    if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
     if (
       options.all ||
       (options.list &&
@@ -188,6 +205,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
+  if (executions.some(e => e.task.flow === "provider_connection")) throw new RunnerSelectorError("Provider connection journeys use an explicit local/staging connection configuration; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,

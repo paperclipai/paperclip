@@ -5,10 +5,28 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
-Use the helper bundled with the Paperclip skill from the repo root:
+## Native runner
+
+When `register_deliverable` is available, use it for files in the bound local or
+remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
+`contentType`, exact `byteSize` and SHA-256, `title`, and a stable `idempotencyKey`.
+The tool verifies the file, stores an attachment and artifact work product, and
+binds it to the response. Generic API tools and a legacy API key are unnecessary.
+
+Wait for the receipt. It includes `attachmentId`, `contentPath`, and
+`downloadPath`, along with the existing command, revision, entity references,
+and disposition. Reuse the original key after an ambiguous result. A receipt
+confirms storage and response binding in Paperclip; it does not confirm delivery
+to an external chat provider. If registration fails, use the returned error to
+resolve the failure or explain the limitation; do not describe a workspace path
+as an uploaded file.
+
+## Legacy adapters
+
+Use Bash to run the helper bundled with the Paperclip skill from the repo root; installed skill files may not retain executable permissions:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh path/to/output.webm \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```
@@ -26,6 +44,17 @@ It uploads the file to
 `POST /api/companies/{companyId}/issues/{issueId}/attachments` and creates an
 artifact work product on `POST /api/issues/{issueId}/work-products` by default.
 The command prints issue-safe markdown links for the final task comment.
+
+## Task artifact presentation
+
+Existing and newly arriving agent attachments, work products, and documents add
+the task's Artifacts tab without selecting it, opening the side panel or mobile
+drawer, or changing the current document/file link. If the pane is closed, the
+tab is available when the user opens it. This uses stored object IDs, so it works
+with either runner. Uploading a file and registering its work product counts as
+one arrival. Revisions and repeated query refreshes preserve dismissed tabs and
+the user's selection. Plans retain their existing Plan-tab behavior;
+unregistered user input attachments remain in the conversation.
 
 ## Uploaded Artifacts vs Workspace Files
 
@@ -96,7 +125,7 @@ available, not the preferred way to deliver files to users.
 Upload an `.mp4` render:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
   --title "Demo video render" \
   --summary "MP4 render for board review"
 ```
@@ -104,7 +133,7 @@ skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
 Upload a `.webm` render:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
   --title "Walkthrough video" \
   --summary "WebM walkthrough render"
 ```
@@ -113,7 +142,7 @@ The helper detects `.mp4`, `.webm`, and `.mov` content types. If a renderer uses
 an unusual extension, pass the MIME type explicitly:
 
 ```sh
-skills/paperclip/scripts/paperclip-upload-artifact.sh render.bin \
+bash skills/paperclip/scripts/paperclip-upload-artifact.sh render.bin \
   --title "Demo video render" \
   --content-type video/mp4
 ```
@@ -144,3 +173,55 @@ curl -sS -X POST \
 Use `type: "artifact"`, `provider: "paperclip"`, and metadata containing the
 uploaded `attachmentId`. The server canonicalizes `contentType`, `byteSize`,
 `contentPath`, `openPath`, `downloadPath`, and `originalFilename`.
+
+The optional `executionWorkspaceId` on work-product create and update requests
+must identify an execution workspace in the same company. A project workspace
+ID is a different identifier and cannot be used here. Omit the field when no
+execution workspace is available, or send `null` to clear an existing link.
+Invalid references return `422` without changing the work product or the current
+primary product.
+
+## Verification
+
+The file-delivery integration suite runs the real helper through queue and
+HTTP/2 gateways against a disposable API, database, and storage. It also tests
+native registration with generic API tools disabled, duplicate retries, Unicode
+filenames, company isolation, and downloads after deleting the workspace.
+
+```sh
+pnpm exec vitest run server/src/__tests__/file-delivery-bridges.test.ts
+```
+
+To run the same suite on disposable Daytona sandboxes, install the standalone
+Daytona plugin's dependencies and set `DAYTONA_API_KEY` in the test process:
+
+```sh
+PAPERCLIP_FILE_DELIVERY_DAYTONA=1 pnpm exec vitest run server/src/__tests__/file-delivery-bridges.test.ts
+```
+
+The live fixture deletes each sandbox before checking that its attachments
+remain downloadable from Paperclip. It does not run unless explicitly enabled.
+
+## Text attachment previews
+
+In the task chat layout, select a text attachment in Artifacts, a work-product
+card, or a chat attachment chip to open a named right-side tab. Reopening the
+same attachment focuses its existing tab. Tabs can be switched and closed.
+On mobile, the same viewer opens in the task details drawer.
+
+Markdown work products keep their expandable review document, annotations,
+revision indicator, and document links. **Open in tab** is a separate action.
+Work-product cards keep **Download** as a direct original-file download.
+Text file cards provide **Open in tab** beside their existing actions. CSV cards
+keep this action before and after loading their data preview.
+
+Markdown attachments offer **Rendered** and **Raw** views. Other supported text
+files display literal text. Image references and diagram source remain inert;
+opening a preview does not load attachment-selected media URLs. The viewer
+provides a download action. Preview reads
+are limited to 512 KiB; oversized, unsupported, or unavailable files show an
+explicit fallback instead of attempting an unbounded render. A failed read can
+be retried. Workspace files continue to use the existing workspace file viewer.
+
+Storybook: **Tasks / Text file tabs** covers opening from Artifacts, Markdown,
+plain text, empty files, oversized files, missing attachments, and a narrow panel.

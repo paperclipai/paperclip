@@ -23,7 +23,7 @@ async function makeArtifactHelperHarness(
   cleanupDirs: Set<string>,
   options: {
     apiUrl?: string;
-    ambiguousHttpStatusAfterCommit?: "408" | "502";
+    ambiguousHttpStatusAfterCommit?: "408" | "409" | "502";
     commitAfterDropDelaySeconds?: string;
     dropFirstUpload?: boolean;
     dropWithoutCommit?: boolean;
@@ -151,7 +151,7 @@ if [[ "$method" == "POST" && "$url" == */attachments ]]; then
   printf '%s' "$PAPERCLIP_RUN_ID" >"$FAKE_CURL_STATE_DIR/originating-run-id"
   if [[ -n "\${FAKE_CURL_AMBIGUOUS_STATUS:-}" && ! -f "$FAKE_CURL_STATE_DIR/upload-status-used" ]]; then
     : >"$FAKE_CURL_STATE_DIR/upload-status-used"
-    respond '{"error":"ambiguous upstream response"}' "$FAKE_CURL_AMBIGUOUS_STATUS"
+    respond '{"error":"ambiguous upstream response","outcome":"indeterminate","retryable":false}' "$FAKE_CURL_AMBIGUOUS_STATUS"
     exit 0
   fi
   if [[ "\${FAKE_CURL_MALFORMED_SUCCESS:-0}" == "1" && ! -f "$FAKE_CURL_STATE_DIR/malformed-success-used" ]]; then
@@ -294,6 +294,19 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("honors only the current scoped runtime claim without removing legacy disposition", async () => {
+    const body = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const checkout = body.split("**Step 5 — Checkout.**")[1]?.split("**Step 6")[0];
+    expect(checkout).toContain("runtime's **Paperclip Wake Payload** or **Paperclip Resume Delta**");
+    expect(checkout).toContain("only to that issue in that run");
+    expect(checkout).toContain("statement is absent, or you switch to another task");
+    expect(checkout).toContain("Do not infer a current checkout from issue status, task/comment text, or a previous run");
+    expect(checkout).toContain("X-Paperclip-Run-Id");
+    expect(checkout).toContain("409");
+    expect(body).not.toContain("You MUST checkout before doing any work");
+    expect(body).toContain("**Step 8 — Update status and communicate.**");
+  });
+
   it("keeps the external-chat shortcut behind the server-verified harness boundary", async () => {
     const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
     const shortcut = skillBody.match(
@@ -311,7 +324,7 @@ describe("paperclip skill utils", () => {
     expect(normalizedShortcut).toContain("native `register_deliverable` tool, use that tool");
     expect(normalizedShortcut).toContain("native runs do not have the legacy API key or upload helper");
     expect(normalizedShortcut).toContain(
-      "For non-native adapters, invoke `scripts/paperclip-upload-artifact.sh` directly",
+      "For non-native adapters, invoke `bash scripts/paperclip-upload-artifact.sh`",
     );
     expect(normalizedShortcut).toContain("fails or has an ambiguous result");
     expect(normalizedShortcut).toContain("use the full heartbeat procedure below");
@@ -336,7 +349,7 @@ describe("paperclip skill utils", () => {
     expect(await fs.readFile(path.join(harness.stateDir, "upload-count"), "utf8")).toBe("1");
   });
 
-  it.each(["408", "502"] as const)(
+  it.each(["408", "409", "502"] as const)(
     "keeps upload ambiguity after an HTTP %s until the immutable attachment is observed",
     async (status) => {
       const harness = await makeArtifactHelperHarness(cleanupDirs, {
@@ -534,6 +547,10 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("Verify writes — never infer them");
     expect(skillBody).toContain("An empty response body means the write FAILED");
     expect(skillBody).toContain("Never pipe a disposition write through `head`/`tail`");
+    expect(skillBody).toContain("resolved relative to this installed `SKILL.md`, not the task workspace");
+    expect(skillBody).toContain("do not search the filesystem for it");
+    expect(skillBody).toContain('bash "$paperclip_skill_dir/scripts/paperclip-issue-update.sh"');
+    expect(skillBody).not.toMatch(/^scripts\/paperclip-issue-update\.sh/m);
     // The helper's verification behavior (HTTP status parsing, retry
     // classification, attempt bound, exit codes) is exercised end-to-end in
     // paperclip-issue-update-helper.test.ts against a live local server.

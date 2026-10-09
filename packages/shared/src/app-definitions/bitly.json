@@ -58,7 +58,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Bitly API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "Create/manage links in authorized groups. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

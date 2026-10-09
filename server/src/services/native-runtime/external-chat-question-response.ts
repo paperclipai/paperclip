@@ -347,11 +347,18 @@ async function resolveQuestionResponseChain(
     );
   const sourceIds = ids(sourceContext.wakeCommentIds);
   const wakePayload = record(wake.payload);
+  // Legacy CLI adapters create the same durable provider interactions through
+  // the API. Their task binding lives in the saved wake rather than nativeIssueId.
+  // Keep the source task, answer receipt, actor and provider proofs below intact.
+  const sourceTaskMatches = source.runtimeMode === "native"
+    ? source.nativeIssueId === binding.issueId
+    : source.runtimeMode === "legacy"
+      && source.nativeIssueId === null
+      && record(sourceWake.issue).id === binding.issueId;
   if (
     !provider ||
     source.agentId !== binding.agentId ||
-    source.runtimeMode !== "native" ||
-    source.nativeIssueId !== binding.issueId ||
+    !sourceTaskMatches ||
     sourceContext.issueId !== binding.issueId ||
     (source.status !== "succeeded" &&
       !(
