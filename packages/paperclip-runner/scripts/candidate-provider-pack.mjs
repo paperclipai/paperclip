@@ -5,14 +5,14 @@ const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
 /** Only materialized providers enter the serialized manifest and its digest. */
 export function providerPackManifestFields(providers, candidates) {
   return {
-    ...(providers.cursor ? { providers: { cursor: providers.cursor } } : {}),
-    ...(candidates.length ? { candidateProviders: Object.fromEntries(candidates.map(provider => [provider, providers[provider]])) } : {}),
+    ...(providers.cursor || providers.copilot ? { providers: { ...(providers.cursor ? { cursor: providers.cursor } : {}), ...(providers.copilot ? { copilot: providers.copilot } : {}) } } : {}),
+    ...(candidates.length ? { candidateProviders: Object.fromEntries(candidates.filter(provider => provider !== "copilot").map(provider => [provider, providers[provider]])) } : {}),
   };
 }
 
 export function providerPackProviders(platform, architecture, candidates) {
   const cursorSupported = ["darwin-arm64", "darwin-x64", "linux-x64"].includes(`${platform}-${architecture}`);
-  return [...new Set([...(cursorSupported ? ["cursor"] : []), ...candidates])];
+  return [...new Set([...(cursorSupported ? ["cursor", "copilot"] : []), ...candidates])];
 }
 
 export function parseProviderPackArguments(args) {
@@ -33,6 +33,10 @@ export function parseProviderPackArguments(args) {
 /** Closed source-owned builder registry; provider branches add their exact pins. */
 export async function materializeCandidateProviderPack({ provider, outputRoot }) {
   if (!CANDIDATES.has(provider)) throw new Error("Unknown candidate provider");
+  if (provider === "copilot") {
+    const { buildPinnedCopilotDistribution } = await import("./build-copilot-distribution.mjs");
+    return buildPinnedCopilotDistribution({ outputRoot });
+  }
   if (provider === "cursor") {
     const result = await materializePinnedCursorDistribution({ destination: outputRoot });
     return { version: result.version,

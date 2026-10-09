@@ -44,11 +44,11 @@ describe("qualified ACPX runtime sidecar", () => {
     const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
       `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
        const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
-       return async function(activeTurnId, request, context) { const agent = openParams.agent, toolEvidence = undefined; ${source.slice(start, end)}`)(
+       return async function(activeTurnId, agent, request, context, toolEvidence) { ${source.slice(start, end)}`)(
       permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }> }) => emitted.push(payload),
     );
     const abort = new AbortController();
-    const pending = wait("turn-1", { sessionId: "session", inferredKind: "edit", raw: {
+    const pending = wait("turn-1", agent, { sessionId: "session", inferredKind: "edit", raw: {
       sessionId: "session", toolCall: { toolCallId: "call", title: "Edit file" },
       options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ kind, optionId: kind, name: kind })),
     } }, { signal: abort.signal, responseDelivery: Promise.resolve() });
@@ -739,7 +739,7 @@ function loadWaitForTool(input: {
     (value: string) => value,
     input.tools,
     "test-turn",
-    (_eventType: string, payload: unknown) => input.emitted.push(payload),
+    (_eventType: string, payload: unknown) => { input.emitted.push(payload); return true; },
     "paperclip_finish",
     "paperclip_block",
     (argumentsValue: unknown) => ({

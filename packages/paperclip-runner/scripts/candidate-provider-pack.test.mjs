@@ -30,10 +30,10 @@ test("candidate selection is explicit", () => {
   assert.deepEqual(parseProviderPackArguments(["--", "/pack"]), { output: "/pack", candidates: [] });
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=pi,cursor"]), { output: "/pack", candidates: ["pi", "cursor"] });
 });
-test("normal packs include Cursor on its three pinned targets without breaking other hosts", () => {
+test("normal packs include Cursor and Copilot on their three pinned targets without breaking other hosts", () => {
   for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]]) {
-    assert.deepEqual(providerPackProviders(platform, architecture, []), ["cursor"]);
-    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), ["cursor"]);
+    assert.deepEqual(providerPackProviders(platform, architecture, []), ["cursor", "copilot"]);
+    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), ["cursor", "copilot"]);
   }
   assert.deepEqual(providerPackProviders("linux", "arm64", []), []);
   assert.deepEqual(providerPackProviders("win32", "x64", []), []);
@@ -44,4 +44,14 @@ test("candidate builder cannot admit unknown providers, options or duplicate ass
     assert.throws(() => parseProviderPackArguments(args));
   }
   await assert.rejects(materializeCandidateProviderPack({ provider: "arbitrary", outputRoot: "/tmp/unused" }), /Unknown candidate/);
+});
+
+test("normal Copilot inventory needs no candidate override and has no duplicate candidate", () => {
+  const copilot = { qualification: "qualified", version: "1.0.88" };
+  for (const candidates of [[], ["copilot"]]) {
+    const fields = providerPackManifestFields({ copilot }, candidates);
+    assert.equal(fields.providers.copilot, copilot);
+    assert.equal(fields.candidateProviders?.copilot, undefined);
+    assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  }
 });

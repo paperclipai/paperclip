@@ -1,3 +1,5 @@
+import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
+import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyCursorInstallation } from "./cursor-installation.js";
 import { assertCursorWorkspacePolicy } from "./cursor-launch-policy.js";
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxAgent, type QualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -5,6 +7,7 @@ import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
 export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile): Promise<VerifiedAcpxInstallation> {
+  if (profile.agent === "copilot") return verifyCopilotInstallation(profile);
   if (profile.agent === "cursor") {
     try { return await verifyCursorInstallation(profile); }
     catch (error) {
@@ -25,6 +28,7 @@ export async function assertAcpxProfileWorkspace(agent: QualifiedAcpxAgent, work
 
 /** Called with the sanitized launch environment, never ambient process.env. */
 export function assertAcpxProfileEnvironment(agent: QualifiedAcpxAgent, environment: Readonly<NodeJS.ProcessEnv>): void {
+  if (agent === "copilot") assertCopilotCredentials(environment);
   if (agent === "cursor" && !environment.CURSOR_API_KEY?.trim() && !environment.CURSOR_AUTH_TOKEN?.trim()) {
     throw Object.assign(new Error("Cursor credentials are missing. Bind a company secret to CURSOR_API_KEY or CURSOR_AUTH_TOKEN in the agent environment."), { code: "CURSOR_CREDENTIALS_MISSING", retryable: false });
   }
@@ -32,6 +36,11 @@ export function assertAcpxProfileEnvironment(agent: QualifiedAcpxAgent, environm
 
 /** Provider admission diagnostics expose no raw provider strings or credentials. */
 export function classifyAcpxProfileError(agent: QualifiedAcpxAgent, error: unknown): Error | null {
+  if (agent === "copilot") {
+  const failure = classifyCopilotFailure(error);
+  if (failure.code === "COPILOT_REQUEST_FAILED") return null;
+  return Object.assign(new Error(failure.message), { code: failure.code, retryable: false });
+  }
   if (agent !== "cursor" || !(error instanceof Error)) return null;
   const message = error.message;
   let code: string;

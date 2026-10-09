@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runnerdRuntimeRequestExpiryNotification } from "../../live/runnerd-codex-transport.js";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
@@ -2405,6 +2406,67 @@ describe("Codex app-server Codex driver", () => {
       },
     ]);
     for (const event of terminal) expect(validatePrpEvent(event).ok).toBe(true);
+  });
+
+  it("preserves runnerd permission expiry before a failed provider terminal and refuses late approval", async () => {
+    const transport = new FakeCodexTransport();
+    const resolve = vi.fn(async () => {});
+    transport.runtimeRequestResolver = resolve;
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-native-expiry", normalizedSessionId: "session-native-expiry", workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+    const events: PrpEvent[] = [];
+    const consume = (async () => { for await (const event of session.events()) events.push(event); })();
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Leave the native edit unanswered." } });
+    const pending = transport.invoke({ id: "native-edit-permission", method: "session/request_permission", params: {
+      threadId: "thread-1", turnId, itemId: "native-edit", reason: "Write file",
+      choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+      origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+    } });
+    await vi.waitFor(() => expect(session.pendingRuntimeRequests?.()).toHaveLength(1));
+    // Exact Rust ACPX projector settlement shape; the facade uses its own
+    // provider-turn identity just as it does when creating the callback.
+    const payload = { provider: "acpx", requestId: "native-edit-permission", requestKind: "permission_approval",
+      requestType: "permission", turnId: "durable-controller-turn", itemId: "durable-item",
+      reason: "provider_process_lost", replayAllowed: false, adapter: "acpx-runtime-sidecar" };
+    for (const kind of ["runtime_request.resolved", "runtime_request.cancelled", "runtime_request.created"])
+      expect(runnerdRuntimeRequestExpiryNotification(kind, payload, "thread-1", turnId)).toBeNull();
+    const expiry = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", turnId)!;
+    transport.push(expiry.method, expiry.params);
+    transport.push(expiry.method, expiry.params); // Same durable retirement cannot settle twice.
+    await pending;
+    expect(session.pendingRuntimeRequests?.()).toEqual([]);
+    await expect(session.resolveRuntimeRequest?.({ requestId: "native-edit-permission", turnId, resolution: { action: "accept" } }))
+      .rejects.toThrow();
+    expect(resolve).not.toHaveBeenCalled();
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "Provider died" } } });
+    await vi.waitFor(() => expect(events.some(event => event.eventType === "turn.failed")).toBe(true));
+    await session.close(); await consume;
+    const settlements = events.filter(event => ["runtime_request.expired", "runtime_request.cancelled", "runtime_request.resolved"].includes(event.eventType));
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({ eventType: "runtime_request.expired", turnId, itemId: "native-edit", payload: { ...payload, turnId, itemId: "native-edit" } });
+    expect(events.indexOf(settlements[0]!)).toBeLessThan(events.findIndex(event => event.eventType === "turn.failed"));
+    expect(validatePrpEvent(settlements[0]!)).toMatchObject({ ok: true });
+  });
+
+  it.each(["turn", "kind", "type", "replay"])("refuses canonical permission expiry with a changed %s binding", async kind => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({ runId: "expiry-bound", normalizedSessionId: "expiry-bound", workingDirectory: TEST_WORKING_DIRECTORY });
+    const events: PrpEvent[] = [];
+    const consume = (async () => { for await (const event of session.events()) events.push(event); })();
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Wait for permission" } });
+    const pending = transport.invoke({ id: "bound-permission", method: "session/request_permission", params: {
+      threadId: "thread-1", turnId, itemId: "edit", reason: "Edit", choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+      origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+    } });
+    await vi.waitFor(() => expect(session.pendingRuntimeRequests?.()).toHaveLength(1));
+    const payload = { requestId: "bound-permission", requestKind: kind === "kind" ? "runtime" : "permission_approval",
+      requestType: kind === "type" ? "input" : "permission", replayAllowed: kind === "replay", reason: "provider_process_lost" };
+    const notification = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", kind === "turn" ? "foreign-turn" : turnId)!;
+    transport.push(notification.method, notification.params);
+    await pending; await consume; await session.close();
+    expect(events.some(e => e.eventType === "runtime_request.expired")).toBe(false);
+    expect(events.some(e => e.eventType === "session.failed" && e.payload.code === "turn_binding_mismatch")).toBe(true);
   });
 
   it("expires a canonical input with its full question set when the provider transport is lost", async () => {

@@ -469,9 +469,11 @@ describe("HarnessDriverBackend", () => {
 
   it("allows only the run id to change when a harness session is attached", async () => {
     const attachedRunIds: string[] = [];
+    const grants: unknown[] = [];
     class AttachableHarnessSession extends FakeHarnessSession {
-      async attachRun(input: { runId: string }) {
+      async attachRun(input: { runId: string; currentRunGrant?: { runtimeContext: null; instructions: string } }) {
         attachedRunIds.push(input.runId);
+        grants.push(input.currentRunGrant);
       }
     }
     const backend = new HarnessDriverBackend({
@@ -505,8 +507,10 @@ describe("HarnessDriverBackend", () => {
 
     await expect(session.attachRun?.({
       identity: { ...originalIdentity, runId: "run-2" },
+      currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." },
     })).resolves.toBeUndefined();
     expect(attachedRunIds).toEqual(["run-2"]);
+    expect(grants).toEqual([{ runtimeContext: null, instructions: "Current registered instructions." }]);
     expect(session.identity()).toEqual({ ...originalIdentity, runId: "run-2" });
   });
 

@@ -1368,27 +1368,47 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
-  let directoriesReleased = false;
-  const releaseDirectories = async (): Promise<void> => {
-    if (directoriesReleased) return;
-    directoriesReleased = true;
-    await Promise.all([
+  let spawnedChild: ChildProcess | undefined;
+  let directoriesRelease: Promise<void> | undefined;
+  let snapshotRetirement: Promise<void> | undefined;
+  const releaseDirectories = (): Promise<void> => {
+    return (directoriesRelease ??= Promise.all([
       commandDirectory.close(),
       ...dependencyAncestors.map((handle) => handle.close()),
       ...(providerRuntimeExecutable === null
         ? []
         : [providerRuntimeExecutable.close()]),
-    ]);
+    ]).then(() => undefined));
+  };
+  const retireSnapshot = (): Promise<void> => {
+    if (
+      privateSnapshot &&
+      spawnedChild?.pid !== undefined &&
+      spawnedChild.exitCode === null &&
+      spawnedChild.signalCode === null
+    ) {
+      return Promise.reject(
+        new Error("Verified ACPX snapshot cannot retire before provider exit"),
+      );
+    }
+    return (snapshotRetirement ??= Promise.resolve()
+      .then(() => privateSnapshot?.close())
+      .catch((error: unknown) => {
+        snapshotRetirement = undefined;
+        throw error;
+      }));
   };
   const releaseDirectoriesBestEffort = (): void => {
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed) return;
+    const wasConsumed = consumed;
     consumed = true;
-    verifiedBytes.fill(0);
+    // A spawned command owns its source buffer until its pipe write completes.
+    if (!wasConsumed) verifiedBytes.fill(0);
     await releaseDirectories();
-    await privateSnapshot?.close();
+    // Consumption prevents a second launch; it does not complete retirement.
+    await retireSnapshot();
   };
   return {
     spawn(
@@ -1457,7 +1477,7 @@ function commandLease(
           environment[VERIFIED_PROVIDER_RUNTIME_TARGET_ENV] =
             providerRuntimeEnvironmentVariable;
         }
-        child = spawnChildProcess(
+        child = spawnedChild = spawnChildProcess(
           runtimeHandoff.executable,
           guarded
             ? [
@@ -1562,12 +1582,18 @@ function commandLease(
       } catch (error) {
         verifiedBytes.fill(0);
         releaseDirectoriesBestEffort();
-        void privateSnapshot?.close();
+        if (spawnedChild?.pid !== undefined) {
+          spawnedChild.once("exit", () => { void retireSnapshot().catch(() => undefined); });
+          spawnedChild.once("error", () => { void retireSnapshot().catch(() => undefined); });
+          spawnedChild.kill();
+        } else {
+          void retireSnapshot().catch(() => undefined);
+        }
         throw error;
       }
       releaseDirectoriesBestEffort();
-      child.once("exit", () => { void privateSnapshot?.close(); });
-      child.once("error", () => { void privateSnapshot?.close(); });
+      child.once("exit", () => { void retireSnapshot().catch(() => undefined); });
+      child.once("error", () => { void retireSnapshot().catch(() => undefined); });
       const sourceInput = child.stdio[COMMAND_SOURCE_FD] as Writable | null;
       if (sourceInput === null) {
         verifiedBytes.fill(0);

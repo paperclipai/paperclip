@@ -31,6 +31,8 @@ export interface CodexNativeSessionBackendOptions {
     startedAt: string;
   }) => Promise<void>;
   transportFactory?: (context?: {
+    /** Current run instructions are required before a recovered transport opens. */
+    baseInstructions?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -143,6 +145,7 @@ function createTransportBackedNativeSessionBackend(
     ...nativeTaskConstraints(input),
   ];
 
+  const baseInstructions = nativeSystemInstructions(input);
   return new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
@@ -155,7 +158,7 @@ function createTransportBackedNativeSessionBackend(
         input.provider.kind === "codex"
           ? (input.provider.approvalPolicy ?? "never")
           : "never",
-      baseInstructions: nativeSystemInstructions(input),
+      baseInstructions,
       instructionWorkingCopyRoot: "runtimeContext" in input ? input.runtimeContext.instructions.workingCopy?.rootPath : undefined,
       includeSkillInstructions: isCodex && "runtimeContext" in input,
       skillInputs: isCodex
@@ -178,7 +181,9 @@ function createTransportBackedNativeSessionBackend(
       runnerInstanceId:
         options.runnerInstanceId ?? `paperclip-native-${input.binding.runId}`,
       onSpawn: options.onSpawn,
-      transportFactory: options.transportFactory,
+      transportFactory: options.transportFactory
+        ? (context) => options.transportFactory!({ ...context, baseInstructions })
+        : undefined,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
       completionFeedback: options.completionFeedback,

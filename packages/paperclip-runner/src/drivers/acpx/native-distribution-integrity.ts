@@ -16,6 +16,8 @@ export interface NativeAcpxDistributionInput {
   entrypoint?: string;
   fixedArguments: readonly string[];
   isolatedCacheEnvironmentName?: "COPILOT_PKG_CACHE_HOME";
+  /** Trusted Copilot profile only; resolved inside each immutable spawn lease. */
+  copilotDistributionDirectory?: string;
 }
 export interface NativeAcpxDistributionSnapshot {
   snapshot: AcpxPrivateSnapshot;
@@ -32,6 +34,7 @@ const NATIVE_COPY_CONCURRENCY = 8;
 const NATIVE_COPY_BUFFER_BYTES = 32 * 1024 * 1024;
 const BOOTSTRAP = ".paperclip-native-entry.cjs";
 const GUARD = ".paperclip-native-module-guard.cjs";
+const COPILOT_ENTRY = ".paperclip-copilot-entry";
 export const NATIVE_ACPX_BOOTSTRAP_NAME = BOOTSTRAP;
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const validPath = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4_096 && !isAbsolute(value) && !/[\u0000-\u001f\u007f\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..");
@@ -58,7 +61,8 @@ export function parseNativeAcpxDistributionEntries(value: unknown, expectedSha25
 }
 
 export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistributionInput): Promise<NativeAcpxDistributionEntry[]> {
-  if (!validPath(input.executable) || (input.entrypoint !== undefined && !validPath(input.entrypoint)) || input.fixedArguments.length > 128 || input.fixedArguments.some(arg => typeof arg !== "string" || arg.length > 16_384 || arg.includes("\0")) || (input.isolatedCacheEnvironmentName !== undefined && input.isolatedCacheEnvironmentName !== "COPILOT_PKG_CACHE_HOME")) throw new Error("Native ACPX launch declaration is invalid");
+  if (!validPath(input.executable) || (input.entrypoint !== undefined && !validPath(input.entrypoint)) || input.fixedArguments.length > 128 || input.fixedArguments.some(arg => typeof arg !== "string" || arg.length > 16_384 || arg.includes("\0")) || (input.isolatedCacheEnvironmentName !== undefined && input.isolatedCacheEnvironmentName !== "COPILOT_PKG_CACHE_HOME")
+    || (input.copilotDistributionDirectory !== undefined && (!validPath(input.copilotDistributionDirectory) || input.entrypoint !== undefined))) throw new Error("Native ACPX launch declaration is invalid");
   const file = await open(input.manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await file.stat({ bigint: true });
@@ -67,6 +71,7 @@ export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistrib
     if (!same(before, await file.stat({ bigint: true })) || bytes.length !== Number(before.size)) throw new Error("Native ACPX manifest changed while read");
     const entries = parseNativeAcpxDistributionEntries(JSON.parse(bytes.toString("utf8")), input.expectedClosureSha256);
     if (!entries.some(entry => entry.path === input.executable && entry.executable && entry.size > 0) || (input.entrypoint !== undefined && !entries.some(entry => entry.path === input.entrypoint && entry.size > 0))) throw new Error("Native ACPX executable or entrypoint is absent from its closure");
+    if (input.copilotDistributionDirectory !== undefined && !entries.some(entry => entry.path === `${input.copilotDistributionDirectory}/index.js` && entry.size > 0)) throw new Error("Copilot owned entrypoint is absent from its closure");
     return entries;
   } finally { await file.close(); }
 }
@@ -143,12 +148,23 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     if (!same(rootBefore, await heldRoot.stat({ bigint: true })) || !same(rootBefore, await lstat(source, { bigint: true }))) throw new Error("Native ACPX distribution root changed during snapshot");
     const executable = join(packageRoot, ...input.executable.split("/"));
     const args = [...(input.entrypoint === undefined ? [] : ["--require", join(packageRoot, GUARD), join(packageRoot, ...input.entrypoint.split("/"))]), ...input.fixedArguments];
-    if (input.entrypoint !== undefined) {
+    let copilotEntryDirectory: string | undefined;
+    if (input.copilotDistributionDirectory !== undefined) {
+      copilotEntryDirectory = join(packageRoot, COPILOT_ENTRY);
+      await mkdir(copilotEntryDirectory, { mode: 0o700 }); directories.add(copilotEntryDirectory);
+      const shim = Buffer.from([
+        `require(${JSON.stringify(join(packageRoot, GUARD))});`,
+        `import(require("node:url").pathToFileURL(${JSON.stringify(join(packageRoot, input.copilotDistributionDirectory, "index.js"))}).href).catch(error=>{console.error(error);process.exitCode=1;});`,
+      ].join("\n"));
+      const shimPath = join(copilotEntryDirectory, "index.js");
+      await writeFile(shimPath, shim, { mode: 0o400, flag: "wx" }); digests[shimPath] = sha256(shim);
+    }
+    if (input.entrypoint !== undefined || copilotEntryDirectory !== undefined) {
       const guard = Buffer.from(nativeModuleGuard(digests));
       await writeFile(join(packageRoot, GUARD), guard, { mode: 0o400, flag: "wx" });
       digests[join(packageRoot, GUARD)] = sha256(guard);
     }
-    const bootstrap = Buffer.from(nativeBootstrap(executable, digests[executable]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined));
+    const bootstrap = Buffer.from(nativeBootstrap(executable, digests[executable]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
     await writeFile(join(packageRoot, BOOTSTRAP), bootstrap, { mode: 0o400, flag: "wx" });
     digests[join(packageRoot, BOOTSTRAP)] = sha256(bootstrap);
     // executable is null: commandLease's separately-qualified provider runtime
@@ -164,7 +180,7 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
   } finally { await heldRoot.close(); }
 }
 
-function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }): string {
+function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
   return [
     'const {spawn}=require("node:child_process");',
     'const fs=require("node:fs");',
@@ -174,12 +190,23 @@ function nativeBootstrap(executable: string, executableDigest: string, args: str
     'const env={...process.env}; delete env.PAPERCLIP_ACPX_NATIVE_GUARDED; delete env.PAPERCLIP_ACPX_PRIVATE_SNAPSHOT; delete env.PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE;',
     'env.NODE_DISABLE_COMPILE_CACHE="1"; delete env.NODE_COMPILE_CACHE;',
     ...(cache ? [`env[${JSON.stringify(cache.name)}]=${JSON.stringify(cache.value)};`] : []),
+    ...(copilotEntryDirectory ? [
+      // Never permit the native loader to choose a different cached version,
+      // app, bootstrap mode or module path supplied by a workspace/caller.
+      'for(const name of ["COPILOT_CLI_VERSION","COPILOT_CLI_DIST_DIR","COPILOT_CLI_RESOLVED_DIST_DIR","COPILOT_VOICE_SERVER_MODE","COPILOT_SHUTDOWN_FLUSH","NODE_OPTIONS","NODE_PATH"])delete env[name];',
+      `env.COPILOT_CLI_DIST_DIR=${JSON.stringify(copilotEntryDirectory)};`,
+    ] : []),
     'if(guarded)for(const fd of [5,6,7,8])fs.fstatSync(fd);',
     `const executable=${JSON.stringify(executable)};const fd=fs.openSync(executable,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);`,
     `if(require("node:crypto").createHash("sha256").update(fs.readFileSync(fd)).digest("hex")!==${JSON.stringify(executableDigest)})throw new Error("Native ACPX executable changed before spawn");`,
     'const stdio=guarded?[0,1,2,5,6,7,8]:[0,1,2]; const childExecutable=process.platform==="linux"?"/proc/self/fd/"+stdio.length:executable;stdio.push(fd);',
     `const child=spawn(childExecutable,${JSON.stringify(args)},{env,cwd:process.cwd(),shell:false,detached:false,stdio});fs.closeSync(fd);`,
-    'child.once("error",()=>process.exit(1)); child.once("exit",(code,signal)=>process.exit(signal?1:code??1));',
+    // A guarded Node launcher has a pending filesystem read on its guardian
+    // pipe. process.exit can wait for that read while the guardian waits for
+    // this launcher to exit. Retire the live owned group through the kernel;
+    // no saved PID/group identity or provider JavaScript cleanup is required.
+    'const retire=code=>{if(guarded){try{process.kill(0,"SIGKILL");}catch{process.kill(process.pid,"SIGKILL");}}else process.exit(code);};',
+    'child.once("error",()=>retire(1)); child.once("exit",(code,signal)=>retire(signal?1:code??1));',
     'for(const signal of ["SIGTERM","SIGINT","SIGHUP"])process.on(signal,()=>child.kill(signal));',
   ].join("\n");
 }

@@ -90,6 +90,9 @@ export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
+/** Decodable history; current immutable admission comes from the shared manifest. */
+export type NativeAcpxProfileVersion = AcpxProfileVersion;
+
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
   protocolVersion: 1;

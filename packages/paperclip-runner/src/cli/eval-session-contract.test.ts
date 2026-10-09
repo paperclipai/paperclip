@@ -7,8 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 import { createCapabilityFixtureState } from "../mock-core/capability-control-plane-types.js";
 
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
-import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import {
   evalSessionUsage,
   parseEvalSessionRequest,
@@ -126,6 +127,25 @@ describe("eval-session request contract", () => {
       await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(expected)], { serviceFactory }))
         .rejects.toThrow("ENOENT");
       expect(serviceFactory).not.toHaveBeenCalled();
+      expect(await readdir(workspace)).toEqual(["request.json"]);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it("requires bounded exact Copilot profile admission before loading provider state", async () => {
+    const args = ["--request", "/tmp/request.json", "--output", "/tmp/result.json", "--candidate-profile", "copilot"];
+    expect(() => parseEvalSessionCliArgs(args)).toThrow("require --expected-acpx-profile");
+    for (const invalid of ["[]", "null", "malformed", JSON.stringify({ overflow: "x".repeat(4096) })]) {
+      expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", invalid])).toThrow();
+    }
+    const profile = resolveQualifiedAcpxProfile("copilot", "gpt-5.6-luna");
+    expect(parseEvalSessionCliArgs([...args, "--expected-acpx-profile", JSON.stringify(profile)]).expectedAcpxProfile).toEqual(profile);
+    const workspace = await mkdtemp(join(tmpdir(), "eval-profile-admission-"));
+    try {
+      const path = join(workspace, "request.json");
+      await writeFile(path, JSON.stringify(request({ provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" })));
+      const factory = vi.fn();
+      await expect(runEvalSessionCli(["--request", path, "--output", join(workspace, "output.json"), "--candidate-profile", "copilot", "--expected-acpx-profile", JSON.stringify({ ...profile, commandDigest: `sha256:${"0".repeat(64)}` })], { serviceFactory: factory })).rejects.toThrow("does not match the built runner profile");
+      expect(factory).not.toHaveBeenCalled();
       expect(await readdir(workspace)).toEqual(["request.json"]);
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });

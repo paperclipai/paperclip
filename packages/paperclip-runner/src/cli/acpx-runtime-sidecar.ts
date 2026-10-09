@@ -31,7 +31,7 @@ import {
   normalizeAcpFormElicitation,
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
-import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { openCodexAcpxRuntime, AcpxProviderProcessLostError } from "../drivers/acpx/codex-runtime-adapter.js";
 import { AcpxApprovalRequiredError } from "../drivers/acpx/permission-policy.js";
 import { normalizeAcpxPermission, type NormalizedAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
@@ -63,6 +63,7 @@ import {
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
+import type { CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
 import {
   persistedAcpxTurnUsage,
   acpxUsageEstimateNotice,
@@ -149,6 +150,7 @@ let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
 let runId: string | null = null;
 let turnId: string | null = null;
+let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
 let closing = false;
@@ -297,6 +299,7 @@ async function dispatch(
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+          ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {
           // Admission can emit a snapshot before the verified host is assigned.
@@ -379,6 +382,7 @@ async function dispatch(
       emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
       unavailable: () => diagnostic(`${openParams!.agent}_evidence_unavailable`, "ACP tool evidence is incomplete; permission and terminal outcomes are unchanged."),
     });
+    activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -663,7 +667,7 @@ async function pumpTurn(
     terminal = {
       status: "failed",
       error: {
-        ...(error instanceof AcpxApprovalRequiredError ? { code: error.code } : {}),
+        ...(error instanceof AcpxApprovalRequiredError || error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}),
         message: safeMessage(error),
         retryable: false,
       },
@@ -720,6 +724,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     // This is the same roundtrip used by ordinary dynamic tools; emitting a
     // local semantic_result here would let an invalid review handoff appear
     // accepted before the server has checked it.
+    const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
     const forwarded = emit(
       "runtime.tool_called",
       {
@@ -744,6 +749,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
           // A pipe write alone does not prove receiver admission. Only this
           // call's turn-bound tool.resolve success confirms runnerd accepted
           // the validated body; rejection, cancellation and timeout stay null.
+          commitNormalizedInput?.();
           settle(result);
         },
         reject,

@@ -27,6 +27,12 @@ export interface NativeRuntimeContextSnapshot {
   aggregateDigest: string;
 }
 
+/** Authenticated current-run grants; immutable session policy is verified separately. */
+export interface NativeRunRuntimeGrant {
+  runtimeContext: NativeRuntimeContextSnapshot | null;
+  instructions: string;
+}
+
 export class NativeRuntimeContextError extends Error {
   readonly code = "native_runtime_context_invalid" as const;
   constructor(message: string) { super(message); this.name = "NativeRuntimeContextError"; }

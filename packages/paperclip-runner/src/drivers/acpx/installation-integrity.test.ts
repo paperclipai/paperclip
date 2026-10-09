@@ -1927,7 +1927,7 @@ async function expectOutput(
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
   const normalized = process.platform === "darwin"
-    ? stdout.replace(/\/private\/var\/[^"\s]*\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
+    ? stdout.replace(/\/private\/(?:var\/[^"\s]*|tmp)\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
     : stdout;
   expect(normalized).toBe(expected);
 }

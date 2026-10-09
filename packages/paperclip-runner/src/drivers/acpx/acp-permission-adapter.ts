@@ -3,6 +3,8 @@ import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-dr
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 
 
+import { safeCopilotEditTarget } from "./copilot-permission-context.js";
+
 export type AcpxPermissionAction = "accept" | "accept_for_session" | "decline" | "cancel";
 export interface NormalizedAcpxPermission {
   title: string;
@@ -36,6 +38,8 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
     || (options.provider === "cursor" && !call.toolCallId.trim())) {
     throw new Error("ACP permission request omitted its tool identity");
   }
+  const needsEditContext = options.provider === "copilot" && call.kind === "edit";
+  const target = needsEditContext ? safeCopilotEditTarget(call, options.workingDirectory) : undefined;
   const bindings = new Map<AcpxPermissionAction, AcpPermissionDecision["outcome"]>();
   const choices: NormalizedAcpxPermission["choices"] = [];
   for (const [key, kind, label] of [
@@ -43,6 +47,7 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
     ["accept_for_session", "allow_always", "Allow for session"],
     ["decline", "reject_once", "Deny"],
   ] as const) {
+    if (needsEditContext && !target && (key === "accept" || key === "accept_for_session")) continue;
     if (kind === "allow_always" && options.allowAlwaysScope !== "session") continue;
     if (byKind.has(kind)) { bindings.set(key, kind); choices.push({ key, label }); }
   }
@@ -50,7 +55,9 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
   bindings.set("cancel", "cancel");
   choices.push({ key: "cancel", label: "Cancel" });
   return {
-    title: typeof call.title === "string" && call.title.trim()
+    title: needsEditContext
+      ? target ? `Change file: ${target}` : "File change requested; target unavailable. Deny or cancel this request."
+      : typeof call.title === "string" && call.title.trim()
       ? call.title.slice(0, 4_000) : "Approve provider operation",
     kind: request.inferredKind ?? "other",
     // Display/durable identity must match the tool-event boundary. Leave the

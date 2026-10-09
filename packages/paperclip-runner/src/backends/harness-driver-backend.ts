@@ -13,6 +13,7 @@ import type {
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import type { NativeRunRuntimeGrant } from "../contracts/runtime-context.js";
 import type {
   PrpEvent,
   PrpTerminalState,
@@ -471,6 +472,7 @@ class HarnessNativeSession implements NativeSession {
 
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
+    currentRunGrant?: NativeRunRuntimeGrant;
   }): Promise<void> {
     this.#assertProtocolIntegrity();
     const currentIdentity = this.#input.identity;
@@ -486,7 +488,9 @@ class HarnessNativeSession implements NativeSession {
       throw new Error("native_session_multi_run_unavailable");
     }
     try {
-      await this.#session.attachRun({ runId: input.identity.runId });
+      await this.#session.attachRun({ runId: input.identity.runId,
+        ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+      });
       this.#assertProtocolIntegrity();
     } catch (error) {
       this.#rethrowProtocolIntegrity(error);

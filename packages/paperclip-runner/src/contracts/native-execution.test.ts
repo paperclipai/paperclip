@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, type NativeExecutionInputV1 } from "./native-execution.js";
+import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -324,6 +325,20 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
+  it.each(Object.values(QUALIFIED_ACPX_PROFILES))("round-trips the registered $agent profile through execution admission", (profile) => {
+    const { qualificationModel: _qualificationModel, reportedModelId: _reportedModelId,
+      permissionPolicy, qualificationStatus: _qualificationStatus, modelPolicy: _modelPolicy,
+      ...snapshot } = profile;
+    const provider = { kind: "acpx", agent: profile.agent, model: "explicit-test-model", permissionPolicy, profile: snapshot } as const;
+    const parsed = parseNativeExecutionInput({
+      ...input,
+      session: { ...input.session, driverKind: "acpx_runtime" },
+      provider,
+    });
+    expect(parsed.provider).toEqual(provider);
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+  });
+
   it.each([1, 2, 3, 4, 5] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
@@ -356,7 +371,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 6, 1.5, "5", null]) {
+    for (const unsupportedVersion of [0, 6, 14, 15, 16, 17, 18, 19, 23, 24, 25, 1.5, "5", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
@@ -373,6 +388,31 @@ describe("NativeExecutionInputV1", () => {
       ...input,
       session: { ...input.session, driverKind: "opencode_server" },
       provider,
+    })).toThrow("does not match");
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] as const)("decodes closed Copilot profile history at version %s without admitting a future version", (agentProfileVersion) => {
+    const { qualificationModel: _qualificationModel, reportedModelId: _reportedModelId,
+      permissionPolicy, qualificationStatus: _qualificationStatus, modelPolicy: _modelPolicy,
+      ...snapshot } = QUALIFIED_ACPX_PROFILES.copilot;
+    const provider = {
+      kind: "acpx", agent: "copilot", model: "gpt-5.6-luna", permissionPolicy,
+      profile: { ...snapshot, agentProfileVersion },
+    } as const;
+    const value = { ...input, session: { ...input.session, driverKind: "acpx_runtime" }, provider };
+    const parsed = parseNativeExecutionInput(value);
+    expect(parsed.provider).toEqual(provider);
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    for (const unsupportedVersion of [0, 34, 1.5, "33", null]) {
+      expect(() => parseNativeExecutionInput({
+        ...value, provider: { ...provider, profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
+      })).toThrow("qualified ACPX v1 profile");
+    }
+    expect(() => parseNativeExecutionInput({
+      ...value, provider: { ...provider, profile: { ...provider.profile, agent: "pi" } },
+    })).toThrow("qualified ACPX v1 profile");
+    expect(() => parseNativeExecutionInput({
+      ...value, session: { ...value.session, driverKind: "opencode_server" },
     })).toThrow("does not match");
   });
 
@@ -512,7 +552,12 @@ describe("native task context ownership", () => {
     });
   }
 
+  const { qualificationModel: _copilotQualificationModel, reportedModelId: _copilotReportedModelId,
+    permissionPolicy: _copilotPermissionPolicy, qualificationStatus: _copilotQualificationStatus, modelPolicy: _copilotModelPolicy,
+    ...copilotSnapshot } = QUALIFIED_ACPX_PROFILES.copilot;
+
   it.each([
+    { driverKind: "acpx_runtime", provider: { kind: "acpx", agent: "copilot", model: "gpt-5.6-luna", permissionMode: "deny-all", profile: copilotSnapshot } },
     { driverKind: "opencode_server", provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny" } },
     { driverKind: "acpx_runtime", provider: {
       kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny-all",

@@ -7,7 +7,7 @@ import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function root() { const path = await mkdtemp(join(tmpdir(), "runner-provider-assets-")); roots.push(path); return path; }
+async function root() { const path = await realpath(await mkdtemp(join(tmpdir(), "runner-provider-assets-"))); roots.push(path); return path; }
 
 it("uses one fixed provider directory for source, compiled and bundled runner layouts", async () => {
   vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
@@ -29,6 +29,18 @@ it("resolves descriptor sidecars only through the runner-bound canonical package
   expect(() => resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "pi")).toThrow("runner or server package");
   vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", "relative");
   expect(() => resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "pi")).toThrow("normalized absolute");
+});
+
+it("uses the public server owner for its vendored Copilot probe and selected sidecar", async () => {
+  const path = await root();
+  await writeFile(join(path, "package.json"), JSON.stringify({ name: "@paperclipai/server" }));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const moduleUrl = pathToFileURL(join(path, "dist/vendor/paperclip-runner/drivers/acpx/copilot-installation.js")).href;
+  expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", path);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", join(path, "package.json"));
+  expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "copilot")).toBe(join(path, "provider-assets/copilot"));
 });
 
 it("resolves the public server bundle without repository paths or candidate overrides", async () => {
