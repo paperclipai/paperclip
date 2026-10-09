@@ -353,16 +353,22 @@ export interface PluginDefinition {
   ): Promise<DetectExternalObjectsResult>;
 
   /**
+   * Complete required work for the committed agent lifecycle phase.
+   * Requires manifest `agentLifecycle: true` and `agents.lifecycle.manage`.
+   * Echo operationId/version; return pending until the effect finishes.
+   * Calls can repeat. Fence older versions and make external effects idempotent.
+   */
+  onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
+
+  /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
+  onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
+
+  /**
    * Called when Paperclip needs the current normalized status for one external
    * object owned by a manifest-declared provider.
    *
    * Requires `external.objects.read`.
    */
-  /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
-  onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
-
-  onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
-
   onResolveExternalObject?(
     params: ResolveExternalObjectParams,
   ): Promise<PluginExternalObjectResolveResult>;

@@ -486,6 +486,51 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(driver.runPlugin(snapshot, pluginId)).rejects.toThrow("Invalid lifecycle result");
   });
 
+  it("drives required resource work through setup, pause, resume, and confirmed cleanup", async () => {
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "resource-lifecycle-test", version: "1.0.0", status: "ready",
+      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage"] } as never });
+    let resourcesReady = false;
+    let resourcesRemoved = false;
+    const requests: import("@paperclipai/shared").AgentLifecycleRequest[] = [];
+    const call = async (id: string, method: string, input: import("@paperclipai/shared").AgentLifecycleRequest) => {
+      expect(id).toBe(pluginId);
+      expect(method).toBe("agentLifecycle");
+      expect(input.companyId).toBe(companyId);
+      expect((await current(input.agentId)).lifecycleOperation?.hostComplete).toBe(true);
+      requests.push(input);
+      const pending = (input.phase === "preparing" && !resourcesReady) || (input.phase === "cleaning_up" && !resourcesRemoved);
+      return { operationId: input.operationId, version: input.version, status: pending ? "pending" : "complete" };
+    };
+    const driver = createLifecycleDriver(db, { call } as never);
+    // Provider/harness execution is stubbed; plugin dispatch and durable transitions are real.
+    const work = configureAgentLifecycle(db, { ...driver, requiredPluginIds: async () => [pluginId], runHost: async () => "complete" });
+    workers.push(work);
+    const lifecycle = createAgentLifecycle(db);
+    const agent = await hire();
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "preparing", status: "paused", lifecycleError: null });
+    const preparation = requests[0];
+    resourcesReady = true;
+    await lifecycle.retry(agent.id); await work.process(agent.id);
+    expect(requests[1]).toEqual(preparation);
+    expect((await current(agent.id)).lifecycleState).toBe("ready");
+    await lifecycle.pauseAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+    await lifecycle.resumeAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("ready");
+    await lifecycle.terminateAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("cleaning_up");
+    await expect(lifecycle.purgeAgent(agent.id)).rejects.toThrow("Complete termination");
+    resourcesRemoved = true;
+    await lifecycle.retry(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("terminated");
+    expect(requests.map(request => request.phase)).toEqual([
+      "preparing", "preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up", "cleaning_up",
+    ]);
+    expect(requests.every(request => request.agentId === agent.id)).toBe(true);
+  });
+
   it("keeps host completion and required plugin results across a worker restart", async () => {
     const pluginIds = [randomUUID(), randomUUID()];
     const runHost = vi.fn(async () => "complete" as const);

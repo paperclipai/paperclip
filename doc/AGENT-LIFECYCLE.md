@@ -156,7 +156,10 @@ It shows `paused` during preparation, verification, pause, and resume.
 It shows `terminated` as soon as termination starts.
 Execution code can change this field only when the lifecycle is `ready`.
 Use `lifecycleState` to distinguish the steps.
-This change does not change the user interface.
+The agent page shows preparation, verification, pause, resume, and cleanup
+progress from `lifecycleState`. Failed steps show the host error and a Retry
+action. The page refreshes pending steps every two seconds and other states
+every thirty seconds. It does not query plugins for a separate readiness state.
 
 ## Required plugin work
 
