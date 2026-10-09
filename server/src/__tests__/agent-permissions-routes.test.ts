@@ -679,6 +679,16 @@ describe("agent permission routes", () => {
     ]);
   });
 
+  it.each([{ spentMonthlyCents: 0 }, { name: "Renamed", spentMonthlyCents: 0 }])(
+    "rejects accounting fields before applying an agent update: %j", async payload => {
+      const app = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: true, companyIds: [companyId] });
+      const res = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${agentId}`).send(payload));
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(expect.arrayContaining([expect.objectContaining({ path: ["spentMonthlyCents"] })]));
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    },
+  );
+
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

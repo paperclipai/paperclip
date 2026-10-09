@@ -279,6 +279,14 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("excludes spend totals from the agent update request", () => {
+    const document = buildOpenApiSpec() as any;
+    const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;
+    expect(properties).not.toHaveProperty("spentMonthlyCents");
+    expect(properties).toHaveProperty("name");
+    expect(properties).toHaveProperty("budgetMonthlyCents");
+  });
+
   it("documents manager-only task privacy hints without protected scope identity", () => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths["/api/issues/{id}/privacy-constraints"].get;

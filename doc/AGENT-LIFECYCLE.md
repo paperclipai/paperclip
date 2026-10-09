@@ -24,7 +24,9 @@ const state = await lifecycle.get(agentId);
 The pause command records the request. The worker completes the external steps.
 Read `lifecycleState` to check progress.
 Configuration updates accept only the fields in `AGENT_CONFIGURATION_FIELDS`.
-They reject identity, company, accounting, timestamp, and lifecycle fields.
+They reject identity, company, accounting totals, timestamp, and lifecycle fields.
+The public update schema also rejects spend totals. Budget limit changes remain
+permitted through `budgetMonthlyCents`.
 
 Do not import module adapters or construct module dependencies in a caller.
 The company deletion service uses the separate deletion entry point.

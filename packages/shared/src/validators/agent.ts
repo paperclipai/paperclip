@@ -156,7 +156,7 @@ export const updateAgentSchema = objectWithoutDefaults(
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
+    spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
