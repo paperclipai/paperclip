@@ -199,7 +199,9 @@ describe("AgentMail durable email pipeline", () => {
     expect(await db.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
   });
 
-  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService) {
+  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
+    beforeSetup?: (input: { fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+  ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       endpointId = randomUUID();
@@ -312,6 +314,7 @@ describe("AgentMail durable email pipeline", () => {
       storage,
     });
     services.push(service);
+    await beforeSetup?.({ fetcher, wakeup });
     await service.setup(
       companyId,
       {
@@ -374,6 +377,66 @@ describe("AgentMail durable email pipeline", () => {
       setWebhookError: (status: number) => { webhookError = status; },
     };
   }
+  it("activates an empty running worker from another service and drains committed inbound and outbound work", async () => {
+    // Connector setup and tool calls construct short-lived service objects.
+    // Their committed writes must wake the app-owned worker sharing this DB.
+    let running!: EmailChannelService;
+    const f = await fixture("webhook", undefined, async ({ fetcher, wakeup }) => {
+      running = emailChannelService(db, { heartbeat: { wakeup }, fetch: fetcher });
+      services.push(running);
+      await running.start();
+      const select = vi.spyOn(db, "select");
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(select).not.toHaveBeenCalled();
+      select.mockRestore();
+    });
+    await vi.waitFor(async () => {
+      const [config] = await db.select().from(emailEndpoints).where(eq(emailEndpoints.endpointId, f.endpointId));
+      expect(config.lastSyncAt).not.toBeNull();
+    }, { timeout: 5000 });
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await f.service.control(f.endpointId, "resume", { userId: "email-board" });
+    const message = f.message();
+    f.messages.set(message.message_id, message);
+    await f.service.admit(await f.service.getEndpoint(f.endpointId), {
+      event_type: "message.received", message,
+    });
+    await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const [parent] = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, parentIssueId: parent.id,
+      to: ["recipient@example.test"], subject: "Wake on send", text: "Hello", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    await vi.waitFor(async () => expect((await f.service.publication(input.idempotencyKey, f.companyId)).outcome).toBe("sent"), { timeout: 5000 });
+    expect(f.sends).toHaveLength(1);
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("restores a persisted send retry at startup and sleeps until its due time", async () => {
+    const f = await fixture();
+    const parent = await issueService(db).create(f.companyId, { title: "Scheduled retry", status: "todo", assigneeAgentId: f.agentId });
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, parentIssueId: parent.id,
+      to: ["recipient@example.test"], subject: "Retry", text: "Hello", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    // Simulate a previous process persisting a provider retry deadline.
+    await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 5000) })
+      .where(eq(chatPublications.id, input.idempotencyKey));
+    await f.service.start();
+    expect(f.sends).toHaveLength(0);
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(select).not.toHaveBeenCalled();
+    expect(f.sends).toHaveLength(0);
+    await vi.waitFor(() => expect(f.sends).toHaveLength(1), { timeout: 8000 });
+    await f.service.tick();
+    expect((await f.service.publication(input.idempotencyKey, f.companyId)).outcome).toBe("sent");
+  });
+
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
     const f = await fixture();
     const endpoint = await f.service.getEndpoint(f.endpointId);

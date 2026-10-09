@@ -423,11 +423,19 @@ Longer polling intervals alone do not complete an item.
   [app.ts](../../server/src/app.ts),
   [chat-channels.ts](../../server/src/services/chat-channels.ts).
 
-- [ ] **JOB-02 — Email reconciliation.** Current: every **1s**, querying active
-  endpoints even when none exist. Change: initialize resource/pending state and
-  update on endpoint changes, webhook receipt, sends, and retries. **Complete
-  when:** empty mail state produces no polling SQL and new work activates the
-  worker without restart. Source:
+- [x] **JOB-02 — Email reconciliation.** Replaced the unconditional **1s**
+  scan with startup recovery and transaction-aware wakes for endpoint activation,
+  pause/resume/removal, admitted events, and queued sends. Separate service
+  objects sharing the database owner wake the app worker after commit. The
+  worker restores its next deadline from persisted inbound/outbound retries and
+  catch-up state. No active inboxes means no recurring email SQL or timer.
+  Configured inboxes retain one-minute catch-up and live socket lease renewal
+  (NET-01/NET-02); this does not yet make an active inbox sleep indefinitely.
+  Intent reconciliation survives ambiguous transaction outcomes. Warm standby
+  suppresses SQL, and idle drain defers dispatch without losing its wake.
+  No new tables or provider infrastructure. Independent database roots and
+  direct SQL do not emit these process-local hints; startup and configured-inbox
+  catch-up remain the recovery boundaries. Source:
   [email-channels.ts](../../server/src/services/email-channels.ts).
 
 - [ ] **JOB-03 — Browser-use cleanup.** Current: every **3s** with due-session

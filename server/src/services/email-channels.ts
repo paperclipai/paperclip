@@ -1,3 +1,5 @@
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
@@ -77,6 +79,8 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface EmailChannelOptions {
   /** Suppress periodic database work while an unclaimed Cloud app stands by. */
   isBackgroundWorkEnabled?: () => boolean;
+  /** Allow transaction outcome checks during idle drain, but not warm standby. */
+  isReconciliationEnabled?: () => boolean;
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">;
   storage?: StorageService;
   publicBaseUrl?: string;
@@ -130,7 +134,12 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   let stopped = false;
   let ticking = false;
   let activeTick: Promise<void> | null = null;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let worker: { wake: () => void; ready: Promise<void> } | undefined;
+  let nextWorkAt: number | null = null;
+  function needWorkAt(at: number) {
+    nextWorkAt = Math.min(nextWorkAt ?? Infinity, Math.max(Date.now() + 1000, at));
+  }
 
   async function getEndpoint(id: string) {
     const [row] = await db
@@ -881,6 +890,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       }
       const now = new Date();
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
         await tx
           .update(emailEndpoints)
           .set({
@@ -909,7 +919,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       return summary(await getEndpoint(endpoint.id));
     });
     if (!result) throw conflict("Inbox setup is already running");
-    if (timer) void tick().catch(() => {});
     return result;
   }
 
@@ -919,22 +928,24 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     if (!event) return;
     if (event.inbox_id !== endpoint.botExternalId)
       throw forbidden("Email event belongs to a different inbox");
-    await db
-      .insert(chatDeliveries)
-      .values({
-        companyId: endpoint.companyId,
-        endpointId: endpoint.id,
-        providerEventId: event.eventId,
-        deduplicationKey: `${event.kind}:${event.message_id}`,
-        eventKind: "message",
-        normalizedEvent: event,
-      })
-      .onConflictDoNothing();
-    await db
-      .update(chatEndpoints)
-      .set({ lastEventAt: new Date() })
-      .where(eq(chatEndpoints.id, endpoint.id));
-    if (timer) void tick().catch(() => {});
+    await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
+      await tx
+        .insert(chatDeliveries)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          providerEventId: event.eventId,
+          deduplicationKey: `${event.kind}:${event.message_id}`,
+          eventKind: "message",
+          normalizedEvent: event,
+        })
+        .onConflictDoNothing();
+      await tx
+        .update(chatEndpoints)
+        .set({ lastEventAt: new Date() })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    });
   }
   async function webhook(
     publicId: string,
@@ -1550,6 +1561,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         if (!reply)
           throw badRequest("Reply target is not in this inbox conversation");
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
       await tx.insert(chatPublications).values({
         id: input.idempotencyKey,
         companyId,
@@ -1571,7 +1583,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     await audit(endpoint, "email.queued", actor, {
       publicationId: input.idempotencyKey,
     });
-    if (timer) void tick().catch(() => {});
     return publication(input.idempotencyKey, companyId);
   }
   async function publication(
@@ -1968,6 +1979,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             .update(emailEndpoints)
             .set({ lastSyncAt: null })
             .where(eq(emailEndpoints.endpointId, endpoint.id));
+          worker?.wake();
         } else await admit(endpoint, value);
       })().catch(async () => {
         await markError(
@@ -1988,6 +2000,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       const delay = Math.min(60_000, (backoff.get(endpoint.id) ?? 1000) * 2);
       backoff.set(endpoint.id, delay);
       reconnectAt.set(endpoint.id, Date.now() + delay);
+      worker?.wake();
       void db
         .delete(chatEndpointLeases)
         .where(
@@ -2056,6 +2069,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   async function runTick() {
     if (ticking || stopped) return;
     ticking = true;
+    nextWorkAt = null;
     try {
       const endpoints = await db
         .select()
@@ -2199,7 +2213,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             );
             if (
               !config.lastSyncAt ||
-              Date.now() - config.lastSyncAt.getTime() > 60_000
+              Date.now() - config.lastSyncAt.getTime() >= 60_000
             )
               await withLease(
                 endpoint,
@@ -2208,7 +2222,31 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
                 },
                 "email-catchup",
               );
+            // Catch-up is a real scheduled obligation; an empty queue is not.
+            const refreshed = await getConfig(endpoint.id);
+            needWorkAt((refreshed.lastSyncAt?.getTime() ?? 0) + 60_000);
+            if (refreshed.receiveMode === "websocket" && !sockets.has(endpoint.id))
+              needWorkAt(reconnectAt.get(endpoint.id) ?? Date.now() + 1000);
+            const [inbound] = await db
+              .select({ at: sql<Date | null>`min(coalesce(${chatDeliveries.nextAttemptAt}, now()))` })
+              .from(chatDeliveries)
+              .where(and(
+                eq(chatDeliveries.endpointId, endpoint.id),
+                inArray(chatDeliveries.state, ["received", "processing", "retry"]),
+              ));
+            const [outbound] = await db
+              .select({ at: sql<Date | null>`min(coalesce(${chatPublications.nextAttemptAt}, now()))` })
+              .from(emailSends)
+              .innerJoin(chatPublications, eq(chatPublications.id, emailSends.publicationId))
+              .where(and(
+                eq(emailSends.endpointId, endpoint.id),
+                inArray(emailSends.outcome, ["queued", "uncertain"]),
+                ne(chatPublications.state, "delivery_unknown"),
+              ));
+            for (const pending of [inbound, outbound])
+              if (pending?.at) needWorkAt(new Date(pending.at).getTime());
           } catch (e) {
+            needWorkAt(Date.now() + 1000);
             await markError(endpoint, diagnostic(e));
           }
         }),
@@ -2219,6 +2257,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   }
   async function stopEndpoint(endpoint: Endpoint) {
     await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
       await tx
         .select()
         .from(chatEndpoints)
@@ -2319,6 +2358,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           await removeUnusedSecret(secretId);
       }
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
         await tx
           .update(chatEndpoints)
           .set({
@@ -2642,17 +2682,28 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       };
     },
     start: () => {
-      if (!timer) {
-        timer = setInterval(() => {
-          void tick().catch(() => {});
-        }, 1000);
-        timer.unref();
-        void tick().catch(() => {});
-      }
+      if (coordinator || stopped) return;
+      coordinator = createDeliveryWorkCoordinator({
+        owner: db,
+        canRun: () => options.isBackgroundWorkEnabled?.() !== false,
+        canReconcile: () => options.isReconciliationEnabled?.() ?? (options.isBackgroundWorkEnabled?.() !== false),
+        onError: (error) => process.emitWarning(`Email background work failed: ${diagnostic(error)}`),
+      });
+      worker = coordinator.register(DELIVERY_QUEUES.email, {
+        retryMs: 1000,
+        run: tick,
+        // Retries and maintenance have deadlines; only unresolved writes need
+        // the coordinator's pending-intent hold, not a configured idle inbox.
+        hasPending: async () => false,
+        nextRunAt: () => options.isBackgroundWorkEnabled?.() === false
+          ? Date.now() + 1000
+          : nextWorkAt,
+      });
+      return worker.ready;
     },
     shutdown: async () => {
       stopped = true;
-      clearInterval(timer);
+      await coordinator?.stop();
       await activeTick;
       const heldSockets = [...sockets.entries()];
       sockets.clear();
