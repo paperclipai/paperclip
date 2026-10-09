@@ -530,7 +530,10 @@ export async function captureHermesApiSettlement(input: {
       && usage.accountingReceiptReady === true && usage.biller === input.expectedBiller && usage.billingType === "metered_api" && usage.costStatus === (direct ? "estimated" : "reported")
       && provenance.source === (direct ? "rate_card" : "provider_reported") && provenance.version === expectedVersion
       && (!direct || usage.provider === input.expectedBiller && usage.accountingUsageComplete === true && present(input.model) && usage.model === input.model)
-      && typeof cost === "number" && Number.isFinite(cost) && cost >= 0 && typeof exact === "string" && /^(0|[1-9][0-9]{0,6})\.[0-9]{9}$/.test(exact) && Number(exact) === cost
+      && typeof exact === "string" && /^(0|[1-9][0-9]{0,6})\.[0-9]{9}$/.test(exact)
+      // Direct rate cards store the authoritative decimal without a rounded
+      // numeric duplicate. Provider-reported prices retain both representations.
+      && (direct && cost == null || typeof cost === "number" && Number.isFinite(cost) && cost >= 0 && Number(exact) === cost)
       && typeof usage.inputTokens === "number" && Number.isSafeInteger(usage.inputTokens) && usage.inputTokens >= 0
       && typeof usage.outputTokens === "number" && Number.isSafeInteger(usage.outputTokens) && usage.outputTokens >= 0 && usage.inputTokens + usage.outputTokens > 0 },
     { id: "budget-health-after-settlement", passed: company.status === "active" && agent.status === "idle" && agent.pauseReason === null

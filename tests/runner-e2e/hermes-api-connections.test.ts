@@ -9,11 +9,13 @@ import { inflateSync } from "node:zlib";
 describe("Hermes direct API billing oracle", () => {
   it.each(["anthropic", "openai"] as const)("requires a scoped complete %s estimate and healthy post-run budgets", async biller => {
     const model = biller === "anthropic" ? "claude-haiku-4-5-20251001" : "gpt-6-luna";
-    for (const fault of ["valid", "reported", "partial", "model", "biller", "provenance", "paused", "pending"]) {
+    for (const fault of ["valid", "decimal-only", "missing-price", "invalid-decimal", "mismatched-price", "reported", "partial", "model", "biller", "provenance", "paused", "pending"]) {
       const company = { id: "company", status: "active", budgetMonthlyCents: 200 };
       const agent = { id: "agent", companyId: "company", status: fault === "paused" ? "paused" : "idle", pauseReason: null, budgetMonthlyCents: 200 };
       const usage = { provider: biller, biller: fault === "biller" ? "unknown" : biller, model: fault === "model" ? "foreign" : model,
-        billingType: "metered_api", costStatus: fault === "reported" ? "reported" : "estimated", costUsd: 0.0042, costUsdExact: "0.004200000",
+        billingType: "metered_api", costStatus: fault === "reported" ? "reported" : "estimated",
+        costUsd: ["decimal-only", "missing-price"].includes(fault) ? null : 0.0042,
+        costUsdExact: fault === "missing-price" ? null : fault === "invalid-decimal" ? "NaN" : fault === "mismatched-price" ? "0.004300000" : "0.004200000",
         inputTokens: 40, outputTokens: 10, accountingReceiptReady: true, accountingUsageComplete: fault !== "partial",
         pricingProvenance: { source: fault === "provenance" ? "agent_claim" : "rate_card",
           version: biller === "anthropic" ? "anthropic-standard-2026-10-09" : "openai-standard-2026-09-30" } };
@@ -21,7 +23,7 @@ describe("Hermes direct API billing oracle", () => {
         costAccountingPending: fault === "pending", costAccountedAt: "2026-10-09T14:00:00Z" };
       const receipt = await captureHermesApiSettlement({ companyId: "company", agentId: "agent", issueId: "task", runId: "run", expectedBiller: biller, model,
         api: { async get<T>(path: string) { return (path === "/api/companies/company" ? company : path === "/api/agents/agent" ? agent : run) as T; } } });
-      expect(receipt.checks.every(check => check.passed), `${biller}: ${fault}`).toBe(fault === "valid");
+      expect(receipt.checks.every(check => check.passed), `${biller}: ${fault}`).toBe(["valid", "decimal-only"].includes(fault));
     }
   });
 });

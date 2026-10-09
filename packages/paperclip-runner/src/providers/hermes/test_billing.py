@@ -104,6 +104,41 @@ class Accounting(unittest.TestCase):
 
 
 class DirectTokens(unittest.TestCase):
+    def test_direct_openai_native_alias_is_accounted_only_at_the_official_endpoint(self):
+        from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+        with patch.dict('os.environ', {'OPENAI_BASE_URL': ''}), patch('hermes_cli.runtime_provider._get_named_custom_provider', return_value=None):
+            provider, endpoint = expand_direct_api_alias('openai', None)
+        self.assertEqual((provider, endpoint), ('custom', 'https://api.openai.com/v1'))
+        for endpoint, accepted in [('https://api.openai.com/v1', True), ('https://api.openai.com/v1/', True),
+                ('https://api.openai.com.attacker.test/v1', False), ('https://proxy.test/v1', False),
+                ('https://api.openai.com/v1?route=other', False), ('http://api.openai.com/v1', False),
+                ('https://user@api.openai.com/v1', False), ('https://api.openai.com:8443/v1', False)]:
+            ledger = start_turn(SimpleNamespace(provider='custom', base_url=endpoint, api_mode='codex_responses', model='gpt-6-luna'), token_accounting=True)
+            try:
+                self.assertEqual(isinstance(ledger, TokenBilling), accepted, endpoint)
+                if accepted:
+                    self.assertEqual((ledger.biller, ledger.model, ledger.protocol), ('openai', 'gpt-6-luna', 'responses'))
+            finally:
+                close_turn(ledger)
+
+    def test_pinned_openai_responses_sdk_captures_the_native_custom_route(self):
+        install_billing_capture()
+        ledger = start_turn(SimpleNamespace(provider='custom', base_url='https://api.openai.com/v1', api_mode='codex_responses', model='gpt-6-luna'), token_accounting=True)
+        try:
+            event = {'type': 'response.completed', 'response': {'id': 'fixture', 'object': 'response',
+                'created_at': 0, 'status': 'completed', 'model': 'gpt-6-luna', 'output': [], 'service_tier': 'default',
+                'usage': {'input_tokens': 20, 'output_tokens': 5, 'input_tokens_details': {'cached_tokens': 3}}}}
+            body = b'data: ' + json.dumps(event).encode() + b'\n\n'
+            with patch.dict('os.environ', {'OPENAI_API_KEY': 'synthetic-fixture-only'}), httpx.Client(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, headers={'content-type': 'text/event-stream'}, stream=httpx.ByteStream(body)))) as client:
+                with OpenAI(http_client=client, api_key='synthetic-fixture-only') as sdk:
+                    list(sdk.responses.create(model='gpt-6-luna', input='fixture', stream=True))
+            receipt, totals = ledger.finish()
+            self.assertTrue(receipt['complete'])
+            self.assertEqual(totals, (17, 5, 3, 0))
+        finally:
+            close_turn(ledger)
+
     def test_anthropic_chunk_boundaries_merge_final_usage_without_double_counting(self):
         wire = b''.join(b'data: ' + json.dumps(event).encode() + b'\n\n' for event in [
             {"type": "message_start", "message": {"usage": {"input_tokens": 12, "output_tokens": 1,

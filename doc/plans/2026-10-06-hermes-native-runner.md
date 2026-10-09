@@ -2202,3 +2202,28 @@ mock HTTP transport and the observed usage fields, plus negative premium and
 model cases. The platform closures change only `billing.py`; all remaining
 execution bytes retain their verified pins. A corrected cloud image and live
 Product E2E rerun are required before either API path is qualified.
+
+### 2026-10-09 direct API rerun findings
+
+At `59853464f`, the paid Claude task completed, its two wire receipts were
+complete, its rate-card estimate settled at `0.072608100` USD, and the company
+and agent remained healthy. Its original test grade remains failed: the test
+incorrectly required a numeric duplicate of the canonical decimal estimate.
+Direct rate-card pricing intentionally stores the exact decimal only. The
+corrected oracle still rejects absent/malformed prices, conflicting duplicates,
+wrong provenance or scope, incomplete usage, pending accounting and unhealthy
+budgets. OpenRouter's dual reported-price contract remains unchanged.
+
+The OpenAI task at the same revision completed but lacked observed wire usage
+and paused under the existing unknown-cost budget rules. Pinned Hermes expands
+its `openai` alias to a `custom` runtime at the official OpenAI endpoint; the
+observer previously selected ledgers only by native provider name. It now
+recognizes that exact official HTTPS `/v1` route before applying the unchanged
+per-request credential, model, protocol and processing-tier checks. Proxy,
+lookalike, unauthenticated, regional or different-port routes do not acquire
+OpenAI billing authority. Tests use the pinned resolver and Responses SDK with
+mock transport; those are regression coverage, not paid qualification.
+
+Both failed campaigns and their costs remain retained. Corrected live browser
+reruns and a new cloud-built image are required; Hermes remains pending
+qualification until those and the remaining user journeys pass.

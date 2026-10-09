@@ -310,6 +310,10 @@ OpenRouter also requires a settled provider-reported price with an exact USD
 amount and healthy company/agent budget state before fixture teardown. The
 oracle reads scoped public run, company and agent records; it never derives
 billing or health from the model's answer or the cleanup pause.
+Claude and OpenAI additionally require complete wire token receipts and a scoped
+rate-card estimate in the canonical exact decimal format. Missing or malformed
+prices fail; any numeric duplicate must agree. Healthy post-settlement budgets
+remain mandatory.
 
 `hermes-native-interactions` adds one native question-batch journey on local and
 Daytona. The original run remains active while Chromium reloads and answers the

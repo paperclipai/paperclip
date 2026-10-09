@@ -1591,7 +1591,9 @@ correct. Claude and OpenAI API cells require a complete selected-account wire
 token receipt, the correct model's explicitly estimated rate-card cost and
 healthy post-settlement budgets. Their `hermes-api-settlement.json` rejects
 reported-dollar claims, missing tokens, wrong model/biller and pending or
-unpriced accounting. xAI, Google and routed Bedrock retain completion-only coverage.
+unpriced accounting. Direct rate-card estimates use the canonical exact decimal
+amount; an optional numeric duplicate must agree. OpenRouter continues to require
+both reported-price representations. xAI, Google and routed Bedrock retain completion-only coverage.
 Before creating the task, public account readback must identify the selected
 connected personal account, its company and owner, and the authenticated caller.
 Both run attribution fields must match that independently recorded owner.

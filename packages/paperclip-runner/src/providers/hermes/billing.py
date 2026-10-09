@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import threading
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import urlsplit
 
 MAX_REQUESTS = 10000
 MAX_FRAME = 1024 * 1024
@@ -337,6 +338,15 @@ class TokenWireReceipt(WireReceipt):
 def start_turn(agent, token_accounting=False):
     global _active
     provider, mode = getattr(agent, "provider", None), getattr(agent, "api_mode", None)
+    # Pinned Hermes expands its direct OpenAI alias to a custom runtime.
+    # Recognize only the official endpoint; per-request authorization still
+    # binds the exact selected model, protocol and staged credential.
+    if provider == "custom":
+        route = urlsplit(getattr(agent, "base_url", "") or "")
+        if (route.scheme == "https" and route.hostname == "api.openai.com"
+                and route.port in (None, 443) and route.path.rstrip("/") == "/v1"
+                and not route.query and not route.fragment and not route.username and not route.password):
+            provider = "openai"
     ledger = TurnBilling() if provider == "openrouter" and mode == "chat_completions" else None
     if token_accounting and provider == "anthropic" and mode == "anthropic_messages":
         ledger = TokenBilling(provider, agent.model, "messages")
