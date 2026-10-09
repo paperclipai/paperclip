@@ -166,7 +166,10 @@ function parseReassignment(target: string): CommentReassignment | null {
 }
 
 function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  // Only a blocked issue implicitly resumes from an ordinary comment. A `done`
+  // or `cancelled` issue is terminal, so a completion note must not silently
+  // move it back to todo; reopening it needs an explicit reopen request.
+  const resumesToTodo = issueStatus === "blocked";
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
