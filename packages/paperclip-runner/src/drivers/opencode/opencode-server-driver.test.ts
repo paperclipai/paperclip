@@ -906,6 +906,8 @@ describe("OpenCodeServerDriver", () => {
     expect(environment.keys).not.toContain("UNRELATED_SECRET");
     expect(environment.keys).not.toContain("PAPERCLIP_PROVIDER_TRACE_PATH");
     expect(environment.projectConfigDisabled).toBe("true");
+    expect(environment.modelsFetchDisabled).toBe("true");
+    expect(environment.defaultPluginsDisabled).toBe("true");
     expect(mcpEvidence.tools).toEqual(
       expect.arrayContaining(["paperclip_finish", "paperclip_block"]),
     );
@@ -918,6 +920,43 @@ describe("OpenCodeServerDriver", () => {
     expect(config).not.toContain("test-openrouter-key");
     expect(diagnostics.join("\n")).not.toContain("test-openrouter-key");
     expect(diagnostics.join("\n")).toContain("[REDACTED]");
+  });
+
+  it.each(["role-first", "role-last"])("streams repeated deltas before the final snapshot with identity checks (%s)", async (roleOrder) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-stream-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-stream-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH },
+    });
+    const session = await driver.openSession({ runId: "stream", normalizedSessionId: "stream", workingDirectory: workspace });
+    try {
+      await session.startTurn({ message: { role: "user", text: `incremental-stream ${roleOrder}` } });
+      const deltas: string[] = [];
+      const reasoning: string[] = [];
+      const events: PrpEvent[] = [];
+      for await (const event of session.events()) {
+        events.push(event);
+        if (event.eventType === "item.delta" && event.payload.kind === "reasoning") reasoning.push(String(event.payload.text));
+        if (event.eventType === "item.delta" && event.payload.kind === "agentMessage") {
+          deltas.push(String(event.payload.text));
+          // No final snapshot is sent until the consumer sees the first chunk.
+          expect(event.payload.text).not.toBe("Hi 👋👋");
+          await writeFile(join(root, "stream", "data", "release-stream"), "ready");
+        }
+        if (TURN_TERMINAL_EVENT_TYPES.has(event.eventType)) break;
+      }
+      expect(deltas).toEqual(["Hi ", "👋", "👋"]);
+      expect(reasoning).toEqual(["Thinking"]);
+      expect(events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage")
+        .map(event => event.payload.text)).toEqual(["Hi 👋👋"]);
+    } finally {
+      await session.close({ reason: "stream test complete" });
+    }
   });
 
   it("maps OpenCode's normal abort error to cancellation without a false provider failure notice", async () => {
@@ -1942,6 +1981,7 @@ describe("OpenCodeServerDriver", () => {
         "*": permissionMode,
         external_directory: { "*": "deny", [`${workspace}/**`]: "allow" },
       });
+      expect(config.autoupdate).toBe(false);
       expect(config.provider.openrouter.models).toHaveProperty(
         "deepseek/deepseek-v4-flash-0731",
       );

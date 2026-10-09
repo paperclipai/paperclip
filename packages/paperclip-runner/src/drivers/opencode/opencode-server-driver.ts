@@ -479,6 +479,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     Array<Record<string, unknown>>
   >();
   readonly #partText = new Map<string, string>();
+  readonly #streamingParts = new Map<string, Record<string, unknown>>();
   readonly #completedTextPartIds = new Set<string>();
   readonly #completedReasoningPartIds = new Set<string>();
   readonly #completedTextParts: Array<{
@@ -646,6 +647,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#activeTurnId !== null)
       throw new Error("OpenCode session already has an active turn");
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
+    this.#streamingParts.clear();
     this.#activeTurnId = turnId;
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
@@ -1470,9 +1472,11 @@ class OpenCodeHarnessSession implements HarnessSession {
     const event = record(value);
     const properties = record(event.properties);
     const type = text(event.type);
-    const eventId = text(event.id, canonicalJson(value));
-    if (this.#seenProviderEvents.has(eventId)) return;
-    this.#seenProviderEvents.add(eventId);
+    // Id-less deltas are additive: two identical chunks can be legitimate
+    // adjacent tokens. Content deduplication would silently lose the second.
+    const eventId = text(event.id) || (type === "message.part.delta" ? null : canonicalJson(value));
+    if (eventId !== null && this.#seenProviderEvents.has(eventId)) return;
+    if (eventId !== null) this.#seenProviderEvents.add(eventId);
     if (this.#seenProviderEvents.size > 10_000)
       this.#seenProviderEvents.delete(
         this.#seenProviderEvents.values().next().value!,
@@ -1565,8 +1569,16 @@ class OpenCodeHarnessSession implements HarnessSession {
       );
       return;
     }
-    if (type === "message.part.updated") {
-      const part = record(properties.part);
+    if (type === "message.part.updated" || type === "message.part.delta") {
+      let part = record(properties.part);
+      if (type === "message.part.delta") {
+        const previous = this.#streamingParts.get(text(properties.partID));
+        // A delta has no role or part type. Only stream text for an observed
+        // part with matching message identity; never infer assistant identity.
+        if (!previous || properties.field !== "text" || typeof properties.delta !== "string"
+          || text(previous.messageID, text(previous.messageId)) !== text(properties.messageID)) return;
+        part = { ...previous, text: text(previous.text) + properties.delta };
+      }
       const messageId = text(part.messageID, text(part.messageId));
       if (!messageId) return;
       // Resolve the turn this message actually belongs to, not whichever
@@ -1574,6 +1586,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       // must stay attributed to the turn that created that message.
       const owningTurnId = this.#messageTurnIds.get(messageId) ?? turnId;
       if (!owningTurnId) return;
+      if (owningTurnId === turnId && text(part.id) && ["text", "reasoning"].includes(text(part.type))) {
+        this.#streamingParts.set(text(part.id), part);
+      }
       const role = this.#messageRoles.get(messageId);
       if (role === "assistant") this.#emitAssistantPart(part, owningTurnId);
       else if (role === undefined) {
@@ -2239,6 +2254,7 @@ async function startRuntime(input: {
       model: input.options.model,
       small_model: input.options.model,
       share: "disabled",
+      autoupdate: false,
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
@@ -2307,6 +2323,11 @@ async function startRuntime(input: {
         XDG_DATA_HOME: dataHome,
         XDG_CACHE_HOME: cacheHome,
         OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+        // The runner pins the executable, model and assigned MCP tools. A
+        // fresh isolated cache must not fetch a catalog or install unrelated
+        // default plugins before it can submit the first prompt.
+        OPENCODE_DISABLE_MODELS_FETCH: "true",
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
         ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),

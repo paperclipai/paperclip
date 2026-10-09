@@ -238,6 +238,15 @@ provider-native operations. Full auto is resolved consistently for agent
 creation, adapter conversion, direct driver launches, and fresh/resumed turns.
 Explicitly stored restrictive modes still apply.
 
+Native OpenCode forwards incremental text and reasoning parts as they arrive;
+the final full snapshot selects the final response without repeating streamed
+text. Delta parts must match an observed message and part identity. Identical
+chunks without event IDs remain distinct tokens. Each isolated launch disables
+automatic updates, remote model-catalog refreshes, and default plugins; the
+runner supplies the pinned executable, selected model, and assigned MCP tools.
+Provider inference and reasoning still contribute to time to first text. These
+startup settings do not disable model reasoning.
+
 The runner's authenticated bridge and controller still enforce company access,
 action claims, task modes, and governed approvals. Provider permission defaults
 do not change workspace isolation or grant credentials or connection access.

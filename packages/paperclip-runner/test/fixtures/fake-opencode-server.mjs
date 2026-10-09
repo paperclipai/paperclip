@@ -99,6 +99,8 @@ await writeFile(
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+    modelsFetchDisabled: process.env.OPENCODE_DISABLE_MODELS_FETCH,
+    defaultPluginsDisabled: process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS,
   }),
 );
 
@@ -427,11 +429,52 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+          emit({
+            type: "message.part.delta",
+            properties: {
+              sessionID: session.id,
+              messageID: "message-late-source",
+              partID: "part-late-straggler",
+              field: "text",
+              delta: "late straggler text must not reach the next turn",
+            },
+          });
         }
       }
       setTimeout(async () => {
         await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? "").includes("incremental-stream")) {
+          const messageID = `stream-message-${promptTurnSeq}`;
+          const part = { id: `stream-part-${promptTurnSeq}`, messageID, sessionID: session.id, type: "text", text: "" };
+          const reasoning = { ...part, id: `${part.id}-reasoning`, type: "reasoning" };
+          const update = (value) => emit({ type: "message.part.updated", properties: { sessionID: session.id, part: value } });
+          const delta = (value, text, extra = {}) => emit({ type: "message.part.delta", properties: { sessionID: session.id, messageID, partID: value.id, field: "text", delta: text, ...extra } });
+          const announceRole = () => emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          const roleFirst = String(parsedPrompt.message).includes("role-first");
+          if (roleFirst) announceRole();
+          // Parts and deltas can precede the message's role announcement.
+          update(part);
+          update(reasoning);
+          delta(reasoning, "Thinking");
+          delta(part, "Hi ");
+          delta(part, "👋");
+          delta(part, "👋");
+          delta(part, "wrong message", { messageID: "unrelated-message" });
+          delta(part, "wrong session", { sessionID: "unrelated-session" });
+          delta(part, "wrong field", { field: "output" });
+          delta(part, "unknown part", { partID: "unknown-part" });
+          if (!roleFirst) announceRole();
+          // The consumer must observe a delta before the completed snapshot
+          // exists. This handshake makes the streaming regression deterministic.
+          for (let i = 0; i < 500; i++) {
+            if (await readFile(join(process.env.XDG_DATA_HOME, "release-stream"), "utf8").catch(() => "") === "ready") break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          update({ ...part, text: "Hi 👋👋", time: { start: 1, end: 2 } });
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         if (String(parsedPrompt.message ?? "").includes("native-question")) {
           pendingQuestion = nativeQuestion();
           emit({
