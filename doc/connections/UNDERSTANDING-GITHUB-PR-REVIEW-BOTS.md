@@ -255,15 +255,19 @@ discussion, it uses `comment`. For a review, `submit_review` publishes the
 assessment summary and updates the check. It should not add another comment
 just to announce that the review is complete.
 
-Paperclip does not post routine queued, working, progress or completion comments
-on GitHub. The runner's final text stays inside the Paperclip task, including
-when the agent has not sent a reply. An acknowledgement reaction is removed
-when the run ends. A real question can still link to its answer form in Paperclip.
+Paperclip posts one “Working on this…” comment when it accepts a request. The
+agent can periodically edit that comment with `update_comment` as it makes
+progress. Its final `comment` or review summary replaces the same comment;
+inline-only reviews close it with a link to the finding. Coalesced requests have
+their existing working comments updated to point to the response. New requests
+no longer create eyes reactions.
 
-If a run fails without a tool reply, Paperclip can send one safe failure notice.
-A confirmed reply suppresses that notice. A pending or uncertain tool delivery
-holds it until the delivery is resolved, so a missing receipt does not cause a
-duplicate comment. A check alone does not count as a conversation reply.
+The runner's final text stays inside the Paperclip task. If a run ends without
+a tool reply, Paperclip updates the working comment with a safe notice and a
+link to the task. A real question can link to its answer form in Paperclip.
+A confirmed reply suppresses fallback notices. Pending or uncertain tool
+delivery prevents a duplicate reply while its receipt is resolved. A check
+alone does not count as a conversation reply.
 
 ## Formal Approve and Request changes reviews are separate
 

@@ -2583,6 +2583,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.responseWrites).toHaveLength(2);
       expect([...f.responseComments.values()][0].body).toContain("Done");
     });
+    it("closes the working comment after an inline-only GitHub review", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: config.revision,
+        configuration: { ...config.configuration, defaults: { ...config.configuration.defaults, publishSummary: false, publishInline: true } },
+      }, "owner-user");
+      const head = "b".repeat(40);
+      const inlineWrites: unknown[] = [];
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/418")) return Response.json({ number: 418, state: "open", draft: false,
+          head: { sha: head }, base: { sha: "a".repeat(40), ref: "master" }, user: { id: 42, login: "octocat", type: "User" }, labels: [] });
+        if (url.includes("/files?")) return Response.json([{ filename: "src/math.ts", status: "modified", patch: "@@ -1 +1 @@\n-old\n+new" }]);
+        if (url.includes("/check-runs?")) return Response.json({ check_runs: [] });
+        if (url.includes("/check-runs") && init?.method) return Response.json({ id: 419, html_url: "https://github.com/checks/419" });
+        if (url.includes("/pulls/418/comments?")) return Response.json([]);
+        if (url.endsWith("/pulls/418/comments") && init?.method === "POST") {
+          inlineWrites.push(JSON.parse(String(init.body)));
+          return Response.json({ id: 420, html_url: "https://github.com/paperclipai/paperclip/pull/418#discussion_r420" });
+        }
+        return undefined;
+      });
+      const service = githubChatReviewService(db, f.providerFetch);
+      await service.execute(f.session, "begin_review", { reviewedCommit: head });
+      await service.execute(f.session, "submit_review", { reviewedCommit: head, score: 5, complete: true,
+        summary: "Disabled summary must not be published", rationale: "Looks good",
+        coverage: { reviewedPaths: ["src/math.ts"], omittedPaths: [], limitations: [] },
+        findings: [{ key: "note", path: "src/math.ts", line: 1, side: "RIGHT", severity: "error", category: "correctness", body: "Example finding" }],
+      }, "inline-only");
+      expect(inlineWrites).toHaveLength(1);
+      expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
+      expect(f.responseComments.size).toBe(1);
+      const comment = [...f.responseComments.values()][0];
+      expect(comment.body).toContain("Review complete.");
+      expect(comment.body).toContain("https://github.com/paperclipai/paperclip/pull/418");
+      expect(comment.body).not.toContain("Disabled summary");
+      expect(comment.body).toContain("paperclip-response-state:final");
+      await expect(githubRunReplyState(db, { ...f.session, endpointId: f.endpoint.id })).resolves.toBe("confirmed");
+    });
     it.each(["during_summary", "after_summary"] as const)("keeps partial review delivery authoritative when the head changes %s", async phase => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
       const original = "b".repeat(40);
@@ -64673,109 +64712,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("supplements Chat SDK with verified GitHub comment edit and delete lifecycle events", async () => {
     const fixture = await seedCompany();
-    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
-      .privateKey.export({ type: "pkcs8", format: "pem" })
-      .toString();
-    const runtime = new FakeChatSdkRuntime();
-    const { service, wakeup } = createService(runtime, (async (
-      input: string | URL | Request,
-    ) => {
-      const url = String(input);
-      if (url === "https://api.github.com/app") {
-        return new Response(
-          JSON.stringify({
-            id: 790,
-            slug: "maya-paperclip-lifecycle",
-            name: "Maya Paperclip",
-            owner: { login: "paperclipai" },
-            permissions: {
-              issues: "write",
-              metadata: "read",
-              pull_requests: "write",
-            },
-            events: [
-              "github_app_authorization",
-              "installation",
-              "installation_repositories",
-              "issue_comment",
-              "pull_request_review_comment",
-            ],
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (url === "https://api.github.com/app/installations/8642") return Response.json({ permissions: { issues: "write", metadata: "read", pull_requests: "write" }, suspended_at: null });
-      if (url === "https://api.github.com/app/installations?per_page=100") {
-        return new Response(
-          JSON.stringify([
-            {
-              id: 8642,
-              account: { id: 1, login: "paperclipai" },
-              permissions: {
-                issues: "write",
-                metadata: "read",
-                pull_requests: "write",
-              },
-              suspended_at: null,
-            },
-          ]),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (
-        url === "https://api.github.com/app/installations/8642/access_tokens"
-      ) {
-        return new Response(JSON.stringify({ token: "installation-token" }), {
-          status: 201,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (
-        url ===
-        "https://api.github.com/installation/repositories?per_page=100&page=1"
-      ) {
-        return new Response(JSON.stringify({ repositories: [] }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      throw new Error(`Unexpected provider request: ${url}`);
-    }) as typeof globalThis.fetch);
-    const endpoint = await service.create(
-      fixture.companyId,
-      { provider: "github", assignedAgentId: fixture.assignedAgentId },
-      "owner-user",
-    );
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      webhookSecret,
-    );
-    await service.configure(
-      endpoint.id,
-      {
-        action: "configure",
-        credentials: {
-          appId: "790",
-          privateKey,
-        },
-      },
-      "owner-user",
-    );
-    // Seed an already active pre-wizard connection; this test exercises signed
-    // lifecycle transport, not the separate review setup qualification.
-    const legacy = await service.get(endpoint.id);
-    await db.update(chatEndpoints).set({ status: "active", setup: { ...legacy.setup, github: undefined } }).where(eq(chatEndpoints.id, endpoint.id));
-    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
-    if (!callbacks) throw new Error("Expected GitHub callbacks");
+    const { service, wakeup, endpoint, webhookSecret, callbacks } =
+      await configuredGitHubEndpoint(fixture);
     const thread = makeThread({
-      channelId: "paperclipai/chat-e2e",
-      id: "github:paperclipai/chat-e2e:issue:42",
-      name: "paperclipai/chat-e2e",
+      channelId: "paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:42",
+      name: "paperclipai/paperclip",
     });
     await deliverMessage({
       callbacks,
@@ -64792,18 +64734,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     for (const item of [
       {
-        id: "github:paperclipai/chat-e2e:43",
+        id: "github:paperclipai/paperclip:43",
         messageId: "77002",
       },
       {
-        id: "github:paperclipai/chat-e2e:43:rc:88001",
+        id: "github:paperclipai/paperclip:43:rc:88001",
         messageId: "88001",
       },
     ]) {
       const nativeThread = makeThread({
-        channelId: "paperclipai/chat-e2e",
+        channelId: "paperclipai/paperclip",
         id: item.id,
-        name: "paperclipai/chat-e2e",
+        name: "paperclipai/paperclip",
       });
       await deliverMessage({
         callbacks,
@@ -64820,6 +64762,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
     }
 
+    await qualifySetupRoundTrip(service, endpoint.id, "7001");
+    await service.test(endpoint.id, "owner-user");
 
     const sendLifecycle = async (input: {
       action: "edited" | "deleted";
@@ -64831,7 +64775,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       inReplyToId?: number;
       issueIsPullRequest?: boolean;
     }) => {
-      await service.handleWebhook(
+      const response = await service.handleWebhook(
         endpoint.publicId,
         "github",
         signedGitHubWebhookRequest({
@@ -64857,8 +64801,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             pull_request: { number: input.number },
             repository: {
               id: 97531,
-              full_name: "paperclipai/chat-e2e",
-              name: "chat-e2e",
+              full_name: "paperclipai/paperclip",
+              name: "paperclip",
               owner: { id: 1357, login: "paperclipai" },
             },
             sender: { id: 7001, login: "alex-e2e" },
@@ -64867,6 +64811,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           url: `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`,
         }),
       );
+      expect(response.status).toBeLessThan(300);
     };
 
     for (const input of [

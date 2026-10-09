@@ -70,18 +70,18 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
   await expect(page.getByText("1 repository enabled", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Finish|Verify connection|Refresh access|Save repositories/ })).toHaveCount(0);
-  await page.getByRole("link", { name: "Bot settings", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Done", exact: true }).click();
   await expect(page).toHaveURL(/\/apps\/chat\/endpoint-github\/settings$/);
   const nav = page.getByRole("navigation", { name: "Chat connection" });
   for (const tab of ["Settings", "Access", "Reviews", "Conversations", "Activity"]) {
     await expect(nav.getByRole("link", { name: tab, exact: true })).toBeVisible();
   }
   await nav.getByRole("link", { name: "Access", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Who can start work", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "People", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Reviews", exact: true }).click();
-  await expect(page.getByText(/^No reviews yet\. Mention the bot/)).toBeVisible();
+  await expect(page.getByText("No reviews yet", { exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Conversations", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Conversations", exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Conversations", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Connection activity", exact: true })).toBeVisible();
   await page.getByText("Connection health and controls", { exact: true }).click();
@@ -110,7 +110,7 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
   mock.setStatus("active");
   await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
-  await expect(page.getByText(/Maya is permanently assigned to this bot/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Maya", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await page.getByText("Connection health and controls", { exact: true }).click();
   await page.getByRole("button", { name: "Remove connection", exact: true }).click();

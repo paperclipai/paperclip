@@ -1183,6 +1183,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               await githubResponseCommentService(db, fetchImpl).finishRun({ companyId: session.companyId, issueId: source.issue.id, runId: source.run.id, endpointId: source.endpoint.id }, source, published, api, lease,
                 async () => { await currentHead(review.headSha); });
             }
+            let firstInlineReceipt: { id: string; url: string } | null = null;
             const severity = { info: 0, warning: 1, error: 2 };
             if (source.policy.publishInline)
               for (const finding of assessment.findings) {
@@ -1260,11 +1261,18 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     .onConflictDoNothing();
                 });
                 receipts[key] = { id: String(posted.id), url: posted.html_url, digest: hash(finding) };
+                firstInlineReceipt ??= { id: String(posted.id), url: posted.html_url };
                 await lease.commit(async tx => {
                   await tx.update(chatGitHubReviews).set({ publicationReceipts: receipts, updatedAt: new Date() })
                     .where(eq(chatGitHubReviews.id, review.id));
                 });
               }
+            if (!source.policy.publishSummary && firstInlineReceipt) {
+              await githubResponseCommentService(db, fetchImpl).finishRun({
+                companyId: session.companyId, issueId: source.issue.id, runId: source.run.id,
+                endpointId: source.endpoint.id, closePrimary: true,
+              }, source, firstInlineReceipt, api, lease, async () => { await currentHead(review.headSha); });
+            }
             await currentHead(review.headSha);
             const checks = await api.request<{
               check_runs: Array<{

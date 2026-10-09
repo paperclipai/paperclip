@@ -204,12 +204,12 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       .orderBy(asc(chatMessageLinks.createdAt));
     return { run, links };
   }
-  async function finishRun(input: { companyId: string; endpointId: string; issueId: string; runId: string },
+  async function finishRun(input: { companyId: string; endpointId: string; issueId: string; runId: string; closePrimary?: boolean },
     primary: Source, receipt: { id: string; url: string }, api: Api, lease: Lease, assertCurrent: () => Promise<void>) {
     const { run, links } = await requestsForRun(input);
     if (run.agentId !== primary.endpoint.assignedAgentId) throw forbidden("GitHub response authority changed");
     for (const link of links) {
-      if (!link.deliveryId || link.deliveryId === primary.delivery.id) continue;
+      if (!link.deliveryId || (link.deliveryId === primary.delivery.id && !input.closePrimary)) continue;
       const sibling = await context(link.deliveryId);
       if (sibling.endpoint.id !== primary.endpoint.id || sibling.number !== primary.number || sibling.replyId !== primary.replyId || sibling.conversation.id !== primary.conversation.id)
         throw forbidden("Coalesced GitHub response belongs to another conversation");
@@ -222,7 +222,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         continue;
       }
       await writeGitHubResponseComment(db, sibling, api, lease, {
-        body: `Handled with the [response to this request](${receipt.url}).`, final: true, versionAt: new Date(),
+        body: link.deliveryId === primary.delivery.id
+          ? `Review complete. See the [review finding](${receipt.url}).`
+          : `Handled with the [response to this request](${receipt.url}).`, final: true, versionAt: new Date(),
       }, async () => { await assertCurrent(); await context(link.deliveryId!); });
     }
   }
