@@ -42,6 +42,14 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
 }));
 
+vi.mock("../services/authorization.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/authorization.js")>();
+  return {
+    ...actual,
+    issueReadSqlCondition: vi.fn(async () => ({}) as any),
+  };
+});
+
 vi.mock("../services/agent-action-audit.js", () => ({
   agentActionAuditService: () => mockAgentActionAuditService,
 }));
@@ -101,7 +109,7 @@ async function requestApp(
   }
 }
 
-describe.sequential("activity routes", () => {
+describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
@@ -219,6 +227,7 @@ describe.sequential("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+      readCondition: expect.anything(),
     });
   });
 
@@ -237,6 +246,7 @@ describe.sequential("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+      readCondition: expect.anything(),
     });
   });
 
@@ -275,6 +285,26 @@ describe.sequential("activity routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockActivityService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: "issue-uuid-1", companyId: "company-2" }])(
+    "does not start run reads or retries for a missing or cross-company task", async (issue) => {
+      mockIssueService.getByIdentifier.mockResolvedValue(issue);
+      const app = await createApp();
+      const res = await request(app).get("/api/issues/TEST-1/runs");
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "Issue not found" });
+      expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not start run reads or retries when task read authorization is denied", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "denied", explanation: "Denied by test policy." });
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/TEST-1/runs");
+    expect(res.status).toBe(403);
+    expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
   });
 
   it("returns 200 [] (not 404) when listing issues for another company's run, preserving API contract and the cross-tenant oracle", async () => {

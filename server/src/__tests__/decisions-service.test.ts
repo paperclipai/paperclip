@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -87,7 +87,6 @@ describePg("decisionService", () => {
     options: [{ id: "yes", label: "Yes", effects: [{ type: "comment_on_issue", targetIssueId, staleness, bodyMarkdown: "hello" }] }],
     ...extra,
   });
-
   // Make an existing decision TTL-expired for the next sweep. Creating a
   // decision that is already expired is impossible (create rejects a past
   // expiresAt), and creating one that expires a few milliseconds later races
@@ -122,10 +121,15 @@ describePg("decisionService", () => {
   });
 
   it("allows one double-decide winner and rejects the loser", async () => {
-    const created = await createCommentDecision();
+    // Repeating the same option is a valid replay if the first request already
+    // won. Distinct choices exercise contention regardless of query scheduling.
+    const created = await createCommentDecision("lenient", { options: [
+      { id: "yes", label: "Yes", effects: [{ type: "comment_on_issue", targetIssueId, staleness: "lenient", bodyMarkdown: "hello" }] },
+      { id: "alternative", label: "Alternative", effects: [{ type: "comment_on_issue", targetIssueId, staleness: "lenient", bodyMarkdown: "alternative" }] },
+    ] });
     const outcomes = await Promise.allSettled([
       service().decide({ id: created.id, optionId: "yes", idempotencyKey: "race-a", decidedByUserId, userActor: boardActor() }),
-      service().decide({ id: created.id, optionId: "yes", idempotencyKey: "race-b", decidedByUserId, userActor: boardActor() }),
+      service().decide({ id: created.id, optionId: "alternative", idempotencyKey: "race-b", decidedByUserId, userActor: boardActor() }),
     ]);
     expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((item) => item.status === "rejected")).toHaveLength(1);

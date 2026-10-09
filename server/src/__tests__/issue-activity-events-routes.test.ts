@@ -7,6 +7,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -18,6 +19,9 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(async ({ action }: { action: string }) => ({
+    action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+  })),
   canUser: vi.fn(async () => false),
   hasPermission: vi.fn(async () => false),
 }));
@@ -44,6 +48,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+const mockRunnerGoalService = vi.hoisted(() => ({
+  projection: vi.fn(async () => null),
+  act: vi.fn(),
 }));
 
 function registerModuleMocks() {
@@ -75,9 +83,15 @@ function registerModuleMocks() {
     routineService: () => mockRoutineService,
   }));
 
+  vi.doMock("../services/runner-goals.js", () => ({
+    runnerGoalService: () => mockRunnerGoalService,
+    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({
@@ -125,7 +139,17 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
+function createEmptyRelationReadDb() {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => []),
+  };
+  return {
+    select: vi.fn().mockReturnValue(query),
+  };
+}
+
+async function createApp(db: unknown = createEmptyRelationReadDb()) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -168,6 +192,8 @@ function makeIssue() {
 function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Record<string, unknown>) {
   const {
     actorAgentId: _actorAgentId,
+    actorRunId: _actorRunId,
+    actorRunStopId: _actorRunStopId,
     actorUserId: _actorUserId,
     blockedByIssueIds: _blockedByIssueIds,
     ...issuePatch
@@ -200,6 +226,7 @@ describe("issue activity event routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
@@ -555,6 +582,7 @@ describe("issue activity event routes", () => {
       createdAt: new Date("2026-05-01T00:00:00.000Z"),
     };
     const dbMock = {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
       select: () => ({
         from: () => ({
           where: () => ({

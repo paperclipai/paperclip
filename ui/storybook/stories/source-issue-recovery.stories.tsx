@@ -9,6 +9,12 @@ import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/pap
 
 const claudeAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("claude")) ?? storybookAgents[0]!;
 const codexAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("codex")) ?? storybookAgents[0]!;
+// The recovery lane must be shown by an agent that is genuinely not the source owner,
+// otherwise the "separate roles" story cannot demonstrate anything.
+const managerAgent =
+  storybookAgents.find((agent) => agent.name.toLowerCase() === "cto") ??
+  storybookAgents.find((agent) => agent.id !== codexAgent.id) ??
+  codexAgent;
 
 function StoryFrame({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
@@ -186,6 +192,159 @@ function AllStatesPanel() {
         forcedState="escalated"
         canFalsePositive
       />
+    </div>
+  );
+}
+
+/**
+ * Owner-sticky repair lineage (PAP-17484). One recovery-action row moves through three
+ * budgets — the original owner retrying itself, a manager repairing the path, then the
+ * board — and the source owner never changes.
+ */
+function inMinutes(minutes: number) {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+function buildSourceLaneAction(overrides: Partial<IssueRecoveryAction> = {}) {
+  return buildAction({
+    kind: "deliberate_wait_without_target",
+    cause: "deliberate_wait_without_target",
+    ownerAgentId: codexAgent.id,
+    previousOwnerAgentId: codexAgent.id,
+    returnOwnerAgentId: codexAgent.id,
+    fingerprint: "disposition_repair:v1:9f2c",
+    evidence: {
+      summary: "The run parked on a review wait, but no reviewer, approval, or monitor exists.",
+      sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+    },
+    nextAction:
+      "The original owner must replace the parked summary with a terminal, live, blocked, monitored, or typed waiting disposition.",
+    wakePolicy: {
+      type: "bounded_owner_disposition_repair",
+      retryAgentId: codexAgent.id,
+      attempt: 2,
+      maxAttempts: 5,
+      baseBackoffMs: 60_000,
+      jitterMs: 4_200,
+      retryAt: inMinutes(3),
+      scheduledRunId: "2606404d-3859-4142-ba37-3228a037cc09",
+    },
+    attemptCount: 2,
+    maxAttempts: 5,
+    timeoutAt: inMinutes(3),
+    ...overrides,
+  });
+}
+
+function buildRecoveryLaneAction(overrides: Partial<IssueRecoveryAction> = {}) {
+  return buildSourceLaneAction({
+    ownerAgentId: managerAgent.id,
+    nextAction:
+      "Repair the source issue disposition or request an explicit reassignment decision without taking source ownership.",
+    evidence: {
+      summary: "Five original-owner repair attempts finished without a durable source change.",
+      sourceAttemptCount: 5,
+      sourceMaxAttempts: 5,
+      terminalReason: "disposition_repair_attempts_exhausted",
+    },
+    wakePolicy: {
+      type: "bounded_recovery_owner",
+      ownerAgentId: managerAgent.id,
+      attempt: 1,
+      maxAttempts: 3,
+      retryAt: inMinutes(1),
+      scheduledRunId: "9c1c5f5a-2e0b-4d1a-9d6f-3228a037cc09",
+      preservesSourceAssignee: true,
+    },
+    attemptCount: 1,
+    maxAttempts: 3,
+    timeoutAt: inMinutes(1),
+    ...overrides,
+  });
+}
+
+function RetryLineagePanel() {
+  return (
+    <div className="grid gap-5 lg:grid-cols-1">
+      <CardPanel
+        caption="Lane 1 · Original owner retrying itself — quiet, no action needed"
+        action={buildSourceLaneAction()}
+      />
+      <CardPanel
+        caption="Lane 1 (exhausted) · Every automatic attempt is spent — strong warning"
+        action={buildSourceLaneAction({
+          attemptCount: 5,
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: codexAgent.id,
+            attempt: 5,
+            maxAttempts: 5,
+            retryAt: inMinutes(-2),
+          },
+        })}
+        canFalsePositive
+      />
+      <CardPanel
+        caption="Lane 2 · Manager repairs the path only — the original owner keeps the task"
+        action={buildRecoveryLaneAction()}
+      />
+      <CardPanel
+        caption="Lane 3 · Board escalation — still not a change of task ownership"
+        action={buildRecoveryLaneAction({
+          status: "escalated",
+          ownerType: "board",
+          ownerAgentId: null,
+          attemptCount: 3,
+          maxAttempts: 3,
+          timeoutAt: null,
+          wakePolicy: {
+            type: "board_escalation",
+            reason: "recovery_owner_retry_exhausted",
+            attempt: 3,
+            maxAttempts: 3,
+            preservesSourceAssignee: true,
+          },
+        })}
+        canFalsePositive
+      />
+      <section className="space-y-2">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          Parent blocker chips · same actions, same liveness state
+        </div>
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            buildBlocker({
+              id: "lineage-1",
+              identifier: "PAP-17417",
+              title: "Original owner is being retried",
+              activeRecoveryAction: buildSourceLaneAction(),
+            }),
+            buildBlocker({
+              id: "lineage-2",
+              identifier: "PAP-17418",
+              title: "Automatic repair exhausted",
+              status: "blocked",
+              activeRecoveryAction: buildSourceLaneAction({
+                attemptCount: 5,
+                wakePolicy: {
+                  type: "bounded_owner_disposition_repair",
+                  retryAgentId: codexAgent.id,
+                  attempt: 5,
+                  maxAttempts: 5,
+                  retryAt: inMinutes(-2),
+                },
+              }),
+            }),
+            buildBlocker({
+              id: "lineage-3",
+              identifier: "PAP-17399",
+              title: "Manager is repairing the path",
+              activeRecoveryAction: buildRecoveryLaneAction(),
+            }),
+          ]}
+        />
+      </section>
     </div>
   );
 }
@@ -431,6 +590,17 @@ export const RecoveryActionCardStates: Story = {
       description="Five states required by the source-issue recovery contract: needed, in progress, observe-only watchdog, escalated, resolved."
     >
       <AllStatesPanel />
+    </StoryFrame>
+  ),
+};
+
+export const OwnerStickyRetryLineage: Story = {
+  render: () => (
+    <StoryFrame
+      title="Owner-sticky repair lineage"
+      description="A stored retry keeps the card quiet; the strong warning is reserved for an exhausted or missing path. The task owner and the recovery owner are always shown as separate roles, and parent blocker chips report the same liveness state as the source card."
+    >
+      <RetryLineagePanel />
     </StoryFrame>
   ),
 };

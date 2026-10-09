@@ -8,9 +8,98 @@ import type {
   WakeupRequestStatus,
 } from "../constants.js";
 
-export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
+export interface ProviderTraceDebugRequest {
+  providerTrace: "raw";
+}
 
-export type GitWorktreeInProgressOperation = "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
+export type ProviderTraceDirection =
+  "client_to_provider" | "provider_to_client" | "provider_stderr";
+export type ProviderTraceDisposition =
+  "mapped" | "generic" | "ignored" | "rejected" | "operator_only";
+
+export type ProviderTraceFieldMappingAction =
+  "copied" | "renamed" | "normalized" | "derived" | "dropped" | "redacted";
+
+export interface ProviderTraceFieldMapping {
+  inputPath?: string;
+  outputPath?: string;
+  action: ProviderTraceFieldMappingAction;
+  reason?: string;
+}
+
+export interface ProviderTraceFrame {
+  kind?: "frame";
+  schema: "paperclip.provider_trace_frame.v1";
+  debugChannel: string;
+  debugSequence: number;
+  frameId: number;
+  timestamp: string;
+  direction: ProviderTraceDirection;
+  transport: string;
+  provider: string;
+  byteLength: number;
+  digest: `sha256:${string}`;
+  rawBase64: string;
+}
+
+export interface ProviderTraceInterpretation {
+  kind?: "interpretation";
+  schema: "paperclip.provider_trace_interpretation.v1";
+  debugChannel: string;
+  debugSequence: number;
+  frameId: number;
+  stage: string;
+  ruleId: string;
+  disposition: ProviderTraceDisposition;
+  emittedEventIds: string[];
+  droppedFields: string[];
+  fieldMappings?: ProviderTraceFieldMapping[];
+  reason: string;
+}
+
+export type ProviderTraceStatus =
+  "capturing" | "complete" | "incomplete" | "truncated" | "deleted" | "expired";
+
+export interface ProviderTraceMetadata {
+  schema: "paperclip.provider_trace_metadata.v1";
+  id: string;
+  runId: string;
+  companyId: string;
+  status: ProviderTraceStatus;
+  provider: string;
+  frameCount: number;
+  byteCount: number;
+  digest: `sha256:${string}` | null;
+  reason: string | null;
+  requestedBy: string;
+  createdAt: string | Date;
+  expiresAt: string | Date;
+  deletedAt: string | Date | null;
+}
+
+export type RunPresentationSource =
+  | "existing_issue_comment"
+  | "final_agent_message"
+  | "semantic_result_summary"
+  | "adapter_final_response"
+  | "none";
+
+export interface RunPresentationDecision {
+  schema: "paperclip.run_presentation_decision.v1";
+  resolverVersion: string;
+  chosenSource: RunPresentationSource;
+  sourceEventId: string | null;
+  commentAction: "reuse" | "create" | "none";
+  commentId: string | null;
+  activityDisposition: "collapse";
+  reasonCodes: string[];
+}
+
+export type GitWorktreeBranchAncestryVerdict =
+  "ancestor" | "diverged" | "unknown";
+
+export type GitWorktreeInProgressOperation =
+  "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
 
 export interface GitWorktreeBranchIncoherenceEvidence {
   reason: "git_worktree_branch_incoherence";
@@ -65,13 +154,36 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;
   agentId: string;
+  scopeKind: "company" | "issue";
+  issueId: string | null;
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
   responsibleUserId: string | null;
+  activeIdentityContextId?: string | null;
+  identityHistory?: Array<{
+    id: string;
+    revision: number;
+    responsibleUserId: string | null;
+    messageId: string | null;
+    parentContextId: string | null;
+    cause: string;
+    status: string;
+    acceptedAt: Date | string | null;
+    github: {
+      status: "available" | "absent" | "unavailable";
+      login?: string;
+      source?: "personal" | "dedicated";
+      reason?: string;
+      connectionId?: string;
+      grantId?: string;
+      authenticationMode?: "managed" | "host" | "anonymous";
+    } | null;
+  }>;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
@@ -112,6 +224,10 @@ export interface HeartbeatRun {
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Metadata-only company-list row for a run bound to an unreadable private issue. */
+  redacted?: boolean;
+  durationMs?: number | null;
+  costUsd?: number | null;
   outputSilence?: HeartbeatRunOutputSilence;
   /**
    * Ephemeral, process-local current status message for an active run. Resolved
@@ -141,11 +257,7 @@ export type HeartbeatRunStatusPhase =
   | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =
-  | "not_applicable"
-  | "ok"
-  | "suspicious"
-  | "critical"
-  | "snoozed";
+  "not_applicable" | "ok" | "suspicious" | "critical" | "snoozed";
 
 export interface HeartbeatRunOutputSilence {
   lastOutputAt: Date | string | null;
@@ -173,6 +285,15 @@ export interface AgentWakeupSkipped {
 }
 
 export type AgentWakeupResponse = HeartbeatRun | AgentWakeupSkipped;
+
+/** A durable chat retry can be accepted before a scheduler run exists. */
+export interface ChatFailedRunRetryResponse {
+  actionId: string;
+  issueId: string;
+  runId: string | null;
+  status:
+    "queued" | "deferred" | "running" | "succeeded" | "failed" | "cancelled";
+}
 
 export interface HeartbeatRunEvent {
   id: number;

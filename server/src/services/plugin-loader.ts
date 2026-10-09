@@ -141,6 +141,7 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   string,
   { driverKey: string; envVars: readonly string[] }
 > = {
+  "@paperclipai/plugin-createos": { driverKey: "createos", envVars: ["CREATEOS_API_KEY"] },
   "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
   "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
   "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
@@ -268,6 +269,16 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
  * Options for the plugin loader service.
  */
 export interface PluginLoaderOptions {
+  /** Image-owned deployment policy, checked before importing code and starting workers. */
+  assertPackageActivation?: (input: {
+    pluginKey?: string;
+    packageRoot: string;
+    /** Persisted source path, even when package resolution used a fallback. */
+    installedPackagePath?: string | null;
+    manifest?: PaperclipPluginManifestV1;
+    /** Persisted grants, supplied before a runtime manifest refresh is saved. */
+    previousManifest?: PaperclipPluginManifestV1;
+  }) => void;
   /**
    * Path to the local plugin directory to scan.
    * Defaults to ~/.paperclip/plugins/
@@ -793,9 +804,11 @@ function buildStandaloneBundledPluginInstallArgs(
   packageRoot: string,
 ): string[] {
   const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
-  return existsSync(packageLockfilePath)
-    ? ["install", "--ignore-workspace", "--frozen-lockfile"]
-    : ["install", "--ignore-workspace", "--no-lockfile"];
+  // Never let plugin-supplied workspace settings broaden dependency resolution
+  // or script execution. When a plugin declares a local install policy, disable
+  // dependency lifecycle scripts instead of loading that workspace configuration.
+  const scriptArgs = existsSync(path.join(packageRoot, "pnpm-workspace.yaml")) ? ["--ignore-scripts"] : [];
+  return ["install", "--ignore-workspace", ...scriptArgs, existsSync(packageLockfilePath) ? "--frozen-lockfile" : "--no-lockfile"];
 }
 
 function buildStandaloneBundledPluginInstallCommand(
@@ -1141,6 +1154,7 @@ export function pluginLoader(
     migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
+    assertPackageActivation,
   } = options;
 
   const registry = pluginRegistryService(db);
@@ -1266,6 +1280,7 @@ export function pluginLoader(
 
     // Step 3: Read and validate plugin manifest
     // Note: this.loadManifest (used via current context)
+    assertPackageActivation?.({ packageRoot: resolvedPackagePath });
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
@@ -1284,6 +1299,7 @@ export function pluginLoader(
     }
 
     const manifest = await loadManifestFromPath(manifestPath);
+    assertPackageActivation?.({ packageRoot: resolvedPackagePath, pluginKey: manifest.id, manifest });
 
     // Step 4: Reject incompatible plugin API versions
     if (!manifestValidator.getSupportedVersions().includes(manifest.apiVersion)) {
@@ -1379,6 +1395,7 @@ export function pluginLoader(
       );
     }
 
+    assertPackageActivation?.({ packageRoot, installedPackagePath: plugin.packagePath, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
     if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
       return plugin;
     }
@@ -1406,6 +1423,7 @@ export function pluginLoader(
     packagePath: string,
     source: PluginSource,
   ): Promise<DiscoveredPlugin | null> {
+    assertPackageActivation?.({ packageRoot: packagePath });
     const pkgJson = await readPackageJson(packagePath);
     if (!pkgJson) return null;
 
@@ -1435,6 +1453,7 @@ export function pluginLoader(
 
     try {
       const manifest = await loadManifestFromPath(manifestPath);
+      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
       return {
         packagePath,
         packageName,
@@ -1687,6 +1706,7 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async loadManifest(packagePath: string): Promise<PaperclipPluginManifestV1 | null> {
+      assertPackageActivation?.({ packageRoot: packagePath });
       const pkgJson = await readPackageJson(packagePath);
       if (!pkgJson) return null;
 
@@ -1701,7 +1721,9 @@ export function pluginLoader(
       const manifestPath = resolveManifestPath(packagePath, pkgJson);
       if (!manifestPath || !existsSync(manifestPath)) return null;
 
-      return loadManifestFromPath(manifestPath);
+      const manifest = await loadManifestFromPath(manifestPath);
+      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
+      return manifest;
     },
 
     // -----------------------------------------------------------------------
@@ -1945,25 +1967,61 @@ export function pluginLoader(
       // Fetch all plugins in ready status, ordered by installOrder
       const readyPlugins = (await registry.listByStatus("ready")) as PluginRecord[];
 
-      if (readyPlugins.length === 0) {
+      // Retry plugins stranded in error status. An activation failure is often
+      // environmental — missing package dependencies, a stale build output, a
+      // module that moved under a pull — and the fix lands on disk without any
+      // write to the plugin row, so the row would otherwise stay dead until an
+      // operator flips it back by hand. One attempt per boot cannot crash-loop
+      // within a running process, and a failed attempt re-records the error
+      // through the normal markError path. The flip to ready must run BEFORE
+      // activation: the error status only legally transitions to ready or
+      // uninstalled, so a retry that failed while still in error status could
+      // not re-mark itself as errored.
+      const erroredPlugins = (await registry.listByStatus("error")) as PluginRecord[];
+      const retriedPlugins: PluginRecord[] = [];
+      for (const plugin of erroredPlugins) {
+        try {
+          const flipped = (await registry.updateStatus(plugin.id, { status: "ready" })) as PluginRecord | null;
+          if (flipped) retriedPlugins.push(flipped);
+        } catch (err) {
+          log.warn(
+            {
+              pluginId: plugin.id,
+              pluginKey: plugin.pluginKey,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "plugin-loader: could not queue errored plugin for a boot retry",
+          );
+        }
+      }
+      if (retriedPlugins.length > 0) {
+        log.info(
+          { count: retriedPlugins.length, pluginKeys: retriedPlugins.map((plugin) => plugin.pluginKey) },
+          "plugin-loader: retrying plugins that failed activation on a previous boot",
+        );
+      }
+
+      const pluginsToLoad = [...readyPlugins, ...retriedPlugins];
+
+      if (pluginsToLoad.length === 0) {
         log.info("plugin-loader: no ready plugins to load");
         return { total: 0, succeeded: 0, failed: 0, results: [] };
       }
 
       log.info(
-        { count: readyPlugins.length },
+        { count: pluginsToLoad.length },
         "plugin-loader: found ready plugins to load",
       );
 
       // Load plugins in parallel
       const results = await Promise.allSettled(
-        readyPlugins.map((plugin) => activatePlugin(plugin))
+        pluginsToLoad.map((plugin) => activatePlugin(plugin))
       );
 
       const loadResults = results.map((r, i) => {
         if (r.status === "fulfilled") return r.value;
         return {
-          plugin: readyPlugins[i]!,
+          plugin: pluginsToLoad[i]!,
           success: false,
           error: String(r.reason),
           registered: { worker: false, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
@@ -1975,7 +2033,7 @@ export function pluginLoader(
 
       log.info(
         {
-          total: readyPlugins.length,
+          total: pluginsToLoad.length,
           succeeded,
           failed,
         },
@@ -1983,7 +2041,7 @@ export function pluginLoader(
       );
 
       return {
-        total: readyPlugins.length,
+        total: pluginsToLoad.length,
         succeeded,
         failed,
         results: loadResults,
@@ -2207,8 +2265,10 @@ export function pluginLoader(
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
       const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
+      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
       const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
@@ -2447,8 +2507,9 @@ export function pluginLoader(
       );
 
       if (options.markErrorOnFailure) {
-        // Mark the plugin as errored in the database so it is not retried
-        // automatically on next startup without operator intervention.
+        // Mark the plugin as errored in the database. The running process
+        // leaves it inactive; the next boot's loadAll retries it once, and the
+        // lifecycle enable() path can revive it sooner by hand.
         // markError also deactivates the plugin runtime in this process.
         try {
           await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);

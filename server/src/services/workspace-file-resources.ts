@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
+import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
@@ -20,6 +19,11 @@ import type {
   WorkspaceFileWorkspaceKind,
 } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
+import {
+  isWorkspaceGitScanError,
+  WORKSPACE_GIT_SCAN_ERROR_CODES,
+  workspaceGitOperationScheduler,
+} from "./workspace-git-operation-scheduler.js";
 
 export const WORKSPACE_FILE_TEXT_MAX_BYTES = 512 * 1024;
 export const WORKSPACE_FILE_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
@@ -31,8 +35,12 @@ const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
 const GIT_STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
-const execFileAsync = promisify(execFile);
 const LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES = new Set(["local_path", "non_git_path", "git_repo", "git_worktree"]);
+
+export interface WorkspaceFileScanContext {
+  signal?: AbortSignal;
+  fairnessKeys?: readonly string[];
+}
 
 const DENIED_SEGMENTS = new Set([
   ".git",
@@ -326,6 +334,11 @@ function throwIfDenied(segments: string[]) {
   }
 }
 
+/** Apply the existing file-path policy to other read-only file surfaces. */
+export function assertWorkspaceFilePathAllowed(relativePath: string): void {
+  throwIfDenied(normalizeWorkspaceRelativePath(relativePath).segments);
+}
+
 function shouldPruneSegments(segments: string[]) {
   return denyReasonForPathSegments(segments) != null;
 }
@@ -346,7 +359,8 @@ function previewKindForKnownContentType(contentType: string | null): WorkspaceFi
   if (contentType.startsWith("image/") && contentType !== "image/svg+xml") return "image";
   if (contentType.startsWith("video/")) return "video";
   if (contentType === "application/pdf") return "pdf";
-  if (contentType === "text/html") return "unsupported";
+  // HTML is returned as bounded UTF-8 in the JSON content response. The UI
+  // renders it only in its opaque-origin sandbox; downloads stay attachments.
   if (contentType === "image/svg+xml" || contentType.startsWith("text/")) return "text";
   return "unsupported";
 }
@@ -976,16 +990,29 @@ async function listChangedWorkspaceFiles(input: {
   normalizedQuery: string | null;
   limit: number;
   offset: number;
+  scanContext?: WorkspaceFileScanContext;
 }) {
   let stdout: string;
   try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", input.rootReal, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { maxBuffer: GIT_STATUS_MAX_BUFFER_BYTES },
-    );
+    const result = await workspaceGitOperationScheduler.run({
+      workspacePath: input.rootReal,
+      args: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      operation: "workspace_file_browser.changed_files",
+      fairnessKeys: input.scanContext?.fairnessKeys,
+      signal: input.scanContext?.signal,
+      maxStdoutBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      maxStderrBytes: GIT_STATUS_MAX_BUFFER_BYTES,
+      // The shared scheduler defaults this to ten seconds. This deliberately
+      // trades a few seconds of freshness for protection from tab/refetch bursts.
+    });
     stdout = result.stdout;
-  } catch {
+  } catch (error) {
+    if (
+      isWorkspaceGitScanError(error) &&
+      error.code !== WORKSPACE_GIT_SCAN_ERROR_CODES.failed
+    ) {
+      throw error;
+    }
     return { unavailableReason: "changed_unavailable" as const };
   }
 
@@ -1011,9 +1038,23 @@ async function listChangedWorkspaceFiles(input: {
   };
 }
 
-export function workspaceFileResourceService(db: Db) {
+export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
+  async function visibleCandidates(candidates: WorkspaceCandidate[]) {
+    if (!actor) return candidates;
+    const visible: WorkspaceCandidate[] = [];
+    for (const candidate of candidates) {
+      const rows = candidate.workspaceKind === "execution_workspace"
+        ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), await executionWorkspaceReadSqlCondition(db, actor)))
+        : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+          .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
+      if (rows.length) visible.push(candidate);
+    }
+    return visible;
+  }
   async function getIssue(issueId: string): Promise<IssueRow> {
-    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId)).limit(1);
+    const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), actor ? await issueReadSqlCondition(db, actor) : undefined)).limit(1);
     if (!issue) throw notFound("Issue not found");
     return issue;
   }
@@ -1039,7 +1080,9 @@ export function workspaceFileResourceService(db: Db) {
       throw unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" });
     }
 
-    return candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name });
+    const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+    if (!candidate) throw notFound("Project workspace not found");
+    return candidate;
   }
 
   async function listCandidates(
@@ -1106,7 +1149,7 @@ export function workspaceFileResourceService(db: Db) {
       }
     }
 
-    return candidates;
+    return visibleCandidates(candidates);
   }
 
   async function loadAvailabilityTargets(
@@ -1146,9 +1189,8 @@ export function workspaceFileResourceService(db: Db) {
           error: unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" }),
         });
       } else {
-        targets.set(targetKey, {
-          candidate: candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name }),
-        });
+        const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+        targets.set(targetKey, candidate ? { candidate } : { error: notFound("Project workspace not found") });
       }
     }
     return targets;
@@ -1180,7 +1222,7 @@ export function workspaceFileResourceService(db: Db) {
       seen.add(row.workspace.id);
       candidates.push(candidateFromProjectWorkspace(row.workspace, row.project));
     }
-    return candidates;
+    return visibleCandidates(candidates);
   }
 
   async function discoverUniqueProjectWorkspaceMatch<T>(
@@ -1367,7 +1409,7 @@ export function workspaceFileResourceService(db: Db) {
   async function list(
     issueId: string,
     input: WorkspaceFileListQueryInput = {},
-    opts: { issue?: IssueRow } = {},
+    opts: { issue?: IssueRow; scanContext?: WorkspaceFileScanContext } = {},
   ): Promise<WorkspaceFileListResponse> {
     const issue = opts.issue ?? await getIssue(issueId);
     const selector = input.workspace ?? "auto";
@@ -1442,7 +1484,14 @@ export function workspaceFileResourceService(db: Db) {
       }
 
       if (mode === "changed") {
-        const changed = await listChangedWorkspaceFiles({ candidate, rootReal, normalizedQuery, limit, offset });
+        const changed = await listChangedWorkspaceFiles({
+          candidate,
+          rootReal,
+          normalizedQuery,
+          limit,
+          offset,
+          scanContext: opts.scanContext,
+        });
         if ("unavailableReason" in changed) {
           const reason = changed.unavailableReason ?? "changed_unavailable";
           firstUnavailable ??= { candidate, reason };

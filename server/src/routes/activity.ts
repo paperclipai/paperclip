@@ -10,6 +10,8 @@ import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
 import { logActivity } from "../services/activity-log.js";
+import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
@@ -95,17 +97,17 @@ const createActivitySchema = z.object({
   action: z.string().min(1),
   entityType: z.string().min(1),
   entityId: z.string().min(1),
-  agentId: z.string().uuid().optional().nullable(),
-  details: z.record(z.unknown()).optional().nullable(),
+  agentId: z.string().guid().optional().nullable(),
+  details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
 
 const agentActionAuditQuerySchema = z.object({
   actorScope: agentActionAuditActorScopeSchema.default("agents"),
-  agentId: z.string().uuid().optional(),
+  agentId: z.string().guid().optional(),
   responsibleUserId: z.string().min(1).optional(),
-  runId: z.string().uuid().optional(),
+  runId: z.string().guid().optional(),
   entityType: z.string().min(1).optional(),
   entityId: z.string().min(1).optional(),
   action: z.string().min(1).optional(),
@@ -230,6 +232,7 @@ export function activityRoutes(db: Db) {
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      readCondition: await issueReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
     res.json(result);
@@ -369,6 +372,10 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, run.companyId))) return;
+    if (!(await canActorReadHeartbeatRun(db, access, req.actor, run))) {
+      res.json([]);
+      return;
+    }
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });

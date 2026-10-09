@@ -20,6 +20,7 @@ export {
 } from "./file-resources.js";
 export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";
+export { onboardingSeedRoutes } from "./onboarding-seed.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";
 export { toolAccessRoutes } from "./tool-access.js";
@@ -38,3 +39,5 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
+export { managedAgentProfileRoutes } from "./managed-agent-profiles.js";
+export { remoteAgentProfileRoutes } from "./remote-agent-profiles.js";

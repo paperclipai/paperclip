@@ -42,6 +42,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
@@ -171,7 +172,11 @@ describeEmbeddedPostgres("attention service", () => {
     createdAt?: Date;
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
+    visibility?: "open" | "private";
+    privacyRootIssueId?: string | null;
+    responsibleUserId?: string | null;
     harnessKind?: string | null;
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -181,6 +186,7 @@ describeEmbeddedPostgres("attention service", () => {
       title: input.title,
       status: input.status,
       priority: input.priority ?? "medium",
+      reviewPolicy: input.reviewPolicy ?? null,
       parentId: input.parentId ?? null,
       projectId: input.projectId ?? null,
       projectWorkspaceId: input.projectWorkspaceId ?? null,
@@ -192,6 +198,9 @@ describeEmbeddedPostgres("attention service", () => {
       executionState: input.executionState ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
+      visibility: input.visibility ?? "open",
+      privacyRootIssueId: input.privacyRootIssueId ?? null,
+      responsibleUserId: input.responsibleUserId ?? null,
       harnessKind: input.harnessKind ?? null,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
@@ -314,6 +323,9 @@ describeEmbeddedPostgres("attention service", () => {
       title: "Stalled review blocker",
       status: "in_review",
       assigneeAgentId: reviewerId,
+      // PAP-16506: the /decisions review card states who may give the verdict,
+      // so the subject has to carry the issue's opt-in constraint.
+      reviewPolicy: "human_only",
       updatedAt: new Date("2026-07-09T12:05:00.000Z"),
     });
     await db.insert(issueRelations).values({
@@ -611,13 +623,13 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(12);
+    expect(feed.totalCount).toBe(11);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
       join_request: 1,
       recovery_action: 1,
-      productivity_review: 1,
+      productivity_review: 0,
       blocker_attention: 1,
       review: 2,
       failed_run: 1,
@@ -629,7 +641,6 @@ describeEmbeddedPostgres("attention service", () => {
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
-      "productivity_review",
       "blocker_attention",
       "review",
       "failed_run",
@@ -646,7 +657,14 @@ describeEmbeddedPostgres("attention service", () => {
       expect(item.rank).toBeGreaterThan(0);
     }
     expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "productivity_review")).toBe(false);
     expect(feed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
+    const legacyReviews = await db.select().from(issues).where(eq(issues.originKind, "issue_productivity_review"));
+    expect(legacyReviews).toHaveLength(2);
+    expect(legacyReviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Human productivity review", status: "todo", assigneeUserId: "board-user", parentId: productivitySourceIssueId }),
+      expect.objectContaining({ title: "Agent productivity review excluded", status: "todo", assigneeAgentId: workerId, parentId: agentProductivitySourceIssueId }),
+    ]));
     expect(feed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
     expect(feed.items.some((item) =>
       item.sourceKind === "failed_run" && item.subject.metadata?.errorCode === "provider_quota"
@@ -673,7 +691,10 @@ describeEmbeddedPostgres("attention service", () => {
       // A stalled review resolves in-row on the /decisions card (PAP-16080 §4.4).
       inlineResolvable: true,
       subject: expect.objectContaining({
-        metadata: expect.objectContaining({ reviewAttentionState: "stalled" }),
+        metadata: expect.objectContaining({
+          reviewAttentionState: "stalled",
+          reviewPolicy: "human_only",
+        }),
       }),
       decisionVerbs: expect.arrayContaining([
         expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
@@ -788,6 +809,177 @@ describeEmbeddedPostgres("attention service", () => {
       "Terminated reviewer question",
     ]));
     expect(interactionTitles).not.toContain("Active reviewer question");
+  });
+
+  // PAP-17287: a collapsed queue row offers Accept/Reject before anything fetches
+  // the interaction, so the audience the resolution routes will enforce has to
+  // ship with the feed item.
+  it("ships the effective resolver audience with each interaction row", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ARA");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ARA-1",
+      title: "Needs a decision",
+      status: "in_progress",
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Open question",
+        createdByAgentId: workerId,
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Creator-excluded question",
+        createdByAgentId: workerId,
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        resolverPolicyProvenance: "explicit",
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Capped question",
+        createdByAgentId: workerId,
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "human_only",
+        effectiveResolverPolicySource: "company_cap",
+        payload: { version: 1, questions: [] },
+      },
+    ]);
+    // An addressed card only reaches board attention once its addressee cannot
+    // act, which is exactly when naming the addressee matters most.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      title: "Addressed question",
+      createdByAgentId: workerId,
+      addresseeAgentId: reviewerId,
+      payload: { version: 1, questions: [] },
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      title: "User-addressed question",
+      createdByAgentId: workerId,
+      addresseeUserId: "board-user",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, questions: [] },
+    });
+    await agentService(db).pause(reviewerId);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const otherUserFeed = await attentionService(db).list(companyId, { userId: "other-user" });
+    const audienceByTitle = new Map(feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => [item.subject.title, item.resolverAudience]));
+
+    expect(audienceByTitle.get("Open question")).toMatchObject({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      effectiveResolverPolicySource: "requested",
+      addresseeAgentId: null,
+      addresseeName: null,
+    });
+    expect(audienceByTitle.get("Creator-excluded question")).toMatchObject({
+      effectiveResolverPolicy: "not_creator",
+      createdByAgentId: workerId,
+      createdByAgentName: "Worker",
+    });
+    expect(audienceByTitle.get("Capped question")).toMatchObject({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "company_cap",
+    });
+    expect(audienceByTitle.get("Addressed question")).toMatchObject({
+      addresseeAgentId: reviewerId,
+      addresseeName: "Reviewer",
+    });
+    expect(audienceByTitle.get("User-addressed question")).toMatchObject({
+      addresseeUserId: "board-user",
+      effectiveResolverPolicy: "human_only",
+    });
+    expect(otherUserFeed.items.some((item) => item.subject.title === "User-addressed question")).toBe(false);
+    // Non-interaction rows carry no resolver policy at all.
+    expect(feed.items.find((item) => item.sourceKind !== "issue_thread_interaction")?.resolverAudience)
+      .toBeNull();
+  });
+
+  it("reads one compact row per exhausted run despite thousands of historical receipts", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("MEM");
+    const other = await seedCompany("OTH");
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, reviewerId));
+    const issueId = await insertIssue({
+      companyId, identifier: "MEM-1", title: "Failed task", status: "in_progress",
+    });
+    const taskId = await insertIssue({
+      companyId, identifier: "MEM-2", title: "Timed out task", status: "in_progress",
+    });
+    const [failedId, timedOutId, succeededId, terminatedId, foreignId, noReceiptId] =
+      Array.from({ length: 6 }, () => randomUUID());
+    const createdAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      { id: failedId, companyId, agentId: workerId, status: "failed", contextSnapshot: { issueId, prompt: "x".repeat(32_000) } },
+      { id: timedOutId, companyId, agentId: workerId, status: "timed_out", contextSnapshot: { taskId, prompt: "y".repeat(32_000) } },
+      { id: succeededId, companyId, agentId: workerId, status: "succeeded" },
+      { id: terminatedId, companyId, agentId: reviewerId, status: "failed" },
+      { id: foreignId, companyId: other.companyId, agentId: other.workerId, status: "failed" },
+      { id: noReceiptId, companyId, agentId: workerId, status: "failed" },
+    ].map((run) => ({ ...run, createdAt, updatedAt: createdAt, finishedAt: createdAt })));
+    for (let batch = 0; batch < 5; batch += 1) {
+      await db.insert(heartbeatRunEvents).values(Array.from({ length: 500 }, (_, index) => ({
+        companyId, agentId: workerId, runId: failedId, seq: batch * 500 + index + 1,
+        eventType: "lifecycle", message: `Bounded retry exhausted receipt ${batch * 500 + index + 1}`,
+      })));
+    }
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, agentId: workerId, runId: timedOutId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted timeout" },
+      { companyId, agentId: workerId, runId: succeededId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted success" },
+      { companyId, agentId: reviewerId, runId: terminatedId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted terminated" },
+      { companyId: other.companyId, agentId: other.workerId, runId: foreignId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted other company" },
+      // A newer event must not replace the latest matching, company-scoped receipt.
+      { companyId: other.companyId, agentId: other.workerId, runId: failedId, seq: 2501, eventType: "lifecycle", message: "Bounded retry exhausted foreign receipt" },
+      { companyId, agentId: workerId, runId: failedId, seq: 2502, eventType: "stdout", message: "Bounded retry exhausted quoted output" },
+      { companyId, agentId: workerId, runId: failedId, seq: 2503, eventType: "lifecycle", message: "Unrelated lifecycle event" },
+    ]);
+
+    // Assert the database result itself: JavaScript feed deduplication used to
+    // hide the thousands of full run contexts already loaded into memory.
+    const rows = await listAttentionExhaustedRuns(db, companyId);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === failedId)).toMatchObject({
+      exhaustionMessage: "Bounded retry exhausted receipt 2500",
+      contextSnapshot: { issueId, taskId: null },
+    });
+    expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
+
+    const feed = await attentionService(db).list(companyId, {
+      includeDismissed: true, all: true, allowUnscopedAll: true,
+    });
+    const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
+    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
+    expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {
@@ -1852,6 +2044,35 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
+  });
+
+  it("omits private issue review items for a non-member board user", async () => {
+    const { companyId } = await seedCompany("ATP");
+    const privateIssueId = randomUUID();
+    await insertIssue({
+      id: privateIssueId,
+      companyId,
+      identifier: "ATP-1",
+      title: "Confidential review",
+      status: "in_review",
+      assigneeUserId: "private-owner",
+      executionState: pendingUserExecutionState("private-owner"),
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: "private-owner",
+    });
+
+    const actor = {
+      type: "board" as const,
+      source: "session" as const,
+      userId: "non-member",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    };
+    const feed = await attentionService(db).list(companyId, { userId: actor.userId, actor });
+
+    expect(feed.items.map((item) => item.subject.title)).not.toContain("Confidential review");
+    expect(JSON.stringify(feed)).not.toContain(privateIssueId);
   });
 
   it("computes the aging shelf uniformly across approval, interaction, and review sources", async () => {

@@ -4,10 +4,11 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWindowAutoFollow } from "./useWindowAutoFollow";
+import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 function Host({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
   useWindowAutoFollow(contentKey, enabled);
-  return <div>thread</div>;
+  return <div data-testid="task-chat-thread">thread</div>;
 }
 
 /**
@@ -21,8 +22,17 @@ describe("useWindowAutoFollow", () => {
 
   function fakeWindowGeometry({ scrollHeight = 2000, innerHeight = 800 } = {}) {
     const el = document.scrollingElement ?? document.documentElement;
-    Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+    let currentScrollHeight = scrollHeight;
+    Object.defineProperty(el, "scrollHeight", {
+      get: () => currentScrollHeight,
+      configurable: true,
+    });
     Object.defineProperty(window, "innerHeight", { value: innerHeight, configurable: true });
+    return {
+      setScrollHeight(value: number) {
+        currentScrollHeight = value;
+      },
+    };
   }
 
   function setWindowScrollY(y: number) {
@@ -72,6 +82,40 @@ describe("useWindowAutoFollow", () => {
     vi.unstubAllGlobals();
   });
 
+  it("reapplies same-task targets and POP positions on mobile without remounting", async () => {
+    vi.stubGlobal("scrollTo", (options: ScrollToOptions) => setWindowScrollY(Math.min(1200, options.top ?? 0)));
+    function MobileThread() {
+      useWindowAutoFollow("unchanged", true);
+      return <div data-testid="task-chat-thread">{[100, 500].map((top, index) => (
+        <div key={index} id={`mobile-comment-${index}`} data-thread-anchor={`mobile-comment-${index}`} ref={(node) => {
+          if (node) node.getBoundingClientRect = () => ({ top: top - window.scrollY, bottom: top + 100 - window.scrollY, height: 100 } as DOMRect);
+        }}>Comment {index}</div>
+      ))}</div>;
+    }
+    const navigate = (key: string, hash: string, restore = false) => flushSync(() => root.render(
+      <TaskChatScrollNavigation.Provider value={{ key, hash, restore }}><MobileThread /></TaskChatScrollNavigation.Provider>,
+    ));
+    navigate("mobile-entry-one", "#mobile-comment-0");
+    const thread = container.firstElementChild;
+    expect(window.scrollY).toBe(100);
+    await scrollWindowTo(150);
+    navigate("mobile-entry-two", "#mobile-comment-1");
+    expect(container.firstElementChild).toBe(thread);
+    expect(window.scrollY).toBe(500);
+    navigate("mobile-entry-one", "#mobile-comment-0", true);
+    expect(window.scrollY).toBe(150);
+    navigate("mobile-entry-one", "#mobile-comment-1", true);
+    expect(window.scrollY).toBe(500);
+  });
+
+  it("owns browser restoration only while the mobile thread is enabled", () => {
+    window.history.scrollRestoration = "auto";
+    render(0);
+    expect(window.history.scrollRestoration).toBe("manual");
+    render(0, false);
+    expect(window.history.scrollRestoration).toBe("auto");
+  });
+
   it("scrolls the window to the bottom on mount", () => {
     render(0);
     expect(scrollToCalls).toContain(2000);
@@ -92,6 +136,121 @@ describe("useWindowAutoFollow", () => {
     await scrollWindowTo(100); // far from the bottom
     scrollToCalls = [];
     render(1);
+    expect(scrollToCalls).toHaveLength(0);
+  });
+
+  it("follows document growth while pinned on mobile", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const geometry = fakeWindowGeometry();
+    render(0);
+    await flushRaf();
+    await scrollWindowTo(1200);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2300);
+    triggerResize();
+
+    expect(scrollToCalls).toContain(2300);
+  });
+
+  it("holds document position through mobile composer growth when scrolled up", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const geometry = fakeWindowGeometry();
+    render(0);
+    await flushRaf();
+    await scrollWindowTo(100);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2300);
+    triggerResize();
+
+    expect(scrollToCalls).toHaveLength(0);
+  });
+
+  it("follows a late thread resize without a React content update or body resize", async () => {
+    const observed = new Set<Element>();
+    let resizeThread = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeThread = () => {
+          const thread = container.querySelector('[data-testid="task-chat-thread"]')!;
+          if (observed.has(thread)) callback([{ target: thread } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        };
+      }
+      observe(element: Element) { observed.add(element); }
+      disconnect() { observed.clear(); }
+    });
+    const geometry = fakeWindowGeometry();
+    render(0);
+    scrollToCalls = [];
+
+    geometry.setScrollHeight(2400);
+    resizeThread();
+
+    expect(scrollToCalls).toContain(2400);
+    expect(window.scrollY).toBe(1600);
+  });
+
+  it("keeps following when a scroll event arrives after growth before reconciliation", async () => {
+    const geometry = fakeWindowGeometry();
+    render(0);
+
+    geometry.setScrollHeight(2400);
+    await scrollWindowTo(1200); // Still at the old bottom; the user did not move up.
+    scrollToCalls = [];
+    render(1);
+
+    expect(scrollToCalls).toContain(2400);
+  });
+
+  it("holds an upward user scroll during growth and resumes after returning to the bottom", async () => {
+    const geometry = fakeWindowGeometry();
+    render(0);
+
+    geometry.setScrollHeight(2400);
+    await scrollWindowTo(900);
+    scrollToCalls = [];
+    render(1);
+    expect(scrollToCalls).toHaveLength(0);
+
+    await scrollWindowTo(1600);
+    geometry.setScrollHeight(2700);
+    render(2);
+    expect(scrollToCalls).toContain(2700);
+  });
+
+  it("follows viewport resizing while pinned and holds it while reading older output", async () => {
+    render(0);
+    Object.defineProperty(window, "innerHeight", { value: 600, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    expect(window.scrollY).toBe(1400);
+
+    await scrollWindowTo(500);
+    scrollToCalls = [];
+    Object.defineProperty(window, "innerHeight", { value: 700, configurable: true });
+    window.dispatchEvent(new Event("resize"));
     expect(scrollToCalls).toHaveLength(0);
   });
 
