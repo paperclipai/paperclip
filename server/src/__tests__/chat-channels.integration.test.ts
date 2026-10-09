@@ -1594,6 +1594,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       message: makeMessage({
         id: setupFollowUpMessageId,
         text: "Setup follow-up",
+        mentioned: endpoint.provider === "slack",
         userId,
       }),
       trigger:
@@ -16865,7 +16866,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
-    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+    await service.update(endpoint.id, { allowUnlinkedPeople: true, requireAtMention: false }, "owner-user");
     await service.configure(
       endpoint.id,
       {
