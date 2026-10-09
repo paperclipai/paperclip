@@ -345,7 +345,7 @@ describe("AgentProviderConnection reuse", () => {
     const intent = { provider: "anthropic" as const, method: "subscription" as const, name: "My account", ownership: "personal" as const, agentIds: [], allAgents: false };
     await mount("claude_local", false, false, false, false, false, { intent, onComplete }, true);
     openProvider();
-    await vi.waitFor(() => expect(host.textContent).toContain("claude auth login"));
+    await vi.waitFor(() => expect(host.textContent).toContain("Use a setup token instead"));
     click("Use a setup token instead");
     const field = host.querySelector('input[aria-label="Setup token"]') as HTMLInputElement;
     expect(field).toBeTruthy();
