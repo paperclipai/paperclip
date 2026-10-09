@@ -19,6 +19,8 @@ import { getCACertificates } from "node:tls";
 import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
   createCodexTaskEnvelope,
@@ -165,6 +167,8 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
 
 export interface OpenCodeServerDriverOptions {
   model: string;
+  /** OpenRouter only; omitted/default leaves model reasoning unchanged. */
+  reasoningMode?: OpenCodeReasoningMode;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
   conversationMode?: "task" | "prepared";
@@ -241,7 +245,13 @@ export class OpenCodeServerDriver implements HarnessDriver {
   readonly #options: OpenCodeServerDriverOptions;
 
   constructor(options: OpenCodeServerDriverOptions) {
-    this.#options = options;
+    const reasoningMode = parseOpenCodeReasoningMode(
+      options.reasoningMode ?? options.environment?.PAPERCLIP_OPENCODE_REASONING,
+    );
+    if (reasoningMode === "disabled" && !options.model.startsWith("openrouter/")) {
+      throw new Error("Disabled OpenCode reasoning is supported only for OpenRouter models");
+    }
+    this.#options = { ...options, reasoningMode };
   }
 
   async descriptor(): Promise<HarnessDriverDescriptor> {
@@ -2279,7 +2289,12 @@ async function startRuntime(input: {
             },
           } : {}),
           models: {
-            [providerModelId]: { name: providerModelId },
+            [providerModelId]: {
+              name: providerModelId,
+              ...(input.options.reasoningMode === "disabled"
+                ? { options: { reasoning: { enabled: false } } }
+                : {}),
+            },
           },
         },
       },

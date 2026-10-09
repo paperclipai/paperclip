@@ -3278,6 +3278,9 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   if (input.provider === "opencode") {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
+      ...(input.options.environment?.PAPERCLIP_OPENCODE_REASONING !== undefined
+        ? { PAPERCLIP_OPENCODE_REASONING: input.options.environment.PAPERCLIP_OPENCODE_REASONING }
+        : {}),
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
         input.options.opencodePermissionMode ?? "allow",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:

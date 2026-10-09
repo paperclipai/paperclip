@@ -1745,6 +1745,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
       environment: {
         PATH: "/bin",
         OPENROUTER_API_KEY: "test-provider-key",
+        PAPERCLIP_OPENCODE_REASONING: "disabled",
         HOME: "/host/home",
         CODEX_HOME: "/host/codex-home",
         DATABASE_URL: "must-not-reach-runnerd",
@@ -1774,6 +1775,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
     PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
     OPENROUTER_API_KEY: "test-provider-key",
+    PAPERCLIP_OPENCODE_REASONING: "disabled",
   });
   expect(environment.HOME).toBeUndefined();
   expect(environment.CODEX_HOME).toBeUndefined();
@@ -1802,6 +1804,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
       runtimeContextPath: "/isolated/runtime-context.json",
       hasRuntimeContext: false,
     });
+  expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_REASONING).toBeUndefined();
   expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_PERMISSION_MODE).toBe(
     "allow",
   );
@@ -7995,7 +7998,11 @@ it("preserves prepared input and completion feedback through runnerd and the rea
     opencodeProxySha256: digest(proxy),
     providerNodeCommand: providerNode,
     providerNodeCommandSha256: digest(providerNode),
-    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    environment: {
+      PATH: process.env.PATH,
+      OPENROUTER_API_KEY: "fixture-key",
+      PAPERCLIP_OPENCODE_REASONING: "disabled",
+    },
   });
   const task = createCodexTaskEnvelope({
     objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
@@ -8035,6 +8042,10 @@ it("preserves prepared input and completion feedback through runnerd and the rea
       expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
       expect(sessionRoots).toHaveLength(1);
+      const config = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "config/opencode/opencode.json"), "utf8"));
+      expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toEqual({
+        reasoning: { enabled: false },
+      });
       const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
       const outcomes = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"));

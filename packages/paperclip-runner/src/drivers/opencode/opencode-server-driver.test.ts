@@ -1948,9 +1948,11 @@ describe("OpenCodeServerDriver", () => {
     },
   );
 
-  it.each(["allow", "ask", "deny"] as const)(
-    "pins the %s permission mode while retaining external-directory denial",
-    async (permissionMode) => {
+  it.each([
+    ["allow", undefined], ["ask", "default"], ["deny", "disabled"],
+  ] as const)(
+    "pins %s permissions and explicit %s reasoning while retaining external-directory denial",
+    async (permissionMode, reasoningMode) => {
       await chmod(fixture, 0o755);
       const root = await mkdtemp(
         join(tmpdir(), `paperclip-opencode-mode-${permissionMode}-`),
@@ -1967,6 +1969,7 @@ describe("OpenCodeServerDriver", () => {
         environment: {
           PATH: process.env.PATH,
           OPENROUTER_API_KEY: "fixture-key",
+          PAPERCLIP_OPENCODE_REASONING: reasoningMode,
         },
       });
       const session = await driver.openSession({
@@ -1987,6 +1990,9 @@ describe("OpenCodeServerDriver", () => {
       expect(config.autoupdate).toBe(false);
       expect(config.provider.openrouter.models).toHaveProperty(
         "deepseek/deepseek-v4-flash-0731",
+      );
+      expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toEqual(
+        reasoningMode === "disabled" ? { reasoning: { enabled: false } } : undefined,
       );
       expect(config.permission.paperclip_finish).toBeUndefined();
       expect(config.permission["paperclip_*"]).toBe("allow");

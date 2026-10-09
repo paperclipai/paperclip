@@ -247,6 +247,16 @@ runner supplies the pinned executable, selected model, and assigned MCP tools.
 Provider inference and reasoning still contribute to time to first text. These
 startup settings do not disable model reasoning.
 
+For an explicitly selected low-latency OpenRouter run, set
+`PAPERCLIP_OPENCODE_REASONING=disabled` in the agent's environment configuration
+(`adapterConfig.env`). This passes `reasoning: { enabled: false }` through the
+isolated OpenCode model options. Unset or `default` preserves the provider's
+reasoning defaults; the runner never automatically selects disabled reasoning.
+Start a fresh session after changing this setting. It applies only to the new
+runner's OpenCode/OpenRouter path, and models must support disabling reasoning.
+Other providers and invalid setting values fail before OpenCode starts. Direct
+driver consumers can set `OpenCodeServerDriverOptions.reasoningMode` instead.
+
 The runner's authenticated bridge and controller still enforce company access,
 action claims, task modes, and governed approvals. Provider permission defaults
 do not change workspace isolation or grant credentials or connection access.
