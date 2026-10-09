@@ -2457,6 +2457,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid("run.attach runtime launch arguments are invalid")
             })?;
         let mut upgraded_skill_config = false;
+        let mut instruction_root_changed = false;
         if let Some(provider) = payload.get("provider") {
             let mut config: CodexProviderConfig = serde_json::from_value(provider.clone())
                 .map_err(|error| {
@@ -2485,6 +2486,23 @@ impl CodexCommandExecutor {
             {
                 next_state.config.include_skill_instructions = config.include_skill_instructions;
                 upgraded_skill_config = true;
+            }
+            if config.driver == "codex_app_server_command_environment_v2"
+                && matches!(
+                    next_state.config.driver.as_str(),
+                    "codex_app_server_command_environment_v1"
+                        | "codex_app_server_command_environment_v2"
+                )
+            {
+                // The base environment stays immutable. Only the authenticated
+                // controller can rotate/clear the registered run copy. Upgrading
+                // a v1 checkpoint also clears its old inline AGENT_HOME at use.
+                instruction_root_changed = next_state.config.driver != config.driver
+                    || next_state.config.instruction_working_copy_root
+                        != config.instruction_working_copy_root;
+                next_state.config.driver = config.driver.clone();
+                next_state.config.instruction_working_copy_root =
+                    config.instruction_working_copy_root.clone();
             }
             if config != next_state.config {
                 return Err(DurableRunnerError::invalid(
@@ -2535,6 +2553,7 @@ impl CodexCommandExecutor {
         next_state.last_agent_message = None;
         let retained_provider = if let Some(provider) = self.provider.as_mut() {
             !runtime_launch_changed
+                && !instruction_root_changed
                 && !upgraded_skill_config
                 && provider
                     .attach_run_in_place(
@@ -4972,6 +4991,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5353,6 +5374,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5444,6 +5467,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5497,6 +5522,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5540,6 +5567,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5632,6 +5661,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5699,6 +5730,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5749,6 +5782,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5873,6 +5908,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5985,6 +6022,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6042,6 +6081,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6163,6 +6204,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6204,6 +6247,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6242,6 +6287,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6319,6 +6366,8 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                command_environment: None,
+                instruction_working_copy_root: None,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },

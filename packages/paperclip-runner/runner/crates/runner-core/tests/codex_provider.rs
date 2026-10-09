@@ -65,6 +65,8 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         instructions: "Stay inside the test workspace.".to_owned(),
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
+        command_environment: None,
+        instruction_working_copy_root: None,
         include_skill_instructions: None,
         conversation_mode: None,
     }
@@ -83,6 +85,277 @@ fn delegates_command_isolation_to_an_explicit_external_sandbox() {
         .expect("start the turn with the external sandbox policy");
     provider.shutdown().expect("stop fake Codex provider");
     fs::remove_dir_all(directory).expect("remove external sandbox test directory");
+}
+
+#[test]
+fn command_environment_survives_durable_provider_recovery() {
+    let directory = temporary_directory("command-environment");
+    let requests = directory.join("requests.jsonl");
+    let config = provider_config(&directory, &["--request-log", requests.to_str().unwrap()]);
+    let environment = json!({
+        "PATH": format!("/tools/{}", "toolchain/bin:".repeat(700)),
+        "LANG": "C.UTF-8",
+        "HOME": "/isolated/command-home",
+        "AGENT_HOME": "/agent-files/run-1"
+    });
+    let mut wire_config = serde_json::to_value(&config).unwrap();
+    wire_config["driver"] = json!("codex_app_server_command_environment_v1");
+    wire_config["commandEnvironment"] = environment.clone();
+    wire_config["includeSkillInstructions"] = json!(true);
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": wire_config}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    recovered
+        .execute(&command("snapshot", 3, "session.snapshot", json!({})))
+        .unwrap();
+    let mut changed_config = wire_config.clone();
+    changed_config["commandEnvironment"]["PATH"] = json!("/different/tools");
+    let refused = recovered
+        .execute(&command(
+            "changed-environment",
+            4,
+            "run.attach",
+            json!({"provider": changed_config}),
+        ))
+        .expect_err("reattachment must not change the durable environment");
+    assert!(refused.to_string().contains("cannot change the durable"));
+    recovered
+        .execute(&command(
+            "same-environment",
+            5,
+            "run.attach",
+            json!({"provider": wire_config}),
+        ))
+        .expect("the unchanged profile remains attachable after rejection");
+    recovered.shutdown().unwrap();
+    let frames: Vec<Value> = fs::read_to_string(&requests)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for method in ["thread/start", "thread/resume"] {
+        let frame = frames
+            .iter()
+            .find(|frame| frame["method"] == method)
+            .unwrap();
+        assert_eq!(
+            frame["params"]["config"]["shell_environment_policy.set"],
+            environment
+        );
+        assert_eq!(
+            frame["params"]["config"]["skills.include_instructions"],
+            true
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn command_environment_is_bounded_without_weakening_argument_limits() {
+    let directory = temporary_directory("command-environment-bounds");
+    let base = serde_json::to_value(provider_config(&directory, &[])).unwrap();
+    for environment in [
+        json!({"OPENAI_API_KEY": "must-not-enter-command-config"}),
+        json!({"PATH": "bad\u{0}path"}),
+        json!({"PATH": "p".repeat(64 * 1024 + 1)}),
+        json!({"PATH": "p".repeat(40 * 1024), "HOME": "h".repeat(40 * 1024)}),
+    ] {
+        let mut wire_config = base.clone();
+        wire_config["driver"] = json!("codex_app_server_command_environment_v1");
+        wire_config["commandEnvironment"] = environment;
+        let config: CodexProviderConfig = serde_json::from_value(wire_config).unwrap();
+        assert!(config.validate().is_err());
+    }
+    for args in [vec!["x".to_owned(); 65], vec!["x".repeat(4097)]] {
+        let mut config: CodexProviderConfig = serde_json::from_value(base.clone()).unwrap();
+        config.args = args;
+        assert!(config.validate().is_err());
+    }
+    let legacy: CodexProviderConfig = serde_json::from_value(base).unwrap();
+    assert!(legacy.validate().is_ok());
+    assert!(legacy.command_environment.is_none());
+    let mut boundary = legacy.clone();
+    boundary.driver = "codex_app_server_command_environment_v1".to_owned();
+    boundary.command_environment = Some(std::collections::BTreeMap::from([(
+        "PATH".to_owned(),
+        "p".repeat(64 * 1024 - 4),
+    )]));
+    assert!(boundary.validate().is_ok());
+    boundary.driver = "codex_app_server_command_environment_v2".to_owned();
+    assert!(boundary.validate().is_ok());
+    boundary.instruction_working_copy_root = Some("/agent-files/run-1".to_owned());
+    assert!(
+        boundary.validate().is_err(),
+        "the run projection also counts toward 64 KiB"
+    );
+    boundary.command_environment = Some(Default::default());
+    for root in [
+        "relative".to_owned(),
+        "/bad\0root".to_owned(),
+        format!("/{}", "x".repeat(4096)),
+    ] {
+        boundary.instruction_working_copy_root = Some(root);
+        assert!(boundary.validate().is_err());
+    }
+    boundary.instruction_working_copy_root = Some("/agent-files/run-1".to_owned());
+    assert!(boundary.validate().is_ok());
+    boundary.driver = "codex_app_server_command_environment_v1".to_owned();
+    assert!(
+        boundary.validate().is_err(),
+        "v1 cannot silently ignore a run binding"
+    );
+    boundary.provider = "opencode".to_owned();
+    boundary.driver = "opencode_server".to_owned();
+    assert!(boundary.validate().is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn command_environment_rebinds_only_the_registered_run_copy() {
+    for initial_driver in [
+        "codex_app_server_command_environment_v1",
+        "codex_app_server_command_environment_v2",
+    ] {
+        let directory = temporary_directory("command-environment-run-copy");
+        let requests = directory.join("requests.jsonl");
+        let config = provider_config(&directory, &["--request-log", requests.to_str().unwrap()]);
+        let mut wire = serde_json::to_value(&config).unwrap();
+        wire["driver"] = json!(initial_driver);
+        // Retain v1's inline root unchanged even when upgrading its projection.
+        wire["commandEnvironment"] = json!({"PATH": "/tools", "AGENT_HOME": "/old-copy"});
+        if initial_driver.ends_with("v2") {
+            wire["instructionWorkingCopyRoot"] = json!("/old-copy");
+        }
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider": wire}),
+            ))
+            .unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        let mut sequence = 3;
+        for root in [json!("/new-copy"), Value::Null] {
+            wire["driver"] = json!("codex_app_server_command_environment_v2");
+            wire["instructionWorkingCopyRoot"] = root.clone();
+            for (key, value) in [("PATH", "/changed"), ("AGENT_HOME", "/spoofed")] {
+                let mut changed = wire.clone();
+                changed["commandEnvironment"][key] = json!(value);
+                let error = executor
+                    .execute(&command(
+                        "bad-profile",
+                        sequence,
+                        "run.attach",
+                        json!({"provider": changed}),
+                    ))
+                    .unwrap_err();
+                assert!(error.to_string().contains("cannot change the durable"));
+                sequence += 1;
+            }
+            executor
+                .execute(&command(
+                    "attach",
+                    sequence,
+                    "run.attach",
+                    json!({"provider": wire}),
+                ))
+                .unwrap();
+            sequence += 1;
+            executor
+                .execute(&command(
+                    "snapshot",
+                    sequence,
+                    "session.snapshot",
+                    json!({}),
+                ))
+                .unwrap();
+            sequence += 1;
+            executor.shutdown().unwrap();
+            executor = CodexCommandExecutor::new(&directory);
+            executor
+                .execute(&command(
+                    "restored-snapshot",
+                    sequence,
+                    "session.snapshot",
+                    json!({}),
+                ))
+                .unwrap();
+            sequence += 1;
+            let frames: Vec<Value> = fs::read_to_string(&requests)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let frame = frames
+                .iter()
+                .rev()
+                .find(|frame| frame["method"] == "thread/resume")
+                .unwrap();
+            let environment = &frame["params"]["config"]["shell_environment_policy.set"];
+            assert_eq!(environment["PATH"], "/tools");
+            if root.is_null() {
+                assert!(environment.get("AGENT_HOME").is_none());
+            } else {
+                assert_eq!(environment["AGENT_HOME"], root);
+            }
+            let persisted: Value = serde_json::from_slice(
+                &fs::read(directory.join("codex-provider-state.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                persisted["config"]["commandEnvironment"],
+                wire["commandEnvironment"]
+            );
+        }
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn command_environment_requires_a_supported_launch_profile_before_provider_start() {
+    let directory = temporary_directory("command-environment-profile");
+    let requests = directory.join("requests.jsonl");
+    let config = provider_config(&directory, &["--request-log", requests.to_str().unwrap()]);
+    let base = serde_json::to_value(config).unwrap();
+    for (driver, environment) in [
+        ("codex_app_server", json!({"PATH": "/explicit/tools"})),
+        ("codex_app_server_command_environment_v1", Value::Null),
+        ("codex_app_server_command_environment_v2", Value::Null),
+        ("codex_app_server_command_environment_v3", json!({})),
+    ] {
+        let mut wire_config = base.clone();
+        wire_config["driver"] = json!(driver);
+        wire_config["commandEnvironment"] = environment;
+        let mut executor = CodexCommandExecutor::new(&directory);
+        assert!(executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider": wire_config})
+            ))
+            .is_err());
+        assert!(!directory.join("codex-provider-state.json").exists());
+        assert!(!requests.exists());
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

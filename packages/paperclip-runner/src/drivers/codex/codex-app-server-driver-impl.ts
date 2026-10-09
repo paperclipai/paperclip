@@ -889,7 +889,7 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.includeCollaborationModeInstructions ?? true,
         },
         environmentKeys: Object.keys(
-          codexCommandEnvironment(this.#options.environment),
+          codexCommandEnvironment(this.#options.environment, this.#options.instructionWorkingCopyRoot),
         ).sort(),
         dynamicToolNames: this.#providerDynamicTools().map((tool) =>
           text(tool.name),
