@@ -1214,12 +1214,16 @@ function StandardConnectionSetupFlow({
       : null,
     [applicationsQuery.data, resumeConnection],
   );
+  const completedRouteResumeConnectionId = routeStage === "complete"
+    && resumeConnection?.status === "active"
+    ? resumeConnection.id
+    : null;
   const resumeSourceMatches = requestedAppKey
     ? retainedResumeMatches({
       requestedAppKey,
       resumeConnection,
       resumeApplication,
-      completedResumeConnectionId,
+      completedResumeConnectionId: completedResumeConnectionId ?? completedRouteResumeConnectionId,
     })
     : false;
   const identityConnection = resumeConnection ?? reconnectConnection;
@@ -1543,6 +1547,16 @@ function StandardConnectionSetupFlow({
     // A resume URL is only a recovery route. Invalid or cross-provider drafts
     // must remain on the blocked recovery screen instead of falling through to
     // fresh setup for a hidden provider.
+    if (
+      resumeConnectionId
+      && routeStage === "complete"
+      && resumeConnection?.status === "active"
+      && completedResumeConnectionId !== resumeConnectionId
+      && resumeSourceMatches
+    ) {
+      navigate(`/apps/${resumeConnection.id}/permissions`, { replace: true });
+      return;
+    }
     if (resumeConnectionId && !resumeSourceMatches) return;
 
     const requestedEntry = requestedConnectionEntry({
@@ -1700,6 +1714,8 @@ function StandardConnectionSetupFlow({
     resumeApplication,
     resumeSourceMatches,
     completedResumeConnectionId,
+    completedRouteResumeConnectionId,
+    routeStage,
     resumeConnectionId,
     fullRequestedDefinition,
     requestedAppKey,
@@ -2682,7 +2698,11 @@ function StandardConnectionSetupFlow({
             installCount: installAgentIds.size,
             lockedAgentId: requestedAgentId ?? null,
           })}
-          onDone={onCancel ?? (() => navigate("/apps"))}
+          onDone={onCancel ?? (() => navigate(
+            host === "page" && connectResult?.connectionId
+              ? `/apps/${connectResult.connectionId}/permissions`
+              : "/apps",
+          ))}
         />
       )}
     </div>

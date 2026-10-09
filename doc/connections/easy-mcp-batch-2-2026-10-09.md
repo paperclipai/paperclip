@@ -27,7 +27,7 @@ These definitions and durable overrides are retained for further work, but withh
 | ClickUp | Both retained and fresh Google identity flows returned to blank ClickUp login with `Password required` | Resolve the ClickUp account/login route, then review its `read write` provider consent and run a bounded workspace read. No grant or authenticated catalog occurred. |
 | Klaviyo | Initial client authorization reached; no account or exact scope strings enumerated; optional prompt-intent collection unchecked | Await the separate client authorization decision, then review any subsequent account/scope grant. No approval, account read, campaign send, or deletion occurred. |
 
-The saved monday.com draft was resumed from Browse and survived reload in the actual app after the recovery fix. Fresh `source=monday` setup stayed withheld, and using the same draft with `source=clickup` showed a provider-mismatch error. These checks did not retry authorization or approve a provider grant. An extra public Context7 connection was seeded as a saved draft through the local API solely to exercise recovery. Browse → Finish setup → Connect reached the success screen after activation, with zero agents selected; the saved Connected state and zero-agent choice survived a Permissions reload.
+The saved monday.com draft was resumed from Browse and survived reload in the actual app after the recovery fix. Fresh `source=monday` setup stayed withheld, and using the same draft with `source=clickup` showed a provider-mismatch error. These checks did not retry authorization or approve a provider grant. An extra public Context7 connection was seeded as a saved draft through the local API solely to exercise recovery. Browse → Finish setup → Connect reached the success screen after activation, with zero agents selected; the saved Connected state and zero-agent choice survived a Permissions reload. Refreshing the generated `stage=complete` URL now opens that exact saved Permissions page after validating active status, company, application, and provider. View connection also opens that exact page. A normal active recovery URL and a completed URL with a mismatched provider stayed blocked in the browser; a draft at the completion stage does not imply success.
 
 monday.com is recorded as provider-approval blocked in the research ledger. ClickUp and Klaviyo retain their documented DCR setup research but remain hidden pending actual qualification.
 
@@ -36,7 +36,7 @@ monday.com is recorded as provider-approval blocked in the research ledger. Clic
 - Token exchange now requests `Accept: application/json`. Bitly documents a legacy form response when this header is absent. The first callback reported `oauth_access_token_missing`; a fresh equivalent authorization succeeded after the header fix. The earlier token response body/content type was not captured, so the exact old payload remains unproven. Code exchange and refresh use the same exchange function.
 - Remote MCP callbacks preserve an explicitly saved Access step, including zero selected agents. Saving installs now records a transactional marker, distinguishing a deliberate empty selection from a flow that has not selected access. The old branch only recognized aggregator MCP methods, causing fresh Resend setup to replace an empty install set with access for all agents. Empty, individual-agent, company, and unconfigured-default selections have regression coverage for install rows and profile bindings. Managed OAuth keeps its subject/recommended defaults when no Access choice was saved.
 
-- Saved hidden-provider drafts now reach their exact setup wizard from Finish setup. The wizard validates the company-visible draft, its application, and matching provider before resolving a hidden definition; unknown or mismatched drafts stay on an error screen. Fresh hidden-provider setup remains withheld. Completion now accepts the exact active row only after this flow successfully finishes it, so the draft → active refetch preserves the success screen; initially active, disabled, archived, and mismatched resumes remain rejected.
+- Saved hidden-provider drafts now reach their exact setup wizard from Finish setup. The wizard validates the company-visible draft, its application, and matching provider before resolving a hidden definition; unknown or mismatched drafts stay on an error screen. Fresh hidden-provider setup remains withheld. Completion now accepts the exact active row only after this flow successfully finishes it, so the draft → active refetch preserves the success screen; normal initially active, disabled, archived, and mismatched recovery URLs remain rejected.
 
 Provider-specific changes use durable overrides so ingestion preserves them. Bitly and Resend use full documented account capabilities; Context7 and Hugging Face add or qualify public read endpoints. No custom skills or channels are required for these basic MCP tool connections.
 
@@ -54,6 +54,8 @@ Provider-specific changes use durable overrides so ingestion preserves them. Bit
 
 ![Context7: resumed public setup survives activation and reaches success with zero agents](easy-mcp-batch-2-evidence-2026-10-09/context7-resumed-completion.jpg)
 
+![Context7: completed URL restores the exact saved permissions page with zero agents](easy-mcp-batch-2-evidence-2026-10-09/context7-completed-route.jpg)
+
 ## Evidence and sources
 
 Account-profile and domain results remain private and are not committed. Permission screenshots and public documentation results can be shared after visual review. Provider-specific `liveProof` and `evidenceLimit` records are in [tool-method-permission-reviews.json](tool-method-permission-reviews.json); the dated research entries are in [self-serve-mcp-research.json](../../packages/shared/src/self-serve-mcp-research.json).
@@ -70,7 +72,7 @@ Account-profile and domain results remain private and are not committed. Permiss
 
 - Shared catalog suite: 36 passed.
 - Durable override suite: 3 passed.
-- Focused UI setup, recovery, Browse, and OAuth-helper suites: 303 passed.
+- Focused UI setup, recovery, Browse, and OAuth-helper suites: 306 passed.
 - Brand validation: 101 identities passed.
 - Full connector service suite: 420 passed, including the four-case JSON-token/access regression and existing managed OAuth lifecycle coverage.
 - Recursive typecheck: passed again after rebasing onto current master.

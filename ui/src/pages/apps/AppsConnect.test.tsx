@@ -2757,6 +2757,112 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connectionId }));
     expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.any(Object));
     expect(startOAuthMock).not.toHaveBeenCalled();
+    await act(async () => {
+      buttonByText("View connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenLastCalledWith(`/apps/${connectionId}/permissions`);
+  });
+
+  it("restores a valid completed resume URL to the exact connection permissions page", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    });
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a draft connection as completed from the URL stage", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Finish connecting ClickUp"));
+
+    expect(mockNavigate).not.toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    expect(container.textContent).not.toContain("ClickUp is ready.");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a mismatched active connection as completed from the URL stage", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&stage=complete&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-monday",
+        companyId: "company-1",
+        status: "active",
+        metadata: { sourceTemplateKey: "monday" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        companyId: "company-1",
+        applicationId: "app-monday",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "active",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: { sourceTemplateKey: "clickup" },
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup can’t be resumed"));
+
+    expect(mockNavigate).not.toHaveBeenCalledWith(`/apps/${connectionId}/permissions`, { replace: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
   it("rejects a matching-provider resume when the saved connection was already active", async () => {
