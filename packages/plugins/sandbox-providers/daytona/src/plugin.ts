@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
@@ -3271,8 +3271,11 @@ const plugin = definePlugin({
     };
     try {
       return await withSandboxActivityGate(scope, async () => {
-        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, timeoutSeconds);
+        const sandbox = await withEnvironmentSyncTransferStep("sandbox_access", async () => {
+          const resolved = await getSandbox(scope, { bypassTeardownGate: true });
+          await ensureSandboxStarted(resolved, timeoutSeconds);
+          return resolved;
+        });
         const result = await performSyncOut({
           sandbox,
           operations: params.operations,

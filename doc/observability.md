@@ -661,6 +661,24 @@ The envelope excludes provider messages, response bodies, names, paths, and
 credentials. The existing RPC error message and code remain unchanged, as do
 restore classification, retries, and source retention. Older workers without the
 envelope still report `unknown` when no structured cause is available.
+For native transfers, optional `workspaceRestoreTransferStep` identifies
+`sandbox_access`, `sandbox_guard`, `file_download`, `file_finalize`,
+`archive_create`, `archive_download`, `archive_validate`, or `archive_extract`.
+`workspaceRestoreTransferFailureKind` distinguishes a producer-confirmed
+`command_failed`, `download_failed`, `download_missing`, `unsafe_archive`,
+`listing_timeout`, `listing_entry_limit`, `listing_byte_limit`,
+`listing_line_limit`, or `listing_stderr_limit`. These labels are fixed values,
+not classifications inferred from provider message text. Missing labels remain
+absent. A listing deadline records `ETIMEDOUT`; sandbox and listing commands
+retain bounded nonzero exit codes even when their error text is wrapped.
+`workspaceRestoreRpcCode` retains only known numeric plugin RPC error codes from
+a typed error at the host's sync-out boundary. In particular, RPC `TIMEOUT`
+(`-32003`) is separate from the model execution's `timedOut` value; successful
+model execution does not exclude a later transfer timeout. Transfer evidence is
+isolated per outbound request and per restore settlement, then independently
+revalidated before persistence and Sentry projection. These fields only accompany
+`workspace_transfer` or `asset_restore` diagnostics and do not authorize cleanup
+or retries. Older workers remain compatible.
 For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
 command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
 `commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is

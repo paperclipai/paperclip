@@ -1,6 +1,6 @@
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
-import { environmentSyncErrorData } from "./environment-sync-error.js";
+import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
@@ -1570,6 +1570,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    * Dispatches to the correct handler based on the method name.
    */
   async function handleHostRequest(request: JsonRpcRequest): Promise<void> {
+    if (request.method === "environmentSyncOut") {
+      return withEnvironmentSyncErrorCapture(() => handleHostRequestInScope(request));
+    }
+    return handleHostRequestInScope(request);
+  }
+
+  async function handleHostRequestInScope(request: JsonRpcRequest): Promise<void> {
     const { id, method, params } = request;
     let done: (() => void) | undefined;
     try {

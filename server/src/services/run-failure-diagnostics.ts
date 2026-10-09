@@ -203,6 +203,9 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       if (diagnostic.step) execution.workspaceRestoreStep = diagnostic.step;
       if (diagnostic.httpStatus !== undefined) execution.workspaceRestoreHttpStatus = diagnostic.httpStatus;
       if (diagnostic.exitCode !== undefined) execution.workspaceRestoreExitCode = diagnostic.exitCode;
+      if (diagnostic.transferStep) execution.workspaceRestoreTransferStep = diagnostic.transferStep;
+      if (diagnostic.transferFailureKind) execution.workspaceRestoreTransferFailureKind = diagnostic.transferFailureKind;
+      if (diagnostic.rpcCode !== undefined) execution.workspaceRestoreRpcCode = diagnostic.rpcCode;
       if (diagnostic.gitCommand) execution.workspaceRestoreGitCommand = diagnostic.gitCommand;
       if (diagnostic.gitFailureKind) execution.workspaceRestoreGitFailureKind = diagnostic.gitFailureKind;
     }
