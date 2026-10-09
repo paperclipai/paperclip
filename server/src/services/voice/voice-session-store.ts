@@ -1,6 +1,6 @@
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { activityLog, chatVoicePhoneLines, chatVoiceInboundCalls, chatVoiceCallbacks, chatEndpoints, chatConversations, chatDeliveries, chatPublications, chatVoiceSessions, chatVoiceToolCalls, chatVoiceReplies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolConnectionInstalls, instanceUserRoles, issueThreadInteractions, issues, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import type { ToolCredentialSecretRef, VoiceSession } from "@paperclipai/shared";
@@ -211,6 +211,21 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     }).returning({ id: chatDeliveries.id });
     return delivery.id;
   }
+  function priorCallDeliveryBarrier(session: VoiceSessionRow, publicationId: string | SQL) {
+    return sql<boolean>`exists (select 1 from chat_voice_replies r join chat_voice_sessions s
+      on s.id = r.session_id and s.company_id = r.company_id
+      where r.company_id = ${session.companyId} and r.publication_id = ${publicationId}
+        and s.id <> ${session.id} and s.caller_id = ${session.callerId}
+        and s.endpoint_id = ${session.endpointId} and s.conversation_id = ${session.conversationId}
+        and s.issue_id = ${session.issueId}
+        and (r.delivered_at is not null or exists (
+          select 1 from chat_actions a where a.company_id = r.company_id
+            and a.endpoint_id = s.endpoint_id and a.kind = 'speko_voice_reply_push'
+            and a.payload->>'replyId' = r.id::text
+            and (a.status in ('dispatching', 'unknown') or
+              (a.status = 'completed' and coalesce(a.payload->>'questionNotification', 'false') = 'false'))
+        )))`;
+  }
   async function collectMissedReplies(tx: VoiceTransaction, session: VoiceSessionRow) {
     // Only publications since this caller joined this exact conversation are
     // eligible. Transport acceptance in any prior call suppresses automatic
@@ -224,11 +239,9 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       eq(chatPublications.conversationId, session.conversationId), eq(chatPublications.issueId, session.issueId),
       eq(chatPublications.state, "published"), gte(chatPublications.createdAt, first?.createdAt ?? session.createdAt),
       sql`(coalesce(${chatPublications.payload}->>'progressState', '') = '' or ${chatPublications.payload}->>'interactionId' is not null)`,
-      sql`not exists (select 1 from chat_voice_replies r join chat_voice_sessions s
-        on s.id = r.session_id and s.company_id = r.company_id
-        where r.company_id = ${session.companyId} and r.publication_id = ${chatPublications.id}
-          and (s.id = ${session.id} or (s.caller_id = ${session.callerId}
-            and s.conversation_id = ${session.conversationId} and r.delivered_at is not null)))`,
+      sql`not exists (select 1 from chat_voice_replies r where r.company_id = ${session.companyId}
+        and r.publication_id = ${chatPublications.id} and r.session_id = ${session.id})`,
+      sql`not (${priorCallDeliveryBarrier(session, sql`${chatPublications.id}`)})`,
     )).orderBy(asc(chatPublications.createdAt), asc(chatPublications.id)).limit(100);
     let cursor = session.replyCursor;
     for (const publication of missing) {
@@ -424,6 +437,9 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
           const { session } = await authorizeSession(tx, companyId, candidate.id);
           const prior = await tx.select({ id: chatVoiceReplies.id }).from(chatVoiceReplies).where(and(eq(chatVoiceReplies.sessionId, session.id), eq(chatVoiceReplies.publicationId, publication.id))).then((rows) => rows[0]);
           if (prior) return;
+          const [priorCall] = await tx.select({blocked: priorCallDeliveryBarrier(session, publication.id)})
+            .from(chatPublications).where(eq(chatPublications.id, publication.id)).limit(1);
+          if (priorCall?.blocked) return;
           const cursor = session.replyCursor + 1;
           await tx.insert(chatVoiceReplies).values({ companyId, sessionId: session.id, publicationId: publication.id, cursor });
           await tx.update(chatVoiceSessions).set({ replyCursor: cursor, updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));

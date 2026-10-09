@@ -12,7 +12,7 @@ export const LIVE_VOICE_EXECUTION_GUIDANCE = [
 export async function liveVoiceExecutionGuidance(db: Db, input: {
   companyId: string; issueId: string; agentId: string;
 }, now = new Date()): Promise<string | null> {
-  const [live] = await db.select({ id: chatVoiceSessions.id }).from(chatVoiceSessions)
+  const [live] = await db.select({ id: chatVoiceSessions.id, authority: chatVoiceSessions.callerAuthority }).from(chatVoiceSessions)
     .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, chatVoiceSessions.companyId)))
     .innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, chatEndpoints.companyId)))
     .where(and(
@@ -27,5 +27,7 @@ export async function liveVoiceExecutionGuidance(db: Db, input: {
         and ${chatVoiceToolCalls.sessionId} = ${chatVoiceSessions.id} and ${chatVoiceToolCalls.tool} = 'submit_request'
         and ${chatVoiceToolCalls.deliveryId} is not null)`,
     )).limit(1);
-  return live ? LIVE_VOICE_EXECUTION_GUIDANCE : null;
+  return live ? [LIVE_VOICE_EXECUTION_GUIDANCE, live.authority === "guest_intake"
+    ? "This caller is unverified. Ask any clarification as a brief task comment and continue when submit_request brings their spoken follow-up. Do not use ask_user_questions or create a protected human-input wait. Guest answers cannot grant approval or access to private work."
+    : null].filter(Boolean).join("\n\n") : null;
 }
