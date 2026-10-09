@@ -47,6 +47,7 @@ describe("workspace command helpers", () => {
         serviceName: "web",
         command: "pnpm dev",
         cwd: "/repo",
+        port: null,
         configIndex: null,
       },
     ]);
@@ -69,6 +70,7 @@ describe("workspace command helpers", () => {
         serviceName: "web",
         command: "pnpm dev",
         cwd: "/repo",
+        port: null,
         configIndex: null,
       },
     ]);
@@ -125,5 +127,53 @@ describe("workspace command helpers", () => {
     ]);
 
     expect(match).toBeNull();
+  });
+
+  it("does not revive runtime history from a previously configured port", () => {
+    const command = findWorkspaceCommandDefinition({
+      services: [
+        {
+          name: "web",
+          command: "pnpm dev",
+          port: { type: "fixed", value: 42001 },
+        },
+      ],
+    }, "service:web");
+    expect(command).toEqual(expect.objectContaining({ port: 42001 }));
+
+    const match = matchWorkspaceRuntimeServiceToCommand(command!, [
+      {
+        id: "runtime-old-port",
+        serviceName: "web",
+        command: "pnpm dev",
+        cwd: "/repo",
+        port: 42013,
+        configIndex: 0,
+      },
+      {
+        id: "runtime-current-port",
+        serviceName: "web",
+        command: "pnpm dev",
+        cwd: "/repo",
+        port: 42001,
+        configIndex: 0,
+      },
+    ]);
+
+    expect(match).toEqual(expect.objectContaining({ id: "runtime-current-port" }));
+  });
+
+  it("does not treat an auto port preference as a fixed runtime identity", () => {
+    const command = findWorkspaceCommandDefinition({
+      services: [
+        {
+          name: "web",
+          command: "pnpm dev",
+          port: { type: "auto", value: 42001 },
+        },
+      ],
+    }, "service:web");
+
+    expect(command).toEqual(expect.objectContaining({ port: null }));
   });
 });

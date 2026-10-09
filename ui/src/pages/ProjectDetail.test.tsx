@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { queryKeys } from "../lib/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import type { ReactNode } from "react";
@@ -30,6 +31,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   updateProject: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockParams = vi.hoisted(() => ({ projectId: "project-1" }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
 const mockSummarySlotCard = vi.hoisted(() => vi.fn());
@@ -59,7 +61,7 @@ vi.mock("@/lib/router", () => ({
   Navigate: ({ to }: { to: string }) => <div data-testid="navigate">{to}</div>,
   useLocation: () => ({ pathname: mockLocation.pathname, search: mockLocation.search, hash: "", state: null }),
   useNavigate: () => mockNavigate,
-  useParams: () => ({ projectId: "project-1" }),
+  useParams: () => mockParams,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -82,7 +84,7 @@ vi.mock("@/plugins/slots", () => ({
 }));
 vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
 vi.mock("../components/ProjectProperties", () => ({
-  ProjectProperties: () => <div data-testid="project-properties" />,
+  ProjectProperties: ({ onFieldUpdate }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button></div>,
 }));
 vi.mock("../components/BudgetPolicyCard", () => ({
   BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
@@ -112,6 +114,10 @@ vi.mock("../components/IssuesList", () => ({
     return <div data-testid="issues-list" />;
   },
 }));
+
+async function settle() {
+  for (let i = 0; i < 8; i++) { await new Promise(resolve => setTimeout(resolve, 0)); flushSync(() => {}); }
+}
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -181,6 +187,7 @@ describe("ProjectDetail", () => {
     document.body.appendChild(container);
     mockLocation.pathname = "/projects/project-1/plugin-operations";
     mockLocation.search = "";
+    mockParams.projectId = "project-1";
     mockCompanyContext.companies = [{ id: "company-1", issuePrefix: "PAP" }];
     mockCompanyContext.selectedCompanyId = "company-1";
     mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
@@ -210,6 +217,49 @@ describe("ProjectDetail", () => {
     root = null;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it.each(["alias", "other project", "other company"])("preserves a draft only for a same-project route alias (%s)", async target => {
+    const loaded = project({ urlKey: "managed-project" });
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.get.mockResolvedValueOnce(loaded);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const render = () => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>);
+    root = createRoot(container);
+    await act(render);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const draft = container.querySelector<HTMLInputElement>('input[aria-label="Unsaved project field"]');
+    expect(draft).not.toBeNull();
+    draft!.value = "Unsaved repository removal";
+    mockProjectsApi.get.mockImplementation(() => new Promise(() => {}));
+    mockParams.projectId = target === "other project" ? "different-project" : "managed-project";
+    if (target === "other company") mockCompanyContext.selectedCompanyId = "company-2";
+    mockLocation.pathname = `/projects/${mockParams.projectId}/configuration`;
+    await act(render);
+    const after = container.querySelector<HTMLInputElement>('input[aria-label="Unsaved project field"]');
+    if (target === "alias") {
+      expect(after).toBe(draft);
+      expect(after!.value).toBe("Unsaved repository removal");
+    } else {
+      expect(after).toBeNull();
+    }
+    await act(() => queryClient.clear());
+  });
+
+  it("refreshes cached task audiences when visibility is saved through the field autosave path", async () => {
+    mockLocation.pathname = "/projects/project-1/configuration";
+    mockProjectsApi.update.mockResolvedValue(project({ visibility: "open" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = queryKeys.issues.accessGrants("cached-task");
+    queryClient.setQueryData(key, [{ source: "project" }]);
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>));
+    await settle();
+    await act(() => [...container.querySelectorAll("button")].find(button => button.textContent === "Open project through autosave")!.click());
+    await settle();
+    expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { visibility: "open" }, "company-1");
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    queryClient.clear();
   });
 
   it("shows managed plugin affordances and filters the operations tab by plugin origin", async () => {
@@ -244,6 +294,28 @@ describe("ProjectDetail", () => {
       projectId: "project-1",
       originKindPrefix: "plugin:paperclip.missions",
     });
+  });
+
+  it("keeps Timeline out of the project task-list controls", async () => {
+    mockLocation.pathname = "/projects/project-1/issues";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const props = mockIssuesList.mock.calls.at(-1)?.[0];
+    expect(props).toEqual(expect.objectContaining({ projectId: "project-1" }));
+    expect(props).not.toHaveProperty("projectTimelineHref");
   });
 
   describe("plugin detail-tab deep links", () => {

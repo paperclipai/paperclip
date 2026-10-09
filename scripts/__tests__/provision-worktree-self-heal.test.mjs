@@ -16,7 +16,7 @@ const testPath = [path.dirname(process.execPath), "/usr/bin", "/bin"].join(":");
 const cleanupDirs = [];
 
 function makeTempDir(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   cleanupDirs.push(dir);
   return dir;
 }
@@ -102,10 +102,12 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix } = {}) {
-  const worktreeCwd = makeTempDir("paperclip-provision-worktree-");
+function runProvision(baseCwd, { pathPrefix, setupWorktree, setupInstance, existingWorktree, env = {} } = {}) {
+  const worktreeCwd = existingWorktree ?? makeTempDir("paperclip-provision-worktree-");
+  setupWorktree?.(worktreeCwd);
   const worktreesHome = makeTempDir("paperclip-provision-home-");
   const paperclipHome = makeInstanceHome();
+  setupInstance?.(paperclipHome);
   const result = spawnSync("bash", [script], {
     cwd: worktreeCwd,
     encoding: "utf8",
@@ -119,14 +121,16 @@ function runProvision(baseCwd, { pathPrefix } = {}) {
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
       PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+      ...(typeof env === "function" ? env(paperclipHome) : env),
     },
   });
   return { result, worktreeCwd, worktreesHome, paperclipHome };
 }
 
-function runRuntimeProvision(baseCwd, worktreeCwd) {
+function runRuntimeProvision(baseCwd, worktreeCwd, { setupInstance } = {}) {
   const worktreesHome = makeTempDir("paperclip-provision-runtime-home-");
   const paperclipHome = makeInstanceHome();
+  setupInstance?.(paperclipHome);
   return spawnSync("bash", [runtimeScript], {
     cwd: worktreeCwd,
     encoding: "utf8",
@@ -181,15 +185,152 @@ test("uses the base CLI when its import graph boots", () => {
   );
 });
 
+for (const defaultConfigInEnv of [false, true]) {
+  test(`prepares a plain checkout without a default instance config (image default env: ${defaultConfigInEnv})`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      env: (home) => defaultConfigInEnv ? { PAPERCLIP_CONFIG: path.join(home, "instances", "default", "config.json") } : {},
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /preparing checkout dependencies without a seeded development instance/);
+    for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+      assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", file)), false);
+    }
+    assert.equal(fs.realpathSync(path.join(worktreeCwd, "cli", "node_modules")), path.join(baseCwd, "cli", "node_modules"));
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+test("rejects a missing custom seed source", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    env: { PAPERCLIP_CONFIG: path.join(baseCwd, "missing", "config.json") },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /config is unavailable \(control-plane instance\)/);
+  assert.match(result.stderr, /For a seeded development instance, configure a canonical config/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
+test("initializes a previously plain checkout once a registered seed source is available", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const first = runProvision(baseCwd, {
+    setupInstance: (home) => fs.rmSync(path.join(home, "instances"), { recursive: true }),
+  });
+  assert.equal(first.result.status, 0, first.result.stderr);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+
+  const second = runProvision(baseCwd, { existingWorktree: first.worktreeCwd });
+  assert.equal(second.result.status, 0, second.result.stderr);
+  assert.equal(readWorktreeConfig(first.worktreeCwd).$meta.source, "fake-cli");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(first.worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state, "pending");
+});
+
+test("a plain checkout without a source is not ready for a seeded runtime", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  fs.mkdirSync(path.join(baseCwd, "scripts"));
+  fs.copyFileSync(script, path.join(baseCwd, "scripts", "provision-worktree.sh"));
+  const setupInstance = (home) => fs.rmSync(path.join(home, "instances"), { recursive: true });
+  const { result, worktreeCwd } = runProvision(baseCwd, { setupInstance });
+  assert.equal(result.status, 0, result.stderr);
+
+  const runtime = runRuntimeProvision(baseCwd, worktreeCwd, { setupInstance });
+  assert.notEqual(runtime.status, 0);
+  assert.match(runtime.stderr, /Worktree config still does not exist after built-in provisioning/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
+for (const relativePath of ["instances/default/config.json", "instances/default"]) {
+  test(`rejects a dangling implicit source symlink at ${relativePath}`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance(home) {
+        const sourcePath = path.join(home, relativePath);
+        fs.rmSync(sourcePath, { recursive: true });
+        fs.symlinkSync(path.join(home, "missing"), sourcePath);
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /canonical/);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+  test(`does not downgrade an existing development instance with ${file} when its source disappears`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      setupWorktree(root) {
+        fs.mkdirSync(path.join(root, ".paperclip"));
+        fs.writeFileSync(path.join(root, ".paperclip", file), "retained state\n");
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /config is unavailable/);
+    assert.equal(fs.readFileSync(path.join(worktreeCwd, ".paperclip", file), "utf8"), "retained state\n");
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
+for (const installExit of [0, 42]) {
+  test(`plain checkout dependency provisioning preserves install exit ${installExit}`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const bin = makeTempDir("paperclip-checkout-pnpm-");
+    fs.writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh\nprintf '%s\\n' "$*" >> pnpm-calls\nmkdir -p node_modules cli/node_modules\nexit ${installExit}\n`, { mode: 0o700 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      pathPrefix: bin,
+      setupInstance: (home) => fs.rmSync(path.join(home, "instances", "default", "config.json")),
+      setupWorktree(root) {
+        fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+        fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      },
+    });
+    assert.equal(result.status, installExit, result.stderr);
+    assert.match(fs.readFileSync(path.join(worktreeCwd, "pnpm-calls"), "utf8"), /^install --prod=false --frozen-lockfile/);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "pnpm-install-fingerprint")), installExit === 0);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "config.json")), false);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json")), false);
+    assert.deepEqual(readCliInvocations(baseCwd), []);
+  });
+}
+
 test("rejects a dangling base workspace config symlink instead of falling back", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
   fs.symlinkSync(path.join(baseCwd, "absent.json"), path.join(baseCwd, ".paperclip", "config.json"));
 
-  const { result } = runProvision(baseCwd);
+  const { result, worktreeCwd } = runProvision(baseCwd);
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /is missing or is not a canonical file/);
+  assert.match(result.stderr, /is not a canonical file \(base project workspace\)/);
+  assert.doesNotMatch(result.stderr, /checkout-only|provisionCommand/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
+});
+
+test("rejects a non-regular instance config without suggesting a setup bypass", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    setupInstance: (home) => {
+      const configPath = path.join(home, "instances", "default", "config.json");
+      fs.rmSync(configPath);
+      fs.mkdirSync(configPath);
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /is not a canonical file \(control-plane instance\)/);
+  assert.match(result.stderr, /Repair the registered source path/);
+  assert.doesNotMatch(result.stderr, /checkout-only|provisionCommand/);
+  assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip")), false);
+  assert.deepEqual(readCliInvocations(baseCwd), []);
 });
 
 test("rejects a dangling base workspace .paperclip symlink instead of falling back", () => {
@@ -491,4 +632,86 @@ test("runtime provisioning does not trust a truncated verified manifest", () => 
       .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded").length,
     1,
   );
+});
+
+/**
+ * pnpm 9.15.4 calls the deprecated url.parse() once per `pnpm install`
+ * (see toNerfDart in the pnpm bundle), which Node 24 reports as DEP0169.
+ * Each `pnpm install` call site must silence that one warning code, and must
+ * append the flag to any NODE_OPTIONS value the environment already set
+ * instead of overwriting it.
+ */
+test("every pnpm install call site silences DEP0169 without overwriting NODE_OPTIONS", () => {
+  const disableWarningFlag = "--disable-warning=DEP0169";
+  const appendsToExistingNodeOptions = /NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/;
+
+  const provisionSource = fs.readFileSync(script, "utf8");
+  const repairCallSites = provisionSource.match(/env -u NODE_ENV CI=true NODE_OPTIONS="\$repair_node_options" "\$\{repair_cmd\[@\]\}"/g) ?? [];
+  assert.equal(repairCallSites.length, 2, "expected the repair pnpm install to carry the flag at both call sites (locked and unlocked)");
+  assert.match(provisionSource, /local repair_node_options="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/);
+  assert.match(provisionSource, appendsToExistingNodeOptions);
+  assert.match(provisionSource, /NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169" pnpm install --prod=false "\$@"/);
+
+  const runtimeSource = fs.readFileSync(runtimeScript, "utf8");
+  const runtimeRepairCallSites = runtimeSource.match(/env -u NODE_ENV CI=true NODE_OPTIONS="\$repair_node_options" "\$\{repair_cmd\[@\]\}"/g) ?? [];
+  assert.equal(runtimeRepairCallSites.length, 2, "expected the repair pnpm install to carry the flag at both call sites (locked and unlocked)");
+  assert.match(runtimeSource, /local repair_node_options="\$\{NODE_OPTIONS:-\} --disable-warning=DEP0169"/);
+
+  // No other warning code is suppressed anywhere in either script.
+  for (const source of [provisionSource, runtimeSource]) {
+    const disableWarningMatches = source.match(/--disable-warning=[^\s"]+/g) ?? [];
+    for (const match of disableWarningMatches) {
+      assert.equal(match, disableWarningFlag);
+    }
+  }
+});
+
+for (const failure of ["ERR_PNPM_LOCKFILE_CONFIG_MISMATCH", "ERR_PNPM_OUTDATED_LOCKFILE", "ENOTFOUND", "retry-fails"]) {
+  test(`dependency provisioning preserves failures and bounds recovery: ${failure}`, () => {
+    const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+    const bin = makeTempDir("paperclip-fake-pnpm-");
+    fs.writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh
+printf '%s\\n' "$*" >> pnpm-calls
+case "$*" in
+  *--frozen-lockfile*) echo '${failure === "retry-fails" ? "ERR_PNPM_LOCKFILE_CONFIG_MISMATCH" : failure}' >&2; exit 42 ;;
+  *) ${failure === "retry-fails" ? "exit 43" : "mkdir -p node_modules; exit 0"} ;;
+esac
+`, { mode: 0o700 });
+    const { result, worktreeCwd } = runProvision(baseCwd, {
+      pathPrefix: bin,
+      setupWorktree(root) {
+        fs.writeFileSync(path.join(root, "package.json"), "{}\n");
+        fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      },
+    });
+    const recovers = failure.startsWith("ERR_PNPM_");
+    assert.equal(result.status, recovers ? 0 : failure === "ENOTFOUND" ? 42 : 1, result.stderr);
+    assert.equal(fs.existsSync(path.join(worktreeCwd, ".paperclip/pnpm-install-fingerprint")), recovers);
+    const calls = fs.readFileSync(path.join(worktreeCwd, "pnpm-calls"), "utf8").trim().split("\n").filter((call) => call.startsWith("install "));
+    assert.equal(calls.length, failure === "ENOTFOUND" ? 1 : 2);
+    if (calls.length === 2) assert.match(calls[1], /--no-frozen-lockfile/);
+  });
+}
+
+test("patch content changes invalidate an otherwise matching install fingerprint", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const bin = makeTempDir("paperclip-patch-pnpm-");
+  fs.writeFileSync(path.join(bin, "pnpm"), '#!/bin/sh\ncase "$1" in install) echo install >> pnpm-calls; mkdir -p node_modules cli/node_modules ;; esac\n', { mode: 0o700 });
+  const first = runProvision(baseCwd, { pathPrefix: bin, setupWorktree(root) {
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ pnpm: { patchedDependencies: { "dependency@1": "patches/dependency.diff" } } }));
+    fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    fs.mkdirSync(path.join(root, "patches"));
+    fs.writeFileSync(path.join(root, "patches/dependency.diff"), "first patch");
+  } });
+  assert.equal(first.result.status, 0, first.result.stderr);
+  const options = { pathPrefix: bin, existingWorktree: first.worktreeCwd };
+  assert.equal(runProvision(baseCwd, options).result.status, 0);
+  const callsPath = path.join(first.worktreeCwd, "pnpm-calls");
+  assert.equal(fs.readFileSync(callsPath, "utf8"), "install\n");
+  fs.writeFileSync(path.join(first.worktreeCwd, "unrelated.patch"), "unrelated change");
+  assert.equal(runProvision(baseCwd, options).result.status, 0);
+  assert.equal(fs.readFileSync(callsPath, "utf8"), "install\n");
+  fs.writeFileSync(path.join(first.worktreeCwd, "patches/dependency.diff"), "changed patch");
+  assert.equal(runProvision(baseCwd, options).result.status, 0);
+  assert.equal(fs.readFileSync(callsPath, "utf8"), "install\ninstall\n");
 });

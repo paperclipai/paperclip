@@ -64,7 +64,7 @@ function platformDenial() {
 describe("SkillPolicyDenialNotice", () => {
   it("renders a State B policy denial with title and remediation", () => {
     const el = render(<SkillPolicyDenialNotice denial={policyDenial()} />);
-    expect(el.textContent).toContain("restricted by your company policy");
+    expect(el.textContent).toContain("restricted by your organization policy");
     expect(el.textContent).toContain("administrator can change the skill policy");
   });
 

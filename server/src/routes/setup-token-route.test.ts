@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_PROVIDER_UNSUPPORTED,
+  isTerminalSessionState,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
@@ -111,11 +112,9 @@ const mockSecretService = vi.hoisted(() => ({
 const mockFindActiveServerAdapter = vi.hoisted(() => vi.fn());
 
 // The Claude setup-token login capability the registry declares for the built-in
-// adapter. The guard requires the pseudo-terminal transport and the stored-session
-// completion claim.
+// adapter. The guard requires the stored-session completion claim.
 const CLAUDE_LOGIN_CAPABILITY = {
   panelMode: "submitted_browser_code",
-  sandboxTransport: "pseudo_terminal",
   timeoutPolicy: "fixed",
   completionClaim: "storedSessionId",
   getCommand: () => "",
@@ -290,6 +289,26 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       }
       row.boundAt = Date.now();
       return { ...row };
+    },
+    async cancelDurable(identity, cancellableStates) {
+      const row = rows.get(identity.sessionId);
+      if (!row || !cancellableStates.includes(row.state)) return null;
+      row.state = "cancelled";
+      return { ...row };
+    },
+    async findActiveDurable(key, now) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
     },
   };
   const leases: SetupTokenLeaseManager = {
@@ -641,6 +660,50 @@ describe("company-and-environment setup-token route — object-level authorizati
     expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
   });
 
+  it("returns the caller's active session with no session id in the URL", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    const active = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(active.status, JSON.stringify(active.body)).toBe(200);
+    expect(active.body.sessionId).toBe(sessionId);
+    expect(active.body.status).toBe("waiting_for_user");
+    expect(active.body.panelMode).toBe("submitted_browser_code");
+    // The full login URL rides in this owner response, the same way it rides in
+    // the guarded `.../prompt` response — this is not a public, secret-free
+    // surface, so it is not checked against `expectNoSecret`.
+    expect(active.body.prompt).toEqual({ authorizationUrl: FULL_LOGIN_URL, transportAdvisory: null });
+    expect(active.headers["cache-control"]).toBe("no-store, private");
+  });
+
+  it("returns the identical not-found on the active route for no active session, a cross-owner caller, and a cross-company caller", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    // No session has started yet.
+    const none = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(none.status).toBe(404);
+    expect(none.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+
+    await startCompanySession(app);
+
+    // A different board user in the same company holds no active session.
+    useOwner(OTHER_USER_ID);
+    const otherOwner = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(otherOwner.status).toBe(404);
+    expect(otherOwner.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    useOwner();
+
+    // The same owner under a different company holds no active session there.
+    const crossCompanyBase = `/api/companies/${OTHER_COMPANY_ID}/setup-token-login-sessions`;
+    const otherCompany = await request(app).get(`${crossCompanyBase}/active`).send();
+    expect(otherCompany.status).toBe(404);
+    expect(otherCompany.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
   it("returns the fixed not-found for a non-member on every action across a company boundary", async () => {
     const transport = buildTransport({ onSubmit: "complete" });
     const { app } = await createApp({ transport });
@@ -695,12 +758,13 @@ describe("company-and-environment setup-token route — object-level authorizati
     expect(transport.records).toEqual([]);
   });
 
-  it("starts a setup-token login for a third adapter that declares the capability", async () => {
-    // A third adapter, not the Claude adapter, declares the pseudo-terminal
-    // setup-token capability with the stored-session claim. The guard reads the
-    // capability, not the adapter name, so the adapter passes the guard and
-    // starts a session. This proves no adapter-name branch remains in the guard
-    // path. The start response reads the panel mode from the capability.
+  it("rejects a third adapter that declares the capability but is not the served adapter", async () => {
+    // A third adapter, not the Claude adapter, declares the same pseudo-terminal
+    // setup-token capability with the stored-session claim. The five follow-up
+    // routes and the reaper both read only the one served adapter type, so the
+    // guard must reject this adapter even though its capability matches. It
+    // rejects with the same fixed 400 as the capability-mismatch case, before
+    // any sandbox assertion, lease, durable row, or pseudo-terminal.
     mockFindActiveServerAdapter.mockImplementation((type: string) =>
       type === "gemini_local"
         ? {
@@ -716,9 +780,15 @@ describe("company-and-environment setup-token route — object-level authorizati
       environmentId: ENVIRONMENT_ID,
       adapterType: "gemini_local",
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(res.body.panelMode).toBe("displayed_code");
-    expect(res.body.status).toBe("waiting_for_user");
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("This adapter does not support a setup-token login.");
+    // The route rejected the adapter before any sandbox, lease, or store side
+    // effect: no cleanup record, no lease acquire, no pseudo-terminal start, and
+    // no environment or provider guard call.
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+    expect(mockResolvePluginSandboxProviderDriverByKey).not.toHaveBeenCalled();
   });
 });
 

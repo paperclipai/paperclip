@@ -8,19 +8,28 @@ import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@p
 import { artifactReviewDocumentKey } from "@paperclipai/shared";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
 import { ApiError } from "@/api/client";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
 
 const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(async (): Promise<unknown[]> => []),
-  listWorkProducts: vi.fn(async (): Promise<unknown[]> => []),
+  listWorkProducts: vi.fn(async (_issueId: string, _options?: { refreshPullRequests?: boolean }): Promise<unknown[]> => []),
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+const mockActivityApi = vi.hoisted(() => ({ runsForIssue: vi.fn(async (): Promise<unknown[]> => []) }));
+vi.mock("@/api/activity", () => ({ activityApi: mockActivityApi }));
+const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn(async (): Promise<unknown[]> => []) }));
+vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
 
 const mockUseIssueDocuments = vi.hoisted(() =>
   vi.fn((): { data: IssueDocument[] } => ({ data: [] })),
 );
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
-vi.mock("@/lib/router", () => ({ useLocation: () => ({ hash: "" }) }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
+  useLocation: () => ({ hash: "" }),
+}));
 vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => (
     <div data-testid="markdown-body">{children}</div>
@@ -39,7 +48,7 @@ const ATTACHMENT_ID = "00000000-0000-4000-8000-000000000001";
 const WORK_PRODUCT_ID = "11111111-1111-4111-8111-111111111111";
 const REVIEW_KEY = artifactReviewDocumentKey(WORK_PRODUCT_ID);
 
-const issue = { id: "issue-1", identifier: "PAP-1534", workMode: "standard" } as Issue;
+const issue = { id: "issue-1", companyId: "company-1", identifier: "PAP-1534", workMode: "standard" } as Issue;
 
 function makeMarkdownWorkProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
   const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
@@ -152,6 +161,7 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
 describe("markdown work product review row", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  const openText = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -160,6 +170,8 @@ describe("markdown work product review row", () => {
     Element.prototype.scrollIntoView = vi.fn();
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([makeMarkdownWorkProduct()]);
+    mockActivityApi.runsForIssue.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
     mockUseIssueDocuments.mockReturnValue({ data: [] });
   });
 
@@ -172,7 +184,10 @@ describe("markdown work product review row", () => {
     container.remove();
   });
 
-  async function renderTab(props: { documentDeepLink?: { requestId: number; documentKey: string } | null } = {}) {
+  async function renderTab(
+    props: { documentDeepLink?: { requestId: number; documentKey: string } | null } = {},
+    expectedText = "Verification report",
+  ) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -181,12 +196,14 @@ describe("markdown work product review row", () => {
     await act(async () =>
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
-          <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          <TextAttachmentContext.Provider value={openText}>
+            <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          </TextAttachmentContext.Provider>
         </QueryClientProvider>,
       ),
     );
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Verification report");
+      expect(container.textContent).toContain(expectedText);
     });
   }
 
@@ -197,12 +214,30 @@ describe("markdown work product review row", () => {
   it("renders an expandable row with explicit raw and download actions", async () => {
     await renderTab();
 
-    expect(expandButton().textContent).toContain("Verification report");
+    expect(container.querySelector("h2")?.textContent).toBe("Verification report");
+    expect(expandButton().textContent).toBe("Read document");
     const raw = container.querySelector('a[title="Open raw"]') as HTMLAnchorElement;
     const download = container.querySelector('a[title="Download"]') as HTMLAnchorElement;
     expect(raw?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content`);
     expect(raw?.getAttribute("target")).toBe("_blank");
     expect(download?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content?download=1`);
+  });
+
+  it("shows saved artifacts while the first PR refresh is stalled", async () => {
+    const saved = makeMarkdownWorkProduct({
+      type: "pull_request", provider: "github", title: "Saved PR during refresh",
+      url: "https://github.com/example/repo/pull/42", metadata: {},
+    });
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    await renderTab({}, saved.title);
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith(issue.id, expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => expect(container.textContent?.toLowerCase()).toContain("merged"));
   });
 
   it("expands into the existing document surface without a server call when the document exists", async () => {
@@ -211,7 +246,7 @@ describe("markdown work product review row", () => {
 
     // The proxy document maps onto the work-product row instead of a
     // standalone Documents row.
-    expect(container.textContent).not.toContain("Documents");
+    expect(container.querySelectorAll(`[data-testid="annotation-surface-${REVIEW_KEY}"]`)).toHaveLength(0);
     expect(container.querySelector(`[data-testid="annotation-count-${REVIEW_KEY}"]`)).not.toBeNull();
 
     await act(async () => expandButton().click());
@@ -220,6 +255,40 @@ describe("markdown work product review row", () => {
     ).toBe("document-1");
     expect(container.querySelector('[data-testid="markdown-body"]')?.textContent).toContain("Rendered body");
     expect(mockIssuesApi.ensureWorkProductReviewDocument).not.toHaveBeenCalled();
+  });
+
+  it("opens the attachment in a tab without replacing its review controls", async () => {
+    mockUseIssueDocuments.mockReturnValue({ data: [makeReviewDocument({ latestRevisionNumber: 3 })] });
+    await renderTab();
+
+    expect(container.textContent).toContain("revision 3");
+    expect(container.querySelector(`[data-testid="annotation-count-${REVIEW_KEY}"]`)).not.toBeNull();
+    const open = container.querySelector('button[aria-label="Open in tab: Verification report"]') as HTMLButtonElement;
+    expect(open).not.toBeNull();
+    await act(async () => open.click());
+    expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
+    expect(expandButton().getAttribute("aria-expanded")).toBe("false");
+    await act(async () => expandButton().click());
+    expect(container.querySelector(`[data-testid="annotation-surface-${REVIEW_KEY}"]`)).not.toBeNull();
+  });
+
+  it.each(["compact", "card"] as const)("keeps %s text-card downloads separate from opening a tab", async (variant) => {
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <TextAttachmentContext.Provider value={openText}>
+        <RichWorkProductCard workProduct={makeMarkdownWorkProduct()} href={`/api/attachments/${ATTACHMENT_ID}/content`} variant={variant} />
+      </TextAttachmentContext.Provider>,
+    ));
+    const download = container.querySelector('a[aria-label="Download: Verification report"]') as HTMLAnchorElement;
+    expect(download.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content?download=1`);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => { download.dispatchEvent(click); });
+    expect(click.defaultPrevented).toBe(false);
+    expect(openText).not.toHaveBeenCalled();
+    const open = container.querySelector('button[aria-label="Open in tab: Verification report"]') as HTMLButtonElement;
+    expect(open).not.toBeNull();
+    await act(async () => open.click());
+    expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
   });
 
   it("materializes the document on first expand", async () => {
@@ -308,14 +377,18 @@ describe("markdown work product review row", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("loose-notes.md");
     });
-    expect(container.textContent).not.toContain("report.md");
+    expect(container.querySelectorAll("article")).toHaveLength(2);
     const looseLink = Array.from(container.querySelectorAll("a")).find(
-      (anchor) => anchor.textContent?.includes("loose-notes.md"),
+      (anchor) => anchor.getAttribute("download") === "loose-notes.md",
     );
-    expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content");
+    expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content?download=1");
+    const open = container.querySelector<HTMLButtonElement>('button[aria-label="Open in tab: loose-notes.md"]');
+    expect(open).not.toBeNull();
+    await act(async () => open!.click());
+    expect(openText).toHaveBeenCalledWith(loose.id, "loose-notes.md");
   });
 
-  it("keeps non-markdown work products on the raw link row", async () => {
+  it("keeps non-markdown work products on the download row", async () => {
     const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
     mockIssuesApi.listWorkProducts.mockResolvedValue([
       makeMarkdownWorkProduct({
@@ -333,12 +406,81 @@ describe("markdown work product review row", () => {
     await renderTab();
 
     await waitForAssertion(() => {
-      const row = Array.from(container.querySelectorAll("a")).find(
-        (anchor) => anchor.textContent?.includes("Verification report"),
-      );
-      expect(row?.getAttribute("href")).toBe(contentPath);
-      expect(row?.getAttribute("target")).toBe("_blank");
+      const row = container.querySelector("article");
+      const link = row?.querySelector("a[download]");
+      expect(row?.textContent).toContain("Verification report");
+      expect(link?.textContent).toBe("Download file");
+      expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);
     });
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
+  });
+
+  it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {
+    const image = { ...makeMarkdownAttachment(), contentType, originalFilename: "cover.png" };
+    const looseImage = { ...image, id: "loose-image", contentPath: "/api/attachments/loose-image/content" };
+    const video = { ...makeMarkdownAttachment(), id: "loose-video", contentType: "application/octet-stream", originalFilename: "clip.mp4", contentPath: "/api/attachments/loose-video/content" };
+    mockIssuesApi.listAttachments.mockResolvedValue([image, video, looseImage, { ...video, id: "user-video", createdByAgentId: null, createdByUserId: "user-1" }]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([makeMarkdownWorkProduct({
+      title: "Cover artwork",
+      metadata: { attachmentId: ATTACHMENT_ID, contentType, originalFilename: "cover.png", contentPath: image.contentPath, openPath: image.contentPath, downloadPath: `${image.contentPath}?download=1`, byteSize: 64 },
+    })]);
+    await renderTab({}, "Cover artwork");
+    await waitForAssertion(() => {
+      const buttons = container.querySelectorAll('button[aria-label^="View image:"], button[aria-label^="Open video:"]');
+      expect(buttons).toHaveLength(3);
+      expect(container.querySelectorAll("img")).toHaveLength(2);
+      expect(container.querySelectorAll("article")).toHaveLength(3);
+      expect(container.querySelector("video")?.getAttribute("src")).toBe(video.contentPath);
+      expect(container.querySelectorAll("video")).toHaveLength(1);
+    });
+  });
+
+  it("groups rich cards by producing run", async () => {
+    const runOne = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const runTwo = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const imagePath = `/api/attachments/${ATTACHMENT_ID}/content`;
+    mockIssuesApi.listWorkProducts.mockResolvedValue([
+      makeMarkdownWorkProduct({
+        id: "22222222-2222-4222-8222-222222222222",
+        type: "pull_request",
+        provider: "github",
+        title: "Artifact grouping PR",
+        url: "https://github.com/paperclipai/paperclip/pull/1",
+        createdByRunId: runOne,
+        metadata: { repo: "paperclipai/paperclip", number: 1, baseRef: "master", headRef: "artifacts" },
+      }),
+      makeMarkdownWorkProduct({
+        id: "33333333-3333-4333-8333-333333333333",
+        title: "Artifacts screenshot",
+        createdByRunId: runTwo,
+        metadata: {
+          attachmentId: ATTACHMENT_ID,
+          contentType: "image/png",
+          byteSize: 64,
+          contentPath: imagePath,
+          openPath: imagePath,
+          downloadPath: `${imagePath}?download=1`,
+        },
+      }),
+    ]);
+    mockActivityApi.runsForIssue.mockResolvedValue([
+      { runId: runOne, agentId: "agent-1", startedAt: "2026-09-02T10:00:00Z", createdAt: "2026-09-02T10:00:00Z" },
+      { runId: runTwo, agentId: "agent-2", startedAt: "2026-09-02T11:00:00Z", createdAt: "2026-09-02T11:00:00Z" },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-1", name: "CodexCoder" },
+      { id: "agent-2", name: "DesignCoder" },
+    ]);
+
+    await renderTab({}, "Artifact grouping PR");
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("CodexCoder");
+      expect(container.textContent).toContain("DesignCoder");
+      expect(container.querySelectorAll("article")).toHaveLength(2);
+      expect(container.querySelector(`img[src="${imagePath}"]`)).not.toBeNull();
+      expect(container.querySelector('a[href="https://github.com/paperclipai/paperclip/pull/1"]')?.textContent).toContain("Open pull request");
+      expect(container.querySelector('button[aria-label="View image: Artifacts screenshot"]')).not.toBeNull();
+    });
   });
 });

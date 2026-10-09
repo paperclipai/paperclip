@@ -13,6 +13,10 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
+vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
+beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -130,6 +134,34 @@ describe("deriveRecoveryCardState", () => {
 });
 
 describe("IssueRecoveryActionCard", () => {
+  it.each(["running", "scheduled", "missed"] as const)("describes native %s finalization without claiming another agent turn", (state) => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid",
+      nextAction: "Finish the existing run.",
+      wakePolicy: { kind: "resume_native_run", runId: "native-run", notBefore: state === "scheduled" ? "2099-01-01T00:00:00Z" : "2020-01-01T00:00:00Z" },
+      nativeRunActivity: state === "running" ? { runId: "native-run", status: "running", workspaceOperationId: "export-operation" } : null,
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe(state === "missed" ? "needed" : "in_progress");
+    expect(node.textContent).toContain("existing run");
+    expect(node.textContent).not.toContain("retrying the original owner");
+    expect(node.textContent).not.toContain("retrying itself");
+    expect(node.textContent).not.toContain("repairs the next step only");
+    expect(node.textContent).not.toContain("stopped to wait");
+    expect(node.querySelector('[data-testid="recovery-retry-progress"]')?.getAttribute("data-recovery-lane")).toBe("native_run");
+  });
+
+  it("describes actual export progress after the board retries an exhausted repair", () => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid", ownerType: "board", status: "escalated", attemptCount: 3,
+      wakePolicy: { kind: "resume_native_run", runId: "native-run" },
+      nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(node.textContent).toContain("Paperclip is recovering the existing run");
+    expect(node.querySelector('[data-testid="recovery-recovery-owner"]')?.textContent).toContain("Paperclip");
+    expect(node.textContent).not.toContain("Automatic retries are finished");
+  });
+
   it("renders state and kind attributes with owner names and the recorded next action", () => {
     const node = render(
       <IssueRecoveryActionCard
@@ -166,6 +198,64 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain(
       "The active run has been silent. Recovery is observing without interrupting it.",
     );
+  });
+
+  it.each(["active", "escalated", "resolved"] as const)("keeps %s runner recovery in the run log without a card", status => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "uncertain_external_action", status, ownerType: "board",
+    })} />);
+    expect(node.textContent).toBe("");
+    expect(node.querySelector("section")).toBeNull();
+  });
+
+  it.each(["active", "escalated"] as const)(
+    "describes a %s board-owned watchdog as a human decision, not a live run",
+    (status) => {
+      const node = render(
+        <IssueRecoveryActionCard
+          action={buildAction({
+            kind: "active_run_watchdog",
+            status,
+            ownerType: "board",
+            ownerAgentId: null,
+            wakePolicy: null,
+          })}
+        />,
+      );
+      expect(node.textContent).toContain(
+        "This recovery needs a human decision. Review the recorded failure and choose the next step.",
+      );
+      expect(node.textContent).not.toContain("The active run has been silent");
+      expect(node.textContent).not.toContain("observing without interrupting");
+      expect(
+        node.querySelector("[data-testid='recovery-action-resolve-trigger']"),
+      ).toBeNull();
+    },
+  );
+
+  it("retains the existing authorized controls for a board-owned watchdog", () => {
+    const onResolve = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "active_run_watchdog",
+          ownerType: "board",
+          ownerAgentId: null,
+          wakePolicy: null,
+        })}
+        onResolve={onResolve}
+      />,
+    );
+    click(
+      node.querySelector("[data-testid='recovery-action-resolve-trigger']"),
+    );
+    expect(document.body.textContent).not.toContain("False positive");
+    click(
+      [...document.body.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Try again"),
+      ) ?? null,
+    );
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith("todo");
   });
 
   it("explains issue_graph_liveness in plain language", () => {
@@ -398,6 +488,15 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
       />,
     );
     expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).toBeNull();
+  });
+
+  it("hides the isolated re-issue action under operator visibility policy", () => {
+    visibility.visible = false;
+    const onReissueIsolated = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} onReissueIsolated={onReissueIsolated} />);
+    expect(node.querySelector("[data-testid='recovery-action-reissue-trigger']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(onReissueIsolated).not.toHaveBeenCalled();
   });
 
   it("offers the re-issue action and passes the live branch as the base ref", () => {
@@ -999,32 +1098,35 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.textContent).not.toContain("Times out");
   });
 
-  it("shows the board escalation without implying the board owns the task", () => {
+  it("shows a current-policy board recovery action without implying the board owns the task", () => {
     const node = render(
       <IssueRecoveryActionCard
         action={buildSourceLaneAction({
-          status: "escalated",
+          status: "active",
           ownerType: "board",
           ownerAgentId: null,
-          evidence: { sourceAttemptCount: 5, sourceMaxAttempts: 5 },
+          evidence: {
+            sourceAttemptCount: 5,
+            sourceMaxAttempts: 5,
+            routingPolicy: "board_escalation_no_takeover_v1",
+          },
           wakePolicy: {
             type: "board_escalation",
-            reason: "recovery_owner_retry_exhausted",
-            attempt: 3,
-            maxAttempts: 3,
+            reason: "unchanged_source_state_exhausted",
             preservesSourceAssignee: true,
           },
-          attemptCount: 3,
-          maxAttempts: 3,
+          attemptCount: 5,
+          maxAttempts: null,
           timeoutAt: null,
         })}
         agentMap={bothAgents}
       />,
     );
     const section = node.querySelector("section[aria-label]");
-    expect(section?.getAttribute("data-recovery-state")).toBe("escalated");
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
     expect(section?.getAttribute("data-recovery-lane")).toBe("board");
     expect(node.textContent).toContain("Automatic recovery is exhausted");
+    expect(node.textContent).toContain("Board decision required");
     const recoveryOwner = node.querySelector("[data-testid='recovery-recovery-owner']");
     expect(recoveryOwner?.textContent).toContain("Board");
     expect(recoveryOwner?.textContent).toContain("decides the next step only");
@@ -1042,4 +1144,20 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.querySelector("[data-testid='recovery-source-owner']")).toBeNull();
     expect(node.textContent).toContain("→ Returns to:");
   });
+});
+
+it.each(["active", "escalated", "resolved"] as const)("does not show a historical unsafe-export repair card: %s", status => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ status, kind: "active_run_watchdog",
+    cause: "native_workspace_sync_out_unsafe_archive", ownerType: "board", nextAction: "Repair the unsafe link manually" })} onResolve={() => {}} />);
+  expect(node.textContent).toBe("");
+});
+
+it("requires export retry for ordinary restoration while keeping explicit board overrides", () => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog", ownerType: "board",
+    cause: "native_workspace_sync_out_retry_exhausted" })} onResolve={() => {}} canFalsePositive />);
+  click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+  expect(document.body.textContent).not.toContain("Try again");
+  expect(document.body.textContent).not.toContain("Mark task done");
+  expect(document.body.textContent).not.toContain("Send for review");
+  expect(document.body.textContent).toContain("False positive, done");
 });

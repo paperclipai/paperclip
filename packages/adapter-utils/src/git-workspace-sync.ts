@@ -3,6 +3,9 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createWorkspaceManifest, workspacePaths, WorkspaceNulParser, type WorkspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
+import { preserveWorkspaceRestoreErrorDiagnostic, withWorkspaceRestoreGitCommand, type WorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 export interface GitCommandResult {
   stdout: string;
@@ -12,10 +15,14 @@ export interface GitCommandResult {
 export interface GitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
-  overlayPaths: string[];
-  deletedPaths: string[];
-  ignoredPaths: string[];
+  overlayPaths: WorkspacePaths;
+  deletedPaths: WorkspacePaths;
+  ignoredPaths: WorkspacePaths;
+  /** Managed, editable repositories inside the task workspace. */
+  repositories?: Array<{ path: string; snapshot: GitWorkspaceSnapshot }>;
 }
+
+export const PROJECT_REPOSITORIES_DIR = ".paperclip-repositories";
 
 export interface ExpensiveWorkspaceGitInput {
   localDir: string;
@@ -23,6 +30,17 @@ export interface ExpensiveWorkspaceGitInput {
   operation: string;
   timeout: number;
   maxBuffer: number;
+  onStdout?: (chunk: Buffer) => Promise<void> | void;
+  signal?: AbortSignal;
+  /**
+   * Optional environment override for the invocation. Absent for the anchor
+   * workspace's own full-tree walks (they inherit the process environment, a
+   * directory this process already controls). A referenced-project scan sets
+   * this to its hardened environment (see {@link buildHardenedGitEnv}), so a
+   * host executor that honors it still runs the read hardened even though it
+   * dispatches through the same seam as the anchor's reads.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type ExpensiveWorkspaceGitExecutor = (
@@ -32,9 +50,22 @@ export type ExpensiveWorkspaceGitExecutor = (
 let expensiveWorkspaceGitExecutor: ExpensiveWorkspaceGitExecutor | null = null;
 
 /**
+ * The workspace Git scan scheduler's typed code for a saturated queue
+ * (`server/src/services/workspace-git-operation-scheduler.ts`,
+ * `WORKSPACE_GIT_SCAN_ERROR_CODES.saturated`). Declared again here because
+ * `adapter-utils` cannot import from `server` (the reverse direction is
+ * allowed, not this one); `server` carries a test that asserts the two
+ * literals stay equal. `resolveReferencedSourceIgnore` in
+ * `sandbox-managed-runtime.ts` reads this code off a caught error's `code`
+ * property, never off its message text, to retry only a saturated queue and
+ * fail closed on every other Git scan error.
+ */
+export const WORKSPACE_GIT_SCAN_SATURATED_CODE = "workspace_git_scan_saturated";
+
+/**
  * Lets a host process apply its process-wide admission policy to the adapter
  * package's full-tree Git walks. Standalone adapter-utils consumers retain the
- * existing timeout/buffer-bounded fallback.
+ * streaming process fallback for filename scans.
  */
 export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGitExecutor | null): void {
   expensiveWorkspaceGitExecutor = executor;
@@ -69,6 +100,7 @@ export async function runLocalGit(
   options: {
     timeout?: number;
     maxBuffer?: number;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<GitCommandResult> {
   return await new Promise<GitCommandResult>((resolve, reject) => {
@@ -78,6 +110,7 @@ export async function runLocalGit(
       {
         timeout: options.timeout ?? 15_000,
         maxBuffer: options.maxBuffer ?? 1024 * 128,
+        env: options.env ?? process.env,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -97,7 +130,7 @@ async function runExpensiveWorkspaceGit(
   localDir: string,
   args: string[],
   operation: string,
-  options: { timeout: number; maxBuffer: number },
+  options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv; onStdout?: ExpensiveWorkspaceGitInput["onStdout"]; signal?: AbortSignal },
 ): Promise<GitCommandResult> {
   if (expensiveWorkspaceGitExecutor) {
     return await expensiveWorkspaceGitExecutor({
@@ -106,66 +139,377 @@ async function runExpensiveWorkspaceGit(
       operation,
       timeout: options.timeout,
       maxBuffer: options.maxBuffer,
+      env: options.env,
+      onStdout: options.onStdout,
+      signal: options.signal,
     });
   }
+  if (options.onStdout) return runWorkspaceGitProcess({
+    cwd: localDir, args, timeoutMs: options.timeout, maxStdoutBytes: options.maxBuffer,
+    maxStderrBytes: options.maxBuffer, onStdout: options.onStdout, signal: options.signal, env: options.env,
+  });
   return await runLocalGit(localDir, args, options);
 }
 
-export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWorkspaceSnapshot | null> {
+const ownedSnapshots = new WeakMap<GitWorkspaceSnapshot, string>();
+
+export async function disposeGitWorkspaceSnapshot(snapshot: GitWorkspaceSnapshot | null): Promise<void> {
+  if (!snapshot) return;
+  const ownedDirectory = ownedSnapshots.get(snapshot);
+  if (!ownedDirectory) return;
+  ownedSnapshots.delete(snapshot);
+  for (const repository of snapshot.repositories ?? []) await disposeGitWorkspaceSnapshot(repository.snapshot);
+  await fs.rm(ownedDirectory, { recursive: true, force: true });
+}
+
+/** Snapshot deadlines include disk backpressure. Operators can allow up to 24h. */
+export function workspaceSnapshotTimeoutMs(): number {
+  const configured = Number(process.env.PAPERCLIP_WORKSPACE_GIT_SNAPSHOT_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 86_400_000) : 30 * 60_000;
+}
+
+export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true, options: { signal?: AbortSignal } = {}): Promise<GitWorkspaceSnapshot | null> {
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  // Only repository discovery may report an ordinary directory. A failed
+  // snapshot of a confirmed repository must never fall back to directory sync.
+  let insideWorkTree: GitCommandResult;
   try {
-    const insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
+    insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
     });
-    if (insideWorkTree.stdout.trim() !== "true") {
-      return null;
-    }
-
-    const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
-      runLocalGit(localDir, ["rev-parse", "HEAD"], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
-      }),
-      runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", {
-        timeout: 10_000,
-        maxBuffer: 256 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"], "adapter_sync.ignored_files", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-    ]);
-
-    const branchName = branchResult.stdout.trim();
-    const splitNul = (value: string) => value.split("\0").map((entry) => entry.trim()).filter(Boolean);
-    return {
-      headCommit: headCommitResult.stdout.trim(),
-      branchName: branchName && branchName !== "HEAD" ? branchName : null,
-      overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout)])]
-        .sort((left, right) => left.localeCompare(right)),
-      deletedPaths: [...new Set(splitNul(deletedResult.stdout))]
-        .sort((left, right) => left.localeCompare(right)),
-      ignoredPaths: splitNul(ignoredResult.stdout)
-        .filter((entry) => entry.startsWith("!! "))
-        .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right)),
-    };
-  } catch {
+  } catch (error) {
+    if (repositories.length === 0 && isNotAGitRepositoryError(error)) return null;
+    throw error;
+  }
+  if (insideWorkTree.stdout.trim() !== "true") {
     return null;
   }
+
+  const toplevelResult = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  });
+  // Git discovers a parent repository from a nested project directory, but
+  // that directory is not a fetch source. Keep the selected workspace
+  // boundary: subfolders use directory sync instead of importing the parent.
+  const [workspacePath, repositoryPath] = await Promise.all([
+    fs.realpath(localDir),
+    fs.realpath(toplevelResult.stdout.trim()),
+  ]);
+  if (workspacePath !== repositoryPath) return null;
+
+  const writer = await createWorkspaceManifest();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  try {
+    if (includeRepositories) {
+      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (rootStat) {
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+        for await (const entry of await fs.opendir(root)) {
+          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
+          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+          repositories.push({ path: relative, snapshot });
+        }
+      }
+    }
+
+    const scan = async (args: string[], operation: string, category: string) => {
+      const parser = new WorkspaceNulParser((record) => {
+        const relative = category === "ignored" ? record.replace(/\/+$/, "") : record;
+        if (category === "ignored" && repositories.length && relative === PROJECT_REPOSITORIES_DIR) return;
+        // Managed children have their own exact file selections. Never stage a
+        // parent Git directory record that could admit files created later.
+        if (repositories.some((repo) => relative === repo.path || relative.startsWith(`${repo.path}/`))) return;
+        writer.add(category, relative);
+      });
+      const result = await runExpensiveWorkspaceGit(localDir, args, operation, {
+        timeout: workspaceSnapshotTimeoutMs(), maxBuffer: 64 * 1024,
+        signal: controller.signal,
+        onStdout: (chunk) => writer.batch(() => parser.write(chunk)),
+      });
+      if (result.stdout) throw new Error("Workspace Git executor did not stream stdout");
+      try { parser.finish(); }
+      catch (error) { throw Object.assign(error as Error, { code: "workspace_git_scan_failed" }); }
+    };
+    // Cancellation is followed by an all-settled barrier BEFORE storage cleanup.
+    const tasks = [
+      runLocalGit(localDir, ["rev-parse", "HEAD"], { timeout: 10_000, maxBuffer: 16 * 1024 }),
+      runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 10_000, maxBuffer: 16 * 1024 }),
+      scan(["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", "overlay"),
+      scan(["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", "overlay"),
+      scan(["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", "deleted"),
+      scan(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], "adapter_sync.ignored_files", "ignored"),
+    ];
+    let firstError: unknown;
+    const settled = await Promise.allSettled(tasks.map((task) => task.catch((error) => {
+      if (firstError === undefined) firstError = error;
+      controller.abort();
+      throw error;
+    })));
+    if (firstError !== undefined) throw firstError;
+    if (controller.signal.aborted) throw Object.assign(new Error("Workspace snapshot cancelled"), { code: "workspace_git_scan_cancelled" });
+    for (const repo of repositories) {
+      for (const [category, paths] of [["overlay", repo.snapshot.overlayPaths], ["deleted", repo.snapshot.deletedPaths], ["ignored", repo.snapshot.ignoredPaths]] as const) {
+        for (const relative of workspacePaths(paths)) writer.add(category, `${repo.path}/${relative}`);
+      }
+    }
+    const head = (settled[0] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
+    const branch = (settled[1] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
+    const snapshot: GitWorkspaceSnapshot = {
+      headCommit: head, branchName: branch && branch !== "HEAD" ? branch : null,
+      overlayPaths: writer.paths("overlay"), deletedPaths: writer.paths("deleted"), ignoredPaths: writer.paths("ignored"),
+      ...(repositories.length ? { repositories } : {}),
+    };
+    writer.close();
+    ownedSnapshots.set(snapshot, path.dirname(writer.filePath));
+    return snapshot;
+  } catch (error) {
+    writer.close(false);
+    for (const repo of repositories) await disposeGitWorkspaceSnapshot(repo.snapshot);
+    await fs.rm(path.dirname(writer.filePath), { recursive: true, force: true });
+    throw error;
+  } finally { options.signal?.removeEventListener("abort", abort); }
+}
+
+/** The `git ls-files --others --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
+export interface ReferencedSourceGitIgnoreScan {
+  /** The absolute repository top level `git rev-parse --show-toplevel` reports. */
+  toplevel: string;
+  /** Ignored paths, relative to `toplevel`, trailing slashes stripped, sorted. */
+  ignoredPaths: string[];
+}
+
+/**
+ * Build the environment for a hardened, read-only Git invocation against a
+ * directory this process does not control (a referenced project, not the
+ * anchor workspace). Two protections apply:
+ *
+ * - Drop every inherited `GIT_*` variable, so an already-set override in this
+ *   process's own environment cannot change how the read-only command runs.
+ * - Point the global config file at `/dev/null` (in addition to the
+ *   command-line `GIT_CONFIG_NOSYSTEM=1` the caller sets), so neither this
+ *   host's global nor system Git configuration can add a setting the
+ *   read-only command was not built to expect.
+ *
+ * This does not defend against the directory's OWN repository-local
+ * configuration; the command-line `-c core.fsmonitor=false` override in
+ * {@link runHardenedReadOnlyGit} does that instead, because command-line
+ * config always wins over repository-local config.
+ */
+function buildHardenedGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("GIT_") || value === undefined) continue;
+    env[key] = value;
+  }
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  return env;
+}
+
+/**
+ * Run a read-only Git command against a directory this process does not
+ * control, hardened against a hostile repository-local configuration, and
+ * dispatched through {@link runExpensiveWorkspaceGit} — the SAME process-wide
+ * admission seam the anchor workspace's expensive full-tree reads use. A host
+ * process that registers a bounded scheduler there (see
+ * `setExpensiveWorkspaceGitExecutor`) governs referenced-project scans too, so
+ * a run with many referenced projects cannot spawn one unbounded Git process
+ * per project; each request queues behind the same concurrency limit.
+ *
+ * Every call still carries `--no-optional-locks` (never blocks on, or is
+ * blocked by, a concurrent Git process in the directory) and
+ * `-c core.fsmonitor=false` (neutralizes a repository-local `core.fsmonitor`
+ * setting that would otherwise run an arbitrary configured program on this
+ * read). See {@link buildHardenedGitEnv} for the paired environment hardening,
+ * carried through the executor's optional `env` field so hardening survives
+ * the hop through a host-registered scheduler.
+ */
+async function runHardenedReadOnlyGit(
+  localDir: string,
+  args: string[],
+  operation: string,
+  options: { timeout: number; maxBuffer: number },
+): Promise<GitCommandResult> {
+  return await runExpensiveWorkspaceGit(
+    localDir,
+    ["-c", "core.fsmonitor=false", "--no-optional-locks", ...args],
+    operation,
+    { timeout: options.timeout, maxBuffer: options.maxBuffer, env: buildHardenedGitEnv() },
+  );
+}
+
+/**
+ * True when a failed `git` invocation failed specifically because `localDir`
+ * is not inside a Git work tree — Git's own "not a git repository" fatal
+ * error. Distinguishes the expected non-Git case from a real failure (a
+ * timeout, a permissions error, a corrupt repository), which must still
+ * surface as a failure and never look like "no Git tree here".
+ */
+function isNotAGitRepositoryError(error: unknown): boolean {
+  // The host scheduler keeps bounded subprocess diagnostics under details.
+  // Only a completed Git exit may establish that no repository exists.
+  if (error && typeof error === "object" && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("workspace_git_scan_")) {
+    const details = "details" in error && error.details && typeof error.details === "object"
+      ? error.details as Record<string, unknown> : {};
+    return error.code === "workspace_git_scan_failed" && details.exitCode === 128 && details.signal === null &&
+      typeof details.stderr === "string" && /not a git repository/i.test(details.stderr);
+  }
+  const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr: unknown }).stderr) : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
+}
+
+/** Bound on the number of parsed ignored entries `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT = 10_000;
+
+/** Bound on the summed UTF-8 byte length of the resolved ignored-path strings `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Bound on the raw `git ls-files --others --ignored` output
+ * `readReferencedSourceGitIgnoredPaths` lets Node buffer, kept proportionate
+ * to {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} instead of the far
+ * larger allowance the anchor workspace's general-purpose full-tree reads
+ * use. The command reports only ignored entries (see the invocation below),
+ * so this raw allowance is not exposed to an unrelated tracked-change or
+ * ordinary-untracked record count — a repository with a huge diff or a huge
+ * untracked set never grows this command's output. The parser below still
+ * enforces the real entry-count and byte bounds while it reads each record,
+ * so this value only needs headroom for the NUL delimiter and the trailing
+ * slash on every entry, not room for an oversized ignored-path list to land
+ * in memory in the first place.
+ */
+const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
+
+/**
+ * Thrown by {@link readReferencedSourceGitIgnoredPaths} when the parsed
+ * ignored-path list breaches {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT}
+ * or {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES}, so the caller can
+ * classify the failure as a bound breach instead of a plain Git read error.
+ * The message never leaves this package: `resolveReferencedSourceIgnore`
+ * replaces it with a fixed category before the failure reaches any consumer.
+ */
+export class ReferencedSourceIgnoreScanLimitExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferencedSourceIgnoreScanLimitExceededError";
+  }
+}
+
+/**
+ * Read the Git-ignored paths of a referenced-project host directory, for the
+ * staging path to exclude them (see `resolveReferencedSourceIgnore` in
+ * `sandbox-managed-runtime.ts`). Every command runs through
+ * {@link runHardenedReadOnlyGit}, because the directory is a host checkout the
+ * staging code does not control, unlike the anchor workspace.
+ *
+ * Returns `null` when `localDir` is not a Git work tree — the caller keeps
+ * today's fixed excludes for that case. Throws on any other Git error, a
+ * timeout, malformed output, or a bound breach (see
+ * {@link ReferencedSourceIgnoreScanLimitExceededError}), so the caller can
+ * fail closed and skip staging that one project instead of shipping it
+ * unfiltered.
+ */
+export async function readReferencedSourceGitIgnoredPaths(
+  localDir: string,
+): Promise<ReferencedSourceGitIgnoreScan | null> {
+  let toplevel: string;
+  try {
+    const toplevelResult = await runHardenedReadOnlyGit(
+      localDir,
+      ["rev-parse", "--show-toplevel"],
+      "referenced_source.toplevel",
+      { timeout: 15_000, maxBuffer: 64 * 1024 },
+    );
+    toplevel = toplevelResult.stdout.trim();
+  } catch (error) {
+    if (isNotAGitRepositoryError(error)) {
+      return null;
+    }
+    throw error;
+  }
+  if (!toplevel) {
+    throw new Error(`git rev-parse --show-toplevel returned an empty path for ${localDir}`);
+  }
+
+  // `ls-files --others --ignored --exclude-standard` reports only ignored
+  // entries — unlike `git status --ignored`, it never also reports a tracked
+  // change or an ordinary untracked file. A repository with a huge diff or a
+  // huge untracked set (unrelated to what is ignored) cannot inflate this
+  // command's raw output, so the raw buffer bound below only ever has to
+  // cover the declared ignored-set limits, not an unbounded amount of
+  // unrelated status noise ahead of them.
+  // `--directory` collapses an entirely ignored directory into one entry with
+  // a trailing slash, matching `git status --ignored`'s traditional mode.
+  // `--full-name` reports paths relative to the repository toplevel, so this
+  // still matches the toplevel-relative shape `resolveReferencedSourceIgnore`
+  // re-relativizes against, regardless of `localDir`'s position under it.
+  const ignoredResult = await runHardenedReadOnlyGit(
+    localDir,
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z"],
+    "referenced_source.ignored_files",
+    { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
+  );
+
+  // Read one NUL-delimited record at a time and enforce both bounds while the
+  // ignored-entry list accumulates, instead of splitting and mapping the
+  // whole response into a list first and only then checking its size. A
+  // pathologically large ignore set (a huge repository, or one crafted to
+  // hold many ignored entries) must fail closed the moment it breaches a
+  // bound, without this scan first retaining and transforming the full
+  // oversized response.
+  //
+  // Do not trim each entry: `-z` already delimits entries with a NUL byte, so
+  // a leading or trailing space in an entry is part of the path itself, not
+  // padding to remove. A length check finds the one genuinely empty record
+  // `-z` appends after the last NUL, without eating a real path's own
+  // leading or trailing whitespace.
+  const rawIgnored = ignoredResult.stdout;
+  const parsedIgnoredEntries: string[] = [];
+  let totalIgnoredBytes = 0;
+  let recordStart = 0;
+  while (recordStart < rawIgnored.length) {
+    const nulIndex = rawIgnored.indexOf("\0", recordStart);
+    const recordEnd = nulIndex === -1 ? rawIgnored.length : nulIndex;
+    const record = rawIgnored.slice(recordStart, recordEnd);
+    recordStart = nulIndex === -1 ? rawIgnored.length : nulIndex + 1;
+
+    const entry = record.replace(/\/+$/, "");
+    if (entry.length === 0) {
+      continue;
+    }
+
+    if (parsedIgnoredEntries.length + 1 > REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan found more than ${REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} ignored entries`,
+      );
+    }
+    totalIgnoredBytes += Buffer.byteLength(entry, "utf8");
+    if (totalIgnoredBytes > REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan exceeded ${REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} UTF-8 bytes of ignored paths`,
+      );
+    }
+    parsedIgnoredEntries.push(entry);
+  }
+
+  // The list is bounded by both checks above, so sorting and re-relativizing
+  // it here never costs more than the accepted bounds allow.
+  const ignoredPaths = parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
+
+  return { toplevel, ignoredPaths };
 }
 
 // scp-like ssh remote (`user@host:path`). The syntax has no password slot, so
@@ -229,6 +573,17 @@ export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<st
   }
 }
 
+async function copyCloneTree(source: string, target: string): Promise<void> {
+  await fs.mkdir(target, { recursive: true });
+  for await (const entry of await fs.opendir(source)) {
+    const from = path.join(source, entry.name);
+    const to = path.join(target, entry.name);
+    if (entry.isDirectory()) await copyCloneTree(from, to);
+    else if (entry.isSymbolicLink()) await fs.symlink(await fs.readlink(from), to);
+    else { await fs.copyFile(from, to); await fs.chmod(to, (await fs.stat(from)).mode); }
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -279,6 +634,20 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    for (const repository of input.snapshot.repositories ?? []) {
+      await withShallowGitWorkspaceClone({
+        localDir: path.join(input.localDir, repository.path),
+        snapshot: repository.snapshot,
+      }, async (nestedClone) => {
+        // Preserve repository-relative links. fs.cp otherwise rewrites them to
+        // absolute paths into nestedClone, which is deleted after this callback
+        // and is outside the workspace when the sandbox restores its files.
+        await copyCloneTree(nestedClone, path.join(cloneDir, repository.path));
+      });
+    }
+    if (input.snapshot.repositories?.length) {
+      await fs.appendFile(path.join(cloneDir, ".git/info/exclude"), `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
+    }
     return await fn(cloneDir);
   } finally {
     await runLocalGit(input.localDir, ["update-ref", "-d", tempRef], {
@@ -405,6 +774,12 @@ export function buildRemoteGitDeltaBundleScript(input: {
         `  bundle_base=""`,
         "fi",
       ]),
+    // An empty bundle means "still at baseSha" to the importer. A reset to an
+    // older ancestor has no delta commits either, but must carry its new tip.
+    // Use the full-bundle path so Git advertises that tip instead of losing it.
+    `if [ -n "$bundle_base" ] && [ "$bundle_base" != ${baseSha} ] && [ "$bundle_base" = "$(git -C ${remoteDir} rev-parse HEAD)" ]; then`,
+    `  bundle_base=""`,
+    "fi",
     `if [ -n "$bundle_base" ]; then`,
     `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
     "else",
@@ -422,15 +797,25 @@ export function buildRemoteGitDeltaBundleScript(input: {
     "fi",
     statusPath
       ? [
-        `if [ -z "$(git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal)" ]; then`,
+        `git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal -z > ${shellQuote(`${input.statusPath}.git-status`)}`,
+        `if [ ! -s ${shellQuote(`${input.statusPath}.git-status`)} ]; then`,
         `  printf clean > ${statusPath}`,
         "else",
         `  printf dirty > ${statusPath}`,
         "fi",
+        `rm -f -- ${shellQuote(`${input.statusPath}.git-status`)}`,
       ].join("\n")
       : "",
     input.catBundle ? `cat ${bundlePath}` : "",
   ].filter(Boolean).join("\n");
+}
+
+// Labels are fixed at the integration call sites, never derived from Git arguments.
+function runIntegrationGit(
+  command: WorkspaceRestoreGitCommand,
+  ...args: Parameters<typeof runLocalGit>
+): Promise<GitCommandResult> {
+  return withWorkspaceRestoreGitCommand(command, () => runLocalGit(...args));
 }
 
 /**
@@ -454,11 +839,11 @@ export async function createUnrelatedHistoryGraftCommit(input: {
   importedHead: string;
   syncLabel: string;
 }): Promise<string> {
-  const importedTree = (await runLocalGit(input.localDir, ["rev-parse", `${input.importedHead}^{tree}`], {
+  const importedTree = (await runIntegrationGit("rev_parse", input.localDir, ["rev-parse", `${input.importedHead}^{tree}`], {
     timeout: 10_000,
     maxBuffer: 16 * 1024,
   })).stdout.trim();
-  const importedMessage = (await runLocalGit(input.localDir, ["log", "-1", "--format=%B", input.importedHead], {
+  const importedMessage = (await runIntegrationGit("log", input.localDir, ["log", "-1", "--format=%B", input.importedHead], {
     timeout: 10_000,
     maxBuffer: 256 * 1024,
   })).stdout;
@@ -467,8 +852,8 @@ export async function createUnrelatedHistoryGraftCommit(input: {
     "",
     `(${input.syncLabel} graft ${input.importedHead.slice(0, 12)}: imported history shares no ancestor with ${input.currentHead.slice(0, 12)})`,
   ].join("\n");
-  const graftCommit = await runLocalGit(
-    input.localDir,
+  const graftCommit = await runIntegrationGit(
+    "commit_tree", input.localDir,
     [...GIT_SYNC_COMMIT_IDENTITY_ARGS, "commit-tree", importedTree, "-p", input.currentHead, "-m", message],
     {
       timeout: 60_000,
@@ -478,9 +863,68 @@ export async function createUnrelatedHistoryGraftCommit(input: {
   return graftCommit.stdout.trim();
 }
 
+async function updateLocalGitHead(input: {
+  localDir: string;
+  newHead: string;
+  oldHead: string;
+  branchName: string | null;
+}): Promise<void> {
+  // Prepare the ref transaction before checking the symbolic HEAD identity.
+  // Git holds HEAD.lock (and the branch lock when attached) until commit/abort,
+  // so a checkout cannot redirect the write after this check. --no-deref also
+  // prevents a detached write from following a newly attached branch.
+  await withWorkspaceRestoreGitCommand("update_ref", () => new Promise<void>((resolve, reject) => {
+    let identityError: unknown;
+    let prepared = false;
+    let output = "";
+    const child = execFile("git", ["-C", input.localDir, "update-ref", "--stdin"], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024,
+    }, (error, stdout, stderr) => {
+      if (identityError) reject(identityError);
+      else if (error) reject(Object.assign(error, { stdout, stderr }));
+      else if (!stdout.includes("commit: ok\n")) reject(new Error("Git HEAD transaction did not commit."));
+      else resolve();
+    });
+    // Early Git errors close stdin; the process callback reports the error.
+    child.stdin!.on("error", () => {});
+    child.stdout!.on("data", (chunk: string | Buffer) => {
+      output += chunk.toString();
+      if (prepared || !output.includes("prepare: ok\n")) return;
+      prepared = true;
+      void (async () => {
+        try {
+          const branchName = (await runIntegrationGit("symbolic_ref", input.localDir, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+            timeout: 10_000,
+          }).catch((error) => {
+            if (error.code === 1) return { stdout: "" };
+            throw error;
+          })).stdout.trim() || null;
+          if (branchName !== input.branchName) {
+            throw new Error("Workspace branch changed while remote work was running.");
+          }
+          child.stdin!.end("commit\n");
+        } catch (error) {
+          identityError = error;
+          child.stdin!.end("abort\n");
+        }
+      })();
+    });
+    child.stdin!.write([
+      "start",
+      ...(input.branchName === null ? ["option no-deref"] : []),
+      `update HEAD ${input.newHead} ${input.oldHead}`,
+      "prepare",
+      "",
+    ].join("\n"));
+  }));
+}
+
 export async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
+  /** The host Git identity captured before staging this run. */
+  baseline?: Pick<GitWorkspaceSnapshot, "headCommit" | "branchName">;
 }): Promise<void> {
   const isConcurrentRefUpdateError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -488,19 +932,26 @@ export async function integrateImportedGitHead(input: {
   };
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const snapshot = await readGitWorkspaceSnapshot(input.localDir);
-    if (!snapshot) return;
+    const snapshot = {
+      headCommit: (await runIntegrationGit("rev_parse", input.localDir, ["rev-parse", "HEAD"])).stdout.trim(),
+      branchName: (await runIntegrationGit("symbolic_ref", input.localDir, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch((error) => {
+        if (error.code === 1) return { stdout: "" };
+        throw error;
+      })).stdout.trim() || null,
+    };
 
+    if (input.baseline && snapshot.branchName !== input.baseline.branchName) {
+      throw new Error("Workspace branch changed while remote work was running.");
+    }
     const currentHead = snapshot.headCommit;
     if (!currentHead || currentHead === input.importedHead) return;
 
-    const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
     // `git merge-base` exits 1 when the commits share no ancestor — the only
     // outcome that authorizes the graft fallback below. Every other failure
     // (timeout, missing object, repository error) must keep failing the
     // integration instead of silently rewriting the tip.
     let noCommonAncestor = false;
-    const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
+    const mergeBase = await runIntegrationGit("merge_base", input.localDir, ["merge-base", currentHead, input.importedHead], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
     }).catch((error: unknown) => {
@@ -509,15 +960,15 @@ export async function integrateImportedGitHead(input: {
     });
     const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
-    if (mergeBaseHead === input.importedHead) {
-      return;
-    }
-
-    if (mergeBaseHead === currentHead) {
+    // A rebase/amend rewrites the sandbox tip without a concurrent host edit.
+    // Adopt that history when the host still matches the run's starting tip;
+    // merging the old and rewritten commits can reintroduce resolved conflicts.
+    // Keep the expected-old-value check: if the host advances during this write,
+    // retry against its new tip and use the normal concurrent-history path.
+    if (mergeBaseHead === currentHead || (mergeBaseHead && currentHead === input.baseline?.headCommit)) {
       try {
-        await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
-          timeout: 10_000,
-          maxBuffer: 16 * 1024,
+        await updateLocalGitHead({
+          localDir: input.localDir, newHead: input.importedHead, oldHead: currentHead, branchName: snapshot.branchName,
         });
         return;
       } catch (error) {
@@ -526,7 +977,14 @@ export async function integrateImportedGitHead(input: {
       }
     }
 
+    if (mergeBaseHead === input.importedHead) {
+      return;
+    }
+
     if (noCommonAncestor) {
+      if (input.baseline && currentHead !== input.baseline.headCommit) {
+        throw new Error("Cannot restore unrelated remote history after the host advanced.");
+      }
       // No common ancestor — merging is impossible and failing here would
       // discard the imported work. Graft it onto the current head instead;
       // see createUnrelatedHistoryGraftCommit.
@@ -537,9 +995,8 @@ export async function integrateImportedGitHead(input: {
         syncLabel: "Paperclip remote git sync",
       });
       try {
-        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
-          timeout: 10_000,
-          maxBuffer: 16 * 1024,
+        await updateLocalGitHead({
+          localDir: input.localDir, newHead: graftCommit, oldHead: currentHead, branchName: snapshot.branchName,
         });
         return;
       } catch (error) {
@@ -550,23 +1007,23 @@ export async function integrateImportedGitHead(input: {
 
     let mergedTree;
     try {
-      mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
+      mergedTree = await runIntegrationGit("merge_tree", input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
         timeout: 60_000,
         maxBuffer: 256 * 1024,
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
+      throw preserveWorkspaceRestoreErrorDiagnostic(new Error(
         `Failed to merge concurrent remote git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
-      );
+      ), error);
     }
     const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
     if (!mergedTreeId) {
       throw new Error("Failed to compute a merged git tree for workspace restore.");
     }
 
-    const mergeCommit = await runLocalGit(
-      input.localDir,
+    const mergeCommit = await runIntegrationGit(
+      "commit_tree", input.localDir,
       [
         ...GIT_SYNC_COMMIT_IDENTITY_ARGS,
         "commit-tree",
@@ -584,9 +1041,8 @@ export async function integrateImportedGitHead(input: {
       },
     );
     try {
-      await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
+      await updateLocalGitHead({
+        localDir: input.localDir, newHead: mergeCommit.stdout.trim(), oldHead: currentHead, branchName: snapshot.branchName,
       });
       return;
     } catch (error) {
@@ -615,28 +1071,19 @@ export async function resetLocalGitIndexToHead(input: {
         (error as { stdout?: unknown }).stdout,
       ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n")
       : String(error);
-    throw new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`);
-  }
-
-  const stagedDiff = await runLocalGit(input.localDir, ["diff", "--cached", "--name-status", "HEAD", "--"], {
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (stagedDiff.stdout.trim().length > 0) {
-    throw new Error(
-      `Workspace restore left staged git index changes after reset:\n${stagedDiff.stdout.trim()}`,
+    throw preserveWorkspaceRestoreErrorDiagnostic(
+      new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`), error,
     );
   }
 
-  if (!input.checkWorkingTreeClean) return;
-
-  const workingTreeDiff = await runLocalGit(input.localDir, ["diff", "--name-status", "HEAD", "--"], {
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (workingTreeDiff.stdout.trim().length > 0) {
-    console.warn(
-      "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
-    );
+  const hasDiff = async (args: string[]) => {
+    try { await runLocalGit(input.localDir, args, { timeout: workspaceSnapshotTimeoutMs(), maxBuffer: 64 * 1024 }); return false; }
+    catch (error) { if ((error as { code?: unknown }).code === 1) return true; throw error; }
+  };
+  if (await hasDiff(["diff", "--quiet", "--cached", "HEAD", "--"])) {
+    throw new Error("Workspace restore left staged git index changes after reset");
+  }
+  if (input.checkWorkingTreeClean && await hasDiff(["diff", "--quiet", "HEAD", "--"])) {
+    console.warn("[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.");
   }
 }

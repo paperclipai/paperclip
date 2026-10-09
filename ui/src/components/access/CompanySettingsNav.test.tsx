@@ -31,7 +31,7 @@ vi.mock("@/components/PageTabBar", () => ({
     return (
       <div>
         <div data-testid="active-tab">{props.value}</div>
-        <button type="button" onClick={() => props.onValueChange?.("invites")}>
+        <button type="button" onClick={() => props.onValueChange?.("secrets")}>
           switch-tab
         </button>
       </div>
@@ -77,25 +77,28 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("members");
-    expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
+    expect(getCompanySettingsTab("/company/settings/invites")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
     expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
-    expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
   });
 
-  function renderNav(root: ReturnType<typeof createRoot>, hiddenSettings?: string[]) {
+  function renderNav(
+    root: ReturnType<typeof createRoot>,
+    hiddenSettings?: string[],
+    cloud?: { managed: boolean },
+  ) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       ...(hiddenSettings ? { hiddenSettings } : {}),
+      ...(cloud ? { cloud } : {}),
     });
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -121,12 +124,10 @@ describe("CompanySettingsNav", () => {
           { value: "export", label: "Export" },
           { value: "import", label: "Import" },
           { value: "members", label: "Members" },
-          { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
           { value: "instance-access", label: "Access" },
-          { value: "instance-heartbeats", label: "Heartbeats" },
           { value: "instance-experimental", label: "Experimental" },
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
@@ -141,7 +142,7 @@ describe("CompanySettingsNav", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(navigateMock).toHaveBeenCalledWith("/company/settings/invites");
+    expect(navigateMock).toHaveBeenCalledWith("/company/settings/secrets");
 
     await act(async () => {
       root.unmount();
@@ -153,7 +154,7 @@ describe("CompanySettingsNav", () => {
     const root = createRoot(container);
 
     await act(async () => {
-      renderNav(root, ["instance.plugins", "instance.heartbeats"]);
+      renderNav(root, ["instance.plugins"]);
     });
 
     const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
@@ -164,7 +165,6 @@ describe("CompanySettingsNav", () => {
       "export",
       "import",
       "members",
-      "invites",
       "secrets",
       "instance-profile",
       "instance-environments",
@@ -172,6 +172,46 @@ describe("CompanySettingsNav", () => {
       "instance-experimental",
       "instance-adapters",
     ]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("filters operator-hidden company tabs out of the tab bar", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, ["company.import", "company.secrets"]);
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("import");
+    expect(renderedValues).not.toContain("secrets");
+    expect(renderedValues).toContain("export");
+    expect(renderedValues).toContain("members");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses the Import tab on a Cloud-managed instance", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, { managed: true });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("import");
+    expect(renderedValues).toContain("export");
 
     await act(async () => {
       root.unmount();

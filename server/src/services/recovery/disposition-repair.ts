@@ -17,8 +17,6 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 export const DISPOSITION_REPAIR_MAX_ATTEMPTS = 5;
 export const DISPOSITION_REPAIR_BASE_DELAYS_MS = [0, 60_000, 120_000, 240_000, 480_000] as const;
-export const RECOVERY_OWNER_MAX_ATTEMPTS = 5;
-export const RECOVERY_OWNER_BASE_DELAYS_MS = [0, 60_000, 120_000, 240_000, 480_000] as const;
 
 type DispositionRepairIssue = Pick<
   typeof issues.$inferSelect,
@@ -74,15 +72,6 @@ export function dispositionRepairDelayMs(attempt: number, fingerprint: string) {
     fingerprint,
     DISPOSITION_REPAIR_BASE_DELAYS_MS,
     "disposition repair",
-  );
-}
-
-export function recoveryOwnerDelayMs(attempt: number, fingerprint: string) {
-  return boundedRecoveryDelayMs(
-    attempt,
-    fingerprint,
-    RECOVERY_OWNER_BASE_DELAYS_MS,
-    "recovery owner",
   );
 }
 

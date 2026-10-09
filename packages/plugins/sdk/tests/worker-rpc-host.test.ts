@@ -342,7 +342,7 @@ describe("worker configChanged cross-tenant guard", () => {
     });
 
     async function initialize() {
-      await callWorker("initialize", {
+      return await callWorker("initialize", {
         manifest: {
           id: "paperclip.config-guard-test",
           apiVersion: 1,
@@ -368,6 +368,23 @@ describe("worker configChanged cross-tenant guard", () => {
 
     return { callWorker, initialize, stop };
   }
+
+  it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
+    let releases = 0, stops = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { releases++; return { providerLeaseId: "allocation", state: "destroyed" }; },
+      ...(supported ? { async onEnvironmentStopLease() { stops++; return { providerLeaseId: "allocation", state: "stopped" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const stopped = worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(stopped).resolves.toEqual({ providerLeaseId: "allocation", state: "stopped" });
+      else await expect(stopped).rejects.toThrow();
+      expect(stops).toBe(supported ? 1 : 0);
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
 
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];
@@ -774,28 +791,32 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     let killed = 0;
     let closed = 0;
 
-    // The worker emits output and exit through `ctx.setupTokenPty`, bound to the
+    // The worker emits output and exit through `ctx.loginPty`, bound to the
     // worker session id. The test drives them through the captured emitters.
     const controllablePlugin = definePlugin({
       async setup(ctx) {
-        emitOutput = (chunk: string) => ctx.setupTokenPty.output("ws-1", chunk);
-        resolveWait = (value) => ctx.setupTokenPty.exit("ws-1", value.exitCode);
+        emitOutput = (chunk: string) => ctx.loginPty.output("route-1", "ws-1", chunk);
+        resolveWait = (value) => ctx.loginPty.exit("route-1", "ws-1", value.exitCode);
       },
-      async onSetupTokenPtyOpen(params) {
-        // The open carries the host route id and the fixed command. The worker
-        // returns a worker session id for the output binding only.
+      async onLoginPtyOpen(params) {
+        // The open carries the host route id, the closed command key, and the
+        // validated session home. The worker returns a worker session id for the
+        // output binding only. The open carries no command string.
         expect(params.hostRouteId).toBe("route-1");
-        expect(params.command).toBe("claude setup-token");
+        expect(params.loginCommandKey).toBe("claude");
+        expect(params.sessionHome).toBe(
+          "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555",
+        );
         expect(params.providerLeaseId).toBe("lease-1");
         return { workerSessionId: "ws-1" };
       },
-      async onSetupTokenPtyInput(params) {
+      async onLoginPtyInput(params) {
         inputs.push(params.data);
       },
-      async onSetupTokenPtyStop() {
+      async onLoginPtyStop() {
         killed += 1;
       },
-      async onSetupTokenPtyClose(params) {
+      async onLoginPtyClose(params) {
         // The close keys on the host route id and returns a bound acknowledgement.
         closed += 1;
         return { hostRouteId: params.hostRouteId };
@@ -839,10 +860,10 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       await expect(
         callWorker("initialize", {
           manifest: {
-            id: "paperclip.setup-token-pty",
+            id: "paperclip.login-pty",
             apiVersion: 1,
             version: "1.0.0",
-            displayName: "Setup Token PTY Test",
+            displayName: "Login PTY Test",
             description: "Test plugin",
             author: "Paperclip",
             categories: ["automation"],
@@ -855,31 +876,32 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       ).resolves.toMatchObject({
         ok: true,
         supportedMethods: expect.arrayContaining([
-          "setupTokenPtyOpen",
-          "setupTokenPtyInput",
-          "setupTokenPtyStop",
-          "setupTokenPtyClose",
+          "loginPtyOpen",
+          "loginPtyInput",
+          "loginPtyStop",
+          "loginPtyClose",
         ]),
       });
 
       await expect(
-        callWorker("setupTokenPtyOpen", {
+        callWorker("loginPtyOpen", {
           hostRouteId: "route-1",
           driverKey: "daytona",
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: "lease-1",
-          command: "claude setup-token",
+          loginCommandKey: "claude",
+          sessionHome: "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555",
         }),
       ).resolves.toEqual({ workerSessionId: "ws-1" });
 
       // The worker streams output as a notification bound to the worker session id.
       emitOutput?.("prompt output");
-      await callWorker("setupTokenPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
-      await callWorker("setupTokenPtyStop", { workerSessionId: "ws-1" });
+      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("loginPtyStop", { workerSessionId: "ws-1" });
       resolveWait?.({ exitCode: 0 });
       await expect(
-        callWorker("setupTokenPtyClose", { hostRouteId: "route-1" }),
+        callWorker("loginPtyClose", { hostRouteId: "route-1" }),
       ).resolves.toEqual({ hostRouteId: "route-1" });
 
       await new Promise((resolve) => setImmediate(resolve));
@@ -888,16 +910,16 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
       expect(killed).toBe(1);
       expect(closed).toBe(1);
       const outputNotes = notifications.filter(
-        (note) => note.method === "setupTokenPty.output",
+        (note) => note.method === "loginPty.output",
       );
       expect(outputNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", chunk: "prompt output" },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", chunk: "prompt output" },
       ]);
       const exitNotes = notifications.filter(
-        (note) => note.method === "setupTokenPty.exit",
+        (note) => note.method === "loginPty.exit",
       );
       expect(exitNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", exitCode: 0 },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", exitCode: 0 },
       ]);
     } finally {
       worker.stop();
@@ -1242,5 +1264,68 @@ describe("session event invocation scope", () => {
       hostToWorker.destroy();
       workerToHost.destroy();
     }
+  });
+});
+
+describe("AI connection router RPC", () => {
+  it("advertises and calls only an implemented routing hook", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const request = { companyId: "company", taskKey: "task", candidates: [], memberOrder: [] };
+    let received: unknown;
+    const plugin = definePlugin({ async setup() {}, onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    try {
+      const initialized = await call("initialize", { manifest: { id: "fixture.router", apiVersion: 1, version: "1.0.0", displayName: "Router", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((initialized as { result: { supportedMethods: string[] } }).result.supportedMethods).toContain("routeAiConnection");
+      expect((await call("routeAiConnection", request) as { result: unknown }).result).toEqual({ kind: "selected", memberId: "authorized-member" });
+      expect(received).toEqual(request);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
+  });
+});
+
+describe("Durable lifecycle inbox RPC", () => {
+  it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const event = { id: "7", companyId: "company-a", resourceType: "agent", resourceId: "agent-a", action: "pause", createdAt: new Date(0).toISOString() };
+    const plugin = definePlugin({ async setup(ctx) {
+      ctx.data.register("drain", async ({ companyId }) => {
+        const events = await ctx.events.listLifecycle(companyId!, 10, "6");
+        await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        return events;
+      });
+    } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: JsonRpcResponse) => void>();
+    reader.on("line", line => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      } else if (isJsonRpcRequest(message)) {
+        calls.push({ method: message.method, params: message.params });
+        input.write(serializeMessage(createSuccessResponse(message.id, message.method === "events.listLifecycle" ? [event] : null)));
+      }
+    });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => {
+      const id = String(++sequence);
+      pending.set(id, resolve);
+      input.write(serializeMessage(createRequest(method, params, id)));
+    });
+    try {
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
+      expect(calls).toEqual([
+        { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
+        { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+      ]);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });

@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Loader2 } from "lucide-react";
 import type { TranscriptEntry } from "../../adapters";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,7 @@ export function TaskChatLiveRunPill({
   toolSummary,
 }: {
   status: string;
+  execution?: ExecutionProjection | null;
   /** Run start (startedAt, falling back to createdAt) in ms, or null if unknown. */
   startedAtMs: number | null;
   /** Run finish in ms once terminal; drives the settled elapsed readout. */
@@ -62,21 +64,26 @@ export function TaskChatLiveRunPill({
 
   const elapsedMs =
     startedAtMs == null ? null : (active ? Date.now() : finishedAtMs ?? Date.now()) - startedAtMs;
-  const elapsed = elapsedMs != null ? formatDurationWords(elapsedMs) : null;
-  const verb = active ? "Working" : "Worked";
+  const elapsed = elapsedMs != null
+    ? formatDurationWords(elapsedMs)
+    : null;
+  const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
+  const verb = active ? "Working" : failed ? "Stopped" : "Worked";
   const suffix = elapsed ? `for ${elapsed}` : null;
 
   return (
     <div
-      className="flex min-w-0 items-center gap-2.5 px-1 py-2"
+      className="flex min-w-0 items-center gap-2 py-2"
       data-testid="task-chat-live-run-pill"
     >
       <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
         {active ? (
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          </span>
         ) : (
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}
         {active ? <span className={cn("shimmer-text")}>{verb}</span> : verb}

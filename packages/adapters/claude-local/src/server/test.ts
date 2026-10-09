@@ -16,6 +16,7 @@ import {
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
   resolveAdapterExecutionTargetCwd,
+  resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   detectClaudeLoginRequired,
@@ -23,11 +24,17 @@ import {
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
-import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCommandLooksLike,
+  claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
+  readClaudeCommandVersion,
+} from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -47,6 +54,14 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function localExecutablesMatch(
+  trustedCommand: string | null,
+  runtimeCommand: string | null,
+): boolean {
+  if (!trustedCommand || !runtimeCommand) return false;
+  return trustedCommand === runtimeCommand;
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -54,20 +69,23 @@ export async function testEnvironment(
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testClaudeAcpEnvironment(ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    checks.push({
-      code: "claude_acp_default_fallback",
-      level: "warn",
-      message: "Claude ACP default is unavailable; testing the Claude CLI fallback lane.",
-      detail: engineSelection.fallbackReason,
-      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
-    });
-  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
@@ -117,6 +135,7 @@ export async function testEnvironment(
     : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
       runId,
       target,
       cwd,
@@ -130,8 +149,17 @@ export async function testEnvironment(
     })),
   );
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  let localRuntimeCommand: string | null = null;
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+    if (!targetIsRemote) {
+      localRuntimeCommand = await resolveAdapterExecutionTargetCommandForLogs(
+        command,
+        target,
+        cwd,
+        runtimeEnv,
+      );
+    }
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -150,7 +178,7 @@ export async function testEnvironment(
   // reflect what the agent will actually see at runtime. Only consider env
   // vars from the adapter config in that case; the probe itself will surface
   // any auth issues on the remote box.
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -175,15 +203,18 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
     });
+  } else if (config.managedAiRouting) {
+    checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
-      level: "warn",
+      level: selectedApiKey ? "info" : "warn",
       message:
-        "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
+        selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -214,7 +245,62 @@ export async function testEnvironment(
         check.code !== "claude_command_unresolvable" &&
         check.code !== "claude_managed_config_dir_failed",
     );
-  if (canRunProbe) {
+  let configuredModelIsCompatible = true;
+  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...process.env, ...env } : env);
+  const minimumCliVersion =
+    claudeCommandLooksLike(command, "claude") &&
+    (!hasBedrock || isBedrockModelId(configuredModel))
+    ? minimumClaudeCliVersionForModel(configuredModel)
+    : null;
+  const versionProbeCommand = localProbe?.command ?? (targetIsRemote ? command : null);
+  const versionProbeMatchesRuntime = targetIsRemote || localExecutablesMatch(
+    localProbe?.command ?? null,
+    localRuntimeCommand,
+  );
+  if (
+    canRunProbe &&
+    minimumCliVersion &&
+    versionProbeCommand &&
+    !versionProbeMatchesRuntime
+  ) {
+    configuredModelIsCompatible = false;
+    checks.push({
+      code: "claude_cli_version_probe_mismatch",
+      level: "warn",
+      message:
+        `Skipped ${configuredModel} readiness probing because the runtime PATH selects a different Claude executable than the trusted local Test probe.`,
+      hint:
+        `Ensure the runtime-selected Claude Code is ${minimumCliVersion} or newer. Execution will verify that exact executable before launch.`,
+    });
+  } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
+    const versionProbeEnv = localProbe?.env ?? env;
+    const detectedCliVersion = await readClaudeCommandVersion({
+      runId,
+      command: versionProbeCommand,
+      target,
+      cwd,
+      env: versionProbeEnv,
+      timeoutSec: 45,
+      graceSec: 5,
+    });
+    if (
+      !detectedCliVersion ||
+      !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
+    ) {
+      configuredModelIsCompatible = false;
+      checks.push({
+        code: "claude_cli_version_incompatible",
+        level: "error",
+        message: `${configuredModel} requires Claude Code ${minimumCliVersion} or newer on the CLI lane.`,
+        detail: detectedCliVersion
+          ? `Detected Claude Code ${detectedCliVersion}.`
+          : "Could not determine the installed Claude Code version.",
+        hint: "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
+      });
+    }
+  }
+
+  if (canRunProbe && configuredModelIsCompatible) {
     if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
@@ -233,11 +319,12 @@ export async function testEnvironment(
         hint: "Install the `claude` CLI on the Paperclip host, then retry the Test.",
       });
     } else {
-      const model = asString(config.model, "").trim();
+      const model = configuredModel;
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox }));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -268,6 +355,7 @@ export async function testEnvironment(
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (config.managedAiConnection) args.push("--setting-sources", "user");
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,

@@ -1,13 +1,21 @@
+import type { AgentPublicIdentity } from "@paperclipai/shared";
 import type {
   Agent,
+  ConnectionIntentInteraction,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
   AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
+  AgentInstructionHistory,
+  AgentInstructionCandidate,
+  ResolveAgentInstructionCandidate,
+  AgentInstructionDiff,
+  AgentInstructionSnapshot,
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignalResponse,
   AdapterAuthSessionResponse,
   AdapterAuthSessionOwnerResponse,
   ClaudeSetupTokenSessionResponse,
@@ -21,16 +29,13 @@ import type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
-import type {
-  AdapterModelProfileDefinition,
-  AdapterModelProfileKey,
-} from "@paperclipai/adapter-utils";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -46,9 +51,6 @@ export interface AdapterModel {
   id: string;
   label: string;
 }
-
-export type { AdapterModelProfileKey };
-export type AdapterModelProfile = AdapterModelProfileDefinition;
 
 export interface DetectedAdapterModel {
   model: string;
@@ -94,6 +96,7 @@ export interface AgentWakeRequest {
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
+  debug?: { providerTrace: "raw" };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -107,6 +110,13 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  setAvatar: (companyId: string, agentId: string, imageBase64: string | null) =>
+    api.put<{ agentId: string; appearance: import("@paperclipai/shared").AgentAppearance; avatarUrl: string }>(`/companies/${companyId}/agents/${agentId}/avatar`, { imageBase64 }),
+  getIdentity: (id: string, companyId?: string) =>
+    api.get<AgentPublicIdentity | null>(agentPath(id, companyId, "/identity")),
+  adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>
+    api.post<ConnectionIntentInteraction>(withCompanyScope(`/agents/${agentId}/connection-intents/${interactionId}/adopt`, companyId), { connectionId }),
+
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
@@ -171,12 +181,26 @@ export const agentsApi = {
     ),
   saveInstructionsFile: (
     id: string,
-    data: { path: string; content: string; clearLegacyPromptTemplate?: boolean },
+    data: { path: string; content: string; baseRevisionId?: string | null; baseHash?: string | null; clearLegacyPromptTemplate?: boolean },
     companyId?: string,
   ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
-  deleteInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
+  instructionCandidates: (id: string, companyId?: string) =>
+    api.get<AgentInstructionCandidate[]>(agentPath(id, companyId, "/instructions-bundle/candidates")),
+  resolveInstructionCandidate: (id: string, runId: string, data: ResolveAgentInstructionCandidate, companyId?: string) =>
+    api.post<AgentInstructionsFileDetail>(agentPath(id, companyId, `/instructions-bundle/candidates/${runId}/resolve`), data),
+  instructionHistory: (id: string, path: string, companyId?: string, cursor?: string) =>
+    api.get<AgentInstructionHistory>(agentPath(id, companyId, `/instructions-bundle/history?path=${encodeURIComponent(path)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)),
+  instructionRevision: (id: string, path: string, revisionId: string, companyId?: string) =>
+    api.get<AgentInstructionSnapshot>(agentPath(id, companyId, `/instructions-bundle/revision/${revisionId}?path=${encodeURIComponent(path)}`)),
+  instructionDiff: (id: string, path: string, from: string, to: string, companyId?: string) =>
+    api.get<AgentInstructionDiff>(agentPath(id, companyId, `/instructions-bundle/diff?path=${encodeURIComponent(path)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)),
+  restoreInstructions: (id: string, data: { path: string; revisionId: string; baseRevisionId: string }, companyId?: string) =>
+    api.post<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/restore"), data),
+  downloadInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
+    `/api${agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}&download=true`)}`,
+  deleteInstructionsFile: (id: string, relativePath: string, companyId?: string, baseHash?: string) =>
     api.delete<AgentInstructionsBundle>(
-      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
+      agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}${baseHash ? `&baseHash=${baseHash}` : ""}`),
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
@@ -207,10 +231,12 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
+    options?: { refresh?: boolean; environmentId?: string | null; provider?: string; poolId?: string },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
+    if (options?.provider) params.set("provider", options.provider);
+    if (options?.poolId) params.set("poolId", options.poolId);
     if (options?.environmentId) params.set("environmentId", options.environmentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(
@@ -221,15 +247,14 @@ export const agentsApi = {
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
-  adapterModelProfiles: (companyId: string, type: string) =>
-    api.get<AdapterModelProfile[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/model-profiles`,
-    ),
   testEnvironment: (
     companyId: string,
     type: string,
     data: {
       adapterConfig: Record<string, unknown>;
+      aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
+      agentId?: string;
+      testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },
   ) =>
@@ -237,6 +262,12 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
+  getAdapterAuthSignal: (companyId: string, type: string, environmentId?: string | null) => {
+    const query = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : "";
+    return api.get<AdapterAuthSignalResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/auth-signal${query}`,
+    );
+  },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
   wakeup: (
@@ -244,20 +275,65 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  retryFailedRun: async (
+    id: string,
+    failedRunId: string,
+    companyId: string,
+  ) => {
+    const result = await api.post<
+      AgentWakeupResponse | ChatFailedRunRetryResponse
+    >(agentPath(id, companyId, "/wakeup"), {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "retry_failed_run",
+      failedRunId,
+    });
+    if ("id" in result) {
+      // Exact retries are idempotent: a repeated click can return a successor
+      // that has already stopped. It does not mean a new attempt was queued.
+      if (["failed", "timed_out", "cancelled", "interrupted"].includes(result.status)) {
+        throw new Error(
+          "The previous retry has already stopped. Refresh the task and retry its latest failed run.",
+        );
+      }
+      return { runId: result.id, issueId: null };
+    }
+    if ("actionId" in result) {
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new Error(
+          "This retry could not start. Open the task to review its current access and recovery state.",
+        );
+      }
+      return { runId: result.runId, issueId: result.issueId };
+    }
+    throw new Error(result.message ?? "Retry was skipped.");
+  },
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   startAdapterAuthLogin: (
     companyId: string,
     type: string,
-    data: { environmentId: string; ttlSeconds?: number },
+    data: { environmentId: string; ttlSeconds?: number; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
   ) =>
     api.post<AdapterAuthSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
       data,
     ),
+  // The owner response repeats the live prompt on every read while the
+  // session holds an active public status, so this polling call carries the
+  // same no-store request option as the active-session read below.
   getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" },
+    ),
+  // Reads the caller's active login session for one company and adapter, with
+  // no session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  getActiveAdapterAuthLoginSession: (companyId: string, type: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/active`,
+      { cache: "no-store" },
     ),
   cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
     api.post<AdapterAuthSessionOwnerResponse>(
@@ -280,7 +356,7 @@ export const agentsApi = {
     ),
   startClaudeSetupTokenLogin: (
     companyId: string,
-    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite },
+    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
   ) =>
     api.post<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,
@@ -289,6 +365,14 @@ export const agentsApi = {
   getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  // Reads the caller's active Claude setup-token login session, with no
+  // session id, so the browser rediscovers its own session after a reload with
+  // no local state. A 404 means no active session for the caller.
+  getActiveClaudeSetupTokenLoginSession: (companyId: string) =>
+    api.get<ClaudeSetupTokenSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/active`,
+      { cache: "no-store" },
     ),
   getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionPrompt>(

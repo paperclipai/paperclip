@@ -174,6 +174,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
   }).returning({ id: activityLog.id });
 
   const payload = {
+    issueId: input.issueId ?? (input.entityType === "issue" ? input.entityId : null),
     actorType: input.actorType,
     actorId: input.actorId,
     action: input.action,

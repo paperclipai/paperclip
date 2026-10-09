@@ -1,3 +1,5 @@
+import type { SQL } from "drizzle-orm";
+import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -231,6 +233,10 @@ export type ExecutionWorkspaceServiceOptions = {
   // becomes terminal before it archives the workspace. A value of 0 disables
   // the cooldown. The default is 7 days.
   workspaceReaperCooldownDays?: number;
+  inspectGitCloseReadiness?: (workspace: ExecutionWorkspace) => Promise<{
+    git: ExecutionWorkspaceCloseGitReadiness | null;
+    warnings: string[];
+  }>;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -410,6 +416,9 @@ async function runExpensiveGitStatus(input: {
     operation: input.operation,
     fairnessKeys: input.fairnessKeys,
     cacheTtlMs: 0,
+    // Nested task worktrees can exceed the scheduler's 1 MiB default.
+    // Keep exact file counts for readiness and reconciliation checks.
+    maxStdoutBytes: 32 * 1024 * 1024,
   });
 }
 
@@ -1219,7 +1228,20 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   return new Map(
     rows.map((row) => {
       if (!usesInheritedProjectRuntimeServices(row)) {
-        return [row.id, executionRuntimeServices.get(row.id) ?? []] as const;
+        const runtimeServiceRows = executionRuntimeServices.get(row.id) ?? [];
+        const workspaceRuntime = readExecutionWorkspaceConfig(
+          (row.metadata as Record<string, unknown> | null) ?? null,
+        )?.workspaceRuntime ?? null;
+        return [
+          row.id,
+          workspaceRuntime
+            ? selectConfiguredRuntimeServiceRows(runtimeServiceRows, workspaceRuntime, {
+                // Runtime rows created before shared services defaulted to project-workspace
+                // scope remain valid for configs owned directly by an execution workspace.
+                fallbackScopeTypes: ["execution_workspace"],
+              })
+            : runtimeServiceRows,
+        ] as const;
       }
 
       const workspaceRuntime = projectRuntimeConfigByWorkspaceId.get(row.projectWorkspaceId!) ?? null;
@@ -1251,7 +1273,12 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
+const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
+
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
+  const inspectDisplay = opts.inspectGitCloseReadiness
+    ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
+    : inspectGitForDisplay;
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
@@ -1470,7 +1497,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
     const workspace = toExecutionWorkspace(row, runtimeServices);
-    const { git } = await inspectGitCloseReadiness(workspace);
+    const { git } = await inspectDisplay(workspace);
     const assessment = await assessDelivery(row, git);
     return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
   }
@@ -1806,9 +1833,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      readCondition?: SQL<boolean>;
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
+    if (filters?.readCondition) conditions.push(filters.readCondition);
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -1843,8 +1872,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
+      readCondition?: SQL<boolean>,
     ): Promise<WorkspaceOverviewResponse> => {
       const conditions = buildOverviewConditions(companyId, filters);
+      if (readCondition) conditions.push(readCondition);
       const whereClause = and(...conditions);
 
       const [totalRow, rows] = await Promise.all([
@@ -2055,6 +2086,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db
@@ -2063,12 +2095,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
-      return Promise.all(rows.map((row) =>
-        hydrateWorkspace(
+      // Collection reads are deliberately DB-only. Delivery-state hydration
+      // inspects git and may resolve pull requests, so doing it for every row
+      // lets a large inventory launch an unbounded number of child processes.
+      // Detail and close-readiness reads retain the live hydration path.
+      return rows.map((row) =>
+        toExecutionWorkspace(
           row,
           (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
         ),
-      ));
+      );
     },
 
     listSummaries: async (companyId: string, filters?: {
@@ -2077,6 +2113,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issueId?: string;
       status?: string;
       reuseEligible?: boolean;
+      readCondition?: SQL<boolean>;
     }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db

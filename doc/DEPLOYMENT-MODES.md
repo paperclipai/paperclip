@@ -3,6 +3,27 @@
 Status: Canonical deployment and auth mode model  
 Date: 2026-02-23
 
+### Paperclip Cloud sign-in
+
+Cloud-managed instances use Cloud for human sign-in. The instance `/auth`
+route waits for deployment metadata before rendering; it never renders the
+email/password form when health identifies a Cloud-managed instance. A missing
+instance session returns through Cloud's `/v1/stacks/:slug/entry-redirect`.
+Cloud renews the tenant session from the existing Cloud session, or sends the
+user through its sign-in flow. The original tenant path, query, and fragment
+travel as `returnTo` so the user returns to the same task.
+
+Both the Cloud origin and stack slug come from the server's health metadata
+(`PAPERCLIP_CLOUD_API_ORIGIN` and `PAPERCLIP_STACK_SLUG`). Do not infer the
+environment from the browser hostname or hardcode staging/production domains.
+Missing configuration shows an unavailable state. An automatic recovery attempt
+is limited per browser tab until a session is verified, with a five-minute
+expiry and an explicit retry link if recovery fails. Network/server failures
+show an error rather than treating the user as signed out.
+
+Self-hosted authenticated instances retain their instance sign-in form, and
+`local_trusted` instances retain their normal access path.
+
 ## 1. Purpose
 
 Paperclip supports two runtime modes:
@@ -63,6 +84,24 @@ Paperclip now treats **bind** as a separate concern from auth:
 - Better Auth request rate limiting is on by default; set `PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=false` only when an explicit front-door limiter covers the deployment
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
 - local stdio MCP runtime slots fail closed by default; set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` only when a trusted worker/runtime host is configured to supervise those processes. Remote HTTP MCP remains the preferred public-hosted path.
+
+### Paperclip Cloud warm-pool identity
+
+A Cloud-managed warm-pool process initially boots under a `pool-*` origin. It
+receives only Cloud's public verification set in
+`PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS`. Before Cloud activates a claimed stack,
+the existing server-to-server health request carries a short-lived Ed25519 JWS
+that binds the immutable `PAPERCLIP_CLOUD_STACK_ID`, pool claim, previous
+origin, canonical HTTPS origin, and slug. Paperclip verifies and persists that
+one-time assertion, updates its live public/API URL provider, and acknowledges
+the exact origin in `/api/health` before the first user request is admitted.
+
+The Harness signing private key is never present in Paperclip, browsers, or
+other tenant stacks. A different claim or destination cannot replace the
+persisted identity. On restart, the durable identity is loaded before auth,
+routes, and child-runtime configuration, even when provider variables are
+temporarily stale. Self-hosted deployments continue to use their configured
+`PAPERCLIP_PUBLIC_URL` and do not participate in this protocol.
 
 ## 4. Onboarding UX Contract
 
@@ -145,6 +184,12 @@ only to real browser session actors in `authenticated/private`; unauthenticated
 requests, agent keys, board API keys, and local implicit board actors are
 rejected.
 
+This is intentionally a first-claim bootstrap contract: before an instance
+admin exists, the first authenticated browser session that completes the claim
+wins. Operators must keep a `bootstrap_pending` private deployment on a trusted
+network and complete setup before admitting untrusted users. This behavior is
+not an account-recovery or public-deployment mechanism.
+
 The CLI fallback remains supported in all authenticated setup states:
 
 ```sh
@@ -173,7 +218,7 @@ future public-hosted setup design explicitly changes this policy.
 
 ## 11. Relationship to Other Docs
 
-- implementation plan: `doc/plans/deployment-auth-mode-consolidation.md`
+- implementation plan: `doc/plans/2026-02-23-deployment-auth-mode-consolidation.md`
 - V1 contract: `doc/SPEC-implementation.md`
 - operator workflows: `doc/DEVELOPING.md` and `doc/CLI.md`
 - invite/join state map: `doc/spec/invite-flow.md`
