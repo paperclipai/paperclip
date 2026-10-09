@@ -117,15 +117,19 @@ export function ConnectionStatusMessage({
       ? "You’re offline. Reconnecting when your network is back…"
       : "Connection interrupted. Reconnecting automatically…";
 
+  // Fixed, not in flow: the desktop shell is exactly `h-dvh` with clipped
+  // overflow, so an in-flow banner would push the board's bottom off screen.
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      data-connection-status={view}
-      className="bg-muted px-4 py-2 text-center text-sm text-muted-foreground"
-    >
-      {message}
-      {pending ? <> {pending}</> : null}
+    <div className="pointer-events-none fixed inset-x-0 top-2 z-(--z-120) flex justify-center px-2">
+      <div
+        role="status"
+        aria-live="polite"
+        data-connection-status={view}
+        className="rounded-full border border-border bg-muted px-4 py-1.5 text-center text-sm text-muted-foreground shadow-sm"
+      >
+        {message}
+        {pending ? <> {pending}</> : null}
+      </div>
     </div>
   );
 }

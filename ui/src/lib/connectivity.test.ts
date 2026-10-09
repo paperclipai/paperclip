@@ -109,6 +109,41 @@ describe("connectivity store", () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores a failed probe that started before a newer success", async () => {
+    store.reportError(outage);
+    await flush();
+    let finishProbe: (result: ProbeResult) => void = () => undefined;
+    probe.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProbe = resolve;
+    }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    store.reportSuccess();
+    expect(store.getSnapshot().status).toBe("online");
+    finishProbe(down);
+    await flush();
+    expect(store.getSnapshot().status).toBe("online");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-checks after a stale probe when something failed after the newer success", async () => {
+    let finishProbe: (result: ProbeResult) => void = () => undefined;
+    probe.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProbe = resolve;
+    }));
+    store.reportError(outage);
+    store.reportSuccess();
+    store.reportError(outage);
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    finishProbe(down);
+    await flush();
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().status).toBe("reconnecting");
+  });
+
   it("does not report recovery for a success while already online", () => {
     const recovered = vi.fn();
     store.onRecover(recovered);

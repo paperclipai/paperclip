@@ -1,8 +1,12 @@
-import { errorCopy, isTransientError } from "./errors";
+import { errorCopy, isTransientError, parseRetryAfter } from "./errors";
 
 /** A proxy or restarting server answered an API request without usable JSON. */
 export class ApiUnavailableError extends Error {
-  constructor(public readonly status: number) {
+  constructor(
+    public readonly status: number,
+    /** Delay the gateway asked for with `Retry-After`, in milliseconds. */
+    public readonly retryAfterMs: number | null = null,
+  ) {
     super(errorCopy("transient").body);
     this.name = "ApiUnavailableError";
   }
@@ -24,7 +28,9 @@ export async function readApiJson<T = unknown>(response: Response): Promise<T> {
     if (!(error instanceof SyntaxError)) throw error;
     // An HTML fallback can have status 200 during a deployment. Never expose
     // its parser error or treat it as a successful, empty API response.
-    if (response.ok || response.status >= 500) throw new ApiUnavailableError(response.status);
+    if (response.ok || response.status >= 500) {
+      throw new ApiUnavailableError(response.status, parseRetryAfter(response.headers?.get("Retry-After") ?? null));
+    }
     // Preserve HTTP/auth error handling even when a 4xx response has no JSON.
     return null as T;
   }

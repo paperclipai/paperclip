@@ -108,6 +108,8 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   let lastClearProbeAt = Number.NEGATIVE_INFINITY;
   let serverStarting = false;
   let disposed = false;
+  /** Bumped by every proof of reachability; a probe started before one is stale. */
+  let recoveries = 0;
 
   const emit = () => {
     for (const listener of [...listeners]) listener();
@@ -133,6 +135,7 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   };
 
   const recover = () => {
+    recoveries += 1;
     clearProbeTimer();
     suspectedSince = null;
     probeAttempt = 0;
@@ -161,11 +164,19 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
   const runProbe = () => {
     if (disposed || probing || !browserOnline) return;
     probing = true;
+    const startedAfter = recoveries;
     void probe()
       .catch((): ProbeResult => ({ reachable: false, retryAfterMs: null }))
       .then((result) => {
         probing = false;
         if (disposed || !browserOnline) return;
+        if (!result.reachable && recoveries !== startedAfter) {
+          // A query or the socket reached the server while this probe was in
+          // flight; that newer success wins. Check again only if something
+          // failed after it.
+          if (suspectedSince !== null) runProbe();
+          return;
+        }
         if (result.reachable) {
           if (snapshot.status === "online") lastClearProbeAt = now();
           serverStarting = false;

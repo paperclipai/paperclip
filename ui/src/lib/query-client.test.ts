@@ -48,6 +48,10 @@ describe("retry policy", () => {
     expect(retryDelayFor(9, error)).toBe(15_000);
     const throttled = new ApiError("Slow down", 429, null, { retryAfterMs: 6_000 });
     expect(retryDelayFor(0, throttled)).toBe(6_000);
+    // A rate-limit window longer than the normal backoff is waited out in full.
+    const minuteWindow = new ApiError("Slow down", 429, null, { retryAfterMs: 55_000 });
+    expect(retryDelayFor(0, minuteWindow)).toBe(55_000);
+    expect(retryDelayFor(0, new ApiUnavailableError(503, 20_000))).toBe(20_000);
     expect(reconnectDelayFor(0, throttled)).toBe(6_000);
     expect(reconnectDelayFor(3, new ApiUnavailableError(503))).toBe(10_000);
   });
@@ -194,10 +198,27 @@ describe("createAppQueryClient", () => {
     expect(notifyMutationError).toHaveBeenCalledWith({ title: "Check your input", body: "Title is required" });
   });
 
-  it("does not toast transient failures, handled mutations, or mutations that did not opt in", async () => {
+  it("toasts a transient failure the banner does not cover", async () => {
+    const observer = new MutationObserver(client, {
+      mutationFn: async () => {
+        throw new ApiError("Slow down", 429, null);
+      },
+      meta: { errorToast: true },
+    });
+    await observer.mutate().catch(() => undefined);
+    expect(notifyMutationError).toHaveBeenCalledWith({
+      title: "Connection interrupted",
+      body: "Paperclip is temporarily unavailable. Please try again in a moment.",
+    });
+  });
+
+  it("does not toast covered transient failures, handled mutations, or mutations that did not opt in", async () => {
     const fail = (error: unknown) => async () => {
       throw error;
     };
+    store.reportError(gatewayDown());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getSnapshot().status).toBe("reconnecting");
     await new MutationObserver(client, {
       mutationFn: fail(gatewayDown()),
       meta: { errorToast: true },

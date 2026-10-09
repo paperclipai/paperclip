@@ -11,8 +11,8 @@
  * - `QueryCache`/`MutationCache` events feed the connectivity store; final
  *   query errors go to Sentry unless they are transient or client errors.
  * - A mutation with `meta: { errorToast: true }` and no `onError` of its own
- *   gets a readable toast for a non-transient failure. Transient failures
- *   never toast: the connection banner covers them.
+ *   gets a readable toast when it fails. Transient failures skip the toast
+ *   while the connection banner covers them.
  */
 
 import {
@@ -53,7 +53,6 @@ declare module "@tanstack/react-query" {
 export const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
 /** Unexpected failures (5xx other than gateway errors, parse errors) retry briefly. */
 export const UNKNOWN_RETRY_LIMIT = 2;
-const MAX_RETRY_DELAY_MS = 30_000;
 
 /** Retry policy shared by queries and replayable mutations. */
 export function shouldRetryRequest(failureCount: number, error: unknown): boolean {
@@ -63,11 +62,15 @@ export function shouldRetryRequest(failureCount: number, error: unknown): boolea
   return false;
 }
 
-/** Backoff for `shouldRetryRequest`; a longer server `Retry-After` wins. */
+/**
+ * Backoff for `shouldRetryRequest`; a longer server `Retry-After` wins. It is
+ * not shortened: retrying before the server's window ends only fails again.
+ * `parseRetryAfter` already bounds it.
+ */
 export function retryDelayFor(failureCount: number, error: unknown): number {
   const base = TRANSIENT_RETRY_DELAYS_MS[Math.min(failureCount, TRANSIENT_RETRY_DELAYS_MS.length - 1)];
   const retryAfterMs = errorRetryAfterMs(error);
-  return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_RETRY_DELAY_MS);
+  return retryAfterMs === null ? base : Math.max(base, retryAfterMs);
 }
 
 /**
@@ -97,21 +100,28 @@ export interface MutationErrorToast {
 }
 
 export interface AppQueryClientDeps {
-  connectivity: Pick<ConnectivityStore, "reportError" | "reportSuccess">;
+  connectivity: Pick<ConnectivityStore, "reportError" | "reportSuccess" | "getSnapshot">;
   reportError?: (error: unknown) => void;
   /** Show a toast for a failed opted-in mutation that has no handler of its own. */
   notifyMutationError?: (toast: MutationErrorToast) => void;
 }
 
-/** Whether the global handler should toast for this failed mutation. */
+/**
+ * Whether the global handler should toast for this failed mutation. A
+ * transient failure is skipped only while the connection banner covers it; a
+ * 429 or one route's worker being down leaves the app online, and the write is
+ * still lost.
+ */
 export function shouldToastMutationError(
   error: unknown,
   mutation: Pick<Mutation<unknown, DefaultError, unknown, unknown>, "options" | "meta">,
+  connectionDown: boolean,
 ): boolean {
   if (mutation.options.onError) return false;
   if (mutation.meta?.errorToast !== true) return false;
   const kind = classifyError(error);
-  return kind !== "transient" && kind !== "aborted";
+  if (kind === "aborted") return false;
+  return kind !== "transient" || !connectionDown;
 }
 
 class AppQueryClient extends QueryClient {
@@ -144,7 +154,8 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
   });
   const mutationCache = new MutationCache({
     onError: (error, _variables, _context, mutation) => {
-      if (!deps.notifyMutationError || !shouldToastMutationError(error, mutation)) return;
+      const connectionDown = deps.connectivity.getSnapshot().status !== "online";
+      if (!deps.notifyMutationError || !shouldToastMutationError(error, mutation, connectionDown)) return;
       const { title, body } = describeError(error);
       deps.notifyMutationError({ title, body });
     },
