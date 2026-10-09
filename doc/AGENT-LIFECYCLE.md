@@ -31,13 +31,16 @@ The existing restrictions for built-in agents and accounting still apply.
 
 `requestHire` writes the agent record before preparation starts.
 An approved hire starts preparation after the transaction commits.
-A proposed hire waits for `approveHire` or the approval service.
+A proposed hire waits for `approveHire`.
+`approveHire` and `rejectHire` accept an agent ID or `{ approvalId }`.
+Both forms use the same hire decision path. An agent ID also resolves its open
+hire approval. The approval and the agent change commit together.
 The existing company approval rules still apply.
 
 `pauseAgent`, `resumeAgent`, and `terminateAgent` record the requested change.
 They do not wait for external resource operations.
 `retry` makes a failed step available for another attempt.
-`purgeAgent` removes a record after termination.
+`reconcilePolicyHolds` updates budget and company holds.
 `updateAndTransition` applies a configuration change and a lifecycle command
 in one transaction. A failed command does not save the configuration change.
 
@@ -56,19 +59,27 @@ transaction. It retains the original credential owner when it approves a hire.
 
 The company deletion service owns the company data cascade.
 It requests agent termination before it starts that cascade.
-Its final agent purge uses `deleteTerminatedCompanyAgents` in the deletion
-transaction. This specific integration checks all agent states and takes the
-company lock. A concurrent hire makes deletion fail or waits until deletion ends.
-It cannot remove an agent with incomplete termination.
+It locks the company and its agent rows in the deletion transaction.
+It calls `assertAgentPurgeAllowed` for each agent before the data cascade.
+A concurrent hire makes deletion fail or waits until deletion ends.
+The delete statement also restricts removal to terminated or rejected agents.
+The agent deletion service uses the same state check for a single agent.
+These services cannot remove an agent with incomplete termination.
 
-The ordinary agent service owns reads, permissions, keys, and revision history.
+The ordinary agent service owns reads, permissions, keys, and record deletion.
+The configuration service owns configuration validation, writes, and revisions.
 Credential checks remain in the agent credential service.
 The service in `services/agent-lifecycle.ts` supplies these integrations to the
 module. The module does not import services or routes. Shared record queries
 and validation functions are in `lib/`. They do not call lifecycle commands.
 The application supplies the worker driver at startup.
-Configuration writes use the lifecycle module to invalidate an old verification
-result in the same transaction. They reject caller-supplied lifecycle fields.
+Configuration writes call `invalidateAgentVerification` when execution
+configuration changes during setup. This narrow persistence operation requires
+the configuration transaction. It locks the agent and invalidates the old result.
+It cannot approve, pause, resume, or terminate an agent.
+Configuration writes reject caller-supplied lifecycle fields.
+For `updateAndTransition`, lifecycle owns the transaction and calls the
+configuration service through an injected operation. Both changes commit together.
 
 Manual, budget, and company pause holds are independent.
 A manual resume does not remove a budget or company hold.
@@ -168,4 +179,5 @@ An older process can write the legacy status without the new lifecycle checks.
 
 `pnpm check:module-boundaries` checks the module imports and agent writes.
 Tests and migration fixtures can write records directly.
-Production creation and deletion must use the lifecycle module.
+Production creation and lifecycle state writes must use the lifecycle module.
+Record deletion must restrict its query to terminated or rejected agents.

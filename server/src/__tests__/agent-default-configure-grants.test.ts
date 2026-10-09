@@ -132,7 +132,7 @@ describeDatabase("new agent configuration defaults", () => {
       .where(eq(principalPermissionGrants.principalId, standard.id))).toEqual([]);
 
     await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, peer.id));
-    await createAgentLifecycle(db).purgeAgent(peer.id);
+    await agentService(db).remove(peer.id);
     expect(await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.principalId, peer.id))).toEqual([]);
 

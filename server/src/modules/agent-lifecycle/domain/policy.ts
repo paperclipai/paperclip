@@ -55,3 +55,9 @@ export function compatibilityStatus(state: AgentLifecycleState, executionStatus 
 export function isLifecycleWorkPending(state: AgentLifecycleState): boolean {
   return ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"].includes(state);
 }
+
+export function assertAgentPurgeAllowed(agent: { lifecycleState: string }) {
+  if (!["terminated", "rejected"].includes(agent.lifecycleState)) {
+    throw new AgentLifecycleConflict("Complete termination before deleting the agent");
+  }
+}

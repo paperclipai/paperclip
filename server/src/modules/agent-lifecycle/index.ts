@@ -1,5 +1,4 @@
-import { hireApprovalService as approvalRecords } from "./adapters/approvals.js";
-export { deleteTerminatedCompanyAgents } from "./adapters/delete-company.js";
+import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -10,8 +9,9 @@ import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup } from "./domain/policy.js";
+export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, assertAgentPurgeAllowed } from "./domain/policy.js";
 
+export type { HireDecisionTarget } from "./adapters/approvals.js";
 export type { LifecycleDriver, LifecycleAgent } from "./application/ports.js";
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
@@ -23,23 +23,25 @@ export function configureAgentLifecycle(db: Db, effects: LifecycleEffects, drive
 }
 export function scheduleAgentLifecycle(db: Db, id: string) {
   // The periodic sweep retries work if the process stops before this call.
-  void workers.get(db)?.process(id).catch(() => {});
+  return workers.get(db)?.process(id).catch(() => {});
 }
 
-/** Configuration changes can share their credential transaction; transitions cannot. */
-export function updateAgentConfiguration(db: Db, effects: LifecycleEffects,
-  ...args: Parameters<ReturnType<typeof agentRecords>["update"]>) {
-  return agentRecords(db, effects).update(...args);
-}
+// Only configuration persistence can invalidate verification inside its transaction.
+export { invalidateAgentVerification } from "./adapters/configuration.js";
 
 export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
   assertRootDatabase(db);
   const records = agentRecords(db, effects);
   const store = createLifecycleStore(db, effects);
-  async function change(id: string, command: "pause" | "resume" | "terminate" | "reject" | "retry", reason?: string) {
+  async function change(id: string, command: "pause" | "resume" | "terminate" | "retry", reason?: string) {
     const result = await store.change(id, command, { reason });
     if (result) scheduleAgentLifecycle(db, id);
     return result ? records.getById(id) : null;
+  }
+  async function decideHire(target: HireDecisionTarget, decision: "approved" | "rejected", userId: string, note?: string | null) {
+    const result = await approvalRecords(db, effects).decide(target, decision, userId, note);
+    if (result?.hireApprovedAgentId) scheduleAgentLifecycle(db, result.hireApprovedAgentId);
+    return result;
   }
   return {
     async get(id: string) {
@@ -54,45 +56,36 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       scheduleAgentLifecycle(db, agent.id);
       return agent;
     },
-    async approveHire(...args: Parameters<typeof records.activatePendingApproval>) {
-      const result = await records.activatePendingApproval(...args);
-      if (result?.activated) scheduleAgentLifecycle(db, result.agent.id);
-      return result;
-    },
-    rejectHire: (id: string) => change(id, "reject"),
-    async updateAndTransition(...args: Parameters<typeof records.updateAndTransition>) {
-      const agent = await records.updateAndTransition(...args);
-      if (agent) scheduleAgentLifecycle(db, agent.id);
+    approveHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "approved", userId, note),
+    rejectHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "rejected", userId, note),
+    async updateAndTransition(id: string, command: "pause" | "resume" | "terminate", data: Parameters<LifecycleEffects["updateConfiguration"]>[2], options?: Parameters<LifecycleEffects["updateConfiguration"]>[3]) {
+      const existing = await records.getById(id);
+      if (!existing) return null;
+      const agent = await effects.transaction(db, existing.companyId, async (tx, publications) => {
+        await effects.updateConfiguration(tx, id, data, options, publications);
+        await createLifecycleStore(tx, effects).change(id, command, { reason: command === "resume" ? "user" : "manual" });
+        return agentRecords(tx, effects).getById(id);
+      });
+      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId);
+      scheduleAgentLifecycle(db, id);
       return agent;
+    },
+    async reconcilePolicyHolds(companyId?: string, agentId?: string | null) {
+      if (agentId === null) return;
+      const rows = await db.select({ id: agents.id }).from(agents).where(and(
+        companyId ? eq(agents.companyId, companyId) : undefined, agentId ? eq(agents.id, agentId) : undefined,
+      ));
+      for (const row of rows) {
+        await store.change(row.id, "reconcile");
+        scheduleAgentLifecycle(db, row.id);
+      }
     },
     pauseAgent: (id: string, reason = "manual") => change(id, "pause", reason),
     resumeAgent: (id: string, reason = "user") => change(id, "resume", reason),
     terminateAgent: (id: string) => change(id, "terminate"),
     retry: (id: string) => change(id, "retry"),
     clearError: records.clearError,
-    purgeAgent: records.remove,
   };
-}
-
-export async function resolveAgentHireApproval(db: Db, effects: LifecycleEffects, id: string, status: "approved" | "rejected", userId: string, note?: string | null) {
-  assertRootDatabase(db);
-  const records = approvalRecords(db, effects);
-  if (status === "rejected") return { ...await records.reject(id, userId, note), hireApprovedAgentId: null };
-  const result = await records.approve(id, userId, note);
-  if (result.hireApprovedAgentId) scheduleAgentLifecycle(db, result.hireApprovedAgentId);
-  return result;
-}
-export async function reconcileAgentPolicyHolds(db: Db, effects: LifecycleEffects, companyId?: string, agentId?: string | null) {
-  assertRootDatabase(db);
-  if (agentId === null) return;
-  const store = createLifecycleStore(db, effects);
-  const rows = await db.select({ id: agents.id }).from(agents).where(and(
-    companyId ? eq(agents.companyId, companyId) : undefined, agentId ? eq(agents.id, agentId) : undefined,
-  ));
-  for (const row of rows) {
-    await store.change(row.id, "reconcile");
-    scheduleAgentLifecycle(db, row.id);
-  }
 }
 
 export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: LifecycleDriver, canRun: () => boolean) {
@@ -104,7 +97,7 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
     if (stopped || !canRun()) return Promise.resolve();
     return running ??= (async () => {
       if (Date.now() >= nextPolicySweep) {
-        await reconcileAgentPolicyHolds(db, effects);
+        await createAgentLifecycle(db, effects).reconcilePolicyHolds();
         nextPolicySweep = Date.now() + 60_000;
       }
       await worker.sweep();
@@ -121,14 +114,4 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
       try { await running; } finally { await worker.stop(); }
     },
   };
-}
-
-export async function terminateCompanyAgents(db: Db, effects: LifecycleEffects, companyId: string) {
-  const lifecycle = createAgentLifecycle(db, effects);
-  const rows = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
-  for (const row of rows) {
-    await lifecycle.terminateAgent(row.id);
-    await workers.get(db)?.process(row.id);
-  }
-
 }

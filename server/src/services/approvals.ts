@@ -7,7 +7,7 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
-import { resolveAgentHireApproval } from "./agent-lifecycle.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 
 import { instanceSettingsService } from "./instance-settings.js";
 
@@ -172,21 +172,29 @@ export function approvalService(db: Db) {
     await builtInAgentService(database).ensure(companyId, sourceBuiltInAgentKey);
   }
 
+  async function decideHire(target: string | { approvalId: string }, status: "approved" | "rejected", userId: string, note?: string | null) {
+    const lifecycle = createAgentLifecycle(db);
+    const result = await (status === "approved" ? lifecycle.approveHire : lifecycle.rejectHire)(target, userId, note);
+    if (result?.hireApprovedAgentId && result.approval) {
+      await reconcileApprovedBuiltInAgent(result.approval.companyId, result.approval.payload, db);
+      await budgetService(db).deliverPendingEnforcement(result.approval.companyId);
+      void notifyHireApproved(db, { companyId: result.approval.companyId, agentId: result.hireApprovedAgentId,
+        source: "approval", sourceId: result.approval.id, approvedAt: result.approval.decidedAt ?? new Date() }).catch(() => {});
+    }
+    return result;
+  }
+
   async function decide(id: string, status: "approved" | "rejected", userId: string, note?: string | null) {
     const approval = await getExistingApproval(id);
     if (approval.type === "hire_agent") {
-      const result = await resolveAgentHireApproval(db, id, status, userId, note);
-      if (result.hireApprovedAgentId) {
-        await reconcileApprovedBuiltInAgent(result.approval.companyId, result.approval.payload, db);
-        await budgetService(db).deliverPendingEnforcement(result.approval.companyId);
-        void notifyHireApproved(db, { companyId: result.approval.companyId, agentId: result.hireApprovedAgentId,
-          source: "approval", sourceId: id, approvedAt: result.approval.decidedAt ?? new Date() }).catch(() => {});
-      }
-      return { approval: result.approval, applied: result.applied };
+      const result = await decideHire({ approvalId: id }, status, userId, note);
+      return { approval: result!.approval!, applied: result!.applied };
     }
     return resolveApproval(id, status, userId, note);
   }
   return { ...records,
+    approveHire: (agentId: string, userId: string, note?: string | null) => decideHire(agentId, "approved", userId, note),
+    rejectHire: (agentId: string, userId: string, note?: string | null) => decideHire(agentId, "rejected", userId, note),
     approve: (id: string, userId: string, note?: string | null) => decide(id, "approved", userId, note),
     reject: (id: string, userId: string, note?: string | null) => decide(id, "rejected", userId, note),
   };

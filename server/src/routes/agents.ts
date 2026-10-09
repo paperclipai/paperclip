@@ -5493,32 +5493,14 @@ export function agentRoutes(
       return;
     }
 
-    // Resolve the linked hire approval (clears it from the inbox) and run the
-    // shared approval side effects: agent activation, budget policy, and the
-    // hire-approved notification. Fall back to direct activation if no open
-    // approval record exists (e.g. agents created before approvals were tracked).
-    const decidedByUserId = req.actor.userId ?? "board";
-    const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-
-    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-    if (openApproval) {
-      await approvalsSvc.approve(openApproval.id, decidedByUserId);
-      agent = await svc.getById(id);
-    } else {
-      const approval = await svcLifecycle.approveHire(id);
-      if (!approval) {
-        res.status(404).json({ error: "Agent not found" });
-        return;
-      }
-      if (!approval.activated) {
-        res.status(409).json({ error: "Only pending approval agents can be approved" });
-        return;
-      }
-      agent = approval.agent;
-    }
-
+    const decision = await approvalsSvc.approveHire(id, req.actor.userId ?? "board");
+    const agent = decision?.agent;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (!decision.applied) {
+      res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
 
@@ -5529,7 +5511,7 @@ export function agentRoutes(
       action: "agent.approved",
       entityType: "agent",
       entityId: agent.id,
-      details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
+      details: { source: "agent_detail", approvalId: decision.approval?.id ?? null },
     });
 
     res.json(redactAgentRowForResponse(agent));
@@ -5543,23 +5525,9 @@ export function agentRoutes(
       return;
     }
 
-    // Terminating an agent that is still awaiting approval is the agent-detail
-    // equivalent of rejecting the hire. When a linked hire approval is still
-    // open, delegate to approvalsSvc.reject(), which both resolves the approval
-    // (clearing the inbox "Approve/Reject" card) and terminates the agent.
-    // Mirror the approve path's branch-or-fallback so we never terminate twice:
-    // reject() already calls agentsSvc.terminate() internally.
-    let agent: Awaited<ReturnType<typeof svcLifecycle.terminateAgent>> = null;
-    if (existing.status === "pending_approval") {
-      const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-      if (openApproval) {
-        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
-        agent = await svc.getById(id);
-      }
-    }
-    if (!agent) {
-      agent = await svcLifecycle.terminateAgent(id);
-    }
+    const agent = existing.status === "pending_approval"
+      ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
+      : await svcLifecycle.terminateAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5611,7 +5579,7 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svcLifecycle.purgeAgent(id);
+    const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;

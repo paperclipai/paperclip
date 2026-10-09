@@ -1,5 +1,5 @@
 import { deleteCompany } from "./company-deletion.js";
-import { reconcileAgentPolicyHolds } from "./agent-lifecycle.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
@@ -414,7 +414,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         };
       });
       if (!result) return null;
-      await reconcileAgentPolicyHolds(db, id);
+      await createAgentLifecycle(db).reconcilePolicyHolds(id);
       publishAccountingActivities(id, budgetPublications);
       if (data.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, id);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
@@ -493,7 +493,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         };
       });
       if (!result) return null;
-      await reconcileAgentPolicyHolds(db, id);
+      await createAgentLifecycle(db).reconcilePolicyHolds(id);
 
       // Same doorbell rule as update(): the archive is committed, so ring
       // before finalization, which can throw without undoing it.

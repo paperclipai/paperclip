@@ -1,9 +1,11 @@
+import { createAgentLifecycle as createLifecycleCommands, invalidateAgentVerification } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
 import { requireServerAdapter } from "../../../adapters/index.js";
 import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
 import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
 import { approvalService } from "../../../services/approvals.js";
+import { agentConfigurationService } from "../../../services/agent-configuration.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { readFileSync } from "node:fs";
 import express from "express";
@@ -13,10 +15,10 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createAgentLifecycle, configureAgentLifecycle, reconcileAgentPolicyHolds } from "../../../services/agent-lifecycle.js";
+import { createAgentLifecycle, configureAgentLifecycle } from "../../../services/agent-lifecycle.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
@@ -151,7 +153,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [project] = await db.insert(projects).values({ companyId, name: "Keep until cleanup", leadAgentId: agent.id }).returning();
     await db.insert(issues).values({ companyId, projectId: project.id, title: "Keep this task", assigneeAgentId: agent.id });
     const pending = worker(async () => "pending");
-    await expect(deleteCompany(db, companyId)).rejects.toThrow("Complete agent termination");
+    await expect(deleteCompany(db, companyId)).rejects.toThrow("Complete termination");
     expect(await db.select().from(projects).where(eq(projects.id, project.id))).toHaveLength(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
     await pending.stop();
@@ -191,6 +193,31 @@ const support = await getEmbeddedPostgresTestSupport();
     await approvalService(db).approve(approval.id, "board");
     await vi.waitFor(async () => expect((await current(agent.id)).lifecycleState).toBe("ready"));
     expect(observed).toEqual(["preparing", "verifying"]);
+  });
+
+  it.each(["approved", "rejected"] as const)("uses the same %s hire decision for an agent and its approval", async decision => {
+    const agent = await hire("pending_approval");
+    const approval = await approvalService(db).create(companyId, { type: "hire_agent",
+      requestedByUserId: "requester", payload: { agentId: agent.id }, status: "pending" });
+    const lifecycle = createAgentLifecycle(db);
+    const decide = decision === "approved" ? lifecycle.approveHire : lifecycle.rejectHire;
+    const first = await decide(agent.id, "board");
+    expect(first).toMatchObject({ applied: true, approval: { id: approval.id, status: decision },
+      agent: { lifecycleState: decision === "approved" ? "preparing" : "rejected" } });
+    const version = (await current(agent.id)).lifecycleVersion;
+    expect(await decide({ approvalId: approval.id }, "board")).toMatchObject({ applied: false, hireApprovedAgentId: null });
+    expect((await current(agent.id)).lifecycleVersion).toBe(version);
+  });
+
+  it("rolls back the approval and agent together when activation fails", async () => {
+    const agent = await hire("pending_approval");
+    const approval = await approvalService(db).create(companyId, { type: "hire_agent",
+      payload: { agentId: agent.id }, status: "pending" });
+    const lifecycle = createLifecycleCommands(db, { ...createAgentLifecycleEffects(),
+      recordCreation: async () => { throw new Error("Creation event failed"); } });
+    await expect(lifecycle.approveHire(agent.id, "board")).rejects.toThrow("Creation event failed");
+    expect((await current(agent.id)).lifecycleState).toBe("pending_approval");
+    expect((await db.select().from(approvals).where(eq(approvals.id, approval.id)))[0].status).toBe("pending");
   });
 
   it("keeps the hire credential owner and recovers it for migrated approvals", async () => {
@@ -262,9 +289,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const work = worker(); const lifecycle = createAgentLifecycle(db); const agent = await hire(); await work.process(agent.id);
     await lifecycle.pauseAgent(agent.id); await work.process(agent.id);
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
-    await reconcileAgentPolicyHolds(db, companyId); await work.process(agent.id);
+    await createAgentLifecycle(db).reconcilePolicyHolds(companyId); await work.process(agent.id);
     await db.update(companies).set({ status: "active" }).where(eq(companies.id, companyId));
-    await reconcileAgentPolicyHolds(db, companyId); await work.process(agent.id);
+    await createAgentLifecycle(db).reconcilePolicyHolds(companyId); await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["manual"] });
     await lifecycle.resumeAgent(agent.id); await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("ready");
@@ -313,11 +340,11 @@ const support = await getEmbeddedPostgresTestSupport();
     await lifecycle.terminateAgent(agent.id); await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("cleaning_up");
     expect((await db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, agent.id)))[0].revokedAt).not.toBeNull();
-    await expect(lifecycle.purgeAgent(agent.id)).rejects.toThrow("Complete termination");
+    await expect(agentConfiguration(db).remove(agent.id)).rejects.toThrow("Complete termination");
     pending = false; await lifecycle.retry(agent.id); await work.process(agent.id);
     expect(phases).toContain("terminating");
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
-    await lifecycle.purgeAgent(agent.id);
+    await agentConfiguration(db).remove(agent.id);
     expect(await current(agent.id)).toBeUndefined();
   });
 
@@ -392,6 +419,21 @@ const support = await getEmbeddedPostgresTestSupport();
     await agentConfiguration(db).update(agent.id, { adapterConfig: { command: "echo" } });
     expect(await store.completeHost(claimed, "configuration-test")).toBe(false);
     expect((await lifecycle.get(agent.id))!.lifecycleVersion).toBeGreaterThan(claimed.lifecycleVersion);
+  });
+
+  it("rolls back configuration and verification invalidation in the credential transaction", async () => {
+    const agent = await hire();
+    const before = await current(agent.id);
+    await expect(invalidateAgentVerification(db, agent.id)).rejects.toThrow("configuration transaction");
+    await expect(agentConfigurationService(db).update(agent.id, { name: "Uncommitted" }, undefined, []))
+      .rejects.toThrow("require a transaction");
+    await expect(db.transaction(async tx => {
+      await agentConfiguration(tx as unknown as Db).update(agent.id, { adapterConfig: { command: "echo" } });
+      expect((await tx.select().from(agents).where(eq(agents.id, agent.id)))[0].lifecycleVersion).toBe(before.lifecycleVersion + 1);
+      throw new Error("Credential change failed");
+    })).rejects.toThrow("Credential change failed");
+    expect(await current(agent.id)).toMatchObject({ adapterConfig: before.adapterConfig,
+      lifecycleVersion: before.lifecycleVersion, lifecycleOperation: before.lifecycleOperation });
   });
 
   it("permits a board retry and rejects an agent or a different company", async () => {

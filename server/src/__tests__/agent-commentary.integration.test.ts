@@ -1,4 +1,3 @@
-import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -215,7 +214,7 @@ describe("internal agent commentary through both transports", () => {
     expect((await rows({ ...f, runId }))[0].issueId).toBeNull();
     if (owner === "agent") {
       await server.db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, agentId));
-      await createAgentLifecycle(server.db).purgeAgent(agentId);
+      await agentService(server.db).remove(agentId);
     }
     else await companyService(server.db).remove(f.companyId);
     expect(await rows({ ...f, runId })).toHaveLength(0);

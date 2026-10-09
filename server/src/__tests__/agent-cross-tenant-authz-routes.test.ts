@@ -763,6 +763,5 @@ vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
     pauseAgent: (...args: unknown[]) => mockAgentService.pause(...args),
     resumeAgent: (...args: unknown[]) => mockAgentService.resume(...args),
     terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
-    purgeAgent: (...args: unknown[]) => mockAgentService.remove(...args),
   }) };
 });

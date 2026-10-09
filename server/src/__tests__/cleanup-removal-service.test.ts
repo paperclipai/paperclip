@@ -149,7 +149,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, agentId));
-    const removed = await createAgentLifecycle(db).purgeAgent(agentId);
+    const removed = await agentService(db).remove(agentId);
 
     expect(removed?.id).toBe(agentId);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);

@@ -972,8 +972,8 @@ export async function withCurrentBudgetEnforcement<T>(db: Db, scope: BudgetEnfor
 /** Cancellation is an at-least-once external effect. A failed delivery never
  * rolls back committed spend, and its version remains pending for recovery. */
 export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks, companyId?: string, agentId?: string | null) {
-  const { reconcileAgentPolicyHolds } = await import("./agent-lifecycle.js");
-  await reconcileAgentPolicyHolds(db, companyId, agentId);
+  const { createAgentLifecycle } = await import("./agent-lifecycle.js");
+  await createAgentLifecycle(db).reconcilePolicyHolds(companyId, agentId);
   if (!hooks.cancelWorkForScope) return;
   const pending = await db.select().from(budgetPolicies).where(and(
     sql`${budgetPolicies.enforcementVersion} > ${budgetPolicies.enforcementDeliveredVersion}`,

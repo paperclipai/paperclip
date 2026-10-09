@@ -10,6 +10,7 @@ vi.mock("../services/budgets.js", async importOriginal => ({
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
+  getById: vi.fn(async () => ({ id: "agent-1" })),
   create: vi.fn(),
   terminate: vi.fn(),
 }));

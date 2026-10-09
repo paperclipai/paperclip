@@ -16,7 +16,9 @@ import {
   containsRedactedMarker,
   configPatchFromSnapshot,
 } from "../lib/agent-records.js";
-import { createAgentLifecycle, updateAgentConfiguration } from "./agent-lifecycle.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { agentConfigurationService } from "./agent-configuration.js";
+import { deleteAgent } from "./agent-deletion.js";
 
 export { hasAgentShortnameCollision, deduplicateAgentName } from "../lib/agent-records.js";
 
@@ -27,7 +29,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     hydrateAgentSpend,
     getById
   } = agentRecordQueries(db);
-  const updateAgent = (id: string, data: Parameters<typeof updateAgentConfiguration>[3], options?: Parameters<typeof updateAgentConfiguration>[4]) => updateAgentConfiguration(db, budgetHooks, id, data, options);
+  const updateAgent = agentConfigurationService(db, budgetHooks).update;
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
@@ -277,6 +279,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return { agent: null, ambiguous: false } as const;
     },
     update: updateAgent,
+    remove: (id: string) => deleteAgent(db, id),
     clearError: (id: string) => createAgentLifecycle(db, budgetHooks).clearError(id),
   };
 }

@@ -162,7 +162,7 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
     expect((await get(c)).primaryAgentId).toBeNull();
     await request(app(actor(c))).put(url(c)).send({ primaryAgentId: b.id }).expect(200);
     await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, b.id));
-    await createAgentLifecycle(db).purgeAgent(b.id);
+    await agentService(db).remove(b.id);
     expect(await get(c)).toMatchObject({ primaryAgentId: null, initialized: true });
   });
 

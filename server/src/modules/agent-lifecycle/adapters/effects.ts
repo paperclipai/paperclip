@@ -1,10 +1,11 @@
 import type { Db } from "@paperclipai/db";
-import type { budgetPolicies } from "@paperclipai/db";
-import type { ClaudeLoginContext, RevisionMetadata } from "../../../lib/agent-records.js";
+import type { agents, budgetPolicies } from "@paperclipai/db";
+import type { ClaudeLoginContext, RevisionMetadata, UpdateAgentOptions } from "../../../lib/agent-records.js";
 import type { ActivityPublication } from "../../../types/activity-publication.js";
 
 /** Services supply integrations; lifecycle owns the transaction and state writes. */
 export interface LifecycleEffects {
+  updateConfiguration(db: Db, id: string, data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleRequiredPluginIds" | "lifecycleHolds">>, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]): Promise<unknown>;
   transaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T>;
   policyBlocks(db: Db, policy: typeof budgetPolicies.$inferSelect): Promise<boolean>;
   setAgentBudget(db: Db, publications: ActivityPublication[], companyId: string, agentId: string, amount: number, userId: string | null, isActive?: boolean): Promise<unknown>;
@@ -14,7 +15,6 @@ export interface LifecycleEffects {
   clearPrimary(db: Db, companyId: string, agentId: string): Promise<unknown>;
   initializePrimary(db: Db, companyId: string, userId: string, agentId: string): Promise<unknown>;
   ensureIdentity(db: Db, companyId: string, agentId: string): Promise<unknown>;
-  cancelInteractions(db: Db, companyId: string, agentId: string): Promise<unknown>;
   normalizeAdapterConfig(db: Db, companyId: string, config: Record<string, unknown>, adapterType: string): Promise<Record<string, unknown>>;
   bindCredentials(db: Db, input: {
     companyId: string;

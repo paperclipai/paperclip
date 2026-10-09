@@ -1,6 +1,5 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -1033,7 +1032,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     );
 
     await db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, addresseeAgentId));
-    await createAgentLifecycle(db).purgeAgent(addresseeAgentId);
+    await agentService(db).remove(addresseeAgentId);
 
     const cancelled = await interactionsSvc.getById(created.id);
     expect(cancelled).toMatchObject({

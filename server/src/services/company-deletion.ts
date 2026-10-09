@@ -1,8 +1,10 @@
 import type { Db } from "@paperclipai/db";
-import { eq, inArray } from "drizzle-orm";
-import { deleteTerminatedCompanyAgents, terminateCompanyAgents } from "./agent-lifecycle.js";
+import { and, eq, inArray } from "drizzle-orm";
+import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
+import { assertAgentPurgeAllowed } from "../modules/agent-lifecycle/index.js";
 import {
   companies,
+  agents,
   companyLogos,
   assets,
   agentApiKeys,
@@ -39,7 +41,12 @@ import {
 } from "@paperclipai/db";
 
 export async function deleteCompany(db: Db, id: string) {
-  await terminateCompanyAgents(db, id);
+  const lifecycle = createAgentLifecycle(db);
+  const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
+  for (const agent of companyAgents) {
+    await lifecycle.terminateAgent(agent.id);
+    await scheduleAgentLifecycle(db, agent.id);
+  }
   return db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
         // remain compatible: native writers can already hold a child row while
@@ -47,6 +54,9 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        const terminalAgents = await tx.select({ lifecycleState: agents.lifecycleState }).from(agents)
+          .where(eq(agents.companyId, id)).for("update");
+        for (const agent of terminalAgents) assertAgentPurgeAllowed(agent);
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
@@ -93,7 +103,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
-        await deleteTerminatedCompanyAgents(tx as unknown as Db, id);
+        await tx.delete(agents).where(and(eq(agents.companyId, id), inArray(agents.lifecycleState, ["terminated", "rejected"])));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))

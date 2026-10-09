@@ -970,7 +970,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const companyId = await seedCompany();
     const state = await builtInAgentService(db).ensure(companyId, "briefs");
 
-    await expect(createAgentLifecycle(db).purgeAgent(state.agentId!)).rejects.toMatchObject({
+    await expect(agentService(db).remove(state.agentId!)).rejects.toMatchObject({
       status: 409,
       details: {
         code: "built_in_agent_undeletable",
