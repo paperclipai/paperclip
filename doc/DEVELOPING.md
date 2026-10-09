@@ -1331,6 +1331,16 @@ claims remain database-scoped so separate scheduler instances cannot dispatch
 the same claim. The public heartbeat methods keep their existing signatures.
 Keep scheduling policy changes separate from this extraction and execution.
 
+Run completion is in `server/src/services/heartbeat/run-completion.ts`.
+`createHeartbeatRunCompletion` binds terminal result persistence, accounting,
+response presentation, task-session updates, and execution/setup failure handling.
+The executor calls these handlers from the original try/catch boundaries. It
+retains native recovery exceptions, dispatch ownership, and the outer cleanup.
+Completion reads the shared Stop barriers, uses live output getters, and reports
+trace finalization immediately so a later error cannot lose cleanup state.
+Existing public failure helpers remain re-exported by `heartbeat.ts`.
+Keep completion policy changes separate from this extraction and dispatch.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured
