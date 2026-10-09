@@ -1,7 +1,8 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, max } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentConfigRevisions, agents, heartbeatRuns } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { isAiAuthenticationFailure } from "./ai-auth-failure.js";
 
 /**
@@ -50,7 +51,7 @@ export type LaneRun = {
 
 export type ProviderLoginHoldDecision =
   | { hold: false; reason: "disabled" | "lane_open" | "probe_cooldown_elapsed"; probe?: boolean; failures?: number }
-  | { hold: true; reason: "login_failed" | "probe_in_flight"; failures: number; errorCode: string; holdUntil: Date };
+  | { hold: true; reason: "login_failed" | "probe_in_flight" | "probe_expired"; failures: number; errorCode: string; holdUntil: Date };
 
 const FAILED_STATUSES = new Set(["failed", "timed_out"]);
 
@@ -126,6 +127,27 @@ export function providerLoginLaneKey(agent: {
   return JSON.stringify([agent.adapterType, credentials, record(agent.runtimeConfig).aiConnection ?? null]);
 }
 
+/**
+ * Whether a configuration revision changed the login an agent uses. Revision
+ * snapshots redact secret values, so a change of a redacted credential cannot
+ * be told apart from another adapter setting change; it counts as a login
+ * change. One more failed run puts such an agent back on hold.
+ */
+export function loginSettingsChanged(revision: {
+  changedKeys: string[];
+  beforeConfig: Record<string, unknown>;
+  afterConfig: Record<string, unknown>;
+}): boolean {
+  const key = (snapshot: Record<string, unknown>) => providerLoginLaneKey({
+    adapterType: String(snapshot.adapterType ?? ""),
+    adapterConfig: record(snapshot.adapterConfig),
+    runtimeConfig: record(snapshot.runtimeConfig),
+  });
+  const before = key(revision.beforeConfig);
+  if (before !== key(revision.afterConfig)) return true;
+  return revision.changedKeys.includes("adapterConfig") && before.includes(REDACTED_EVENT_VALUE);
+}
+
 type GrantedProbe = { runId: string; grantedAt: Date };
 
 // The scheduler, HTTP wakes, and other entry points each build their own
@@ -169,55 +191,75 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
       const responsibleUserId = perUser ? run.responsibleUserId ?? null : null;
 
       const laneIds = lane.map((candidate) => candidate.id);
-      // A run counts for the lane only if its agent still had the same login
-      // settings when the run started. Any later configuration change drops
-      // the agent's older runs from the lane history.
-      const revisions = await db
-        .select({ agentId: agentConfigRevisions.agentId, changedAt: max(agentConfigRevisions.createdAt) })
-        .from(agentConfigRevisions)
-        .where(and(eq(agentConfigRevisions.companyId, run.companyId), inArray(agentConfigRevisions.agentId, laneIds)))
-        .groupBy(agentConfigRevisions.agentId);
-      const changedAtByAgent = new Map(revisions.map((revision) => [revision.agentId, revision.changedAt]));
-
       const now = new Date();
-      const history = await db
+      const windowStart = new Date(now.getTime() - config.windowMs);
+      // A run counts for the lane only if its agent used the same login
+      // settings when the run started. A change of those settings drops the
+      // agent's older runs; other edits (name, budget, model) keep them.
+      const revisions = await db
         .select({
-          agentId: heartbeatRuns.agentId,
-          startedAt: heartbeatRuns.startedAt,
-          status: heartbeatRuns.status,
-          finishedAt: heartbeatRuns.finishedAt,
-          errorCode: heartbeatRuns.errorCode,
+          agentId: agentConfigRevisions.agentId,
+          createdAt: agentConfigRevisions.createdAt,
+          changedKeys: agentConfigRevisions.changedKeys,
+          beforeConfig: agentConfigRevisions.beforeConfig,
+          afterConfig: agentConfigRevisions.afterConfig,
         })
+        .from(agentConfigRevisions)
+        .where(and(
+          eq(agentConfigRevisions.companyId, run.companyId),
+          inArray(agentConfigRevisions.agentId, laneIds),
+          gte(agentConfigRevisions.createdAt, windowStart),
+        ));
+      const loginChangedAt = new Map<string, Date>();
+      for (const revision of revisions) {
+        if (!loginSettingsChanged(revision)) continue;
+        const previous = loginChangedAt.get(revision.agentId);
+        if (!previous || previous < revision.createdAt) loginChangedAt.set(revision.agentId, revision.createdAt);
+      }
+      const unchangedIds = laneIds.filter((id) => !loginChangedAt.has(id));
+      // The cutoff is part of the query, so discarded runs do not use up the
+      // history limit.
+      const laneHistory = or(
+        unchangedIds.length > 0 ? inArray(heartbeatRuns.agentId, unchangedIds) : undefined,
+        ...[...loginChangedAt].map(([agentId, changedAt]) =>
+          and(eq(heartbeatRuns.agentId, agentId), gte(heartbeatRuns.startedAt, changedAt))),
+      );
+
+      const runs = await db
+        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
-          inArray(heartbeatRuns.agentId, laneIds),
+          laneHistory,
           perUser
             ? responsibleUserId
               ? eq(heartbeatRuns.responsibleUserId, responsibleUserId)
               : isNull(heartbeatRuns.responsibleUserId)
             : undefined,
-          gte(heartbeatRuns.startedAt, new Date(now.getTime() - config.windowMs)),
+          gte(heartbeatRuns.startedAt, windowStart),
           isNotNull(heartbeatRuns.finishedAt),
           inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
         ))
         .orderBy(desc(heartbeatRuns.finishedAt))
         .limit(60);
-      const runs = history.filter((entry) => {
-        const changedAt = changedAtByAgent.get(entry.agentId);
-        return !changedAt || (entry.startedAt !== null && entry.startedAt >= changedAt);
-      });
 
       const probeKey = JSON.stringify([run.companyId, responsibleUserId, laneKey]);
       const stored = probeByLane.get(probeKey) ?? null;
-      // A probe that was granted but did not start is claimed again as itself.
-      const granted = stored?.runId === run.id ? null : stored;
+      if (stored?.runId === run.id) {
+        // The probe was granted but did not start. Claim it again without
+        // renewing the grant. Once the grant expires, another run may probe.
+        if (now.getTime() - stored.grantedAt.getTime() < config.probeTimeoutMs) {
+          return { hold: false, reason: "probe_cooldown_elapsed", probe: true } as const;
+        }
+        probeByLane.delete(probeKey);
+        return { hold: true, reason: "probe_expired", failures: 0, errorCode: "", holdUntil: now } as const;
+      }
       let probeFinished = false;
-      if (granted) {
+      if (stored) {
         const [probeRun] = await db
           .select({ finishedAt: heartbeatRuns.finishedAt })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, granted.runId));
+          .where(eq(heartbeatRuns.id, stored.runId));
         probeFinished = !probeRun || probeRun.finishedAt !== null;
         const latest = probeByLane.get(probeKey);
         if (latest && latest !== stored) {
@@ -234,7 +276,7 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
       // Decide and grant the probe without an await in between, so two
       // concurrent claims cannot both receive the probe.
       const decision = decideProviderLoginHold(runs, new Date(), config, {
-        probe: granted ? { grantedAt: granted.grantedAt, finished: probeFinished } : null,
+        probe: stored ? { grantedAt: stored.grantedAt, finished: probeFinished } : null,
       });
       if (!decision.hold && decision.probe) probeByLane.set(probeKey, { runId: run.id, grantedAt: new Date() });
       return decision;

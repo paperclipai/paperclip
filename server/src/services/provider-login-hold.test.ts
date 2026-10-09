@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decideProviderLoginHold,
   PROVIDER_LOGIN_HOLD_DEFAULTS,
+  loginSettingsChanged,
   providerLoginLaneKey,
   type LaneRun,
 } from "./provider-login-hold.js";
@@ -99,5 +100,25 @@ describe("providerLoginLaneKey", () => {
     expect(providerLoginLaneKey(agent({ ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "s1" } }))).not.toBe(shared);
     expect(providerLoginLaneKey(agent({}, { aiConnection: { provider: "anthropic", method: "api_key" } }))).not.toBe(shared);
     expect(providerLoginLaneKey({ ...agent({}), adapterType: "codex_local" })).not.toBe(shared);
+  });
+});
+
+describe("loginSettingsChanged", () => {
+  const snapshot = (env: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    adapterType: "claude_local", adapterConfig: { env, ...extra }, runtimeConfig: {},
+  });
+
+  it("detects a change of the login directory", () => {
+    expect(loginSettingsChanged({ changedKeys: ["adapterConfig"], beforeConfig: snapshot({ CLAUDE_CONFIG_DIR: "/a" }), afterConfig: snapshot({ CLAUDE_CONFIG_DIR: "/b" }) })).toBe(true);
+  });
+
+  it("ignores edits that keep the login", () => {
+    expect(loginSettingsChanged({ changedKeys: ["adapterConfig"], beforeConfig: snapshot({ CLAUDE_CONFIG_DIR: "/a" }, { model: "x" }), afterConfig: snapshot({ CLAUDE_CONFIG_DIR: "/a" }, { model: "y" }) })).toBe(false);
+  });
+
+  it("counts an adapter edit with a redacted credential as a login change", () => {
+    const env = { ANTHROPIC_API_KEY: "***REDACTED***" };
+    expect(loginSettingsChanged({ changedKeys: ["adapterConfig"], beforeConfig: snapshot(env), afterConfig: snapshot(env) })).toBe(true);
+    expect(loginSettingsChanged({ changedKeys: ["name"], beforeConfig: snapshot(env), afterConfig: snapshot(env) })).toBe(false);
   });
 });
