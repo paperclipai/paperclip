@@ -68,10 +68,12 @@ All agents must be terminated or rejected. Otherwise, it throws an error.
 The error rolls back all database changes in the deletion transaction.
 A concurrent hire makes deletion fail or waits until deletion ends.
 The module's delete statement also restricts removal to terminated or rejected agents.
-The agent deletion service uses the same state check for a single agent.
-These services cannot remove an agent with incomplete termination.
+`purgeAgent` deletes a single agent. It owns the transaction and checks the agent
+state before it calls the service to remove dependent records.
+The service checks accounting holds. The module then deletes the agent record.
+An error rolls back both operations. Neither path permits incomplete termination.
 
-The ordinary agent service owns reads, permissions, keys, and record deletion.
+The ordinary agent service owns reads, permissions, and keys.
 The configuration service owns configuration validation, writes, and revisions.
 Credential checks remain in the agent credential service.
 The service in `services/agent-lifecycle.ts` supplies these integrations to the
@@ -185,4 +187,4 @@ An older process can write the legacy status without the new lifecycle checks.
 `pnpm check:module-boundaries` checks the module imports and agent writes.
 Tests and migration fixtures can write records directly.
 Production creation and lifecycle state writes must use the lifecycle module.
-Record deletion must restrict its query to terminated or rejected agents.
+Production record deletion must also use the lifecycle module.

@@ -5,6 +5,7 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 
 /** Services supply integrations; lifecycle owns the transaction and state writes. */
 export interface LifecycleEffects {
+  deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   updateConfiguration(db: Db, id: string, data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleRequiredPluginIds" | "lifecycleHolds">>, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]): Promise<unknown>;
   transaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T>;
   policyBlocks(db: Db, policy: typeof budgetPolicies.$inferSelect): Promise<boolean>;

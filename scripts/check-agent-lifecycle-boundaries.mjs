@@ -10,9 +10,8 @@ export function agentLifecycleWriteViolations(source) {
   for (const alias of new Set(aliases)) {
     for (const match of text.matchAll(new RegExp(`\\.(insert|delete|update)\\(\\s*${alias}\\s*\\)([^;]*)`, "g"))) {
       const [, operation, chain] = match;
-      if (operation === "delete" && chain.includes(`inArray(${alias}.lifecycleState, ["terminated", "rejected"])`)) continue;
       if (operation !== "update") { violations.push(operation === "delete"
-        ? "Agent record deletion must require a terminated or rejected lifecycle state"
+        ? "Use the agent lifecycle module to delete an agent"
         : "Use the agent lifecycle module to insert an agent"); continue; }
       for (const field of protectedFields) {
         if (new RegExp(`(?<![\\w.])${field}\\s*(?=:|[,}])`).test(chain)) violations.push(`Use the agent lifecycle module to change ${field}`);

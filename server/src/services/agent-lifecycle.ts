@@ -5,6 +5,7 @@ import { budgetServiceInTransaction, deliverBudgetEnforcement, policyBlocks, typ
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
 import { agentIdentityService } from "./agent-identity.js";
+import { deleteAgentDependencies } from "./agent-deletion.js";
 import { agentConfigurationService } from "./agent-configuration.js";
 import { assertClaudeOAuthBindingInvariant, secretService } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
@@ -16,6 +17,7 @@ export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle
 export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
     transaction: withAccountingTransaction,
+    deleteDependencies: deleteAgentDependencies,
     policyBlocks,
     setAgentBudget: (db, publications, companyId, agentId, amount, userId, isActive) =>
       budgetServiceInTransaction(db, publications).upsertPolicy(companyId, {

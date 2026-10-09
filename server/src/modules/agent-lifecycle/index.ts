@@ -4,12 +4,13 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
+import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
 import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, assertAgentPurgeAllowed } from "./domain/policy.js";
+export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup } from "./domain/policy.js";
 
 export type { HireDecisionTarget } from "./adapters/approvals.js";
 export type { LifecycleDriver, LifecycleAgent } from "./application/ports.js";
@@ -85,6 +86,7 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
     terminateAgent: (id: string) => change(id, "terminate"),
     retry: (id: string) => change(id, "retry"),
     clearError: records.clearError,
+    purgeAgent: (id: string) => purgeAgent(db, effects, id),
   };
 }
 

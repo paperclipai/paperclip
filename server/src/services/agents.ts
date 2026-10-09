@@ -18,7 +18,6 @@ import {
 } from "../lib/agent-records.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { agentConfigurationService } from "./agent-configuration.js";
-import { deleteAgent } from "./agent-deletion.js";
 
 export { hasAgentShortnameCollision, deduplicateAgentName } from "../lib/agent-records.js";
 
@@ -279,7 +278,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return { agent: null, ambiguous: false } as const;
     },
     update: updateAgent,
-    remove: (id: string) => deleteAgent(db, id),
+    remove: (id: string) => createAgentLifecycle(db, budgetHooks).purgeAgent(id),
     clearError: (id: string) => createAgentLifecycle(db, budgetHooks).clearError(id),
   };
 }

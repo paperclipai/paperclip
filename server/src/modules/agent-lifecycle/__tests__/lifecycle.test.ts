@@ -171,6 +171,25 @@ const support = await getEmbeddedPostgresTestSupport();
       .rejects.toThrow("Company deletion requires a database transaction");
   });
 
+  it("rejects individual deletion before cleanup and rolls back failed cleanup", async () => {
+    const agent = await hire();
+    const effects = createAgentLifecycleEffects();
+    const cleanup = vi.fn(effects.deleteDependencies);
+    const lifecycle = createLifecycleCommands(db, { ...effects, deleteDependencies: cleanup });
+    await expect(lifecycle.purgeAgent(agent.id)).rejects.toThrow("Complete termination");
+    expect(cleanup).not.toHaveBeenCalled();
+
+    await db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, agent.id));
+    const [key] = await db.insert(agentApiKeys).values({ companyId, agentId: agent.id, name: "Keep on rollback", keyHash: randomUUID() }).returning();
+    cleanup.mockImplementation(async (tx, companyId, id) => {
+      await effects.deleteDependencies(tx, companyId, id);
+      throw new Error("Dependency cleanup failed");
+    });
+    await expect(lifecycle.purgeAgent(agent.id)).rejects.toThrow("Dependency cleanup failed");
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "terminated" });
+    expect(await db.select().from(agentApiKeys).where(eq(agentApiKeys.id, key.id))).toHaveLength(1);
+  });
+
   it("deletes terminated and rejected agents only in the requested company", async () => {
     await db.insert(agents).values((["terminated", "rejected"] as const).map(lifecycleState => ({
       companyId, name: lifecycleState, status: "terminated", lifecycleState,
