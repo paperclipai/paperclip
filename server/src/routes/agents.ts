@@ -2529,12 +2529,14 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    submittedEnvKeys?: ReadonlySet<string>;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
       {
         strictMode: strictSecretsMode,
+        strictModeKeys: input.submittedEnvKeys,
         adapterType: input.adapterType ?? null,
       },
     );
@@ -2580,6 +2582,35 @@ export function agentRoutes(
     if (asEnvBindingString(value)) return true;
     const record = asRecord(value);
     return record?.type === "secret_ref" && typeof record.secretId === "string";
+  }
+
+  function mergeAdapterConfigPatch(
+    existingAdapterConfig: Record<string, unknown>,
+    requestedAdapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const mergedAdapterConfig = {
+      ...existingAdapterConfig,
+      ...requestedAdapterConfig,
+    };
+    if (!hasOwn(requestedAdapterConfig, "env")) return mergedAdapterConfig;
+
+    const requestedEnv = asRecord(requestedAdapterConfig.env);
+    if (!requestedEnv) return mergedAdapterConfig;
+
+    const mergedEnv = {
+      ...(asRecord(existingAdapterConfig.env) ?? {}),
+    };
+    for (const [key, value] of Object.entries(requestedEnv)) {
+      if (value === null) {
+        delete mergedEnv[key];
+      } else {
+        mergedEnv[key] = value;
+      }
+    }
+    return {
+      ...mergedAdapterConfig,
+      env: mergedEnv,
+    };
   }
 
   // codex_local agents inherit whatever Codex login is already on the device
@@ -5700,6 +5731,12 @@ export function agentRoutes(
       const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : null;
+      const submittedEnv = requestedAdapterConfig && hasOwn(requestedAdapterConfig, "env")
+        ? asRecord(requestedAdapterConfig.env)
+        : null;
+      const submittedEnvKeys = !replaceAdapterConfig && submittedEnv
+        ? new Set(Object.keys(submittedEnv))
+        : undefined;
       if (
         requestedAdapterConfig
         && replaceAdapterConfig
@@ -5713,7 +5750,10 @@ export function agentRoutes(
         ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
         : changingAdapterType ? {} : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
+        rawEffectiveAdapterConfig = mergeAdapterConfigPatch(
+          existingAdapterConfig,
+          rawEffectiveAdapterConfig,
+        );
       }
       if (req.actor.source === "mcp_oauth" && requestedAdapterConfig) {
         rawEffectiveAdapterConfig = applyMcpReasoningEffort(requestedAdapterType, rawEffectiveAdapterConfig, requestedAdapterConfig);
@@ -5724,6 +5764,18 @@ export function agentRoutes(
         // adapterConfig but omits these keys would silently drop them.
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET.has(key)) continue;
+          if (
+            key === "env"
+            && requestedAdapterConfig
+            && hasOwn(requestedAdapterConfig, "env")
+            && !replaceAdapterConfig
+          ) {
+            rawEffectiveAdapterConfig = mergeAdapterConfigPatch(
+              existingAdapterConfig,
+              rawEffectiveAdapterConfig,
+            );
+            continue;
+          }
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
             rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, [key]: existingAdapterConfig[key] };
           }
@@ -5785,6 +5837,7 @@ export function agentRoutes(
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        submittedEnvKeys,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {

@@ -250,6 +250,38 @@ describeEmbeddedPostgres("secretService", () => {
     return { agentId, heartbeatRunId };
   }
 
+  it("enforces strict secret mode only for environment keys submitted by a PATCH", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(svc.normalizeEnvBindingsForPersistence(
+      companyId,
+      {
+        OPENAI_API_KEY: { type: "plain", value: "legacy-value" },
+        NEW_SETTING: { type: "plain", value: "enabled" },
+      },
+      {
+        strictMode: true,
+        strictModeKeys: new Set(["NEW_SETTING"]),
+      },
+    )).resolves.toEqual({
+      OPENAI_API_KEY: { type: "plain", value: "legacy-value" },
+      NEW_SETTING: { type: "plain", value: "enabled" },
+    });
+
+    await expect(svc.normalizeEnvBindingsForPersistence(
+      companyId,
+      {
+        OPENAI_API_KEY: { type: "plain", value: "legacy-value" },
+        FRESH_API_KEY: { type: "plain", value: "fresh-value" },
+      },
+      {
+        strictMode: true,
+        strictModeKeys: new Set(["FRESH_API_KEY"]),
+      },
+    )).rejects.toThrow("Strict secret mode requires secret references for sensitive key: FRESH_API_KEY");
+  });
+
   it("rejects cross-company secret references during env normalization", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");

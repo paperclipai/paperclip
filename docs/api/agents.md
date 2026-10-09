@@ -77,6 +77,13 @@ PATCH /api/agents/{agentId}
 }
 ```
 
+`adapterConfig` is a partial update by default. Its `env` map is also merged by
+key: omitted bindings stay unchanged, and setting `env.KEY` to `null` removes
+that binding. Set `replaceAdapterConfig: true` to replace the complete adapter
+configuration instead. Strict secret validation applies to environment keys
+submitted by the current partial update, so callers do not need to read and
+resubmit existing bindings.
+
 ## Pause Agent
 
 ```

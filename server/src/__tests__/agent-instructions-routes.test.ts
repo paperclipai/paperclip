@@ -812,6 +812,125 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("merges adapter environment bindings by key for ordinary PATCH requests", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          CODEX_HOME: { type: "plain", value: "/paperclip/codex-home" },
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            CODEX_HOME: { type: "plain", value: "/paperclip/codex-home" },
+            KEEP_ME: { type: "plain", value: "keep" },
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.any(Object),
+      expect.objectContaining({
+        strictModeKeys: new Set(["NEW_KEY"]),
+      }),
+    );
+  });
+
+  it("deletes only environment bindings explicitly set to null", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          DELETE_ME: { type: "plain", value: "remove" },
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          env: {
+            DELETE_ME: null,
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            KEEP_ME: { type: "plain", value: "keep" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("merges environment bindings by key while switching adapters", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          KEEP_ME: { type: "plain", value: "keep" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "claude_local",
+        adapterConfig: expect.objectContaining({
+          env: {
+            KEEP_ME: { type: "plain", value: "keep" },
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("replaces adapter config when replaceAdapterConfig is true", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),
@@ -842,5 +961,46 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("replaces the complete environment map when replaceAdapterConfig is true", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          OLD_KEY: { type: "plain", value: "old" },
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: {
+            NEW_KEY: { type: "plain", value: "new" },
+          },
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.any(Object),
+      expect.not.objectContaining({ strictModeKeys: expect.anything() }),
+    );
   });
 });
