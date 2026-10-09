@@ -1,12 +1,10 @@
 # GitHub Copilot runtime connection
 
 The current candidate uses the pinned Copilot CLI **1.0.88** and Paperclip Runner
-profile **v31**. Profile v30 completed all 20 local/Daytona Product cases, seven
-Runner protocol cases, and ordinary installed local/Daytona canaries. V31 preserves
-master's saved-prompt recovery fix and updates profile decoding; its compatibility
-checks pass. Current-head CI, review and final qualification remain required
-before rollout. See [Copilot production readiness](../plans/2026-10-03-copilot-production-readiness.md)
-and the [retained v30 qualification record](../plans/2026-10-08-copilot-qualification-v30.json).
+profile **v36**. This profile is undergoing a frozen local/Daytona qualification
+campaign. Historical passes apply to their recorded builds. Current-head CI,
+review, all required live cases, and ordinary installed canaries must pass
+before rollout.
 
 On first setup, choose **GitHub Copilot** when creating your first agent. In an
 existing organization, open **Connectors → GitHub → Connect Copilot**. Create a
