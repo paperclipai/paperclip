@@ -230,12 +230,28 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
-  it("classifies model-capacity messages as provider quota without reset metadata", () => {
-    const errorMessage = "The requested model is at capacity. Please try again later.";
+  it("classifies legacy JSONL model-capacity failures as transient without reset metadata", () => {
+    const stdout = [
+      '{"type":"error","message":"Selected model is at capacity. Please try a different model."}',
+      '{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+    ].join("\n");
+    const parsed = parseCodexJsonl(stdout);
+    const input = { stdout, errorMessage: parsed.errorMessage };
 
-    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
-    expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
+    expect(parsed.errorMessage).toBe("Selected model is at capacity. Please try a different model.");
+    expect(isCodexProviderQuotaError(input)).toBe(false);
+    expect(isCodexTransientUpstreamError(input)).toBe(true);
+    expect(extractCodexRetryNotBefore(input)).toBeNull();
+    expect(isCodexTransientUpstreamError({ errorMessage: "The requested model is at capacity. Please try again later." })).toBe(true);
+    expect(isCodexTransientUpstreamError({ errorMessage: "At capacity for this model." })).toBe(true);
+  });
+
+  it("preserves quota precedence and authentication classification", () => {
+    const mixed = { errorMessage: "Usage limit reached. Selected model is at capacity." };
+    expect(isCodexProviderQuotaError(mixed)).toBe(true);
+    expect(isCodexTransientUpstreamError(mixed)).toBe(false);
+    expect(isCodexProviderQuotaError({ errorMessage: "Authentication required. Invalid credentials." })).toBe(false);
+    expect(isCodexTransientUpstreamError({ errorMessage: "Authentication required. Invalid credentials." })).toBe(false);
   });
 
   it("parses explicit timezone hints on usage-limit retry windows", () => {
