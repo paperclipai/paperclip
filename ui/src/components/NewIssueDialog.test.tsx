@@ -55,6 +55,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
 }));
@@ -375,6 +376,7 @@ describe("NewIssueDialog", () => {
     toastState.pushToast.mockReset();
     navigateMock.mockReset();
     mockIssuesApi.create.mockReset();
+    mockIssuesApi.update.mockReset();
     mockIssuesApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
@@ -1304,6 +1306,59 @@ describe("NewIssueDialog", () => {
     await flush();
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ description: "Investigate the sign-in redirect and fix it" }));
     expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
+  it("waits for every selected upload before binding receipts and waking the task", async () => {
+    dialogState.newIssueDefaults = { title: "Read these images", assigneeAgentId: "worker" };
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-2", status: "backlog", companyId: "company-1" });
+    mockIssuesApi.update.mockResolvedValue({ id: "issue-2", status: "todo", companyId: "company-1" });
+    let finishFirst!: (value: { id: string }) => void;
+    mockIssuesApi.uploadAttachment.mockReturnValueOnce(new Promise(resolve => { finishFirst = resolve; }))
+      .mockResolvedValueOnce({ id: "second-upload" });
+    const { root } = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [
+      new File(["first image"], "first.png", { type: "image/png" }),
+      new File(["second image"], "second.png", { type: "image/png" }),
+    ] });
+    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      status: "backlog", assigneeAgentId: "worker",
+    }));
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+    await act(async () => finishFirst({ id: "first-upload" }));
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledWith("issue-2", {
+      status: "todo", comment: "Files attached when this task was created.",
+      attachmentIds: ["first-upload", "second-upload"],
+    }));
+    expect(mockIssuesApi.update).toHaveBeenCalledTimes(1);
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a task in Backlog with an actionable warning when an upload fails", async () => {
+    dialogState.newIssueDefaults = { title: "Read this image", assigneeAgentId: "worker" };
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-2", status: "backlog", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockRejectedValue(new Error("Upload unavailable"));
+    const { root } = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true,
+      value: [new File(["image"], "image.png", { type: "image/png" })] });
+    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+    await waitForAssertion(() => expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+      tone: "warn", body: expect.stringContaining("task remains in Backlog"),
+    })));
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 

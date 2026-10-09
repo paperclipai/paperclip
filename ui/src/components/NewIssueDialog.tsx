@@ -433,8 +433,16 @@ export function NewIssueDialog() {
       navigateOnCreate,
       ...data
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
-      const issue = await issuesApi.create(companyId, data);
+      // An executable task must not wake its assignee before its selected files
+      // exist. Backlog is the existing durable state that suppresses that wake.
+      const activateAfterUploads = pendingStagedFiles.length > 0
+        && (data.status === "todo" || data.status === "in_progress");
+      let issue = await issuesApi.create(companyId, {
+        ...data,
+        ...(activateAfterUploads ? { status: "backlog" } : {}),
+      });
       const failures: string[] = [];
+      const attachmentIds: string[] = [];
 
       for (const stagedFile of pendingStagedFiles) {
         try {
@@ -447,11 +455,24 @@ export function NewIssueDialog() {
               baseRevisionId: null,
             });
           } else {
-            await issuesApi.uploadAttachment(companyId, issue.id, stagedFile.file);
+            const attachment = await issuesApi.uploadAttachment(companyId, issue.id, stagedFile.file);
+            attachmentIds.push(attachment.id);
           }
         } catch {
           failures.push(stagedFile.file.name);
         }
+      }
+
+      if (activateAfterUploads && failures.length === 0) {
+        // Binding the upload receipts and activating the task in one mutation
+        // produces one wake whose immutable comment contains exactly these files.
+        issue = await issuesApi.update(issue.id, {
+          status: data.status,
+          ...(attachmentIds.length ? {
+            comment: "Files attached when this task was created.",
+            attachmentIds,
+          } : {}),
+        });
       }
 
       return { issue, companyId, failures, navigateOnCreate };
@@ -475,7 +496,7 @@ export function NewIssueDialog() {
       if (failures.length > 0) {
         pushToast({
           title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.${issue.status === "backlog" ? " The task remains in Backlog; add the missing files before starting it." : ""}`,
           tone: "warn",
           action: openIssueAction,
         });

@@ -283,6 +283,42 @@ describe("Board upload receipt to native wake staging", () => {
     expect(wake?.comments[0]?.attachments ?? []).toEqual([]);
   });
 
+  it("activates an uploaded new task once and carries its exact bytes as native prompt content", async () => {
+    await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, issueId));
+    const { attachment, bytes } = await upload();
+    expect(wakeup).not.toHaveBeenCalled();
+    const response = await request(app).patch(`/api/issues/${issueId}`).send({
+      status: "todo", comment: "Files attached when this task was created.", attachmentIds: [attachment.id],
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
+    const contextSnapshot = mergeCoalescedContextSnapshot({}, wakeup.mock.calls[0]![1].contextSnapshot!);
+    const runId = randomUUID();
+    const paperclipWake = await buildPaperclipWakePayload({ db, companyId, agentId, runId, contextSnapshot });
+    expect(paperclipWake?.comments[0]?.attachments).toEqual([expect.objectContaining({ id: attachment.id })]);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system",
+      contextSnapshot: { ...contextSnapshot, paperclipWake } });
+    await db.update(issues).set({ executionRunId: runId, status: "in_progress" }).where(eq(issues.id, issueId));
+    const workspaceRoot = path.join(root, runId);
+    await mkdir(workspaceRoot);
+    for (const executionTargetKind of ["local", "remote"] as const) {
+      const stage = await stageNativeRunnerWakeAttachments({ db, storage, nativePromptContent: true,
+        binding: { companyId, issueId, agentId, runId, workspaceRoot, executionTargetKind } });
+      try {
+        expect(stage.attachments).toEqual([]);
+        expect(stage.promptAttachments).toEqual([{ schema: "paperclip.user_attachment.v1", kind: "text",
+          name: "fresh.txt", mediaType: "text/plain", text: bytes.toString("utf8") }]);
+      } finally { await stage.cleanup(); }
+    }
+    // Revoking the binding after the snapshot must prevent a stale file from
+    // becoming model input, even though its recorded upload ID still exists.
+    await db.update(issueAttachments).set({ issueCommentId: null }).where(eq(issueAttachments.id, attachment.id));
+    await expect(stageNativeRunnerWakeAttachments({ db, storage, nativePromptContent: true,
+      binding: { companyId, issueId, agentId, runId, workspaceRoot, executionTargetKind: "remote" } }))
+      .rejects.toThrow("no longer authorized");
+  });
+
   it.each([
     "foreign_task",
     "foreign_company",
