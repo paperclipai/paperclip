@@ -6050,8 +6050,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         },
       });
-      expect(run.error).toContain("checkout could not be prepared");
+      expect(run.error).toContain("Configured project workspace is unavailable");
+      expect(run.error).toContain("Repair the configured path or repository access");
       const validation = run.resultJson!.workspaceValidation as Record<string, unknown>;
+      expect(validation.baseCwdFallback).toBe(false);
       const materializations = validation.materializationFailures as Array<Record<string, unknown>>;
       expect(materializations).toHaveLength(failures.length);
       expect(materializations.map((failure) => failure.connectionFailure)).toEqual(failures.map((failure) =>

@@ -15,6 +15,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
   companyMemberships,
   companySkills,
   createDb,
@@ -168,6 +169,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
@@ -312,6 +314,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
   });
 
   afterAll(async () => {

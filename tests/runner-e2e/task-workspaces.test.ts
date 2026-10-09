@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runnerMatrix } from "./catalog.js";
-import { gradeTaskWorkspaces, type TaskWorkspaceObservation } from "./task-workspaces-scoring.js";
+import { gradeTaskWorkspaces, isRepositoryPreparationReceipt, type TaskWorkspaceObservation } from "./task-workspaces-scoring.js";
 import { TASK_WORKSPACES_SUITE, taskWorkspaceFiles, taskWorkspacePrompt } from "./task-workspaces-cases.js";
 
 function valid(): TaskWorkspaceObservation {
@@ -42,6 +42,18 @@ describe("task workspace product E2E", () => {
     expect(taskWorkspacePrompt("fixture", 1, true)).toContain("Call prepare_repository twice");
     expect(taskWorkspacePrompt("fixture", 1, false)).toContain("POST /api/issues/$PAPERCLIP_TASK_ID/workspace/repositories twice");
     expect(taskWorkspacePrompt("fixture", 3, true)).not.toContain(taskWorkspaceFiles("fixture").repositoryBytes.trim());
+  });
+  it("recognizes the normalized provider receipt and rejects claims from another source/run", () => {
+    const receipt = { eventType: "tool.execution.completed", payload: { prpEvent: {
+      sourceKind: "runner", runId: "run-1", payload: { name: "paperclip_prepare_repository", status: "completed" },
+    } } };
+    expect(isRepositoryPreparationReceipt(receipt, "run-1")).toBe(true);
+    expect(isRepositoryPreparationReceipt(receipt, "another-run")).toBe(false);
+    receipt.payload.prpEvent.sourceKind = "control_plane";
+    expect(isRepositoryPreparationReceipt(receipt, "run-1")).toBe(false);
+    receipt.payload.prpEvent.sourceKind = "runner";
+    receipt.payload.prpEvent.payload.status = "failed";
+    expect(isRepositoryPreparationReceipt(receipt, "run-1")).toBe(false);
   });
   it("accepts independently consistent persisted observations", () => {
     expect(gradeTaskWorkspaces(valid()).filter(check => !check.passed)).toEqual([]);

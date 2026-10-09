@@ -47,7 +47,7 @@ export function taskWorkspacePrompt(nonce: string, turn: 1 | 2 | 3, native: bool
     `Update ${files.note} to exactly ${JSON.stringify(files.noteBytes(3))}.`,
     `Register ${files.proof} as a downloadable artifact work product with exact title ${files.proof}.`,
   ];
-  return [...content, api,
+  return [...content, "The quoted \\n escapes denote actual LF bytes. Include the final LF when writing each exact string; verify byte counts before finishing.", api,
     turn < 3 ? "Save a short Paperclip task document describing this completed step as its durable work product. Then complete this step and mark the task Done; do not wait for the next user message."
       : "Validate the written and downloaded-proof source bytes before completing the task.",
     native ? "Use paperclip_finish with reportedWorkDisposition done, the current completion contract revision, satisfied objective criterion, real evidence references, and no remaining work for THIS requested step."

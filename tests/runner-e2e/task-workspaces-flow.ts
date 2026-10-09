@@ -8,7 +8,7 @@ import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { collectRunEvents } from "./run-observations.js";
 import { readRegisteredArtifacts } from "./registered-artifact.js";
 import { TASK_WORKSPACES_BUDGET_CENTS, taskWorkspaceFiles, taskWorkspacePrompt } from "./task-workspaces-cases.js";
-import { gradeTaskWorkspaces, type TaskWorkspaceCheckpoint, type TaskWorkspaceObservation } from "./task-workspaces-scoring.js";
+import { gradeTaskWorkspaces, isRepositoryPreparationReceipt, type TaskWorkspaceCheckpoint, type TaskWorkspaceObservation } from "./task-workspaces-scoring.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -111,9 +111,7 @@ export async function runTaskWorkspacesFlow(input: {
           && event.payload.prpEvent.runId === run.id && event.payload.prpEvent.payload?.result?.reportedWorkDisposition === "done")
           && events.some(event => event.eventType === "run.terminal" && event.payload?.prpEvent?.sourceKind === "control_plane"
             && event.payload.prpEvent.runId === run.id && event.payload.prpEvent.payload?.runTerminalState === "succeeded") },
-      prepareCalls: events.filter(event => event.eventType === "tool.execution.completed"
-        && event.payload?.prpEvent?.sourceKind === "runner" && event.payload.prpEvent.runId === run.id
-        && /(?:^|\.)prepare_repository$/.test(String(event.payload.prpEvent.payload?.name)) && event.payload.prpEvent.payload?.status === "completed").length,
+      prepareCalls: events.filter(event => isRepositoryPreparationReceipt(event, run.id)).length,
     };
     if (turn > 1) {
       const repository = view.repositories[0];
@@ -132,7 +130,7 @@ export async function runTaskWorkspacesFlow(input: {
       .filter(lease => lease.issueId === issue!.id && typeof lease.providerLeaseId === "string").map(lease => lease.heartbeatRunId);
     await save(`turn-${turn}`);
     await page.reload();
-    await expect(page.getByTestId("issue-detail-header")).toBeVisible();
+    await expect(page.getByTestId("task-chat-thread-header").getByTestId("issue-detail-header")).toBeVisible();
     await expect(page.getByTestId("task-chat-agent-bubble").filter({ hasText: `TASK-WORKSPACE-${turn}-${nonce}` }).last()).toBeVisible({ timeout: 30_000 });
     await input.capture(`task-files-turn-${turn}`, `Projectless task after turn ${turn}`, `task-files-turn-${turn}.png`);
   }

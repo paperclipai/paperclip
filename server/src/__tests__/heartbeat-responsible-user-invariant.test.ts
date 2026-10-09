@@ -9,6 +9,7 @@ import {
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  authUsers,
   companyMemberships,
   companySkills,
   createDb,
@@ -121,6 +122,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -300,6 +302,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
+    await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
     await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -357,6 +360,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       const { companyId, agentId } = await seedCompany();
       const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
       const commenterUserId = `commenter-${randomUUID()}`;
+      await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
       await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
       const issueId = randomUUID();
       const commentId = randomUUID();

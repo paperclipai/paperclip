@@ -102,8 +102,6 @@ import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
   compactRecord,
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
   isMainIssueWorkspace,
   overrideLane,
   sortAdapterModels,
@@ -2008,26 +2006,7 @@ export function IssueProperties({
                 option.id === (issue.projectId ?? "") && "bg-accent",
               )}
               onClick={() => {
-                if (option.kind === "project") {
-                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  onUpdate({
-                    projectId: option.project.id,
-                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: workspaceIsolationControlsVisible ? defaultMode : null,
-                    executionWorkspaceSettings: workspaceIsolationControlsVisible && option.project.executionWorkspacePolicy?.enabled
-                      ? { mode: defaultMode }
-                      : null,
-                  });
-                } else {
-                  onUpdate({
-                    projectId: null,
-                    projectWorkspaceId: null,
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: null,
-                    executionWorkspaceSettings: null,
-                  });
-                }
+                onUpdate({ projectId: option.kind === "project" ? option.project.id : null });
                 setProjectOpen(false);
               }}
             >

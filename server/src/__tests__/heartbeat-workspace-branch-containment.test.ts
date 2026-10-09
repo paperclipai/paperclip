@@ -15,6 +15,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
   companyMemberships,
   companySkills,
   createDb,
@@ -344,6 +345,7 @@ async function seedBranchContainmentRun(
     createdAt: now,
     updatedAt: now,
   });
+  await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
@@ -932,6 +934,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
     vi.unstubAllEnvs();
   });
 
@@ -976,6 +979,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     };
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     await db.insert(companies).values({ id: companyId, name: "Retained source", issuePrefix, status: "active", defaultResponsibleUserId: "responsible-user" });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Repository replacement", status: "active",
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", baseRef: "HEAD" } } });
@@ -1082,6 +1086,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       status: "active",
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,

@@ -7,11 +7,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   costEvents,
   agents,
+  authUsers,
   agentRuntimeState,
   agentWakeupRequests,
   activityLog,
   budgetPolicies,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   closeRegisteredClients,
@@ -200,6 +202,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   }
 
@@ -279,6 +282,14 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(authUsers).values({
+      id: "responsible-user", name: "Responsible user", email: "workspace-busy@example.test",
+      createdAt: now, updatedAt: now,
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member",
     });
 
     await db.insert(projects).values({

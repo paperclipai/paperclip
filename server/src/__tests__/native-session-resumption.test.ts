@@ -10,6 +10,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
   companyMemberships,
   completionContracts,
   createDb,
@@ -797,6 +798,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         status: "active",
         defaultResponsibleUserId: "responsible-user",
       });
+      await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
       await db
         .insert(projects)

@@ -13,6 +13,7 @@ import {
 import {
   agents,
   companies,
+  authUsers,
   companyMemberships,
   createDb,
   heartbeatRuns,
@@ -113,6 +114,7 @@ describe("durable inbound chat scheduler receipts", () => {
       defaultResponsibleUserId: "board-user",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(authUsers).values({ id: "board-user", name: "Fixture user", email: "board-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,

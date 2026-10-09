@@ -74,3 +74,14 @@ export function gradeTaskWorkspaces(value: TaskWorkspaceObservation) {
     "Every remote turn has a public Daytona environment lease attributed to that run.");
   return checks;
 }
+
+/** Count durable runner receipts, including the provider's normalized tool name. */
+export function isRepositoryPreparationReceipt(event: {
+  eventType?: string;
+  payload?: { prpEvent?: { sourceKind?: string; runId?: string; payload?: { name?: string; status?: string } } };
+}, runId: string) {
+  const receipt = event.payload?.prpEvent;
+  return event.eventType === "tool.execution.completed" && receipt?.sourceKind === "runner"
+    && receipt.runId === runId && receipt.payload?.status === "completed"
+    && ["prepare_repository", "paperclip.prepare_repository", "paperclip_prepare_repository"].includes(receipt.payload.name ?? "");
+}

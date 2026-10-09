@@ -52,6 +52,8 @@ vi.mock("@/api/chatEndpoints", () => ({
     listPrincipals: mocks.links,
   },
 }));
+vi.mock("@/api/projects", () => ({ projectsApi: { list: vi.fn().mockResolvedValue([]) } }));
+vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: vi.fn().mockResolvedValue([]) } }));
 vi.mock("@/api/access", () => ({ accessApi: { listMembers: mocks.members } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { get: vi.fn() } }));
 vi.mock("@/context/BreadcrumbContext", () => ({

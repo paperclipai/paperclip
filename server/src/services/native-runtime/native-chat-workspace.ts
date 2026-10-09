@@ -101,16 +101,26 @@ export type NativeChatProjectWorkspace = {
   providerRef: string | null;
 };
 
+function isNativeChatTaskRoot(scope: NativeChatWorkspaceScope): boolean {
+  const relative = path.relative(scope.instanceRoot, scope.taskRoot);
+  const allowedTask = path.join("isolated-workspaces", segment(scope.companyId), segment(scope.issueId));
+  const legacyParts = relative.split(path.sep);
+  return relative === allowedTask || (
+    legacyParts.length === 4 && legacyParts[0] === "chat-workspaces" &&
+    legacyParts[1] === scope.companyId && /^[a-zA-Z0-9_-]+$/.test(legacyParts[2]!) && legacyParts[3] === scope.issueId
+  );
+}
+
 /** No implicit move from an intentionally configured repository to an empty cwd. */
 export function nativeChatWorkspaceCwd(
   scope: NativeChatWorkspaceScope,
   workspace: NativeChatProjectWorkspace | null,
   reuseExisting: boolean,
 ): string | null {
-  if (!scope.projectId) return workspace === null || (
+  if (!scope.projectId) return isNativeChatTaskRoot(scope) && (workspace === null || (
     workspace.companyId === scope.companyId && workspace.sourceIssueId === scope.issueId &&
     workspace.projectId === null && workspace.cwd === scope.taskRoot && ["active", "idle"].includes(workspace.status)
-  ) ? scope.taskRoot : null;
+  )) ? scope.taskRoot : null;
   if (
     !reuseExisting ||
     !workspace ||
@@ -136,11 +146,7 @@ export async function materializeNativeChatTaskRoot(
     throw new Error("native_chat_workspace_project_requires_isolation");
   let cursor = scope.instanceRoot;
   const relative = path.relative(scope.instanceRoot, scope.taskRoot);
-  const allowedTask = path.join("isolated-workspaces", segment(scope.companyId), segment(scope.issueId));
-  const legacyParts = relative.split(path.sep);
-  const allowedLegacy = legacyParts.length === 4 && legacyParts[0] === "chat-workspaces" &&
-    legacyParts[1] === scope.companyId && /^[a-zA-Z0-9_-]+$/.test(legacyParts[2]!) && legacyParts[3] === scope.issueId;
-  if (relative !== allowedTask && !allowedLegacy) throw new Error("native_chat_workspace_path_not_isolated");
+  if (!isNativeChatTaskRoot(scope)) throw new Error("native_chat_workspace_path_not_isolated");
   for (const part of relative.split(path.sep)) {
     cursor = path.join(cursor, part);
     await mkdir(cursor, { mode: 0o700 }).catch(
