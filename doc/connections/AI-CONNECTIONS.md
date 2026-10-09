@@ -717,3 +717,114 @@ requires a complete `response_wake` object.
 
 Task-card account repair uses the provider reconnect form for routed accounts,
 retaining the saved endpoint, protocol, model aliases, and connection identity.
+
+## Subscription cost reporting
+
+The Costs page shows metered API spend beside the **current monthly subscription
+commitment**. API dollars and both token totals follow the selected date range;
+monthly subscription fees do not. Tokens measure Paperclip work only, while a
+subscription fee covers the entire provider account, including other usage.
+Recorded subscription overages remain separate from the recurring fee.
+
+Agent, user, project, and model cost rows use a right-aligned amount with any
+estimate badge underneath. Each badge reflects that row's own ledger events in
+the selected date range.
+
+Discovery uses the managed AI connection actually selected for a run, or the
+connected accounts visible to the user viewing Costs. An administrator cannot
+probe another user's private credentials. OpenAI identity combines workspace and
+seat claims from the exact bearer token accepted by its usage endpoint, with
+the selected workspace checked against those claims. An editable ID token cannot
+establish identity or grant price-edit access. Claude's OAuth profile combines
+organization and account identity when the token allows profile access. Identity
+keys are company-scoped hashes; reporting never exposes tokens, raw provider IDs,
+or credential hashes. Multiple agents and connections sharing a known paid seat
+count once. Distinct seats remain separate even in the same workspace. Before
+provider verification, each connection grant has its own unconfirmed record;
+local claims alone cannot combine another user's account or billing editors.
+
+Supported exact plan identifiers with a stable account identity map to dated, USD, before-tax web list prices
+in `packages/shared/src/subscriptions.ts`. The UI labels these **Estimated** (or
+**Partially estimated** when combined with user-supplied prices). A generic
+OpenAI Pro, Claude Max, team, or enterprise entitlement does not reliably
+identify the price: it stays **Price unknown** until its owner enters an amount.
+Annual prices are divided by 12 using exact decimal arithmetic. Supported
+currencies are totaled separately; Paperclip does not estimate exchange rates.
+
+Use **Subscriptions → View details → Edit price** to record the amount paid,
+billing cadence, and tracking status. Personal prices are editable by their
+owner; shared prices require AI-connection management permission. When the same
+seat is connected both personally and shared, both its personal owners and
+company connection managers can edit the single fee, regardless of discovery
+order. These billing permissions survive disconnecting a connection; they do
+not grant access to its credentials. Viewers cannot
+edit. Updates append an immutable price revision and reject stale concurrent
+edits. Ending or excluding tracking does not cancel the provider subscription.
+Disconnecting a connection also does not prove that billing stopped, so the fee
+continues until explicitly ended or excluded.
+
+Claude setup tokens can lack profile permission. Grok plan observations currently
+do not supply a verified billing identity. Such connections retain an unconfirmed
+identity and may need manual linking after a credential change. An unconfirmed
+identity requires a user-supplied price before contributing a monthly fee, so
+credential rotations cannot multiply automatic list-price estimates. **Link accounts**
+combines usage and keeps the selected account's price; it is restricted to accounts
+the caller can edit and should only join the same subscription or paid seat.
+Provider observations never overwrite a user-supplied price. Conflicting manual
+prices prevent automatic linking rather than silently choosing one.
+
+Monthly totals and account details include only accounts the viewer may see:
+personal billing owners, company managers of shared fees, and the authorized
+audience of active shared grants. Revoking a grant removes its audience's access
+to the fee. Cost-read permission alone does not reveal
+another member's personal plan, price, owner, or account-linked activity. Billing
+editors retain visibility after disconnection so they can end tracking. Aggregate
+API and subscription run-token totals remain company-wide, as in existing cost
+reports; hidden private accounts are not mislabeled as missing attribution.
+
+Provider lookups run in the background, with a six-hour attempt cache shared by
+server replicas, at most four active provider lookups per process, a 15-second
+request deadline, and a 256 KiB response limit. Failed checks preserve the last
+observed plan and price. The report reads the database only and loads just the
+current price for each account; earlier revisions remain stored for auditing.
+Failed background UI reloads retain the last loaded values and show a short
+status message. Failed discovery offers **Retry account check**.
+
+Each new managed subscription run snapshots its subscription ID. Its cost receipt
+inherits that server-derived ID, outside the immutable monetary receipt hash.
+Switching accounts cannot move an earlier run to the new subscription. Linking
+duplicates resolves historical IDs in reports without rewriting receipts.
+Legacy and unmanaged subscription usage still contributes to the subscription
+token total but is not retroactively assigned to a guessed account. Subscription
+estimates never create finance events, change the inference ledger's dollar
+amounts, or consume agent budgets.
+
+The company-scoped API is documented in OpenAPI:
+
+- `GET /api/companies/:companyId/costs/subscriptions`: current fees and usage for
+  `from`/`to` (inclusive, matching existing cost reports), or `period=all`.
+- `POST /api/companies/:companyId/costs/subscriptions/refresh`: request background
+  discovery for the caller's authorized connections; returns `202` immediately.
+- `PATCH /api/companies/:companyId/costs/subscriptions/:subscriptionId`: save a
+  price with `expectedRevision`, plan, nullable `amountCents`, currency, cadence,
+  and tracking status.
+- `POST /api/companies/:companyId/costs/subscriptions/:subscriptionId/link`: link
+  a duplicate using `targetId`, `expectedRevision`, and `targetRevision`.
+
+Storybook **Costs / Subscriptions** renders the production Costs page with
+interactive fixtures for normal estimates, unknown prices, provider failures,
+and mobile layouts. Its edits affect fixture data only. Focused verification:
+
+```sh
+pnpm exec vitest run server/src/__tests__/subscriptions.test.ts \
+  server/src/__tests__/subscription-routes.test.ts \
+  ui/src/components/SubscriptionCostCard.test.tsx ui/src/pages/Costs.test.tsx
+pnpm check:token-gates
+pnpm storybook
+```
+
+These tests include real PostgreSQL persistence, migration replay, concurrent
+updates, account changes, duplicate identity resolution, ownership, monetary
+receipt replay, unknown prices, and failed provider observations. Provider payloads
+are fixtures; live provider access still depends on the deployment's credentials
+and scopes.
