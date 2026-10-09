@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
-  AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -155,7 +154,7 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
-    status: z.enum(AGENT_STATUSES).optional(),
+    status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });
 

@@ -279,10 +279,11 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
-  it("excludes spend totals from the agent update request", () => {
+  it("documents only writable agent update fields and lifecycle status requests", () => {
     const document = buildOpenApiSpec() as any;
     const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;
     expect(properties).not.toHaveProperty("spentMonthlyCents");
+    expect(properties.status.enum).toEqual(["paused", "idle", "terminated"]);
     expect(properties).toHaveProperty("name");
     expect(properties).toHaveProperty("budgetMonthlyCents");
   });
