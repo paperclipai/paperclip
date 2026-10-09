@@ -510,6 +510,12 @@ export function githubChatWizardService(
       const [prior] = await tx.select().from(chatGitHubRegistrations)
         .where(and(eq(chatGitHubRegistrations.endpointId, id), eq(chatGitHubRegistrations.companyId, bot.companyId)))
         .orderBy(desc(chatGitHubRegistrations.createdAt)).limit(1).for("update");
+      // A failed Cloud start still owns a durable replacement. Retrying the
+      // original request must resume it instead of minting another App route.
+      if (locked && !locked.botExternalId && locked.status === "draft" &&
+          prior?.handoff?.renewalOf === registrationId && prior.userId === userId &&
+          prior.status === "pending" && prior.expiresAt > new Date() &&
+          !prior.consumedAt && !prior.handoff.manifestClaimId) return prior;
       if (!locked || locked.botExternalId || locked.status !== "draft" ||
           !prior || prior.id !== registrationId || prior.userId !== userId || !restartable(prior))
         throw conflict("This registration cannot be restarted. Resume or recover its existing App.");
@@ -522,7 +528,7 @@ export function githubChatWizardService(
         stateHash: hash(returnState), trustedOrigin,
         ownerType: prior.ownerType, ownerLogin: prior.ownerLogin, appName: prior.appName,
         expiresAt: new Date(Date.now() + 30 * 60_000),
-        handoff: { cloudId: nonce(), returnState, redemptionId: nonce() },
+        handoff: { cloudId: nonce(), returnState, redemptionId: nonce(), renewalOf: prior.id },
       }).returning();
       await logActivity(tx as unknown as Db, {
         companyId: bot.companyId, actorType: "user", actorId: userId,

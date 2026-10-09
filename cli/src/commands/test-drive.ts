@@ -150,11 +150,14 @@ async function loopbackPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-export async function resolveTestDriveServerPort(preferredPort = 3100): Promise<number> {
-  for (let port = preferredPort; port <= 65_535; port += 1) {
-    if (await loopbackPortAvailable(port)) return port;
+export async function resolveTestDriveServerPort(preferredPort = 3100, available = loopbackPortAvailable): Promise<number> {
+  if (await available(preferredPort)) return preferredPort;
+  // A saved high port can be occupied. Search the ordinary range instead of
+  // trapping the restarted test drive at the top of the TCP port space.
+  for (let port = 3100; port <= 65_535; port += 1) {
+    if (port !== preferredPort && await available(port)) return port;
   }
-  throw new Error(`No available loopback port found at or above ${preferredPort}.`);
+  throw new Error("No available loopback port found at or above 3100.");
 }
 
 /**

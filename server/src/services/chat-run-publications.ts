@@ -170,7 +170,7 @@ export async function githubRunReplyState(
       if (action.operation === "assessment") {
         if (action.result?.summaryUrl) return "confirmed";
       }
-    } else if (["received", "processing"].includes(action.status) ||
+    } else if (action.result?.replyWriteStarted === true || ["received", "processing"].includes(action.status) ||
       (action.status === "failed" && (action.result?.retryable === true || action.result?.code === "publication_failed")) ||
       // A later authorization denial cannot disprove an earlier ambiguous write.
       (action.status === "cancelled" && Number(action.result?.attempts ?? 0) > 1)) {

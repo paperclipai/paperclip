@@ -197,6 +197,9 @@ export interface ChatEndpointSetupState {
   github?: {
     stage: "setup" | "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
     appSlug?: string;
+    /** Verified by GitHub GET /app, distinct from draft ownership choices. */
+    appOwnerType?: "personal" | "organization";
+    appOwnerLogin?: string;
     installationUrl?: string;
     managementUrl?: string;
     registrationStatus?: "pending" | "completed" | "failed";

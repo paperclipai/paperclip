@@ -13,6 +13,7 @@ import {
   redactTestDriveText,
   resolveTestDriveBootstrap,
   resolveTestDriveDataDir,
+  resolveTestDriveServerPort,
   testDriveCommand,
   type TestDriveApi,
   type TestDriveHarness,
@@ -104,7 +105,7 @@ describe("test-drive data isolation", () => {
     }));
     try {
       await prepareTestDriveEnvironment({ dataDir: root }, os.tmpdir());
-      if (occupied) expect(Number(process.env.PORT)).toBeGreaterThan(savedPort);
+      if (occupied) { expect(Number(process.env.PORT)).not.toBe(savedPort); expect(Number(process.env.PORT)).toBeGreaterThanOrEqual(3100); }
       else expect(Number(process.env.PORT)).toBe(savedPort);
       expect(JSON.parse(fs.readFileSync(configPath, "utf8")).server.port).toBe(savedPort);
       expect(process.env.HOST).toBe("127.0.0.1");
@@ -625,5 +626,18 @@ describe("test-drive foreground lifecycle", () => {
     });
 
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+});
+
+describe("test drive port recovery", () => {
+  it("falls back from an occupied saved port at the top of the range", async () => {
+    const available = vi.fn(async (port: number) => port === 3101);
+    await expect(resolveTestDriveServerPort(65535, available)).resolves.toBe(3101);
+    expect(available.mock.calls.map(([port]) => port)).toEqual([65535, 3100, 3101]);
+  });
+  it("preserves a free saved port before searching the default range", async () => {
+    const available = vi.fn(async () => true);
+    await expect(resolveTestDriveServerPort(3110, available)).resolves.toBe(3110);
+    expect(available).toHaveBeenCalledTimes(1);
   });
 });

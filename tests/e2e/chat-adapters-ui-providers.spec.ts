@@ -68,9 +68,9 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await page.getByRole("button", { name: "Confirm my account" }).click();
   await expect.poll(() => mock.githubIdentityConfirmed).toBe(true);
   await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
-  await expect(page.getByText(provider.resourceLabel, { exact: true })).toBeVisible();
+  await expect(page.getByText("1 repository enabled", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Finish|Verify connection|Refresh access|Save repositories/ })).toHaveCount(0);
-  await page.getByRole("link", { name: "Connection settings", exact: true }).click();
+  await page.getByRole("link", { name: "Bot settings", exact: true }).click();
   await expect(page).toHaveURL(/\/apps\/chat\/endpoint-github\/settings$/);
   const nav = page.getByRole("navigation", { name: "Chat connection" });
   for (const tab of ["Settings", "Access", "Reviews", "Conversations", "Activity"]) {
@@ -292,7 +292,8 @@ test.describe.serial("native chat adapter UI", () => {
       (provider) => provider.provider === "github",
     )!;
     const mock = await installChatControlPlaneMock(page, github, seed, {
-      enableChatConnectors: false,
+      enableChatConnectors: true,
+      enableGitHubReviewBots: false,
     });
 
     await page.goto(`/${seed.prefix}/apps`);
@@ -367,7 +368,8 @@ test.describe.serial("native chat adapter UI", () => {
       page,
     }, testInfo) => {
       const mock = await installChatControlPlaneMock(page, provider, seed, {
-        enableChatConnectors: true,
+        enableChatConnectors: provider.provider !== "github",
+        enableGitHubReviewBots: provider.provider === "github",
       });
 
       await page.goto(`/${seed.prefix}/apps`);

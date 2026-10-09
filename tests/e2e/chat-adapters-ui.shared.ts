@@ -349,10 +349,11 @@ export async function installChatControlPlaneMock(
   seed: Seed,
   {
     enableChatConnectors,
+    enableGitHubReviewBots = false,
     resourceCount = 2,
     photonShared = false,
     automaticSlack = false,
-  }: { enableChatConnectors: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean },
+  }: { enableChatConnectors: boolean; enableGitHubReviewBots?: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
   if (automaticSlack) endpoint.setup.slackSetupMethod = "automatic";
@@ -455,7 +456,7 @@ export async function installChatControlPlaneMock(
       }
       if (operation === "draft") {
         Object.assign(endpoint.setup, { github: { ...endpoint.setup.github, appName: body.name, ownerType: body.ownerType, ownerLogin: body.ownerLogin } });
-        await fulfill(route, endpoint); return;
+        await fulfill(route, { saved: true }); return;
       }
       if (operation === "configuration") {
         if (method === "PUT") { expect(body.expectedRevision).toBe(githubConfiguration.revision); githubConfiguration = { revision: githubConfiguration.revision + 1, configuration: body.configuration as typeof githubConfiguration.configuration }; }
@@ -473,6 +474,14 @@ export async function installChatControlPlaneMock(
         Object.assign(endpoint, { status: "attention", botExternalId: "123456", botUsername: "maya-paperclip[bot]", botLabel: "Maya" });
         Object.assign(endpoint.setup, { github: { stage: "install", appSlug: "maya-paperclip", installationUrl: "https://github.com/apps/maya-paperclip/installations/new", managementUrl: "https://github.com/settings/installations/2468" } });
         await fulfill(route, endpoint); return;
+      }
+      if (operation === "repositories") {
+        const url = new URL(request.url());
+        const offset = Number(url.searchParams.get("offset") ?? 0), limit = Number(url.searchParams.get("limit") ?? 20);
+        const search = (url.searchParams.get("search") ?? "").toLowerCase();
+        const found = resources.filter(row => (row.label ?? row.providerResourceId).toLowerCase().includes(search));
+        await fulfill(route, { items: found.slice(offset, offset + limit), nextOffset: offset + limit < found.length ? offset + limit : null,
+          totalCount: resources.length, enabledCount: resources.filter(row => row.enabled).length, availableCount: resources.length }); return;
       }
       if (operation === "repositories/refresh") { state.githubRepositoryRefreshes++; await fulfill(route, resources); return; }
       if (operation === "verify") {
@@ -548,6 +557,7 @@ export async function installChatControlPlaneMock(
     ) {
       await fulfill(route, {
         enableChatConnectors,
+        enableGitHubReviewBots,
         enableIsolatedWorkspaces: false,
       });
       return;

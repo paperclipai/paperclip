@@ -239,6 +239,12 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.json(await service.saveGitHubSetupProgress(endpointId(req), req.body.stage));
   });
+  router.get("/chat-endpoints/:endpointId/github/reviews/:reviewId", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    const reviewId = z.string().uuid().safeParse(req.params.reviewId);
+    if (!reviewId.success) throw badRequest("Invalid review ID");
+    res.json(await github.review(endpointId(req), reviewId.data));
+  });
   router.get("/chat-endpoints/:endpointId/github/reviews", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await github.reviews(endpointId(req)));

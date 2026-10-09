@@ -630,6 +630,16 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         throw badRequest("Choose a GitHub person or bot account");
       return { githubUserId: String(user.id), login: user.login };
     },
+    review: async (endpointId: string, reviewId: string) => {
+      const bot = await endpoint(endpointId);
+      const [review] = await db.select().from(chatGitHubReviews).where(and(
+        eq(chatGitHubReviews.companyId, bot.companyId),
+        eq(chatGitHubReviews.endpointId, endpointId),
+        eq(chatGitHubReviews.id, reviewId),
+      ));
+      if (!review) throw notFound("This review was not found in this connection");
+      return review;
+    },
     reviews: async (endpointId: string) => {
       const bot = await endpoint(endpointId);
       return db

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions, chatConversations, chatDeliveries, chatEndpoints,
   chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues,
@@ -30,6 +30,17 @@ const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtim
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
 const responseMarker = (source: Source) => `<!-- paperclip-response:${createHash("sha256")
   .update(`${source.endpoint.companyId}:${source.endpoint.id}:${source.delivery.id}`).digest("hex")} -->`;
+
+async function findResponseComment(source: Source, api: Api): Promise<Comment | null> {
+  const list = source.replyId ? `/pulls/${source.number}/comments` : `/issues/${source.number}/comments`;
+  for (let page = 1; page <= 100; page++) {
+    const rows = await api.request<Comment[]>(`${list}?per_page=100&page=${page}`);
+    const found = rows.find(row => row.body?.includes(responseMarker(source)) && row.user?.login === source.endpoint.botUsername);
+    if (found) return found;
+    if (rows.length < 100) return null;
+  }
+  throw conflict("GitHub history is too large to safely recover the response");
+}
 
 /** One durable, App-owned comment per accepted request. Callers hold the same
  * repository publication lease used by agent replies and review summaries. */
@@ -78,12 +89,7 @@ export async function writeGitHubResponseComment(
     if (!previous.body?.includes(marker) || previous.user?.login !== source.endpoint.botUsername)
       throw forbidden("GitHub response is no longer owned by this App");
   } else {
-    for (let page = 1; page <= 100; page++) {
-      const rows = await api.request<Comment[]>(`${list}?per_page=100&page=${page}`);
-      previous = rows.find(row => row.body?.includes(marker) && row.user?.login === source.endpoint.botUsername) ?? null;
-      if (previous || rows.length < 100) break;
-      if (page === 100) throw conflict("GitHub history is too large to safely recover the response");
-    }
+    previous = await findResponseComment(source, api);
   }
   await assertCurrent();
   const alreadyFinal = previous?.body?.includes("<!-- paperclip-response-state:final -->") === true;
@@ -151,48 +157,103 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           throw forbidden("GitHub response binding changed");
       };
       await assertCurrent();
+      let onlyExisting = false;
       if (finalBody === undefined) {
         const existing = await stageResponse(db, source);
-        if (existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
+        const [run] = await db.select().from(heartbeatRuns).innerJoin(chatMessageLinks, and(
+          eq(chatMessageLinks.companyId, source.endpoint.companyId), eq(chatMessageLinks.endpointId, source.endpoint.id),
+          eq(chatMessageLinks.deliveryId, deliveryId), eq(chatMessageLinks.direction, "inbound"),
+          or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
+            sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`),
+        )).where(and(eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`))
+          .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+        if (run && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(run.heartbeat_runs.status)) {
+          const reply = await githubRunReplyState(db, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+            issueId: source.conversation.issueId!, runId: run.heartbeat_runs.id });
+          if (reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+          onlyExisting = reply === "confirmed" && !existing.result?.id;
+          finalBody = reply === "confirmed" ? "This request has been handled. See the response in this conversation."
+            : run.heartbeat_runs.status === "succeeded" ? "This turn ended without publishing a final response. See the Paperclip task for details."
+            : "This turn stopped before completing. See the Paperclip task for details.";
+        } else if (existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
       }
       const token = await githubBotRepositoryToken(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
       const prefix = `/repos/${source.repository.split("/").map(encodeURIComponent).join("/")}`;
       const api: Api = { request: (path, options) => githubBotRequest(lease.fetch, token, `${prefix}${path}`, options) };
+      if (onlyExisting && !(await findResponseComment(source, api))) {
+        const existing = await stageResponse(db, source);
+        await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled", result: { final: true, code: "run_already_answered" }, updatedAt: new Date() }).where(eq(chatActions.id, existing.id)); });
+        return;
+      }
       return writeGitHubResponseComment(db, source, api, lease,
         { body: finalBody ?? "Working on this…", final: finalBody !== undefined,
           acknowledgement: finalBody === undefined, ...(finalBody !== undefined ? { versionAt: new Date() } : {}) }, assertCurrent);
     });
   }
-  async function failRun(input: { companyId: string; endpointId: string; issueId: string; runId: string; body: string }) {
+  async function requestsForRun(input: { companyId: string; endpointId: string; issueId: string; runId: string }) {
     const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-    const commentId = run?.contextSnapshot?.wakeCommentId;
-    if (!run || typeof commentId !== "string") throw forbidden("GitHub failure has no request binding");
-    const [link] = await db.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.companyId, input.companyId),
-      eq(chatMessageLinks.endpointId, input.endpointId), eq(chatMessageLinks.commentId, commentId), eq(chatMessageLinks.direction, "inbound")));
-    if (!link?.deliveryId) throw forbidden("GitHub failure has no request binding");
-    const assertRun = async () => {
-      const source = await context(link.deliveryId!);
-      const [current] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
-      if (!current || current.agentId !== source.endpoint.assignedAgentId ||
-          !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
-          source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
-          (current.nativeIssueId ?? current.contextSnapshot?.issueId) !== input.issueId)
-        throw forbidden("GitHub failure authority changed");
-      if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
-    };
-    return acknowledge(link.deliveryId, input.body, assertRun);
+    if (!run || (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== input.issueId) throw forbidden("GitHub run has no request binding");
+    const ids = [...new Set([run.contextSnapshot?.wakeCommentId, ...(Array.isArray(run.contextSnapshot?.wakeCommentIds) ? run.contextSnapshot.wakeCommentIds : [])].filter((id): id is string => typeof id === "string"))];
+    if (!ids.length) throw forbidden("GitHub run has no request binding");
+    const links = await db.select({ deliveryId: chatMessageLinks.deliveryId }).from(chatMessageLinks)
+      .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId), eq(chatConversations.companyId, input.companyId),
+        eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, input.issueId)))
+      .where(and(eq(chatMessageLinks.companyId, input.companyId), eq(chatMessageLinks.endpointId, input.endpointId),
+        inArray(chatMessageLinks.commentId, ids), eq(chatMessageLinks.direction, "inbound")))
+      .orderBy(asc(chatMessageLinks.createdAt));
+    return { run, links };
+  }
+  async function finishRun(input: { companyId: string; endpointId: string; issueId: string; runId: string },
+    primary: Source, receipt: { id: string; url: string }, api: Api, lease: Lease, assertCurrent: () => Promise<void>) {
+    const { run, links } = await requestsForRun(input);
+    if (run.agentId !== primary.endpoint.assignedAgentId) throw forbidden("GitHub response authority changed");
+    for (const link of links) {
+      if (!link.deliveryId || link.deliveryId === primary.delivery.id) continue;
+      const sibling = await context(link.deliveryId);
+      if (sibling.endpoint.id !== primary.endpoint.id || sibling.number !== primary.number || sibling.replyId !== primary.replyId || sibling.conversation.id !== primary.conversation.id)
+        throw forbidden("Coalesced GitHub response belongs to another conversation");
+      const [response] = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, link.deliveryId), eq(chatActions.kind, "github_response_comment")));
+      if (!response || response.result?.final === true) continue;
+      // Never create a sibling placeholder just to close it. Mark a failed
+      // acknowledgement settled so its maintenance retry cannot post later.
+      if (!response.result?.id && !(await findResponseComment(sibling, api))) {
+        await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled", result: { final: true, code: "run_already_answered" }, updatedAt: new Date() }).where(eq(chatActions.id, response.id)); });
+        continue;
+      }
+      await writeGitHubResponseComment(db, sibling, api, lease, {
+        body: `Handled with the [response to this request](${receipt.url}).`, final: true, versionAt: new Date(),
+      }, async () => { await assertCurrent(); await context(link.deliveryId!); });
+    }
+  }
+  async function failRun(input: { companyId: string; endpointId: string; issueId: string; runId: string; body: string }) {
+    const { run, links } = await requestsForRun(input);
+    let receipt: { id: string; url: string } | undefined;
+    for (const link of links) {
+      if (!link.deliveryId) continue;
+      const assertRun = async () => {
+        const source = await context(link.deliveryId!);
+        const [current] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
+        if (!current || current.agentId !== source.endpoint.assignedAgentId ||
+            !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
+            source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
+            (current.nativeIssueId ?? current.contextSnapshot?.issueId) !== input.issueId)
+          throw forbidden("GitHub failure authority changed");
+        if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
+      };
+      receipt = await acknowledge(link.deliveryId, input.body, assertRun);
+    }
+    if (!receipt) throw forbidden("GitHub failure has no request binding");
+    return receipt;
   }
   async function hasWorkingResponseForRun(input: { companyId: string; endpointId: string; issueId: string; runId: string }) {
-    const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
-    const commentId = run?.contextSnapshot?.wakeCommentId;
-    if (typeof commentId !== "string") return false;
-    const [response] = await db.select({ result: chatActions.result }).from(chatActions)
-      .innerJoin(chatMessageLinks, and(eq(chatMessageLinks.deliveryId, chatActions.deliveryId), eq(chatMessageLinks.companyId, input.companyId),
-        eq(chatMessageLinks.endpointId, input.endpointId), eq(chatMessageLinks.commentId, commentId), eq(chatMessageLinks.direction, "inbound")))
-      .innerJoin(chatConversations, and(eq(chatConversations.id, chatActions.conversationId), eq(chatConversations.companyId, input.companyId),
-        eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, input.issueId)))
-      .where(and(eq(chatActions.companyId, input.companyId), eq(chatActions.endpointId, input.endpointId), eq(chatActions.kind, "github_response_comment")));
-    return Boolean(response?.result?.id && response.result.final !== true);
+    const { links } = await requestsForRun(input);
+    const ids = links.map(link => link.deliveryId).filter((id): id is string => !!id);
+    if (!ids.length) return false;
+    const responses = await db.select({ result: chatActions.result }).from(chatActions).where(and(
+      eq(chatActions.companyId, input.companyId), eq(chatActions.endpointId, input.endpointId),
+      inArray(chatActions.deliveryId, ids), eq(chatActions.kind, "github_response_comment")));
+    return responses.some(response => response.result?.final !== true);
   }
   async function processPending(limit = 10) {
     const rows = await db.select().from(chatActions).where(and(eq(chatActions.kind, "github_response_comment"),
@@ -215,5 +276,5 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`${chatActions.result}->>'id' is null`));
     }
   }
-  return { tryAcknowledge, processPending, failRun, hasWorkingResponseForRun };
+  return { tryAcknowledge, processPending, failRun, finishRun, hasWorkingResponseForRun };
 }

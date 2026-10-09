@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   toggleAll: vi.fn(),
   updateResources: vi.fn(),
   reviews: vi.fn(),
+  review: vi.fn(),
   members: vi.fn(),
   links: vi.fn(),
   setBreadcrumbs: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/api/githubChat", () => ({
     configuration: mocks.config,
     save: mocks.save,
     reviews: mocks.reviews,
+    review: mocks.review,
     repositories: mocks.repositoryPage,
     toggleAllRepositories: mocks.toggleAll,
   },
@@ -69,9 +71,9 @@ vi.mock("@/components/MarkdownBody", () => ({
 // Exercise settings persistence through the shared editor contract. The editor's
 // rich rendering and slash picker have their own tests and a live walkthrough.
 vi.mock("@/components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, ariaLabel, placeholder }: {
-    value: string; onChange: (value: string) => void; ariaLabel: string; placeholder?: string;
-  }) => <textarea aria-label={ariaLabel} placeholder={placeholder} value={value}
+  MarkdownEditor: ({ value, onChange, ariaLabel, placeholder, readOnly }: {
+    value: string; onChange: (value: string) => void; ariaLabel: string; placeholder?: string; readOnly?: boolean;
+  }) => <textarea aria-label={ariaLabel} placeholder={placeholder} value={value} readOnly={readOnly}
     onChange={(event) => onChange(event.target.value)} />,
 }));
 vi.mock("@/lib/router", () => ({
@@ -315,8 +317,8 @@ describe("GitHub bot management", () => {
         step: "complete",
         github: {
           stage: "verify",
-          ownerType: "organization",
-          ownerLogin: "acme",
+          appOwnerType: "organization",
+          appOwnerLogin: "acme",
           appSlug: "old-draft-name",
         },
       },
@@ -343,7 +345,7 @@ describe("GitHub bot management", () => {
         ...branded,
         setup: {
           step: "complete",
-          github: { stage: "verify", ownerType: "personal" },
+          github: { stage: "verify", appOwnerType: "personal" },
         },
       }),
     ).toBe("https://github.com/settings/apps/maya-reviews");
@@ -463,9 +465,11 @@ describe("GitHub bot management", () => {
   });
   it("loads a direct review URL and keeps unknown reviews within the current connection", async () => {
     mocks.reviewId = "review-1";
-    mocks.reviews.mockResolvedValue([
-      review("review-1", "repo", 1, "2026-10-07T10:00:00Z"),
-    ]);
+    mocks.reviews.mockResolvedValue([]);
+    mocks.review.mockImplementation(async (_endpoint, id) => {
+      if (id !== "review-1") throw new Error("not found");
+      return review("review-1", "repo", 1, "2026-10-07T10:00:00Z");
+    });
     await render("reviews");
     await vi.waitFor(() =>
       expect(container.textContent).toContain(
@@ -508,6 +512,36 @@ describe("GitHub bot management", () => {
     await input(container.querySelector("textarea")!, "Still keep the same audience");
     await click("Save changes");
     expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, invocation: "allowed_authors", instructions: "Still keep the same audience" });
+  });
+  it("preserves an invalid score across Access and Settings without saving a stale value", async () => {
+    await render();
+    await input(container.querySelector('input[type="number"]')!, "6");
+    await render("access");
+    expect([...container.querySelectorAll("button")].find(b => b.textContent === "Save changes")?.disabled).toBe(true);
+    await render("settings");
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')!.value).toBe("6");
+    await click("Discard changes");
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')!.value).toBe("5");
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+  it("remembers external-author automation across tab changes", async () => {
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, defaults: { ...base.defaults, invocation: "allowed_authors" } } });
+    await render(); await click("Run automatically");
+    await render("access"); await render("settings"); await click("Run automatically");
+    await input(container.querySelector("textarea")!, "Updated");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults.invocation).toBe("allowed_authors");
+  });
+  it("makes common and event instruction editors read-only throughout a pending save", async () => {
+    let finish!: (value: unknown) => void;
+    mocks.save.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render();
+    await input(container.querySelector("textarea")!, "Saved instructions");
+    await act(async () => [...container.querySelectorAll("summary")].find(s => s.textContent?.includes("Event-specific instructions"))!.click());
+    await click("Save changes");
+    expect([...container.querySelectorAll<HTMLTextAreaElement>("textarea[aria-label]")].every(editor => editor.readOnly)).toBe(true);
+    await act(async () => { finish({ revision: 5, configuration: { ...base, defaults: { ...base.defaults, instructions: "Saved instructions" } } }); });
+    expect(container.querySelector("textarea")!.readOnly).toBe(false);
   });
   it("defaults to a typed score of 5 and preserves report-only and other review decisions", async () => {
     await render();

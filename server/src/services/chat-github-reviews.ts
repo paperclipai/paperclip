@@ -8,7 +8,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
 import { createHash } from "node:crypto";
-import { writeGitHubResponseComment } from "./chat-github-response-comments.js";
+import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -1008,7 +1008,18 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           )
             throw forbidden("GitHub publication context changed");
           await assertPublicationAuthority(source, action);
-          const api = await client(source, lease.fetch);
+          const providerApi = await client(source, lease.fetch);
+          const api: typeof providerApi = { ...providerApi, request: async (path, options) => {
+            if (options?.method && ["POST", "PATCH"].includes(options.method) && /\/(?:comments|reviews)(?:\/|$)/.test(path)) {
+              // Persist uncertainty before transport. A stale head or lost
+              // authority after a write cannot prove the comment never arrived.
+              await lease.commit(async tx => {
+                await tx.update(chatActions).set({ result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || '{"replyWriteStarted":true}'::jsonb`, updatedAt: new Date() })
+                  .where(eq(chatActions.id, action.id));
+              });
+            }
+            return providerApi.request(path, options);
+          } };
           const publicationMarker = marker(
             "publication",
             action.providerActionId,
@@ -1069,6 +1080,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
             receipt = await writeGitHubResponseComment(db, source, api, lease, {
               body: String(action.payload.body), final: operation === "comment", versionAt: action.createdAt,
             }, async () => assertPublicationAuthority(await scope(session, true), action));
+            if (operation === "comment") await githubResponseCommentService(db, fetchImpl).finishRun({ companyId: session.companyId, issueId: source.issue.id, runId: source.run.id, endpointId: source.endpoint.id }, source,
+              receipt as { id: string; url: string }, api, lease, async () => assertPublicationAuthority(await scope(session, true), action));
           } else if (operation === "formal_review") {
             const parsed = formalSchema.parse({
               body: action.payload.body,
@@ -1152,6 +1165,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               "review",
               `${source.endpoint.id}:${source.repositoryId}:${source.number}`,
             );
+            const receipts = { ...review.publicationReceipts };
             let summaryReceipt: { id: number; html_url: string } | null = null;
             if (source.policy.publishSummary) {
               const currentSummarySource = await currentHead(review.headSha);
@@ -1161,9 +1175,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                 body: `${summary}\n\n${summaryMarker}`, final: true, versionAt: action.createdAt,
               }, async () => { await currentHead(review.headSha); });
               summaryReceipt = { id: Number(published.id), html_url: published.url };
+              receipts.summary = { id: published.id, url: published.url, digest: hash(summary) };
+              await lease.commit(async tx => {
+                await tx.update(chatGitHubReviews).set({ summaryId: published.id, summaryUrl: published.url,
+                  publicationReceipts: receipts, updatedAt: new Date() }).where(eq(chatGitHubReviews.id, review.id));
+              });
+              await githubResponseCommentService(db, fetchImpl).finishRun({ companyId: session.companyId, issueId: source.issue.id, runId: source.run.id, endpointId: source.endpoint.id }, source, published, api, lease,
+                async () => { await currentHead(review.headSha); });
             }
             const severity = { info: 0, warning: 1, error: 2 };
-            const receipts = { ...review.publicationReceipts };
             if (source.policy.publishInline)
               for (const finding of assessment.findings) {
                 if (
@@ -1239,11 +1259,11 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     })
                     .onConflictDoNothing();
                 });
-                receipts[key] = {
-                  id: String(posted.id),
-                  url: posted.html_url,
-                  digest: hash(finding),
-                };
+                receipts[key] = { id: String(posted.id), url: posted.html_url, digest: hash(finding) };
+                await lease.commit(async tx => {
+                  await tx.update(chatGitHubReviews).set({ publicationReceipts: receipts, updatedAt: new Date() })
+                    .where(eq(chatGitHubReviews.id, review.id));
+                });
               }
             await currentHead(review.headSha);
             const checks = await api.request<{
@@ -1375,7 +1395,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               .update(chatActions)
               .set({
                 status: superseded || denied ? "cancelled" : "failed",
-                result: {
+                result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || ${JSON.stringify({
                   attempts,
                   retryable: !superseded && !denied && attempts < 8,
                   retryAt: new Date(
@@ -1386,7 +1406,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     : denied
                       ? "authorization_changed"
                       : "publication_failed",
-                },
+                })}::jsonb`,
                 updatedAt: new Date(),
               })
               .where(eq(chatActions.id, action.id));

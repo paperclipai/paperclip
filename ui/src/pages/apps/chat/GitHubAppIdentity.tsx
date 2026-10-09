@@ -15,9 +15,9 @@ export function gitHubAppSettingsUrl(endpoint: ChatEndpoint) {
   const github = endpoint.setup?.github;
   const slug = gitHubBotMention(endpoint)?.slice(1);
   if (!slug) return "https://github.com/settings/apps";
-  if (github?.ownerType === "organization" && github.ownerLogin)
-    return `https://github.com/organizations/${encodeURIComponent(github.ownerLogin)}/settings/apps/${encodeURIComponent(slug)}`;
-  if (github?.ownerType === "personal")
+  if (github?.appOwnerType === "organization" && github.appOwnerLogin)
+    return `https://github.com/organizations/${encodeURIComponent(github.appOwnerLogin)}/settings/apps/${encodeURIComponent(slug)}`;
+  if (github?.appOwnerType === "personal")
     return `https://github.com/settings/apps/${encodeURIComponent(slug)}`;
   // Legacy manual connections may not record ownership type. Never assume it.
   return "https://github.com/settings/apps";

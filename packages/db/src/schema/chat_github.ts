@@ -71,6 +71,7 @@ export const chatGitHubRegistrations = pgTable(
       redemptionId: string;
       returnState: string;
       webhookSecretHash?: string;
+      renewalOf?: string;
       manifestClaimId?: string;
       identityLeaseId?: string;
       identityLeaseExpiresAt?: string;

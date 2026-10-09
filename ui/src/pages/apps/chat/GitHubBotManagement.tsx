@@ -177,18 +177,29 @@ export function GitHubBotManagement({
   });
   const [draft, setDraft] = useState<GitHubConfigurationRecord | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
-  const [scoreValid, setScoreValid] = useState(true);
+  const [scoreText, setScoreText] = useState<string | null>(null);
+  const [automaticMode, setAutomaticMode] = useState<"linked_authors" | "allowed_authors" | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const record = draft ?? query.data;
+  const currentScoreText = scoreText ?? String(record?.configuration.defaults.ratingThreshold ?? 5);
+  const score = Number(currentScoreText);
+  const scoreValid = record?.configuration.defaults.ratingThreshold === null ||
+    (currentScoreText.trim() !== "" && Number.isInteger(score) && score >= 1 && score <= 5);
   const dirty = Boolean(
     draft &&
       JSON.stringify(draft.configuration) !==
         JSON.stringify(query.data?.configuration),
   );
   const edit = (configuration: GitHubChatConfiguration) => {
-    if (record) setDraft({ ...record, configuration });
+    if (record) {
+      if (configuration.defaults.invocation !== "mentions_only")
+        setAutomaticMode(configuration.defaults.invocation);
+      else if (record.configuration.defaults.invocation !== "mentions_only")
+        setAutomaticMode(record.configuration.defaults.invocation);
+      setDraft({ ...record, configuration });
+    }
     setNotice("");
   };
   const act = async (fn: () => Promise<unknown>) => {
@@ -293,7 +304,10 @@ export function GitHubBotManagement({
         ) : (
           <>
             <GitHubPolicyEditor key={editorVersion}
-              onValidityChange={setScoreValid}
+              readOnly={pending}
+              scoreText={currentScoreText}
+              onScoreTextChange={setScoreText}
+              rememberedAutomaticMode={automaticMode ?? (config.defaults.invocation === "mentions_only" ? "linked_authors" : config.defaults.invocation)}
               accessHref={`/apps/chat/${endpoint.id}/access`}
               policy={config.defaults}
               onChange={(defaults) => edit({ ...config, defaults })}
@@ -318,6 +332,8 @@ export function GitHubBotManagement({
             disabled={pending}
             onClick={() => {
               setDraft(null);
+              setScoreText(null);
+              setAutomaticMode(null);
               setEditorVersion((value) => value + 1);
               setError("");
             }}
@@ -338,6 +354,8 @@ export function GitHubBotManagement({
                   saved,
                 );
                 setDraft(null);
+                setScoreText(null);
+                setAutomaticMode(null);
                 setNotice("Changes saved.");
               })
             }
@@ -567,14 +585,14 @@ export function GitHubReviews({
   reviewId?: string;
 }) {
   const query = useQuery({
-    queryKey: ["github-bot-reviews", endpointId],
-    queryFn: () => githubChatApi.reviews(endpointId),
+    queryKey: ["github-bot-reviews", endpointId, reviewId ?? "list"],
+    queryFn: async () => reviewId ? [await githubChatApi.review(endpointId, reviewId)] : githubChatApi.reviews(endpointId),
     refetchInterval: 5000,
   });
   if (query.isError)
     return (
       <p role="alert" className="text-sm text-destructive">
-        Reviews could not be loaded.{" "}
+        {reviewId ? "This review could not be loaded or was not found in this connection." : "Reviews could not be loaded."}{" "}
         <Button variant="link" onClick={() => void query.refetch()}>
           Try again
         </Button>

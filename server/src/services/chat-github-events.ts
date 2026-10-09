@@ -126,6 +126,7 @@ export function githubExplicitMentionEvent(
     // Created comments retain the SDK's identity so alternate delivery paths
     // cannot duplicate a turn. Edits are separate, delivery-deduplicated asks.
     messageId: edited || description ? `mention-event:${deliveryId}` : review ? `review:${reviewId}` : comment!.id,
+    sourceMessageId: comment?.id ?? null,
     body: body.slice(0, 65536),
     sender: envelope.sender,
     edited,

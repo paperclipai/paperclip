@@ -1,3 +1,5 @@
+import { parseMarkdown } from "chat";
+import { githubPublicAttachmentsFromMessage } from "./chat-github-attachments.js";
 import {
   receiptReactionPayload,
   stageReceiptReactionRemovals,
@@ -921,6 +923,8 @@ type LifecycleRuntimeFence = Pick<
 type InboundRuntimeContext = LifecycleRuntimeFence &
   Pick<RuntimeContext, "discordGatewayOwned" | "endpointRuntime">;
 type VerifiedProviderIdentity = {
+  githubOwnerType?: "personal" | "organization";
+  githubOwnerLogin?: string;
   providerAccountId?: string | null;
   providerAccountLabel?: string | null;
   botExternalId?: string | null;
@@ -6273,7 +6277,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         slug?: string;
         name?: string;
         message?: string;
-        owner?: { login?: string };
+        owner?: { login?: string; type?: string };
         permissions?: Record<string, string>;
         events?: string[];
       };
@@ -6337,6 +6341,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         );
       }
       return {
+        githubOwnerType: result.owner?.type === "Organization" ? "organization" : result.owner?.type === "User" ? "personal" : undefined,
+        githubOwnerLogin: result.owner?.login,
         providerAccountId: result.owner?.login,
         providerAccountLabel: result.owner?.login ?? result.name,
         // The App registration id is the stable, immutable endpoint identity.
@@ -9613,6 +9619,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             lastEventAt: null,
             setup: {
               ...current.setup,
+              ...(endpoint.provider === "github" ? { github: { ...current.setup.github, stage: current.setup.github?.stage ?? "connect", appOwnerType: identity.githubOwnerType, appOwnerLogin: identity.githubOwnerLogin } } : {}),
               step: waitingForSlackConfiguration ? "provider_setup" : "test",
               ...(endpoint.provider === "imessage-photon" ? { photonIntakeAfter: (current.setup as InternalSetupState).photonIntakeAfter ?? updatedAt.toISOString() } : {}),
               testStartedAt: waitingForSlackConfiguration
@@ -14576,6 +14583,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       message: {
         providerMessageId: message.id,
+        ...(endpoint.provider === "github" && typeof (message.raw as { githubSourceMessageId?: unknown })?.githubSourceMessageId === "string" && /^[1-9][0-9]*$/.test((message.raw as { githubSourceMessageId: string }).githubSourceMessageId)
+          ? { sourceProviderMessageId: (message.raw as { githubSourceMessageId: string }).githubSourceMessageId } : {}),
         ...(endpoint.provider === "imessage-photon"
           ? { photonReply: photonReplyReference(message.raw) }
           : {}),
@@ -16940,6 +16949,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       };
       message?: {
         providerMessageId?: unknown;
+        sourceProviderMessageId?: unknown;
         text?: unknown;
         mentionedBot?: unknown;
         attachments?: Array<{
@@ -16978,7 +16988,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               attachment.recovery.locator.kind === "teams_inline_image"))
             ? endpointRuntime.rehydrateAttachment(attachment.recovery, {
                 threadId: thread.id,
-                messageId: providerMessageId,
+                messageId: typeof normalized.message?.sourceProviderMessageId === "string" ? normalized.message.sourceProviderMessageId : providerMessageId,
                 runtimeGeneration: originFence?.generation,
                 credentialFingerprint: originFence?.credentialFingerprint,
                 principalExternalId: externalId,
@@ -17044,7 +17054,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               replyTargetGuid: normalized.message.photonReply.guid,
               threadOriginatorPart: normalized.message.photonReply.part,
             }
-          : {},
+          : endpointRuntime.provider === "github" && typeof normalized.message?.sourceProviderMessageId === "string"
+            ? { githubSourceMessageId: normalized.message.sourceProviderMessageId } : {},
       author: {
         userId: externalId,
         userName:
@@ -17532,7 +17543,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       admissionDependencyEventId?: string;
     },
     runtimeContext?: RuntimeContext,
+    githubSourceMapped = false,
   ) {
+    if (!githubSourceMapped && input.threadId.startsWith("github:") && /^[1-9][0-9]*$/.test(input.messageId)) {
+      const requests = await db.select({ id: chatDeliveries.id, messageId: sql<string>`${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId'` })
+        .from(chatDeliveries).innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatDeliveries.endpointId), eq(chatEndpoints.companyId, chatDeliveries.companyId)))
+        .where(and(eq(chatDeliveries.endpointId, input.endpointId), eq(chatEndpoints.provider, "github"),
+          inArray(chatDeliveries.eventKind, ["mention", "message", "direct_message"]),
+          input.admissionDependencyEventId ? ne(chatDeliveries.providerEventId, input.admissionDependencyEventId) : undefined,
+          sql`${chatDeliveries.normalizedEvent}->'message'->>'sourceProviderMessageId' = ${input.messageId}`,
+          sql`${chatDeliveries.normalizedEvent}->'conversation'->>'externalThreadId' = ${input.threadId}`));
+      if (requests.length) {
+        for (const request of requests) await recordLifecycleDelivery({ ...input, messageId: request.messageId,
+          providerEventId: `${input.providerEventId ?? `${input.eventKind}:${input.threadId}:${input.messageId}:${input.revision ?? "once"}`}:${request.id}` }, runtimeContext, true);
+        return;
+      }
+    }
     const durableThreadId = durableExternalThreadIdentity(input.threadId);
     const providerEventId =
       input.providerEventId ??
@@ -27138,12 +27164,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (mention) {
         const thread = endpointRuntime.thread(mention.threadId);
         const message = {
-          id: mention.messageId, threadId: thread.id, text: mention.body,
-          formatted: { type: "root", children: [] }, raw: mention.raw,
+          id: mention.sourceMessageId ?? mention.messageId, threadId: thread.id, text: mention.body,
+          formatted: parseMarkdown(mention.body), raw: { ...mention.raw, githubSourceMessageId: mention.sourceMessageId },
           author: { userId: mention.sender.id, userName: mention.sender.login, fullName: mention.sender.login, isBot: false, isMe: false, isSystem: false },
           metadata: { dateSent: new Date(), edited: mention.edited }, attachments: [], links: [], isMention: true,
         } as unknown as Message;
-        await processMessage(endpoint, thread, message, "mention", true, mention.url, { ...runtimeContext, endpointRuntime }, undefined, null, mention.receiptReactionSupported);
+        message.attachments.push(...githubPublicAttachmentsFromMessage(message));
+        // The request ledger remains delivery-deduplicated; attachment provenance
+        // and later edits retain the native comment identity separately.
+        const requestMessage = { ...message, id: mention.messageId } as Message;
+        await processMessage(endpoint, thread, requestMessage, "mention", true, mention.url, { ...runtimeContext, endpointRuntime }, undefined, null, mention.receiptReactionSupported);
         if (mention.edited) {
           // Admit the new explicit request before its supplemental edit
           // record: an orphan lifecycle receipt must not wait for the old
@@ -27151,7 +27181,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const lifecycle = await githubLifecycleEventFromRequest(request.clone());
           if (lifecycle) await recordLifecycleDelivery({
             endpointId: endpoint.id, ...lifecycle,
-            admissionDependencyEventId: `${durableExternalThreadIdentity(thread.id)}:${message.id}`,
+            admissionDependencyEventId: `${durableExternalThreadIdentity(thread.id)}:${requestMessage.id}`,
           }, runtimeContext);
         }
         return new Response("accepted", { status: 202 });
@@ -33294,7 +33324,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ) => Promise<void>;
   }) {
     if (input.endpoint.provider === "github" && ["failed", "completed"].includes(input.payload.progressState ?? "") &&
-        !input.payload.interactionId && !isExplicitOperatorPublication(input.publication)) {
+        !input.payload.interactionId && !isExplicitOperatorPublication(input.publication) &&
+        (await db.select({ endpointId: chatGitHubConfigurations.endpointId }).from(chatGitHubConfigurations).where(and(
+          eq(chatGitHubConfigurations.companyId, input.endpoint.companyId), eq(chatGitHubConfigurations.endpointId, input.endpoint.id))).limit(1)).length > 0) {
       const runId = runIdFromMilestonePublication(input.publication);
       if (!runId) throw forbidden("GitHub failure has no run binding");
       const receipt = await githubResponseCommentService(db, fetchImpl).failRun({
@@ -37099,15 +37131,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const reply = await githubRunReplyState(db, {
         companyId: publication.companyId, endpointId: publication.endpointId, issueId: publication.issueId, runId,
       });
-      // A pending or ambiguous write may already have arrived. Leave the
-      // fallback queued until its normal governed outbox settles that effect.
+      // A pending or ambiguous write may already have arrived. Suppress the
+      // fallback without changing the governed outbox that owns that effect.
       if (reply === "unsettled") {
-        if (guard) await db.transaction(async tx => {
-          await guard.assertOwned(tx);
-          await tx.update(chatPublications).set({ state: "retry", attempts: publication.attempts,
-            nextAttemptAt: new Date(Date.now() + 1000), updatedAt: new Date() })
-            .where(and(eq(chatPublications.id, publication.id), eq(chatPublications.state, "streaming"),
-              eq(chatPublications.attempts, publication.attempts + 1)));
+        // Quarantine only the automatic fallback. The governed tool outbox
+        // retains the uncertain write; ordinary board messages and question
+        // cards must not wait behind this notice in the conversation FIFO.
+        await db.transaction(async tx => {
+          await guard?.assertOwned(tx);
+          await tx.update(chatPublications).set({ state: "cancelled", nextAttemptAt: null,
+            redactedError: "Automatic fallback suppressed while the GitHub tool reply remains unresolved", updatedAt: new Date() })
+            .where(and(eq(chatPublications.id, publication.id), guard
+              ? and(eq(chatPublications.state, "streaming"), eq(chatPublications.attempts, publication.attempts + 1))
+              : inArray(chatPublications.state, ["pending", "retry"])));
         });
         return true;
       }
@@ -38251,7 +38287,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         await tx.update(chatEndpoints).set({
           status: "attention", botExternalId: identity.botExternalId, botUsername: identity.botUsername,
           botDisplayName: identity.botLabel, providerAccountId: identity.providerAccountId, providerAccountLabel: identity.providerAccountLabel,
-          setup: { ...current.setup, github: { ...current.setup.github, stage: "install", appSlug: slug, installationUrl: `https://github.com/apps/${slug}/installations/new`, registrationStatus: "completed" } },
+          setup: { ...current.setup, github: { ...current.setup.github, appOwnerType: identity.githubOwnerType, appOwnerLogin: identity.githubOwnerLogin, stage: "install", appSlug: slug, installationUrl: `https://github.com/apps/${slug}/installations/new`, registrationStatus: "completed" } },
           healthMessage: "Install the App on GitHub to continue", updatedAt: new Date(),
         }).where(eq(chatEndpoints.id, endpointId));
         if (source === "existing_app") {

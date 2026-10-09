@@ -163,18 +163,23 @@ function GitHubPassingScore({
   value,
   onChange,
   onValidityChange,
+  text: controlledText,
+  onTextChange,
 }: {
+  text?: string;
+  onTextChange?: (text: string) => void;
   value: GitHubReviewPolicy["ratingThreshold"];
   onChange: (value: GitHubReviewPolicy["ratingThreshold"]) => void;
   onValidityChange?: (valid: boolean) => void;
 }) {
   const id = useId();
-  const [text, setText] = useState(String(value ?? 5));
+  const [localText, setLocalText] = useState(String(value ?? 5));
+  const text = controlledText ?? localText;
+  const setText = onTextChange ?? setLocalText;
   const number = Number(text);
   const valid = value === null || (text.trim() !== "" && Number.isInteger(number) && number >= 1 && number <= 5);
-  useEffect(() => setText(String(value ?? 5)), [value]);
+  useEffect(() => setLocalText(String(value ?? 5)), [value]);
   useEffect(() => { onValidityChange?.(valid); }, [valid, onValidityChange]);
-  useEffect(() => () => { onValidityChange?.(true); }, [onValidityChange]);
   return (
     <div className="space-y-3 py-3">
       <Label htmlFor={id}>Passing score</Label>
@@ -194,7 +199,7 @@ function GitHubPassingScore({
         </div>
         <Label className="flex items-center gap-2 text-sm font-normal">
           <Checkbox aria-label="Report only" checked={value === null}
-            onCheckedChange={(checked) => onChange(checked === true ? null : 5)} />
+            onCheckedChange={(checked) => { setText("5"); onChange(checked === true ? null : 5); }} />
           Report only
         </Label>
       </div>
@@ -219,8 +224,16 @@ export function GitHubPolicyEditor({
   onChange,
   accessHref,
   onValidityChange,
+  scoreText,
+  onScoreTextChange,
+  rememberedAutomaticMode,
+  readOnly = false,
 }: {
   accessHref?: string;
+  readOnly?: boolean;
+  scoreText?: string;
+  onScoreTextChange?: (text: string) => void;
+  rememberedAutomaticMode?: "linked_authors" | "allowed_authors";
   policy: GitHubReviewPolicy;
   onChange: (policy: GitHubReviewPolicy) => void;
   onValidityChange?: (valid: boolean) => void;
@@ -273,6 +286,7 @@ export function GitHubPolicyEditor({
           Instructions
         </h2>
         <MarkdownEditor
+          readOnly={readOnly}
           ariaLabel="Agent instructions"
           contentClassName="min-h-32"
           value={policy.instructions}
@@ -303,6 +317,7 @@ export function GitHubPolicyEditor({
             </select>
             <MarkdownEditor
               key={prompt}
+              readOnly={readOnly}
               ariaLabel={`${prompt === "issue_opened" ? "New issue" : eventLabels[prompt]} instructions`}
               contentClassName="min-h-32"
               value={
@@ -354,7 +369,7 @@ export function GitHubPolicyEditor({
           description="Start work without a mention when an allowed person creates an issue or updates a pull request."
           checked={policy.invocation !== "mentions_only"}
           onChange={(enabled) =>
-            set("invocation", enabled ? automaticMode.current : "mentions_only")
+            set("invocation", enabled ? (rememberedAutomaticMode ?? automaticMode.current) : "mentions_only")
           }
         />
         {policy.invocation !== "mentions_only" && (
@@ -481,7 +496,7 @@ export function GitHubPolicyEditor({
             onChange={(value) => set("publishInline", value)}
           />
         </div>
-        <GitHubPassingScore value={policy.ratingThreshold}
+        <GitHubPassingScore value={policy.ratingThreshold} text={scoreText} onTextChange={onScoreTextChange}
           onChange={(value) => set("ratingThreshold", value)} onValidityChange={onValidityChange} />
       </section>
       <div className="divide-y divide-border">

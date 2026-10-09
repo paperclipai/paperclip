@@ -83,5 +83,6 @@ export const githubChatApi = {
       `${path(id)}/people/lookup`,
       { login },
     ),
+  review: (id: string, reviewId: string) => api.get<GitHubTaskReview>(`${path(id)}/reviews/${reviewId}`),
   reviews: (id: string) => api.get<GitHubTaskReview[]>(`${path(id)}/reviews`),
 };

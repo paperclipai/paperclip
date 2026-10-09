@@ -342,7 +342,6 @@ export function ChatEndpointDetail() {
           )}
           </div>
         </div>
-        </div>
         <div className="flex items-center gap-2">
           {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
