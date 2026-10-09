@@ -225,6 +225,31 @@ describeEmbeddedPostgres("goal-attachment policy enforcement", () => {
     ).resolves.toMatchObject({ status: "in_progress" });
   });
 
+  it("rejects checkout once the goal is cleared after the issue was read, not just at create time", async () => {
+    const seeded = await seed(true);
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values(agentRow(seeded.companyId, { id: agentId, name: "Coder" }));
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const goal = await request(app)
+      .post(`/api/companies/${seeded.companyId}/goals`)
+      .send({ title: "G1 — test goal", status: "active" });
+    expect([200, 201]).toContain(goal.status);
+    const issue = await issueService(ctx.db).create(seeded.companyId, {
+      title: "Backlog issue whose goal gets cleared before checkout",
+      status: "backlog",
+      priority: "medium",
+      goalId: goal.body.id,
+    });
+    // Models a concurrent edit landing between checkout's goal read and its
+    // status write: the check must bind to the row's current state, not a
+    // value cached from an earlier read.
+    await ctx.db.update(issues).set({ goalId: null }).where(eq(issues.id, issue!.id));
+
+    await expect(
+      issueService(ctx.db).checkout(issue!.id, agentId, ["backlog"], randomUUID()),
+    ).rejects.toMatchObject({ status: 422, details: { code: "goal_required" } });
+  });
+
   it("allows checkout on a backlog issue carrying the no-goal label", async () => {
     const seeded = await seed(true);
     const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
@@ -302,5 +327,32 @@ describeEmbeddedPostgres("goal-attachment policy enforcement", () => {
       .expect(422);
 
     expect(res.body.code).toBe("goal_required");
+  });
+
+  it("does not retroactively block an unrelated label edit that never touched the no-goal opt-out", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const otherLabel = await request(app)
+      .post(`/api/companies/${seeded.companyId}/labels`)
+      .send({ name: "other", color: "#888888" })
+      .expect(201);
+    // Seeded directly, bypassing the create-time guard, to model a row that
+    // predates this enforcement and never carried the "no-goal" label either.
+    const [grandfathered] = await ctx.db
+      .insert(issues)
+      .values({
+        companyId: seeded.companyId,
+        issueNumber: 1,
+        identifier: "GF-2",
+        title: "Pre-existing violation, no opt-out to lose",
+        status: "todo",
+        goalId: null,
+      })
+      .returning();
+
+    await request(app)
+      .patch(`/api/issues/${grandfathered.id}`)
+      .send({ labelIds: [otherLabel.body.id] })
+      .expect(200);
   });
 });

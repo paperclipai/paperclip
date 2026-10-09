@@ -11093,19 +11093,28 @@ export function issueService(db: Db) {
         // docs/ops/goal-attachment-policy.md: only re-check the invariant when
         // this request actually touches a field the check depends on.
         // Otherwise an unrelated PATCH (reassignment, a comment-adjacent
-        // field) on an issue that already violates the policy —
-        // grandfathered from before this guard existed — would be blocked by
-        // a field it never asked to change. projectId and label edits count
-        // too: resolveNextIssueGoalId can silently null out patch.goalId on a
-        // project move, and a label-only patch can remove the "no-goal"
-        // label — both change the effective goal requirement without
-        // touching status or goalId directly.
+        // field, or a label edit that has nothing to do with "no-goal") on
+        // an issue that already violates the policy — grandfathered from
+        // before this guard existed — would be blocked by a field it never
+        // asked to change. projectId counts too: resolveNextIssueGoalId can
+        // silently null out patch.goalId on a project move. A label edit
+        // only counts when it removes the existing "no-goal" opt-out —
+        // adding or removing an unrelated label must stay exempt.
+        let removesNoGoalOptOut = false;
+        if (nextLabelIds !== undefined) {
+          const currentLabelIds = (await labelMapForIssues(tx, [id])).get(id)?.map(
+            (label: IssueLabelRow) => label.id,
+          ) ?? [];
+          const hadNoGoalLabel = await hasNoGoalLabel(existing.companyId, currentLabelIds, tx);
+          const willHaveNoGoalLabel = await hasNoGoalLabel(existing.companyId, nextLabelIds, tx);
+          removesNoGoalOptOut = hadNoGoalLabel && !willHaveNoGoalLabel;
+        }
         if (
           existing.originKind === "manual" &&
           (issueData.status !== undefined ||
             issueData.goalId !== undefined ||
             issueData.projectId !== undefined ||
-            nextLabelIds !== undefined) &&
+            removesNoGoalOptOut) &&
           (await companyRequiresGoalAttachment(db, existing.companyId, tx))
         ) {
           const effectiveStatus = patch.status ?? existing.status;
@@ -11538,7 +11547,6 @@ export function issueService(db: Db) {
       const issueCompany = await db
         .select({
           companyId: issues.companyId,
-          goalId: issues.goalId,
           originKind: issues.originKind,
         })
         .from(issues)
@@ -11548,24 +11556,6 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
-
-      // docs/ops/goal-attachment-policy.md: checkout is a status transition
-      // into "in_progress" just like a PATCH, and must not be a side door
-      // around the same guard — this is the primary agent-initiated path the
-      // guard exists to cover.
-      if (
-        issueCompany.originKind === "manual" &&
-        (await companyRequiresGoalAttachment(db, issueCompany.companyId))
-      ) {
-        const labelIdsForGoalCheck = (await labelMapForIssues(db, [id])).get(id)?.map(
-          (label: IssueLabelRow) => label.id,
-        ) ?? [];
-        assertGoalAttached({
-          status: "in_progress",
-          goalId: issueCompany.goalId,
-          hasNoGoalLabel: await hasNoGoalLabel(issueCompany.companyId, labelIdsForGoalCheck),
-        });
-      }
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
@@ -11635,27 +11625,57 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await withRoutineExecutionLockStamp(id, checkoutRunId, ({ claimExecutionSlot }) => db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          ...executionSlotStamp(checkoutRunId, claimExecutionSlot),
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null));
+      const updated = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+
+        // docs/ops/goal-attachment-policy.md: checkout is a status transition
+        // into "in_progress" just like a PATCH, and must not be a side door
+        // around the same guard. Re-read goalId and labels under the row
+        // lock just acquired so a concurrent edit can't clear the goal
+        // between the earlier read and this write.
+        if (
+          issueCompany.originKind === "manual" &&
+          (await companyRequiresGoalAttachment(db, issueCompany.companyId, tx))
+        ) {
+          const lockedIssue = await tx
+            .select({ goalId: issues.goalId })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows) => rows[0] ?? null);
+          const labelIdsForGoalCheck = (await labelMapForIssues(tx, [id])).get(id)?.map(
+            (label: IssueLabelRow) => label.id,
+          ) ?? [];
+          assertGoalAttached({
+            status: "in_progress",
+            goalId: lockedIssue?.goalId ?? null,
+            hasNoGoalLabel: await hasNoGoalLabel(issueCompany.companyId, labelIdsForGoalCheck, tx),
+          });
+        }
+
+        return withRoutineExecutionLockStamp(id, checkoutRunId, ({ claimExecutionSlot }) => tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            ...executionSlotStamp(checkoutRunId, claimExecutionSlot),
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null));
+      });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
