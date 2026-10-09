@@ -54,6 +54,11 @@ export function createVoiceCallAttempt(companyId: string, client: typeof voiceSe
           try { journal?.write(attempt); } catch { /* Exact identity still reaches cleanup. */ }
           throw new VoiceSessionStartError(attempt.sessionId, body.details.code === "voice_credits_required" ? "credits_required" : undefined);
         }
+        if (error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status)) {
+          // These responses reject admission before creating a provider call.
+          // Network errors and ambiguous provider outcomes keep their identity.
+          journal?.clear(); attempt = undefined; recovering = false;
+        }
         throw error;
       }
       attempt.sessionId = result.session.id;

@@ -481,6 +481,21 @@ const support = await getEmbeddedPostgresTestSupport();
     const push = () => f.service.pushReplies(25, f.companyId, f.endpointId);
     return {...f, session, publication, push};
   }
+  it("notifies phone questions once and waits for authorized retrieval before later answers", async () => {
+    const f = await pushFixture(), interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({id: interactionId, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only", payload: {version: 1, questions: [{id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{id: "cobalt", label: "Cobalt"}]}]}});
+    await db.update(chatPublications).set({payload: {text: "Which color?", interactionId}}).where(eq(chatPublications.id, f.publication.id));
+    const [later] = await db.insert(chatPublications).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: {text: "Approved later answer"}}).returning();
+    await f.store.enqueuePublication(f.companyId, later.id);
+    await f.push(); await f.push();
+    expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+    expect(f.transport.sendCallMessage.mock.calls[0]?.[1]).toContain("Call get_updates");
+    const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, f.publication.id));
+    expect(reply.deliveredAt).toBeNull();
+    expect(await f.store.runTool(f.toolInput("get_updates", {cursor: 0}))).toMatchObject({updates: [{question: {interactionId}}]});
+    await f.push();
+    expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
+  });
   it("pushes a published phone answer exactly once across concurrent dispatch and restart", async () => {
     const f = await pushFixture();
     await Promise.all([f.push(), f.push()]); await f.push();
@@ -619,21 +634,44 @@ const support = await getEmbeddedPostgresTestSupport();
     const response = await f.service.inbound.lifecycle(endpoint.publicId, signed.body, signed.headers);
     const capability = (response as {toolSecrets: {paperclip_session_token: string}}).toolSecrets.paperclip_session_token;
     const [call] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.providerSessionId, providerSessionId));
-    const tool = (name: "submit_request" | "get_updates", args: unknown, toolId = randomUUID()) => {
+    const tool = async (name: "submit_request" | "get_updates", args: unknown, toolId = randomUUID()) => {
       const signed = sign({session_id: providerSessionId, tool_call_id: toolId, idempotency_key: `${providerSessionId}:${toolId}`, tool: name, args});
-      return f.service.tool(endpoint.publicId, signed.body, {...signed.headers, authorization: `Bearer ${capability}`});
+      const result = await f.service.tool(endpoint.publicId, signed.body, {...signed.headers, authorization: `Bearer ${capability}`});
+      Object.assign(call, (await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0]);
+      return result;
     };
     return {...f, call, event, signed, sign, response, endpoint, capability, tool};
   }
+  it("bounds admission and retains no task for abandoned public rings", async () => {
+    const f = await inboundFixture(true);
+    expect(f.call.intakeIssueId).toBeNull(); expect(f.call.sessionId).toBeNull();
+    expect(await f.tool("get_updates", {cursor: 0})).toMatchObject({status: "ready_for_intake"});
+    for (let i = 1; i < 10; i++) {
+      const sessionId = randomUUID();
+      const signed = f.sign({...f.event, call_id: sessionId, session_id: sessionId});
+      await f.service.inbound.lifecycle(f.endpoint.publicId, signed.body, signed.headers);
+    }
+    const blockedId = randomUUID(), blocked = f.sign({...f.event, call_id: blockedId, session_id: blockedId});
+    await expect(f.service.inbound.lifecycle(f.endpoint.publicId, blocked.body, blocked.headers)).rejects.toMatchObject({status: 409});
+    expect(await f.service.inbound.lifecycle(f.endpoint.publicId, f.signed.body, f.signed.headers)).toEqual(f.response);
+    expect(await db.select().from(issues).where(eq(issues.originId, f.endpointId))).toHaveLength(0);
+    expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId))).map(session => session.id)).toEqual([f.sessionId]);
+    const ended = f.sign({type: "call.status", call_id: f.event.call_id, status: "ended"});
+    await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+    await db.update(chatVoiceInboundCalls).set({expiresAt: new Date(Date.now() - 8 * 86_400_000), updatedAt: new Date(Date.now() - 8 * 86_400_000)}).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    await f.service.inbound.reconcile(100);
+    expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(0);
+  });
   it("pins a connection-selected sandbox only to its new public task", async () => {
     const sandboxId = randomUUID();
     await db.insert(environments).values({id: sandboxId, name: `Phone sandbox ${sandboxId}`, driver: "sandbox", config: {provider: "daytona"}});
     const f = await inboundFixture(true, sandboxId);
+    expect(f.call.intakeIssueId).toBeNull();
+    expect((await f.tool("submit_request", {text: "Hello"})).status).toBe("accepted");
     const [task] = await db.select().from(issues).where(eq(issues.id, f.call.intakeIssueId!));
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(task.executionWorkspaceSettings).toMatchObject({mode: "isolated_workspace", environmentId: sandboxId, workspaceStrategy: {type: "cloud_sandbox"}});
     expect(agent.defaultEnvironmentId).not.toBe(sandboxId);
-    expect((await f.tool("submit_request", {text: "Hello"})).status).toBe("accepted");
     await db.update(issues).set({executionWorkspaceSettings: {mode: "isolated_workspace", environmentId: randomUUID()}}).where(eq(issues.id, task.id));
     await expect(f.tool("get_updates", {cursor: 0})).rejects.toMatchObject({status: 403});
   });
@@ -653,6 +691,9 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.response.systemPrompt).toContain("How much disk space do you have on your computer?");
     expect(f.response.systemPrompt).toContain("What is the capital of France?");
     expect(f.response.idleRePrompts).toMatchObject({enabled: true, delayMs: 5000, maxPrompts: 10, messages: ["I'm still working on it."]});
+    expect(f.call.intakeIssueId).toBeNull();
+    const first = await f.tool("submit_request", {text: "Help me draft a public inquiry"}, toolId);
+    expect(first).toMatchObject({status: "accepted", authorization: "guest_intake"});
     const [task] = await db.select().from(issues).where(eq(issues.id, f.call.intakeIssueId!));
     expect(task.description).toContain("You are on a live phone call");
     expect(task.description).toContain("Immediately post a brief, caller-safe task comment");
@@ -660,8 +701,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.issueId, task.id));
     expect(conversation.communicationGuidance).toContain("Keep your existing identity, runtime, tools");
     expect(conversation.communicationGuidance).toContain("own low-trust task");
-    const first = await f.tool("submit_request", {text: "Help me draft a public inquiry"}, toolId);
-    expect(first).toMatchObject({status: "accepted", authorization: "guest_intake"});
     expect(await f.tool("submit_request", {text: "Help me draft a public inquiry"}, toolId)).toEqual(first);
     await expect(f.tool("submit_request", {text: "Changed replay"}, toolId)).rejects.toMatchObject({status: 409});
     expect(await f.service.inbound.lifecycle(f.endpoint.publicId, f.signed.body, f.signed.headers)).toEqual(f.response);
@@ -715,6 +754,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
   it("retains both spoken sides once on the public call task and preserves quarantine", async () => {
     const f = await inboundFixture(true), now = new Date().toISOString();
+    await f.tool("submit_request", {text: "Help draft an inquiry"});
     f.transport.callReport.mockResolvedValue({complete: true, transcript: [
       {id: "caller-turn", index: 0, speaker: "caller", text: "Help draft an inquiry", startedAt: now, endedAt: null, interrupted: false},
       {id: "agent-turn", index: 1, speaker: "agent", text: "Here is your draft", startedAt: now, endedAt: null, interrupted: true},

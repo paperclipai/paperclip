@@ -317,6 +317,10 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       if (replay) throw conflict("Voice webhook id was already used for a different tool call");
       let deliveryId: string | null = null, response: Record<string, unknown>;
       if (input.envelope.tool === "submit_request") {
+        if (session.callerAuthority === "guest_intake") {
+          const requests = await tx.select({id: chatVoiceToolCalls.id}).from(chatVoiceToolCalls).where(and(eq(chatVoiceToolCalls.sessionId, session.id), eq(chatVoiceToolCalls.tool, "submit_request"))).limit(20);
+          if (requests.length >= 20) throw conflict("This call has reached its message limit. Continue in Paperclip.");
+        }
         deliveryId = await input.accept(tx, context, input.envelope.args.text, input.envelope.tool_call_id);
         const delivery = await tx.select({ id: chatDeliveries.id }).from(chatDeliveries).where(and(eq(chatDeliveries.id, deliveryId), eq(chatDeliveries.companyId, session.companyId), eq(chatDeliveries.endpointId, session.endpointId))).then((rows) => rows[0]);
         if (!delivery) throw conflict("Voice request was not durably accepted");
