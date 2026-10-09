@@ -1999,6 +1999,9 @@ export function buildInviteOnboardingTextDocument(
 
     Use your runtime's normal skill or instruction installation path.
 
+    ## Working through Paperclip
+    ${EXTERNAL_AGENT_TOOL_GUIDANCE}
+
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
 
