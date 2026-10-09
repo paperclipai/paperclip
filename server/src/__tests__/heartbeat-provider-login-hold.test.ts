@@ -17,7 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
-import { providerLoginHoldService } from "../services/provider-login-hold.ts";
+import { PROVIDER_LOGIN_HOLD_DEFAULTS, providerLoginHoldService } from "../services/provider-login-hold.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -130,6 +130,24 @@ describeEmbeddedPostgres("heartbeat provider login hold", () => {
     });
   }
 
+  async function insertRevision(
+    companyId: string,
+    agentId: string,
+    changedKeys: string[],
+    beforeEnv: Record<string, unknown>,
+    afterEnv: Record<string, unknown>,
+    beforeExtra: Record<string, unknown> = {},
+  ) {
+    const snapshot = (env: Record<string, unknown>) => ({ adapterType: "claude_local", adapterConfig: { env }, runtimeConfig: {} });
+    await db.insert(agentConfigRevisions).values({
+      companyId,
+      agentId,
+      changedKeys,
+      beforeConfig: { ...snapshot(beforeEnv), ...beforeExtra },
+      afterConfig: snapshot(afterEnv),
+    });
+  }
+
   // A manual wake from a user. It resolves its identity from the receipt.
   async function insertQueuedRun(companyId: string, agentId: string, contextSnapshot: Record<string, unknown> = {}) {
     const wakeupRequestId = randomUUID();
@@ -225,19 +243,64 @@ describeEmbeddedPostgres("heartbeat provider login hold", () => {
     const companyId = await insertCompany();
     const agentId = await insertAgent(companyId);
     await insertFinishedRun(companyId, agentId, 1, "claude_auth_required");
-    await db.insert(agentConfigRevisions).values({
-      companyId,
-      agentId,
-      changedKeys: ["adapterConfig"],
-      beforeConfig: {},
-      afterConfig: {},
-    });
+    await insertRevision(companyId, agentId, ["adapterConfig"], { CLAUDE_CONFIG_DIR: "/srv/old-login" }, {});
     const run = await insertQueuedRun(companyId, agentId);
 
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
 
     expect((await runStatus(run))?.status).toBe("succeeded");
+  });
+
+  it("keeps the hold when an edit does not change the login settings", async () => {
+    const companyId = await insertCompany();
+    const agentId = await insertAgent(companyId);
+    await insertFinishedRun(companyId, agentId, 1, "claude_auth_required");
+    await insertRevision(companyId, agentId, ["name"], {}, {}, { name: "Old name" });
+    const run = await insertQueuedRun(companyId, agentId);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await runStatus(run))?.status).toBe("queued");
+  });
+
+  it("reads lane history past the runs of an agent whose login changed", async () => {
+    const companyId = await insertCompany();
+    const failedAgent = await insertAgent(companyId);
+    const movedAgent = await insertAgent(companyId);
+    await insertFinishedRun(companyId, failedAgent, 1, "claude_auth_required");
+    // Successes with the previous login of the moved agent, newer than the failure.
+    for (let index = 0; index < 61; index += 1) await insertFinishedRun(companyId, movedAgent, 0.5 - index / 1000, null);
+    await insertRevision(companyId, movedAgent, ["adapterConfig"], { CLAUDE_CONFIG_DIR: "/srv/old-login" }, {});
+    const run = await insertQueuedRun(companyId, failedAgent);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await runStatus(run))?.status).toBe("queued");
+  });
+
+  it("does not renew the grant of a probe that is claimed again", async () => {
+    const companyId = await insertCompany();
+    const failedAgent = await insertAgent(companyId);
+    const firstAgent = await insertAgent(companyId);
+    const secondAgent = await insertAgent(companyId);
+    await insertFinishedRun(companyId, failedAgent, 6, "claude_auth_required");
+    const first = await insertQueuedRun(companyId, firstAgent);
+    const second = await insertQueuedRun(companyId, secondAgent);
+    const load = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then((rows) => rows[0]!);
+    const hold = providerLoginHoldService(db, { ...PROVIDER_LOGIN_HOLD_DEFAULTS, probeTimeoutMs: 400 });
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    expect(await hold.evaluate(await load(first))).toMatchObject({ hold: false, probe: true });
+    await pause(250);
+    expect(await hold.evaluate(await load(first))).toMatchObject({ hold: false, probe: true });
+    expect(await hold.evaluate(await load(second))).toMatchObject({ hold: true, reason: "probe_in_flight" });
+    await pause(250);
+    // The grant expired: the stuck probe yields and another run may probe.
+    expect(await hold.evaluate(await load(first))).toMatchObject({ hold: true, reason: "probe_expired" });
+    expect(await hold.evaluate(await load(second))).toMatchObject({ hold: false, probe: true });
   });
 
   it("grants one probe across separate service instances", async () => {
