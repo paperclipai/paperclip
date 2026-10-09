@@ -91,13 +91,28 @@ The service in `services/agent-lifecycle.ts` supplies these integrations to the
 module. The module does not import services or routes. Shared record queries
 and validation functions are in `lib/`. They do not call lifecycle commands.
 The application supplies the worker driver at startup.
-Configuration writes call `invalidateAgentVerification` when execution
-configuration changes during setup. This narrow persistence operation requires
-the configuration transaction. It locks the agent and invalidates the old result.
-It cannot approve, pause, resume, or terminate an agent.
+`updateConfiguration` owns the transaction for an ordinary configuration update.
+The module locks the agent. The configuration service validates and prepares the
+patch. The module saves it and invalidates an old verification result when
+execution configuration changes during setup. The service then updates dependent
+records and saves the configuration revision in the same transaction.
+There is no separate invalidation operation for callers.
 Configuration writes reject caller-supplied lifecycle fields.
 For `updateAndTransition`, lifecycle owns the transaction and calls the
-configuration service through an injected operation. Both changes commit together.
+same configuration operation. Both changes commit together.
+
+Some workflows must save an agent reference and their own records together.
+The module exposes `configuration.ts` for these transactions. Only
+`services/agent-configuration-transaction.ts` can import it.
+This service supplies the module integrations. It cannot save a configuration
+without the module's invalidation check.
+Its permitted callers are secret binding approval, Connection adoption, runner
+pairing, avatar updates, instruction revisions, and skill reassignment.
+The boundary check lists these callers. Ordinary callers use the root command.
+Budget changes always use a root command so enforcement follows the commit.
+The transaction integration cannot approve, pause, resume, or terminate an agent.
+It does not start a worker before the caller commits. The periodic scan recovers
+pending setup work after the commit.
 
 Manual, budget, and company pause holds are independent.
 A manual resume does not remove a budget or company hold.
@@ -199,3 +214,5 @@ An older process can write the legacy status without the new lifecycle checks.
 Tests and migration fixtures can write records directly.
 Production creation and lifecycle state writes must use the lifecycle module.
 Production record deletion must also use the lifecycle module.
+Execution configuration writes must use the module. The offline worktree seed
+command can disable timers in a copied database before the server starts.

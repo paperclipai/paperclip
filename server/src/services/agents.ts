@@ -17,7 +17,6 @@ import {
   configPatchFromSnapshot,
 } from "../lib/agent-records.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
-import { agentConfigurationService } from "./agent-configuration.js";
 
 export { hasAgentShortnameCollision, deduplicateAgentName } from "../lib/agent-records.js";
 
@@ -28,7 +27,8 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     hydrateAgentSpend,
     getById
   } = agentRecordQueries(db);
-  const updateAgent = agentConfigurationService(db, budgetHooks).update;
+  const updateAgent = (...args: Parameters<ReturnType<typeof createAgentLifecycle>["updateConfiguration"]>) =>
+    createAgentLifecycle(db, budgetHooks).updateConfiguration(...args);
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];

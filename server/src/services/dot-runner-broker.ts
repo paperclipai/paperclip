@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -13,7 +14,6 @@ import type { PublicMcpToolExtension } from "./public-mcp/dot-runner.js";
 import { boardAuthService } from "./board-auth.js";
 import { logActivity } from "./activity-log.js";
 import { authorizationService } from "./authorization.js";
-import { agentService } from "./agents.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -149,7 +149,7 @@ function createBroker(db: Db) {
         if (!grant || grant.agentId || !agent || !canConfigureAgentConnection(agent)) throw fail("Pairing authority is unavailable.");
         await tx.update(bindings).set({ grantId: grant.id, status: "connected", pairingCodeHash: null, pairingExpiresAt: null, updatedAt: new Date() }).where(eq(bindings.id, b.id));
         await tx.update(mcpOauthGrants).set({ agentId: b.agentId }).where(eq(mcpOauthGrants.id, grant.id));
-        await agentService(tx as unknown as Db).update(agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: b.id } },
+        await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: b.id } },
           { recordRevision: { createdByUserId: b.operatorId, source: "dot-pairing" } });
         await logActivity(tx as unknown as Db, { companyId: b.companyId, actorType: "user", actorId: b.operatorId,
           action: "dot.paired", entityType: "agent", entityId: b.agentId, details: { bindingId: b.id, generation: b.generation } });
@@ -433,7 +433,7 @@ function createBroker(db: Db) {
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).for("update");
         if (agent?.adapterConfig.dotBindingId === b.id) {
           const { dotBindingId: _removed, ...adapterConfig } = agent.adapterConfig;
-          await agentService(tx as unknown as Db).update(agentId, { adapterConfig },
+          await updateAgentConfigurationInTransaction(tx as unknown as Db, agentId, { adapterConfig },
             { recordRevision: { createdByUserId: operatorId, source: "dot-revoke" } });
         }
         await tx.update(assignments).set({ status: "fenced" }).where(and(eq(assignments.bindingId, b.id), inArray(assignments.status, ["offered", "accepted"])));

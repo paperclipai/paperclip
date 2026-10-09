@@ -5,7 +5,7 @@ import { budgetServiceInTransaction, deliverBudgetEnforcement, policyBlocks, typ
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { deleteAgentDependencies } from "./agent-deletion.js";
-import { agentConfigurationService } from "./agent-configuration.js";
+import { prepareAgentConfiguration, completeAgentConfiguration } from "./agent-configuration.js";
 import { prepareAgentHire, initializeAgentHire, prepareAgentHireApproval, completeAgentHireApproval } from "./agent-hiring.js";
 import { trackIdleWork } from "./task-admission.js";
 
@@ -25,7 +25,8 @@ export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lif
     recordCreation: (db, companyId, agentId) => recordResourceCreationEvent(db, companyId, "agent", agentId),
     recordStatus: recordAgentStatusEvent,
     clearPrimary: clearPrimaryAgent,
-    updateConfiguration: (db, id, data, options, publications) => agentConfigurationService(db, hooks).update(id, data, options, publications),
+    prepareConfiguration: prepareAgentConfiguration,
+    completeConfiguration: completeAgentConfiguration,
     prepareHire: prepareAgentHire,
     initializeHire: initializeAgentHire,
     prepareHireApproval: prepareAgentHireApproval,

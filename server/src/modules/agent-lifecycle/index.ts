@@ -4,6 +4,8 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
+import { updateAgentConfiguration } from "./adapters/configuration.js";
+import type { AgentConfigurationPatch, UpdateAgentOptions } from "../../lib/agent-records.js";
 import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
 import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js";
@@ -26,9 +28,6 @@ export function scheduleAgentLifecycle(db: Db, id: string) {
   // The periodic sweep retries work if the process stops before this call.
   return workers.get(db)?.process(id).catch(() => {});
 }
-
-// Only configuration persistence can invalidate verification inside its transaction.
-export { invalidateAgentVerification } from "./adapters/configuration.js";
 
 export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
   assertRootDatabase(db);
@@ -59,11 +58,20 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
     },
     approveHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "approved", userId, note),
     rejectHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "rejected", userId, note),
-    async updateAndTransition(id: string, command: "pause" | "resume" | "terminate", data: Parameters<LifecycleEffects["updateConfiguration"]>[2], options?: Parameters<LifecycleEffects["updateConfiguration"]>[3]) {
+    async updateConfiguration(id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
+      const existing = await records.getById(id);
+      if (!existing) return null;
+      const agent = await effects.transaction(db, existing.companyId, (tx, publications) =>
+        updateAgentConfiguration(tx, effects, id, data, options, publications));
+      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId);
+      scheduleAgentLifecycle(db, id);
+      return agent;
+    },
+    async updateAndTransition(id: string, command: "pause" | "resume" | "terminate", data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
       const existing = await records.getById(id);
       if (!existing) return null;
       const agent = await effects.transaction(db, existing.companyId, async (tx, publications) => {
-        await effects.updateConfiguration(tx, id, data, options, publications);
+        await updateAgentConfiguration(tx, effects, id, data, options, publications);
         await createLifecycleStore(tx, effects).change(id, command, { reason: command === "resume" ? "user" : "manual" });
         return agentRecords(tx, effects).getById(id);
       });

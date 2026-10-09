@@ -1,4 +1,4 @@
-import { createAgentLifecycle as createLifecycleCommands, invalidateAgentVerification } from "../index.js";
+import { createAgentLifecycle as createLifecycleCommands } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../company-deletion.js";
@@ -6,7 +6,7 @@ import { requireServerAdapter } from "../../../adapters/index.js";
 import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
 import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
 import { approvalService } from "../../../services/approvals.js";
-import { agentConfigurationService } from "../../../services/agent-configuration.js";
+import { updateAgentConfigurationInTransaction } from "../../../services/agent-configuration-transaction.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { readFileSync } from "node:fs";
 import express from "express";
@@ -527,17 +527,71 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await lifecycle.get(agent.id))!.lifecycleVersion).toBeGreaterThan(claimed.lifecycleVersion);
   });
 
-  it("rolls back configuration and verification invalidation in the credential transaction", async () => {
+  it("invalidates only changed execution configuration during setup", async () => {
+    const lifecycle = createAgentLifecycle(db);
     const agent = await hire();
     const before = await current(agent.id);
-    await expect(invalidateAgentVerification(db, agent.id)).rejects.toThrow("configuration transaction");
-    await expect(agentConfigurationService(db).update(agent.id, { name: "Uncommitted" }, undefined, []))
-      .rejects.toThrow("require a transaction");
+    await lifecycle.updateConfiguration(agent.id, { name: "Profile only" });
+    await lifecycle.updateConfiguration(agent.id, { adapterConfig: before.adapterConfig });
+    expect((await current(agent.id)).lifecycleVersion).toBe(before.lifecycleVersion);
+    await lifecycle.updateConfiguration(agent.id, { runtimeConfig: { heartbeat: { enabled: false } } });
+    expect((await current(agent.id)).lifecycleVersion).toBe(before.lifecycleVersion + 1);
+    const work = worker();
+    await work.process(agent.id);
+    const ready = await current(agent.id);
+    expect(ready.lifecycleState).toBe("ready");
+    await lifecycle.updateConfiguration(agent.id, { adapterConfig: { command: "echo" } });
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", lifecycleVersion: ready.lifecycleVersion });
+  });
+
+  it("records only the changed configuration fields for a legacy appearance", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Legacy", appearance: null }).returning();
+    await createAgentLifecycle(db).updateConfiguration(agent.id, { name: "Renamed" },
+      { recordRevision: { source: "test", createdByUserId: "board" } });
+    const revisions = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id));
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0].changedKeys).toEqual(["name"]);
+    expect(revisions[0].beforeConfig.appearance).toEqual(revisions[0].afterConfig.appearance);
+  });
+
+  it("accepts the unchanged resolved appearance of a pending hire", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pending legacy", status: "pending_approval", appearance: null }).returning();
+    const resolved = await agentConfiguration(db).getById(agent.id);
+    await expect(createAgentLifecycle(db).updateConfiguration(agent.id, { appearance: resolved!.appearance }))
+      .resolves.toMatchObject({ id: agent.id });
+    await expect(createAgentLifecycle(db).updateConfiguration(agent.id, { name: "Changed" }))
+      .rejects.toThrow("Pending approval agent configuration cannot be changed");
+  });
+
+  it("rolls back a root configuration command when dependent records fail", async () => {
+    const agent = await hire();
+    const before = await current(agent.id);
+    const effects = createAgentLifecycleEffects();
+    const lifecycle = createLifecycleCommands(db, { ...effects, completeConfiguration: async (...args) => {
+      await effects.completeConfiguration(...args);
+      throw new Error("Configuration completion failed");
+    } });
+    await expect(lifecycle.updateConfiguration(agent.id, { adapterConfig: { command: "echo" } },
+      { recordRevision: { source: "test", createdByUserId: "board" } })).rejects.toThrow("Configuration completion failed");
+    expect(await current(agent.id)).toMatchObject({ adapterConfig: before.adapterConfig,
+      lifecycleVersion: before.lifecycleVersion, lifecycleOperation: before.lifecycleOperation });
+    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
+  });
+
+  it("rolls back configuration and verification invalidation in the binding transaction", async () => {
+    const agent = await hire();
+    const before = await current(agent.id);
+    await expect(updateAgentConfigurationInTransaction(db, agent.id, { name: "Uncommitted" }))
+      .rejects.toThrow("requires a database transaction");
+    expect(() => updateAgentConfigurationInTransaction(db, agent.id, { budgetMonthlyCents: 100 } as never))
+      .toThrow("Budget changes require a root lifecycle command");
+    await expect(db.transaction(async tx => agentConfiguration(tx as unknown as Db).update(agent.id, { name: "Uncommitted" })))
+      .rejects.toThrow("root database");
     await expect(db.transaction(async tx => {
-      await agentConfiguration(tx as unknown as Db).update(agent.id, { adapterConfig: { command: "echo" } });
+      await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, { adapterConfig: { command: "echo" } });
       expect((await tx.select().from(agents).where(eq(agents.id, agent.id)))[0].lifecycleVersion).toBe(before.lifecycleVersion + 1);
-      throw new Error("Credential change failed");
-    })).rejects.toThrow("Credential change failed");
+      throw new Error("Binding change failed");
+    })).rejects.toThrow("Binding change failed");
     expect(await current(agent.id)).toMatchObject({ adapterConfig: before.adapterConfig,
       lifecycleVersion: before.lifecycleVersion, lifecycleOperation: before.lifecycleOperation });
   });

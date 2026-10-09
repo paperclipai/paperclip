@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -699,7 +700,7 @@ export function createSecretProposalsService(db: Db) {
       }
       adapterConfig[proposal.configPath] = binding;
     }
-    const updated = await agentSvc.update(target.id, { adapterConfig }, {
+    const updated = await updateAgentConfigurationInTransaction(txDb, target.id, { adapterConfig }, {
       recordRevision: { createdByUserId: resolvedByUserId, source: "patch" },
     });
     if (!updated) throw notFound("Target agent not found");

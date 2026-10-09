@@ -1,15 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
+import { agentRecordQueries, jsonEqual, type AgentConfigurationPatch, type UpdateAgentOptions } from "../../../lib/agent-records.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { AgentLifecycleConflict } from "../domain/policy.js";
+import type { LifecycleEffects } from "./effects.js";
 
-/** Configuration and verification invalidation must commit together. */
-export async function invalidateAgentVerification(tx: Db, id: string) {
-  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Verification invalidation requires the configuration transaction");
-  const [agent] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
-  if (!agent || !["preparing", "verifying", "resuming"].includes(agent.lifecycleState)) return;
-  await tx.update(agents).set({ lifecycleVersion: agent.lifecycleVersion + 1, lifecycleError: null,
-    lifecycleOperation: { ...agent.lifecycleOperation!, id: randomUUID(), hostComplete: false,
+export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
+  for (const field of ["status", "pauseReason", "pausedAt", "lifecycleState", "lifecycleRequiredPluginIds", "lifecycleHolds", "lifecycleVersion", "lifecycleError", "lifecycleOperation"]) {
+    if (Object.prototype.hasOwnProperty.call(data, field)) throw new AgentLifecycleConflict("Use an agent lifecycle command to change lifecycle state");
+  }
+  const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+  if (!current) return null;
+  const patch = await effects.prepareConfiguration(tx, current, data, options);
+  const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
+    Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
+  const invalidate = changed && ["preparing", "verifying", "resuming"].includes(current.lifecycleState);
+  const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
+    lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
+    lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,
       completedPluginIds: [], leaseOwner: undefined, leaseUntil: undefined, retryAt: undefined },
-  }).where(and(eq(agents.id, id), inArray(agents.lifecycleState, ["preparing", "verifying", "resuming"])));
+  } : {}) }).where(eq(agents.id, id)).returning();
+  await effects.completeConfiguration(tx, current, updated, patch, options, publications);
+  return agentRecordQueries(tx).getById(id);
 }

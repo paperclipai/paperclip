@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const protectedFields = new Set(["pauseReason", "pausedAt", "lifecycleState", "lifecycleVersion", "lifecycleError", "lifecycleOperation", "lifecycleRequiredPluginIds", "lifecycleHolds"]);
-export function agentLifecycleWriteViolations(source) {
+const protectedFields = new Set(["pauseReason", "pausedAt", "lifecycleState", "lifecycleVersion", "lifecycleError", "lifecycleOperation", "lifecycleRequiredPluginIds", "lifecycleHolds", "adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"]);
+export function agentLifecycleWriteViolations(source, file = "") {
   const aliases = [...source.matchAll(/\bagents(?:\s+as\s+(\w+))?\s*[,}]/g)].map(match => match[1] ?? "agents");
   const violations = [];
   const text = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
@@ -14,6 +14,8 @@ export function agentLifecycleWriteViolations(source) {
         ? "Use the agent lifecycle module to delete an agent"
         : "Use the agent lifecycle module to insert an agent"); continue; }
       for (const field of protectedFields) {
+        // The offline seed copy disables timers before any server can verify or run an agent.
+        if (field === "runtimeConfig" && file === "cli/src/commands/worktree.ts") continue;
         if (new RegExp(`(?<![\\w.])${field}\\s*(?=:|[,}])`).test(chain)) violations.push(`Use the agent lifecycle module to change ${field}`);
       }
       if (/\bstatus\s*:/.test(chain) && !chain.includes(`eq(${alias}.lifecycleState, "ready")`)) {

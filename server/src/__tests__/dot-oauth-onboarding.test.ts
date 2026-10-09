@@ -43,6 +43,27 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     return f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
       redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
   }
+
+  it("invalidates setup when a broker pairing is applied or revoked", async () => {
+    const f = await fixture(undefined, "preparing");
+    const consent = await f.oauth.consent(f.id, { type: "board", source: "session", userId: f.userId },
+      { decision: "approve", companyId: f.company.id, allowWrites: false });
+    const tokens = await f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
+      redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
+    const principal = await f.oauth.authenticate(tokens.access_token);
+    const broker = dotRunnerBroker(db);
+    await broker.pair(principal, f.pairing.pairingCode);
+    const [paired] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(paired.adapterConfig.dotBindingId).toBe(f.pairing.bindingId);
+    expect(paired.lifecycleVersion).toBe(f.agent.lifecycleVersion + 1);
+    await expect(broker.pair(principal, f.pairing.pairingCode)).rejects.toThrow("Pairing code expired or was consumed");
+
+    await broker.revoke(f.company.id, f.agent.id, f.userId);
+    const [revoked] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(revoked.adapterConfig).not.toHaveProperty("dotBindingId");
+    expect(revoked.lifecycleVersion).toBe(paired.lifecycleVersion + 1);
+    await expect(f.oauth.authenticate(tokens.access_token)).rejects.toThrow();
+  });
   it.each(["preparing", "verifying"])("allows Dot setup during %s without allowing task access", async (state) => {
     const f = await fixture(undefined, state);
     const tokens = await connect(f);

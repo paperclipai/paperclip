@@ -10,6 +10,10 @@ const defaultServerSrc = resolve(repoRoot, "server/src");
 const defaultModulesRoot = resolve(defaultServerSrc, "modules");
 const layerNames = new Set(["domain", "application", "adapters"]);
 const databasePackages = ["@paperclipai/db", "drizzle-orm", "embedded-postgres", "postgres"];
+const configurationTransactionCallers = new Set([
+  "services/secret-proposals.ts", "services/connection-intents.ts", "services/dot-runner-broker.ts",
+  "services/public-mcp/oauth.ts", "services/agent-profile-avatar.ts", "services/agent-instruction-revisions.ts", "services/company-skills.ts",
+]);
 
 function normalizedRelative(from, to) {
   return relative(from, to).split(sep).join("/");
@@ -100,6 +104,12 @@ export function scanModuleBoundaries({
       const targetSegments = targetServerSegments(serverSrc, target);
       const targetLocation = target ? moduleLocation(modulesRoot, target) : null;
 
+      if (/^services\/agent-configuration-transaction\.(?:js|ts)$/.test(targetSegments.join("/")) &&
+          !configurationTransactionCallers.has(normalizedRelative(serverSrc, sourceFile))) {
+        addViolation(violations, sourceLabel, sourceLocation?.layer ?? null, specifier,
+          "configuration transaction integration is limited to its explicit workflow callers");
+      }
+
       if (sourceLocation?.moduleName === "agent-lifecycle" &&
           (targetSegments.includes("services") || targetSegments.includes("routes"))) {
         addViolation(violations, sourceLabel, sourceLocation.layer, specifier,
@@ -142,9 +152,11 @@ export function scanModuleBoundaries({
 
       if (targetLocation && sourceLocation?.moduleName !== targetLocation.moduleName) {
         const targetRelative = normalizedRelative(resolve(modulesRoot, targetLocation.moduleName), target);
+        const configurationIntegration = /^configuration\.(?:js|ts)$/.test(targetRelative) &&
+          normalizedRelative(serverSrc, sourceFile) === "services/agent-configuration-transaction.ts";
         const companyDeletionIntegration = /^company-deletion\.(?:js|ts)$/.test(targetRelative) &&
           normalizedRelative(serverSrc, sourceFile) === "services/company-deletion.ts";
-        if (targetRelative !== "index.js" && targetRelative !== "index.ts" && !companyDeletionIntegration) {
+        if (targetRelative !== "index.js" && targetRelative !== "index.ts" && !companyDeletionIntegration && !configurationIntegration) {
           addViolation(
             violations,
             sourceLabel,

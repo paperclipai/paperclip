@@ -49,5 +49,10 @@ An error must roll back all database changes in the deletion transaction.
 
 Call each module explicitly in dependency order. No module registry is required.
 
+The agent lifecycle module also has a restricted `configuration.ts` entry point.
+It saves configuration and invalidates verification in the caller's transaction.
+The [lifecycle guide](../../../doc/AGENT-LIFECYCLE.md) lists its permitted callers.
+Ordinary configuration updates use the root lifecycle command.
+
 The [agent lifecycle module](../../../doc/AGENT-LIFECYCLE.md) owns agent creation,
 pause, resume, and termination. Use its commands for these changes.

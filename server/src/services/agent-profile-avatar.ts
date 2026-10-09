@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import sharp from "sharp";
@@ -5,7 +6,6 @@ import { agents, assets, companies, type Db } from "@paperclipai/db";
 import { MAX_AGENT_AVATAR_BYTES, resolveAgentAppearance, agentAvatarUrl, setAgentAvatarSchema, type SetAgentAvatarInput } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { StorageService } from "../storage/types.js";
-import { agentService } from "./agents.js";
 import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
 
 /** Decode and re-encode: exclude SVG, animation, metadata and unbounded pixel counts. No URL fetching. */
@@ -60,7 +60,7 @@ export async function setAgentProfileAvatar(db: Db, storage: StorageService, com
           createdByUserId: actor.actorType === "user" ? actor.actorId : null }).returning();
         appearance.customAvatarAssetId = asset!.id;
       }
-      await agentService(txDb).update(agentId, { appearance }, { recordRevision: {
+      await updateAgentConfigurationInTransaction(txDb, agentId, { appearance }, { recordRevision: {
         createdByAgentId: actor.agentId, createdByUserId: actor.actorType === "user" ? actor.actorId : null, source: "avatar-upload",
       } });
       await logActivity(txDb, { ...actor, companyId, action: "agent.avatar_updated", entityType: "agent", entityId: agentId,
