@@ -1668,6 +1668,7 @@ is required.
 
 - store only hashed agent API keys
 - redact secrets in logs (`adapter_config`, auth headers, env vars)
+- mask URL userinfo in workspace-operation output and API log pages, including historical local logs, without rewriting forensic files
 - forward authorized semantic tool arguments unchanged, including credential-bearing document and instruction content; the provider harness owns credential-content policy, and diagnostic redaction must not act as a save or execution gate
 - CSRF protection for board session endpoints
 - rate limit auth and key-management endpoints

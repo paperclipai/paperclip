@@ -827,7 +827,7 @@ function trimToLastBytes(value: string, limit: number) {
   return Buffer.from(value, "utf8").subarray(byteLength - limit).toString("utf8");
 }
 
-function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
+export function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
   const limit = Math.max(1, Math.trunc(maxBytes));
   let text = "";
   let truncated = false;

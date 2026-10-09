@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
@@ -24,6 +27,9 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
+import { createLocalFileWorkspaceOperationLogStore } from "../services/workspace-operation-log-store.js";
+import { workspaceOperationService } from "../services/workspace-operations.js";
+import { createProcessOutputCapture } from "../services/workspace-runtime.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -32,11 +38,15 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const previousPrivacyMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+  const previousLogRoot = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+  let logRoot: string;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-privacy-routes-");
     db = createDb(tempDb.connectionString);
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    logRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-private-operation-logs-"));
+    process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = logRoot;
   }, 120_000);
 
   afterEach(async () => {
@@ -56,6 +66,9 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
   afterAll(async () => {
     if (previousPrivacyMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousPrivacyMode;
+    if (previousLogRoot === undefined) delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+    else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = previousLogRoot;
+    await fs.rm(logRoot, { recursive: true, force: true });
     await tempDb?.cleanup();
   });
 
@@ -314,6 +327,199 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       expect(linkedIssues.status).toBe(200);
       expect(linkedIssues.body[0]).toMatchObject({ issueId: fixture.issueId, title: "Confidential email triage" });
     }
+  });
+
+  it("redacts historical operation URL userinfo for board and agent HTTP readers across byte pages", async () => {
+    const fixture = await seedFixture();
+    const credential = "synthetic-reader:synthetic-password";
+    const url = `postgresql://${credential}@db.example.test/app`;
+    const store = createLocalFileWorkspaceOperationLogStore(logRoot);
+    const handle = await store.begin({ companyId: fixture.companyId, operationId: fixture.operationId });
+    await store.append(handle, {
+      stream: "stdout",
+      chunk: `connect ${url} complete`,
+      ts: new Date().toISOString(),
+    });
+    const filePath = path.join(logRoot, handle.logRef);
+    const original = await fs.readFile(filePath);
+    const credentialOffset = original.indexOf(credential);
+    const expected = Buffer.from(original);
+    expected.fill(0x2a, credentialOffset, credentialOffset + credential.length);
+    await db.update(workspaceOperations)
+      .set({ logRef: handle.logRef, stdoutExcerpt: `connect ${url} complete`, command: `echo ${url}` })
+      .where(eq(workspaceOperations.id, fixture.operationId));
+
+    for (const app of [
+      createBoardApp(fixture.companyId, fixture.ownerUserId),
+      createApp(fixture.companyId, fixture.ownerAgentId),
+    ]) {
+      const list = await request(app)
+        .get(`/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`);
+      expect(list.status).toBe(200);
+      expect(list.body[0].stdoutExcerpt).toContain("postgresql://[REDACTED]@db.example.test/app");
+      expect(JSON.stringify(list.body)).not.toContain(credential);
+
+      let offset = 0;
+      while (offset < original.length) {
+        const page = await request(app)
+          .get(`/api/workspace-operations/${fixture.operationId}/log?offset=${offset}&limitBytes=7`);
+        expect(page.status).toBe(200);
+        const nextOffset = page.body.nextOffset ?? original.length;
+        expect(page.body.content).toBe(expected.subarray(offset, nextOffset).toString("utf8"));
+        offset = nextOffset;
+      }
+    }
+    expect(await fs.readFile(filePath)).toEqual(original);
+  });
+
+  it("redacts 4096-character historical excerpts cut inside userinfo for all supported hosts", async () => {
+    const fixture = await seedFixture();
+    const credential = "synthetic-reader:synthetic-password";
+    const apps = [
+      createBoardApp(fixture.companyId, fixture.ownerUserId),
+      createApp(fixture.companyId, fixture.ownerAgentId),
+    ];
+    for (const hostAndPath of [
+      "db.example.test?sslmode=require", "[::1]:5432/app", "/app", "?host=db.example.test/app",
+    ]) {
+      const url = `postgresql://${credential}@${hostAndPath}`;
+      const cut = url.indexOf("synthetic-password") + 5;
+      const excerpt = (url + "x".repeat(4096 - (url.length - cut))).slice(-4096);
+      const exposedTail = url.slice(cut, url.indexOf("@"));
+      expect(excerpt).toHaveLength(4096);
+      expect(excerpt).toContain(exposedTail);
+      await db.update(workspaceOperations)
+        .set({ stdoutExcerpt: excerpt })
+        .where(eq(workspaceOperations.id, fixture.operationId));
+
+      for (const app of apps) {
+        const list = await request(app)
+          .get(`/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`);
+        expect(list.status).toBe(200);
+        expect(list.body[0].stdoutExcerpt).toContain(`[REDACTED]@${hostAndPath}`);
+        expect(list.body[0].stdoutExcerpt).not.toContain(exposedTail);
+      }
+    }
+  });
+
+  it("does not persist or return a credential when operation output ends before @", async () => {
+    const fixture = await seedFixture();
+    const credential = "synthetic-reader:synthetic-password";
+    const operation = await workspaceOperationService(db)
+      .createRecorder({ companyId: fixture.companyId, heartbeatRunId: fixture.privateRunId, issueId: fixture.issueId })
+      .recordOperation({
+        phase: "provision",
+        run: async (reportProgress) => {
+          await reportProgress({ stdout: `connect postgres://${credential}` });
+          return { status: "succeeded" };
+        },
+      });
+
+    const stored = await fs.readFile(path.join(logRoot, operation.logRef!), "utf8");
+    const row = await db.select().from(workspaceOperations)
+      .where(eq(workspaceOperations.id, operation.id)).then((rows) => rows[0]!);
+    expect(stored).not.toContain(credential);
+    expect(row.stdoutExcerpt).toContain("postgres://[REDACTED]");
+    const app = createApp(fixture.companyId, fixture.ownerAgentId);
+    const list = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`);
+    const log = await request(app).get(`/api/workspace-operations/${operation.id}/log`);
+    expect(list.status).toBe(200);
+    expect(log.status).toBe(200);
+    expect(JSON.stringify(list.body)).not.toContain(credential);
+    expect(JSON.stringify(log.body)).not.toContain(credential);
+  });
+
+  it("redacts new operation records when stdout arrives in separate progress chunks", async () => {
+    const fixture = await seedFixture();
+    const credential = "synthetic-reader:it's-a-password";
+    const url = `postgres://${credential}@db.example.test/app`;
+    const operation = await workspaceOperationService(db)
+      .createRecorder({ companyId: fixture.companyId, heartbeatRunId: fixture.privateRunId, issueId: fixture.issueId })
+      .recordOperation({
+        phase: "provision",
+        command: `echo ${url}`,
+        metadata: { connection: url },
+        run: async (reportProgress) => {
+          await reportProgress({ stdout: "connect postgres://synthetic-reader:it'" });
+          await reportProgress({ stdout: "s-a-password@db.example.test/app complete" });
+          return { status: "succeeded", stderr: `retry ${url}` };
+        },
+      });
+
+    const row = await db.select().from(workspaceOperations)
+      .where(eq(workspaceOperations.id, operation.id)).then((rows) => rows[0]!);
+    expect(JSON.stringify(row)).not.toContain(credential);
+    expect(row.stdoutExcerpt).toContain("postgres://[REDACTED]@db.example.test/app");
+    const stored = await fs.readFile(path.join(logRoot, operation.logRef!), "utf8");
+    expect(stored).not.toContain(credential);
+    const app = createApp(fixture.companyId, fixture.ownerAgentId);
+    const list = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`);
+    const log = await request(app).get(`/api/workspace-operations/${operation.id}/log`);
+    expect(list.status).toBe(200);
+    expect(log.status).toBe(200);
+    expect(JSON.stringify(list.body)).not.toContain(credential);
+    expect(JSON.stringify(log.body)).not.toContain(credential);
+  });
+
+  it("keeps one plain stdout without a newline in one stored event", async () => {
+    const fixture = await seedFixture();
+    const output = "ordinary operation completed";
+    const operation = await workspaceOperationService(db)
+      .createRecorder({ companyId: fixture.companyId, heartbeatRunId: fixture.privateRunId, issueId: fixture.issueId })
+      .recordOperation({ phase: "provision", run: async () => ({ status: "succeeded", stdout: output }) });
+    const stored = await fs.readFile(path.join(logRoot, operation.logRef!), "utf8");
+    const events = stored.trimEnd().split("\n").map((line) => JSON.parse(line) as { stream: string; chunk: string });
+    expect(events).toEqual([expect.objectContaining({ stream: "stdout", chunk: output })]);
+  });
+
+  it("hides a process capture cut inside userinfo in new and historical HTTP log pages", async () => {
+    const fixture = await seedFixture();
+    const limit = 256 * 1024;
+    const credential = "synthetic-reader:synthetic-password";
+    const url = `postgresql://${credential}@db.example.test/app`;
+    const cut = url.indexOf("synthetic-password") + 5;
+    const fullOutput = url + "x".repeat(limit + cut - url.length);
+    const capture = createProcessOutputCapture(limit);
+    capture.append(fullOutput);
+    const captured = capture.finish();
+    expect(captured.truncated).toBe(true);
+    const tail = captured.text.slice(captured.text.indexOf("\n") + 1);
+    const exposedTail = url.slice(cut, url.indexOf("@"));
+    expect(tail.startsWith(`${exposedTail}@db.example.test/app`)).toBe(true);
+
+    const operation = await workspaceOperationService(db)
+      .createRecorder({ companyId: fixture.companyId, heartbeatRunId: fixture.privateRunId, issueId: fixture.issueId })
+      .recordOperation({ phase: "provision", run: async () => ({ status: "succeeded", stdout: captured.text }) });
+    const stored = await fs.readFile(path.join(logRoot, operation.logRef!), "utf8");
+    expect(stored).not.toContain(exposedTail);
+    const app = createApp(fixture.companyId, fixture.ownerAgentId);
+    const newPage = await request(app).get(`/api/workspace-operations/${operation.id}/log?offset=0&limitBytes=160`);
+    expect(newPage.status).toBe(200);
+    expect(newPage.body.content).not.toContain(exposedTail);
+
+    const store = createLocalFileWorkspaceOperationLogStore(logRoot);
+    const historical = await store.begin({ companyId: fixture.companyId, operationId: fixture.operationId });
+    await store.append(historical, { stream: "stdout", chunk: captured.text, ts: new Date().toISOString() });
+    const filePath = path.join(logRoot, historical.logRef);
+    const original = await fs.readFile(filePath);
+    const credentialOffset = original.indexOf(exposedTail);
+    expect(credentialOffset).toBeGreaterThan(0);
+    const expected = Buffer.from(original);
+    expected.fill(0x2a, credentialOffset, credentialOffset + exposedTail.length);
+    await db.update(workspaceOperations)
+      .set({ logRef: historical.logRef, stdoutExcerpt: captured.text.slice(0, 4096) })
+      .where(eq(workspaceOperations.id, fixture.operationId));
+    const list = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`);
+    expect(list.status).toBe(200);
+    expect(JSON.stringify(list.body)).not.toContain(exposedTail);
+    for (const offset of [0, credentialOffset, credentialOffset + 4]) {
+      const page = await request(app)
+        .get(`/api/workspace-operations/${fixture.operationId}/log?offset=${offset}&limitBytes=7`);
+      expect(page.status).toBe(200);
+      expect(page.body.content).toBe(expected.subarray(offset, offset + 7).toString("utf8"));
+      expect(page.body.nextOffset).toBe(offset + 7);
+    }
+    expect(await fs.readFile(filePath)).toEqual(original);
   });
 
   it("returns no linked issue metadata to a non-member", async () => {
