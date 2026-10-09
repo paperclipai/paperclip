@@ -4486,12 +4486,18 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
-  "preserves old warm-attach authority and event ownership across %s",
-  async (mode) => {
+it.each([
+  { mode: "held-ack", observeAfterActivation: false },
+  { mode: "lost-ack", observeAfterActivation: false },
+  { mode: "lost-ack", observeAfterActivation: true },
+  { mode: "rejected-attach", observeAfterActivation: false },
+] as const)(
+  "preserves old warm-attach authority and event ownership across $mode (late observer: $observeAfterActivation)",
+  async ({ mode, observeAfterActivation }) => {
     const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-ack-"));
     const callsPath = join(stateDirectory, "calls.log");
     const cores: DurablePrpControlPlane[] = [];
+    const retirements: DurablePrpControlPlane["store"]["state"][] = [];
     const effects = new Map<string, { event: PrpEvent; deliveries: number }>();
     const handles: ReturnType<typeof durableControlPlane.spawnRunner>[] = [];
     let armed = false;
@@ -4512,6 +4518,14 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       ) {
         const core = new OriginalCore({
           ...options,
+          beforeAuthenticatedConnection: async (input) => {
+            await options.beforeAuthenticatedConnection?.(input);
+            if (input.identity.runId !== core.store.state.identity.runId) {
+              // The authenticated new peer retires the old epoch. The facade's
+              // rotateRunIdentity observer may run after that state is gone.
+              retirements.push(structuredClone(core.store.state));
+            }
+          },
           onCommittedEvent: async (event) => {
             await options.onCommittedEvent?.(event);
             const prior = effects.get(event.sourceEventId);
@@ -4623,6 +4637,19 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const oldIdentity = structuredClone(core.store.state.identity);
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
+      if (observeAfterActivation) {
+        const getCommand = core.getCommand.bind(core);
+        vi.spyOn(core, "getCommand").mockImplementation((id) => {
+          const command = getCommand(id);
+          // Delay only the facade's observation. The real protocol must finish
+          // the old ACK/replay and authenticate the new run independently.
+          return command?.type === "run.attach" &&
+            command.status === "completed" &&
+            core.store.state.identity.runId === oldIdentity.runId
+            ? { ...command, status: "pending" }
+            : command;
+        });
+      }
       const rotations: (typeof core.store.state)[] = [];
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
@@ -4663,6 +4690,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           "run.attach cannot change the durable Codex provider profile",
         );
         expect(rotations).toHaveLength(0);
+        expect(retirements).toHaveLength(0);
         expect(core.store.state.identity).toEqual(oldIdentity);
         expect((await readRunner()).runId).toBe(oldIdentity.runId);
         const read = await within(
@@ -4697,10 +4725,17 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        if (observeAfterActivation) {
+          expect(rotations[0]!.identity.runId).toBe("run-warm-ack-next");
+        }
+        expect(retirements).toHaveLength(1);
+        const retired = retirements[0]!;
+        expect(retired.identity).toEqual(oldIdentity);
+        expect(retired.warmTransition?.phase).toBe("prepared");
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;
+        expect(attachedEvent).toBeDefined();
         expect(attachedEvent.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,
