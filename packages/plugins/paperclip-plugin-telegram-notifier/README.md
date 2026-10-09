@@ -104,6 +104,7 @@ The plugin requests a deliberately narrow surface:
 - `companies.read` — read the selected company's name for the settings card and pairing messages.
 - `agents.read` — populate the Operate-as-agent dropdown and enrich run-failure notifications.
 - `issues.read` / `issues.create` / `issues.update` — list the inbox, create issues from `/new`, and reassign via the inline picker.
+- `issue.comments.read` — read the full comment body and author when building comment notifications.
 - `issue.comments.create` — post a Paperclip comment when someone replies to a comment notification in Telegram.
 - `issue.comments.create_human_attributed` — post the pairing operator's replies as the Paperclip user who confirmed the pairing, so the assignee wakes up.
 - `agent.tools.register` — expose the six agent tools.
