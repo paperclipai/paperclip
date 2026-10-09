@@ -12147,7 +12147,7 @@ export function heartbeatService(
               `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
-          const livenessRun = finalizedRun;
+          let livenessRun = finalizedRun;
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -12290,6 +12290,13 @@ export function heartbeatService(
               `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
+
+          livenessRun =
+            (await classifyAndPersistRunLiveness(
+              livenessRun,
+              persistedResultJson,
+            )) ?? livenessRun;
+
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
             if (policy.enabled && policy.maxAttempts > 0) {
