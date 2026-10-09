@@ -10,6 +10,7 @@
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
+import { formatRelativeTimestamp } from "@/lib/relative-time";
 import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
@@ -46,12 +47,19 @@ function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
   return "agent";
 }
 
-/** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
+/**
+ * Shared bubble-footer time ("5 minutes ago", "Sep 5") — also used by the
+ * description bubble (PAP-375) and the runner turn summary.
+ *
+ * This used to print time-of-day only, at any age, so a message from last week
+ * read as a bare "12:48 PM" with no way to tell what day it belonged to (PAP-612).
+ */
 export function formatTaskChatTimestamp(value: unknown): string | undefined {
   if (!value) return undefined;
-  const d = value instanceof Date ? value : new Date(value as string);
-  if (Number.isNaN(d.getTime())) return undefined;
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (typeof value !== "string" && typeof value !== "number" && !(value instanceof Date)) {
+    return undefined;
+  }
+  return formatRelativeTimestamp(value);
 }
 
 /** Keep every comment footer on the same compact, user-visible timestamp. */
