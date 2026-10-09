@@ -1,11 +1,11 @@
 import { expect, type Page } from "@playwright/test";
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
-import { parseNativeRuntimeContext } from "../../packages/paperclip-runner/src/contracts/runtime-context.js";
+import { parseNativeExecutionInput } from "../../packages/paperclip-runner/src/contracts/native-execution.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { nativeCompletionProfile } from "./native-completion-defaults.js";
 import { createRemoteFixtureClient } from "./remote-native-bootstrap.js";
-import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector, repositoryRuntimeSessionRoot, type RepositoryBundleReceipt, type RepositoryFileReceipt } from "./repository-skill-evidence.js";
+import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector, type RepositoryBundleReceipt, type RepositoryFileReceipt } from "./repository-skill-evidence.js";
 import { createTaskThroughUi } from "./user-actions.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { CredentialName, MatrixExecution, RunnerTaskFixture } from "./types.js";
@@ -130,11 +130,17 @@ export async function runRepositorySkillsFlow(input: {
     bundles = (await Promise.all(roots.map(root => realpath(root)))).map(inspectRepositoryBundle);
     const instanceRoot = await realpath(path.dirname(process.env.PAPERCLIP_CONFIG!));
     const sessionId = runs[0]!.nativeSessionId as string;
-    // Read the exact active session's persisted, digest-validated context. These
+    // Read the active run's persisted, digest-validated execution context. These
     // immutable assets are normal provider inputs, not a fixture or library copy.
-    const context = parseNativeRuntimeContext(JSON.parse(await readFile(path.join(repositoryRuntimeSessionRoot(instanceRoot, sessionId), "runtime-context.json"), "utf8")));
+    const executionInput = parseNativeExecutionInput(runs[0]!.runnerProfileJson.nativeExecutionInput);
+    expect(executionInput.binding).toMatchObject({ companyId: fixtures.company.id, agentId: fixtures.agent.id, runId: runs[0]!.id, issueId: issue.id, executionWorkspaceId: runs[0]!.id });
+    expect(executionInput.session.normalizedSessionId).toBe(sessionId);
+    expect(executionInput.provider.kind).toBe("codex");
+    if (!("runtimeContext" in executionInput) || !("cwd" in executionInput.workspace)) throw new Error("Missing local repository runtime context");
+    const context = executionInput.runtimeContext;
     expect(context.skills.map(skill => skill.key).sort()).toEqual(imported.imported.map((skill: Row) => skill.key).sort());
-    runtimeLocation = { kind: "local", instanceRoot, contextSkills: { sessionId, roots: context.skills.map(skill => skill.bundle.rootPath) } };
+    runtimeLocation = { kind: "local", instanceRoot, owner: { companyId: executionInput.binding.companyId, agentId: executionInput.binding.agentId,
+      driverKind: executionInput.session.driverKind, workspace: executionInput.workspace }, contextSkills: { sessionId, roots: context.skills.map(skill => skill.bundle.rootPath) } };
     await input.evidence("repository-owned-context.json", { nativeSessionId: sessionId, aggregateDigest: context.aggregateDigest,
       skills: context.skills.map(skill => ({ key: skill.key, versionId: skill.versionId, root: skill.bundle.rootPath, digest: skill.bundle.digest })) });
   } else {

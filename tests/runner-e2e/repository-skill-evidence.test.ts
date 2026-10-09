@@ -3,17 +3,23 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, symlinkSync, 
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector } from "./repository-skill-evidence.js";
+import { gradeRepositoryBundles, inspectRepositoryBundle, isOwnedRepositoryRuntimeRoot, remoteRepositoryInspector, repositoryRuntimeSessionRoot } from "./repository-skill-evidence.js";
 
 describe("repository runtime delivery evidence", () => {
   it("binds local and remote copies to the owned native session and rejects library or foreign paths", () => {
     const session = "54db6e46-cd6d-468e-8864-fd71658b355b";
     const digest = "09a8b6d19d867b102dcb01a222d2dde7d3cb0054031af0d73ed93f3c718516a7";
-    const local = { kind: "local" as const, instanceRoot: "/owned/instance" };
-    const localRoot = `/owned/instance/runtime/paperclip-runner/durable-sessions/${digest}/codex-home/skills/architect`;
+    const local = { kind: "local" as const, instanceRoot: "/owned/instance", owner: { companyId: "owned-company", agentId: "owned-agent",
+      driverKind: "codex_app_server", workspace: { cwd: "/owned/workspace", repoUrl: null, repoRef: null, branchName: null } } };
+    const localSessionRoot = "/owned/instance/runtime/paperclip-runner/durable-sessions/2881ee3ad02d8c09ec2af1ef786d588f92b7f25bb002b3da9ca19fa8d9331b5d";
+    expect(repositoryRuntimeSessionRoot(local.instanceRoot, session, local.owner)).toBe(localSessionRoot);
+    const localRoot = `${localSessionRoot}/codex-home/skills/architect`;
     expect(isOwnedRepositoryRuntimeRoot(localRoot, session, local)).toBe(true);
     expect(isOwnedRepositoryRuntimeRoot(localRoot, "another-session", local)).toBe(false);
     expect(isOwnedRepositoryRuntimeRoot(localRoot, session, { ...local, instanceRoot: "/foreign/instance" })).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot(localRoot, session, { ...local, owner: { ...local.owner, companyId: "foreign-company" } })).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot(localRoot, session, { ...local, owner: { ...local.owner, agentId: "foreign-agent" } })).toBe(false);
+    expect(isOwnedRepositoryRuntimeRoot(localRoot, session, { ...local, owner: { ...local.owner, workspace: { ...local.owner.workspace, cwd: "/foreign/workspace" } } })).toBe(false);
     expect(isOwnedRepositoryRuntimeRoot("/owned/instance/runtime-context-assets/bundles/digest", session, local)).toBe(false);
     const preparedRoot = "/owned/instance/runtime-context-assets/bundles/assigned-digest";
     const prepared = { ...local, contextSkills: { sessionId: session, roots: [preparedRoot] } };
