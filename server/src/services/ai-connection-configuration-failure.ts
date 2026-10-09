@@ -1,4 +1,4 @@
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 const reasons = [
   "ai_connection_responsible_user_missing",
@@ -6,6 +6,7 @@ const reasons = [
   "ai_connection_missing",
   "ai_connection_incompatible",
   "ai_connection_unavailable",
+  "ai_connection_credential_not_shared",
 ] as const;
 type AiConnectionConfigurationReason = typeof reasons[number];
 const failures = new WeakMap<Error, AiConnectionConfigurationReason>();
@@ -18,6 +19,13 @@ export function aiConnectionConfigurationFailure(
 ) {
   const error = unprocessable(message, { ...details, code: reason });
   failures.set(error, reason);
+  return error;
+}
+
+/** A verified active user lacks this credential's human sharing permission. */
+export function aiConnectionCredentialNotSharedFailure() {
+  const error = forbidden("This credential is not shared with the responsible user");
+  failures.set(error, "ai_connection_credential_not_shared");
   return error;
 }
 

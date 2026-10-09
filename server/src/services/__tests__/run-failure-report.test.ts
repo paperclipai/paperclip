@@ -301,6 +301,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   it.each([
     "ai_connection_responsible_user_missing", "ai_connection_default_missing",
     "ai_connection_missing", "ai_connection_incompatible", "ai_connection_unavailable",
+    "ai_connection_credential_not_shared",
   ])("keeps the proven AI selection blocker local: %s", async (selectionFailure) => {
     await seedCompanyAndAgent();
     const run = aiSelectionRun();
@@ -317,6 +318,23 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       const run = aiSelectionRun();
       (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
       await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["resume", "provider_started", "outside_setup", "unmarked"] as const)(
+    "reports credential sharing denials without fresh pre-provider proof: %s", async (cause) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = "ai_connection_credential_not_shared";
+      run.error = "This credential is not shared with the responsible user";
+      if (cause === "resume") {
+        run.runtimeMode = "native";
+        run.runnerProfileJson = { nativeExecutionInput: {} };
+      }
+      if (cause === "provider_started") run.resultJson!.executionRecovery = { kind: "bootstrap", providerWorkStarted: true };
+      if (cause === "unmarked") delete (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure;
+      await reportRunFailure(db, run, { phase: cause === "outside_setup" ? "execute" : "setup" });
       expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
     },
   );

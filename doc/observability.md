@@ -445,8 +445,12 @@ recovery, credentials, or execution policy.
 
 AI account selection also stays local when the selection service proves a
 missing responsible user, personal default, or selected connection; an
-incompatible selection; or an account that needs reconnection. The service marks
-the original error, and setup preserves its closed `selectionFailure` reason.
+incompatible selection; an account that needs reconnection; or an active
+responsible user who lacks the selected credential's human sharing permission.
+The sharing rejection keeps its existing HTTP 403 and does not grant access.
+Other permission denials, including absent identity and inactive membership,
+remain outside this sharing classification. The service marks the original error,
+and setup preserves its closed `selectionFailure` reason.
 The same failed/preparing/setup/bootstrap checks apply, and resumed native runs
 with persisted provider input remain reportable. The generic
 `ai_connection_unavailable` wrapper alone is insufficient: database, credential

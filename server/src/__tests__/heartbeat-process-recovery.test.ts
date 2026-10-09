@@ -3,7 +3,8 @@ import { readNativePlanWait, hasCommittedNativePlanWait } from "../services/nati
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
 import { buildQuestionResponseDeliveryEnvelope } from "../services/question-response-delivery.js";
 import * as aiConnectionRuntime from "../services/ai-connection-runtime.js";
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { aiConnectionCredentialNotSharedFailure } from "../services/ai-connection-configuration-failure.js";
 import * as executionContinuation from "../services/execution-continuation.js";
 import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -1531,7 +1532,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
-  it.each(["missing_default", "database_error", "unmarked_http_error", "provider_error"] as const)(
+  it.each(["missing_default", "credential_not_shared", "database_error", "unmarked_http_error", "unmarked_forbidden", "provider_error"] as const)(
     "preserves AI configuration recovery and reports only unexpected causes: %s", async (cause) => {
       const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
@@ -1541,7 +1542,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       } }).where(eq(agents.id, agentId));
       const prepare = vi.spyOn(aiConnectionRuntime, "prepareManagedAiRuntime");
       if (cause !== "missing_default") prepare.mockRejectedValueOnce(
-        cause === "unmarked_http_error"
+        cause === "credential_not_shared"
+          ? aiConnectionCredentialNotSharedFailure()
+          : cause === "unmarked_forbidden"
+            ? forbidden("This credential is not shared with the responsible user", { code: "ai_connection_credential_not_shared" })
+          : cause === "unmarked_http_error"
           ? unprocessable("Connect an account and choose your personal default", { code: "ai_connection_default_missing" })
           : new Error(cause),
       );
@@ -1556,9 +1561,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(failed).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
           resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
         });
-        if (cause === "missing_default") {
-          expect(failed?.error).toBe("Connect an account and choose your personal default");
-          expect(failed?.resultJson?.configurationIncomplete).toMatchObject({ selectionFailure: "ai_connection_default_missing" });
+        if (cause === "missing_default" || cause === "credential_not_shared") {
+          expect(failed?.error).toBe(cause === "missing_default"
+            ? "Connect an account and choose your personal default"
+            : "This credential is not shared with the responsible user");
+          expect(failed?.resultJson?.configurationIncomplete).toMatchObject({ selectionFailure: cause === "missing_default"
+            ? "ai_connection_default_missing" : "ai_connection_credential_not_shared" });
           expect(mockCaptureRunFailure).not.toHaveBeenCalled();
         } else {
           expect(failed?.resultJson?.configurationIncomplete).not.toHaveProperty("selectionFailure");

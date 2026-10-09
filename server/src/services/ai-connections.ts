@@ -39,7 +39,7 @@ import {
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
-import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -349,8 +349,12 @@ export function aiConnectionService(db: Db) {
       ));
     // The existing human-access permission is authoritative for every binding,
     // including old explicit personal selections. Agent delegation cannot bypass it.
-    if (!canUseCredential(grant, userId, audience))
+    if (!canUseCredential(grant, userId, audience)) {
+      // Membership was checked above. A known user's sharing choice is an
+      // operator action; absent identity must remain an unclassified denial.
+      if (userId) throw aiConnectionCredentialNotSharedFailure();
       throw forbidden("This credential is not shared with the responsible user");
+    }
     const installs = await db
       .select()
       .from(toolConnectionInstalls)
