@@ -35,3 +35,12 @@ export const ActivityEndCallFocus: Story = { render: function ActivityFocusFixtu
   const [ended, setEnded] = useState(false);
   return <SpekoCallActivityItem presentation="activity" onEnd={() => setEnded(true)} entry={{...entry, session: {...entry.session, state: ended ? "ended" : "active", endedAt: ended ? entry.session.endedAt : null}}} />;
 }, play: EndCallFocus.play };
+
+export const IncomingFailurePreservesHistory: Story = { args: { entries: [entry], incomingError: "This connection is paused." }, play: async ({canvasElement}) => {
+  const c = within(canvasElement); await expect(c.getByRole("alert")).toHaveTextContent("Unapproved calls could not be loaded");
+  await userEvent.click(canvasElement.querySelector("summary")!); await expect(c.getByRole("list", {name: "Call transcript"})).toBeVisible();
+} };
+export const EndFailurePreservesHistory: Story = { args: { entries: [entry], endError: "Try again after reconnecting." }, play: async ({canvasElement}) => {
+  const c = within(canvasElement); await expect(c.getByRole("alert")).toHaveTextContent("The call could not be ended");
+  await userEvent.click(canvasElement.querySelector("summary")!); await expect(c.getByRole("link", {name: "Conversation task"})).toBeVisible();
+} };
