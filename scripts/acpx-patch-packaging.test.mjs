@@ -28,6 +28,9 @@ const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
+const codexLocalPackage = JSON.parse(
+  await readFile(new URL("../packages/adapters/codex-local/package.json", import.meta.url), "utf8"),
+);
 const runnerPackage = JSON.parse(
   await readFile(new URL("../packages/paperclip-runner/package.json", import.meta.url), "utf8"),
 );
@@ -122,6 +125,16 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.ok(serverPackage.bundleDependencies.includes("acpx"));
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
+});
+
+test("published Codex adapter bundles the patched per-turn ACP policy", () => {
+  assert.equal(codexLocalPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
+  assert.deepEqual(codexLocalPackage.bundleDependencies, ["@agentclientprotocol/codex-acp"]);
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/codex-acp@1.6.2"],
+    "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
+  );
+  assert.match(releaseLib, /bundled.length > 0 \? "npm" : "pnpm"/);
 });
 
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {

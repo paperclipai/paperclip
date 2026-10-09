@@ -26,6 +26,12 @@ GitHub Actions owns `pnpm-lock.yaml`.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
+The published Codex adapter bundles `codex-acp@1.6.2` with the repository's
+per-turn network policy patch. The release staging script checks the patched
+executable, and the adapter runs that bundled file before any ancestor install.
+When updating `codex-acp`, update its pinned version, patch, and package check
+together.
+
 ## Trusted PR Workflow
 
 The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
