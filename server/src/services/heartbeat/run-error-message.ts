@@ -4,6 +4,25 @@ const MAX_RUN_ERROR_MESSAGE_LINES = 16;
 const MAX_RUN_ERROR_MESSAGE_CHARS = 1024;
 
 /**
+ * Where a resolved run error message came from.
+ *
+ * Callers that *decide* something from the message (retry classification, stop
+ * reason inference) must only trust `recorded` and `adapter`: those are
+ * structured, adapter-owned text. A `stderr_excerpt` message is triage display
+ * only — it is arbitrary process output and can contain any substring those
+ * classifiers look for.
+ */
+export type RunErrorMessageSource =
+  | "recorded"
+  | "adapter"
+  | "stderr_excerpt"
+  | "label";
+
+function isLowSurrogate(code: number) {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
  * Derive a bounded tail of an already-captured stderr excerpt.
  *
  * The excerpt on the run row is redacted and byte-capped when it is captured,
@@ -21,9 +40,13 @@ export function extractStderrExcerptTail(
     .split("\n")
     .slice(-MAX_RUN_ERROR_MESSAGE_LINES)
     .join("\n");
-  return tail.length > MAX_RUN_ERROR_MESSAGE_CHARS
-    ? tail.slice(-MAX_RUN_ERROR_MESSAGE_CHARS)
-    : tail;
+  if (tail.length <= MAX_RUN_ERROR_MESSAGE_CHARS) return tail;
+  // Never start the tail inside a surrogate pair. Cutting a fixed number of
+  // UTF-16 units off the end of an astral character leaves a lone low
+  // surrogate, which renders as a replacement character everywhere `error` is
+  // shown; dropping it costs one unit of an already truncated excerpt.
+  const start = tail.length - MAX_RUN_ERROR_MESSAGE_CHARS;
+  return tail.slice(isLowSurrogate(tail.charCodeAt(start)) ? start + 1 : start);
 }
 
 /**
@@ -34,30 +57,41 @@ export function extractStderrExcerptTail(
  * the same as an agent bug on the run row. The captured stderr excerpt already
  * holds the cause, so its tail becomes the message when the adapter gave none.
  *
- * The caller redacts the returned message. `null` means the run has no error.
+ * The returned `source` says whether the message is adapter-owned text or a
+ * stderr tail, so a caller can show the tail without feeding it to a
+ * text-matching classifier. The caller redacts the returned message.
+ * `message: null` means the run has no error.
  */
 export function resolveRunErrorMessage(input: {
   outcome: RunSessionOutcome;
   adapterErrorMessage: string | null | undefined;
   recordedError: string | null | undefined;
   stderrExcerpt: string | null | undefined;
-}): string | null {
-  if (input.outcome === "succeeded") return null;
+}): { message: string | null; source: RunErrorMessageSource | null } {
+  if (input.outcome === "succeeded") return { message: null, source: null };
 
-  const stderrTail = extractStderrExcerptTail(input.stderrExcerpt);
-
-  if (input.outcome === "cancelled") {
-    return (
-      input.recordedError ??
-      input.adapterErrorMessage ??
-      stderrTail ??
-      "Cancelled"
-    );
+  // The cancelled path keeps the already recorded error ahead of everything
+  // else, as it did before this fallback existed.
+  if (input.outcome === "cancelled" && input.recordedError != null) {
+    return { message: input.recordedError, source: "recorded" };
   }
 
-  return (
-    input.adapterErrorMessage ??
-    stderrTail ??
-    (input.outcome === "timed_out" ? "Timed out" : "Adapter failed")
-  );
+  if (input.adapterErrorMessage != null) {
+    return { message: input.adapterErrorMessage, source: "adapter" };
+  }
+
+  const stderrTail = extractStderrExcerptTail(input.stderrExcerpt);
+  if (stderrTail !== null) {
+    return { message: stderrTail, source: "stderr_excerpt" };
+  }
+
+  return {
+    message:
+      input.outcome === "cancelled"
+        ? "Cancelled"
+        : input.outcome === "timed_out"
+          ? "Timed out"
+          : "Adapter failed",
+    source: "label",
+  };
 }

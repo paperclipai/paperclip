@@ -33,7 +33,25 @@ describe("heartbeat stderr excerpt tails", () => {
     expect(extractStderrExcerptTail(exact)).toBe(exact);
     expect(extractStderrExcerptTail(`dropped prefix${exact}`)).toBe(exact);
   });
+
+  it("never starts the tail inside a surrogate pair", () => {
+    // An emoji is two UTF-16 units: a 1024-unit tail of one emoji plus 1023
+    // ASCII characters would otherwise begin on its lone low surrogate.
+    const tail = extractStderrExcerptTail(`prefix\u{1f642}${"x".repeat(1023)}`);
+    expect(tail).toBe("x".repeat(1023));
+    expect(tail).not.toMatch(/[\uD800-\uDFFF]/);
+    // An astral character that lands fully inside the window is preserved.
+    expect(
+      extractStderrExcerptTail(`prefix${"x".repeat(1022)}\u{1f642}`),
+    ).toBe(`${"x".repeat(1022)}\u{1f642}`);
+  });
 });
+
+function resolveMessage(
+  input: Parameters<typeof resolveRunErrorMessage>[0],
+) {
+  return resolveRunErrorMessage(input).message;
+}
 
 describe("heartbeat run error messages", () => {
   const base = {
@@ -44,7 +62,7 @@ describe("heartbeat run error messages", () => {
 
   it("records no error for a run that succeeded", () => {
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "succeeded",
         adapterErrorMessage: "ignored",
@@ -55,21 +73,21 @@ describe("heartbeat run error messages", () => {
 
   it("falls back to the captured stderr tail when the adapter gave no message", () => {
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "failed",
         stderrExcerpt: "spawn acpx ENOENT\nconnect ECONNREFUSED 10.0.0.1:443\n",
       }),
     ).toBe("spawn acpx ENOENT\nconnect ECONNREFUSED 10.0.0.1:443");
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "timed_out",
         stderrExcerpt: "waiting for the model gateway",
       }),
     ).toBe("waiting for the model gateway");
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "interrupted",
         stderrExcerpt: "killed by the supervisor",
@@ -79,7 +97,7 @@ describe("heartbeat run error messages", () => {
 
   it("prefers an explicit adapter message over the stderr tail", () => {
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "failed",
         adapterErrorMessage: "model provider returned 402",
@@ -89,27 +107,27 @@ describe("heartbeat run error messages", () => {
   });
 
   it("keeps the generic outcome label when no stderr was captured", () => {
-    expect(resolveRunErrorMessage({ ...base, outcome: "failed" })).toBe(
+    expect(resolveMessage({ ...base, outcome: "failed" })).toBe(
       "Adapter failed",
     );
     expect(
-      resolveRunErrorMessage({ ...base, outcome: "failed", stderrExcerpt: "" }),
+      resolveMessage({ ...base, outcome: "failed", stderrExcerpt: "" }),
     ).toBe("Adapter failed");
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "timed_out",
         stderrExcerpt: "   \n  ",
       }),
     ).toBe("Timed out");
-    expect(resolveRunErrorMessage({ ...base, outcome: "interrupted" })).toBe(
+    expect(resolveMessage({ ...base, outcome: "interrupted" })).toBe(
       "Adapter failed",
     );
   });
 
   it("prefers the already recorded error on the cancelled path", () => {
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         outcome: "cancelled",
         recordedError: "Cancelled by the board",
         adapterErrorMessage: "adapter noticed the abort",
@@ -117,14 +135,58 @@ describe("heartbeat run error messages", () => {
       }),
     ).toBe("Cancelled by the board");
     expect(
-      resolveRunErrorMessage({
+      resolveMessage({
         ...base,
         outcome: "cancelled",
         stderrExcerpt: "signal SIGTERM",
       }),
     ).toBe("signal SIGTERM");
-    expect(resolveRunErrorMessage({ ...base, outcome: "cancelled" })).toBe(
+    expect(resolveMessage({ ...base, outcome: "cancelled" })).toBe(
       "Cancelled",
     );
+  });
+
+  it("reports where the resolved message came from", () => {
+    expect(
+      resolveRunErrorMessage({ ...base, outcome: "succeeded" }).source,
+    ).toBeNull();
+    expect(
+      resolveRunErrorMessage({
+        ...base,
+        outcome: "failed",
+        adapterErrorMessage: "model provider returned 402",
+        stderrExcerpt: "spawn acpx ENOENT",
+      }).source,
+    ).toBe("adapter");
+    expect(
+      resolveRunErrorMessage({
+        ...base,
+        outcome: "failed",
+        stderrExcerpt: "spawn acpx ENOENT",
+      }).source,
+    ).toBe("stderr_excerpt");
+    expect(resolveRunErrorMessage({ ...base, outcome: "failed" }).source).toBe(
+      "label",
+    );
+    expect(
+      resolveRunErrorMessage({
+        ...base,
+        outcome: "cancelled",
+        recordedError: "Cancelled by the board",
+      }).source,
+    ).toBe("recorded");
+    // A non-cancelled run ignores the recorded error exactly as before, so the
+    // stderr tail is still what a caller must distrust.
+    expect(
+      resolveRunErrorMessage({
+        ...base,
+        outcome: "timed_out",
+        recordedError: "ignored outside the cancelled path",
+        stderrExcerpt: "waiting for the model gateway",
+      }),
+    ).toEqual({
+      message: "waiting for the model gateway",
+      source: "stderr_excerpt",
+    });
   });
 });
