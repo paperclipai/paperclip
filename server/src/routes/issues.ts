@@ -9597,6 +9597,18 @@ export function issueRoutes(
             !activeRecoveryAction.returnOwnerAgentId ||
             lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
           ) {
+            if (
+              activeRecoveryAction.ownerType === "agent" &&
+              activeRecoveryAction.wakePolicy?.type === "bounded_owner_disposition_repair"
+            ) {
+              throw conflict(
+                "This agent-owned disposition repair cannot use the board retry endpoint.",
+                {
+                  code: "disposition_recovery_retry_stale",
+                  nextAction: "If the original owner has authorized unfinished work and no execution or waiting gate applies, PATCH /api/issues/{id} with status: todo, resume: true, and an explanatory comment. Check the returned task and queued run. Otherwise record a real wait or let the bounded repair escalate to the board.",
+                },
+              );
+            }
             throw conflict(
               "This recovery notice no longer matches the task. Refresh the task before choosing its next step.",
               { code: "disposition_recovery_retry_stale" },
@@ -15305,6 +15317,11 @@ export function issueRoutes(
             addWakeup(assigneeId, {
               source: "automation",
               triggerDetail: "system",
+              idempotencyKey:
+                resumeRequested === true && actor.actorType === "agent" &&
+                actor.actorId === assigneeId && actor.runId
+                  ? `issue-owner-resume:${issue.id}:${actor.runId}`
+                  : undefined,
               reason: reopened
                 ? "issue_reopened_via_comment"
                 : "issue_commented",

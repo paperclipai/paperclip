@@ -2228,6 +2228,118 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({ status: "todo", assigneeAgentId: coderId });
   });
 
+  it("rejects an agent-owned disposition repair at the board retry entry with a usable next step", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:agent-owner",
+      nextAction: "Choose a live path.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const wake = vi.fn(async () => null);
+    const app = createApp({
+      type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt",
+    }, { recoveryActionEnqueueWakeup: wake });
+    const response = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" }).expect(409);
+    expect(response.body.details).toMatchObject({
+      code: "disposition_recovery_retry_stale",
+      nextAction: expect.stringContaining("PATCH /api/issues/{id}"),
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("continues two partial owner batches through the issue route with one successor each", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const responsibleUserId = randomUUID();
+    await db.insert(authUsers).values({
+      id: responsibleUserId, name: "Recovery operator", email: `${responsibleUserId}@example.test`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.update(companies).set({ defaultResponsibleUserId: responsibleUserId }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, coderId));
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: randomUUID(), status: "running" });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const firstRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: firstRunId, issueId: sourceIssueId, status: "succeeded" });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:partial-1",
+      nextAction: "Continue the unfinished work.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const ownerApp = (runId: string) => createApp({
+      type: "agent", agentId: coderId, companyId, runId, source: "agent_jwt",
+    });
+    const continueBatch = async (runId: string, batch: number) => request(ownerApp(runId))
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", resume: true, comment: `Batch ${batch} succeeded but work remains.` });
+    const queuedForSource = () => db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, coderId),
+    ));
+
+    const first = await continueBatch(firstRunId, 1);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ status: "todo", assigneeAgentId: coderId });
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(1));
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]?.status).toBe("cancelled");
+
+    const repeated = await continueBatch(firstRunId, 1);
+    expect([200, 409]).toContain(repeated.status);
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(1));
+
+    const [firstWake] = await queuedForSource();
+    expect(firstWake?.runId).toBeTruthy();
+    expect(firstWake?.idempotencyKey).toBe(`issue-owner-resume:${sourceIssueId}:${firstRunId}`);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, firstWake!.runId!));
+    await db.update(issues).set({ status: "blocked", checkoutRunId: null, executionRunId: null }).where(eq(issues.id, sourceIssueId));
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "agent",
+      ownerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "deliberate_wait_without_target", fingerprint: "disposition:partial-2",
+      nextAction: "Continue the unfinished work.",
+      wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: coderId, attempt: 1, maxAttempts: 2 },
+    });
+    const second = await continueBatch(firstWake!.runId!, 2);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body.status).toBe("todo");
+    await vi.waitFor(async () => expect((await queuedForSource()).length).toBe(2));
+    const wakes = await queuedForSource();
+    expect(wakes.filter(wake => wake.runId)).toHaveLength(2);
+    expect(wakes.map(wake => wake.idempotencyKey)).toEqual(expect.arrayContaining([
+      `issue-owner-resume:${sourceIssueId}:${firstRunId}`,
+      `issue-owner-resume:${sourceIssueId}:${firstWake!.runId!}`,
+    ]));
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]?.status).toBe("todo");
+  });
+
+  it("keeps an exhausted monitor at its attempt limit when an old repair tries to re-arm it", async () => {
+    const { sourceIssueId } = await seedCompany();
+    await db.update(issues).set({
+      status: "in_review", monitorAttemptCount: 1, monitorNextCheckAt: null,
+      monitorScheduledBy: "assignee",
+    }).where(eq(issues.id, sourceIssueId));
+    const res = await request(createApp()).patch(`/api/issues/${sourceIssueId}`).send({
+      executionPolicy: { stages: [], monitor: {
+        nextCheckAt: "2099-04-11T12:30:00.000Z", maxAttempts: 1, scheduledBy: "board",
+      } },
+    }).expect(422);
+    expect(res.body.error).toContain("Monitor bounds are already exhausted");
+    expect(res.body.details?.clearReason).toBe("max_attempts_exhausted");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({
+      monitorAttemptCount: 1, monitorNextCheckAt: null, status: "in_review",
+    });
+  });
+
   it("hands restored work back to the recorded return owner and records the outcome", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db

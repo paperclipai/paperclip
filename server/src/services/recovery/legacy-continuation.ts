@@ -25,9 +25,13 @@ export interface LegacyDispositionEpisode {
 export const LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS = 2;
 export const LEGACY_DISPOSITION_REPAIR_INSTRUCTION =
   "The previous task run ended without a recorded disposition or an owned next execution path. " +
-  "Re-read the current task state. Use Paperclip tools/API to record completion, a real blocker, " +
-  "a question or approval request, or a supported next execution path. " +
-  "A final message alone does not record disposition. Respect Stop, pause, budget and approval gates.";
+  "Re-read the current task state. If the original owner still has authorized unfinished work and no Stop, pause, budget, approval, dependency, pending interaction, or active execution gate applies, " +
+  "PATCH /api/issues/{id} with status: todo, resume: true, and an explanatory comment. Confirm the returned status and queued successor run. " +
+  "An agent-owned bounded_owner_disposition_repair action cannot use POST /api/issues/{id}/recovery-actions/resolve to retry. " +
+  "That retry is for a board-owned board_escalation action and an authorized board actor. " +
+  "Record a real blocker, pending question or approval, or still-valid monitor when waiting. A monitor cleared by max_attempts_exhausted cannot be reset to create another wake. " +
+  "If no legal continuation or waiting path exists, let the bounded repair escalate to the board. " +
+  "A final message alone does not record disposition.";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
