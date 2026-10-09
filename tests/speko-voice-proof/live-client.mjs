@@ -229,8 +229,10 @@ try {
   await cleanup("proof.close", () => proof.close());
   await cleanup("server.close", () => { server.close(); server.closeAllConnections(); });
   if (sessionId) {
-    try { const ended = await api(`/v1/calls/${encodeURIComponent(sessionId)}/end`, {}); event("session_end_requested", { status: ended.status }); }
-    catch { event("session_end_failed"); }
+    await cleanup("session.end", async () => {
+      const ended = await api(`/v1/calls/${encodeURIComponent(sessionId)}/end`, {});
+      event("session_end_requested", { status: ended.status });
+    });
   }
   for (const [name, close] of [
     ["room.disconnect", () => room.disconnect()],

@@ -1,9 +1,11 @@
 import { VoiceConversation } from '@spekoai/client';
+import { createCleanup } from './cleanup.mjs';
 const config = JSON.parse(document.querySelector('#config').textContent);
 const $ = (id) => document.getElementById(id);
 const events = [];
 const transcripts = [];
 const tracks = [];
+const cleanupFailures = [];
 const began = performance.now();
 let conversation, context, destination, muted = false, running = false, ended = false;
 let speaking = false, notificationSent = false, sessionId, interval, recorder;
@@ -66,24 +68,32 @@ function renderTranscript(list) {
   }));
 }
 async function saveReport() {
-  const report = { sessionId, sdkVersion: '0.0.13', syntheticMicrophone: true, events, transcripts,
+  const report = { sessionId, sdkVersion: '0.0.13', syntheticMicrophone: true, events, transcripts, cleanupFailures,
     sdkOpen: conversation?.isOpen() ?? false, audioElements: document.querySelectorAll('audio').length,
     inputTrackStates: tracks.map((t) => ({ enabled: t.enabled, readyState: t.readyState })) };
   await api('/report', report);
   $('evidence').textContent = JSON.stringify({ ...report, transcripts: `${transcripts.length} reconciled segments` }, null, 2);
 }
-async function end() {
-  if (ended) return;
-  ended = true; clearInterval(interval); observer.disconnect();
-  $('scenario').disabled = $('mute').disabled = $('end').disabled = true;
-  if (recorder?.state === 'recording') recorder.stop();
-  try { await conversation?.endSession(); } finally {
-    // Record SDK cleanup before stopping fixture-owned tracks ourselves.
+const cleanup = createCleanup({
+  local: async (attempt) => {
+    ended = true; clearInterval(interval); observer.disconnect();
+    $('scenario').disabled = $('mute').disabled = true;
+    await attempt('recorder.stop', () => { if (recorder?.state === 'recording') recorder.stop(); });
+    await attempt('sdk.end', () => conversation?.endSession());
     event('sdk_cleanup', { inputTracksEnded: tracks.every((t) => t.readyState === 'ended'), audioElements: document.querySelectorAll('audio').length });
-    destination?.stream.getTracks().forEach((t) => t.stop());
-    tracks.forEach((t) => t.stop()); await context?.close();
-    await api('/end'); status('Ended'); await saveReport();
-  }
+    await attempt('tracks.stop', () => { destination?.stream.getTracks().forEach((t) => t.stop()); tracks.forEach((t) => t.stop()); });
+    await attempt('context.close', () => context?.close());
+  },
+  provider: () => api('/end'),
+  report: saveReport,
+  failed: (operation) => { cleanupFailures.push({ operation }); event('cleanup_failed', { operation }); },
+});
+async function end() {
+  $('end').disabled = true;
+  try {
+    const completed = await cleanup.end();
+    status(completed ? 'Ended' : 'Cleanup failed. Retry End and inspect evidence.');
+  } finally { $('end').disabled = cleanup.complete; }
 }
 $('connect').onclick = async () => {
   $('connect').disabled = true; status('Connecting');

@@ -98,7 +98,7 @@ try {
     await page.getByRole('button', { name: `Talk to ${fixture.agentName}`, exact: true }).click();
   } else if (process.env.SPEKO_NATIVE_CONNECTED === '1') {
     if (!fixture.endpointId) throw new Error('Connected qualification requires the verified endpoint fixture');
-    const taskResponse = await page.request.post(`${origin}/api/companies/${fixture.companyId}/issues`, {headers: {Origin: origin}, data: {title: "Speko live browser qualification", assigneeAgentId: fixture.agentId, status: "backlog"}});
+    const taskResponse = await page.request.post(`${origin}/api/companies/${fixture.companyId}/issues`, {headers: {Origin: origin}, data: {title: "Speko live browser qualification", assigneeAgentId: fixture.agentId, status: "todo"}});
     if (!taskResponse.ok()) throw new Error(`Qualification task creation rejected (${taskResponse.status()})`);
     const task = await taskResponse.json();
     await page.goto(`${origin}/${fixture.companyPrefix}/issues/${task.id}`);

@@ -13,7 +13,7 @@ const state = JSON.parse(await readFile(`${homedir()}/.paperclip/speko-proof/sta
 const out = resolve(process.env.SPEKO_PROOF_OUTPUT ?? `${homedir()}/.paperclip/speko-proof/browser-${Date.now()}`);
 await mkdir(dirname(out), { recursive: true, mode: 0o700 }); await mkdir(out, { mode: 0o700 });
 const sourceDigests = {};
-for (const file of ['browser-server.mjs', 'browser-client.mjs', 'browser.html', 'proof.mjs', 'application-notification.txt']) sourceDigests[file] = createHash('sha256').update(await readFile(new URL(file, import.meta.url))).digest('hex');
+for (const file of ['browser-server.mjs', 'browser-client.mjs', 'cleanup.mjs', 'browser.html', 'proof.mjs', 'application-notification.txt']) sourceDigests[file] = createHash('sha256').update(await readFile(new URL(file, import.meta.url))).digest('hex');
 await writeFile(resolve(out, 'source.json'), JSON.stringify({ startedAt: new Date().toISOString(), sourceDigests }), { mode: 0o600 });
 const bundle = await build({ entryPoints: [new URL('./browser-client.mjs', import.meta.url).pathname], bundle: true, write: false, platform: 'browser', format: 'esm' });
 const inputs = new Map();

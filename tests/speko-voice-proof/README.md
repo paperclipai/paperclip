@@ -15,7 +15,7 @@ Paperclip permissions, persistence, or actual spoken playback.
 
 ```sh
 cd tests/speko-voice-proof
-npm ci --ignore-scripts
+npm install --ignore-scripts --no-package-lock
 npm test
 ```
 
