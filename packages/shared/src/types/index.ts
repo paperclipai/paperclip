@@ -1098,3 +1098,5 @@ export type { AgentInstructionErrorCode, AgentInstructionErrorDetails, AgentInst
 export type { AgentInstructionCandidate } from "./agent.js";
 
 export * from "./skill-source.js";
+
+export * from "./agent-lifecycle.js";

@@ -1179,8 +1179,9 @@ export function environmentService(db: Db) {
               where ${environmentLeases.environmentId} = ${environments.id}
                 and ${environmentLeases.status} = 'pending_cleanup'
             )`,
-            // A reusable lease keeps a live provider sandbox after a run
-            // releases it. Deleting the environment would set its reference to
+            // A reusable lease keeps a provider sandbox after a run releases
+            // it, including when the run failed but release succeeded.
+            // Deleting the environment would set its reference to
             // null, and both the normal release path and scoped reusable cleanup
             // require that environment context. Refuse the delete atomically
             // until the owning issue/workspace destroys the reusable sandbox.
@@ -1188,7 +1189,7 @@ export function environmentService(db: Db) {
               select 1 from ${environmentLeases}
               where ${environmentLeases.environmentId} = ${environments.id}
                 and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
-                and ${environmentLeases.status} in ('active', 'released', 'retained')
+                and ${environmentLeases.status} in ('active', 'released', 'retained', 'failed')
             )`,
           ),
         )
@@ -1303,7 +1304,7 @@ export function environmentService(db: Db) {
             and(
               eq(environmentLeases.environmentId, id),
               eq(environmentLeases.leasePolicy, "reuse_by_environment"),
-              inArray(environmentLeases.status, ["active", "released", "retained"]),
+              inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
             ),
           ),
         db

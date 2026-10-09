@@ -1,3 +1,9 @@
+import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
+import { readNativePlanWait, hasCommittedNativePlanWait } from "../services/native-runtime/native-plan-wait.js";
+import { nativeSha256 } from "../services/native-runtime/canonical.js";
+import { buildQuestionResponseDeliveryEnvelope } from "../services/question-response-delivery.js";
+import * as aiConnectionRuntime from "../services/ai-connection-runtime.js";
+import { unprocessable } from "../errors.js";
 import * as executionContinuation from "../services/execution-continuation.js";
 import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -21,6 +27,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -44,6 +51,7 @@ import {
   chatExternalPrincipals,
   chatMessageLinks,
   chatPublications,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
   companySkills,
@@ -63,6 +71,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueQuestionResponseDeliveries,
   issueApprovals,
   issueDocuments,
   issuePlanDecompositions,
@@ -1521,6 +1530,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it.each(["missing_default", "database_error", "unmarked_http_error", "provider_error"] as const)(
+    "preserves AI configuration recovery and reports only unexpected causes: %s", async (cause) => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+      await db.update(agents).set({ runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+        aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+      } }).where(eq(agents.id, agentId));
+      const prepare = vi.spyOn(aiConnectionRuntime, "prepareManagedAiRuntime");
+      if (cause !== "missing_default") prepare.mockRejectedValueOnce(
+        cause === "unmarked_http_error"
+          ? unprocessable("Connect an account and choose your personal default", { code: "ai_connection_default_missing" })
+          : new Error(cause),
+      );
+      try {
+        const heartbeat = heartbeatService(db);
+        await heartbeat.resumeQueuedRuns();
+        await waitForRunToSettle(heartbeat, runId, 5_000);
+        await heartbeat.waitForRunExecutionDrain(runId);
+        await waitForPendingRunFailureReports();
+        expect(prepare).toHaveBeenCalled();
+        const failed = await heartbeat.getRun(runId);
+        expect(failed).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+          resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        });
+        if (cause === "missing_default") {
+          expect(failed?.error).toBe("Connect an account and choose your personal default");
+          expect(failed?.resultJson?.configurationIncomplete).toMatchObject({ selectionFailure: "ai_connection_default_missing" });
+          expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+        } else {
+          expect(failed?.resultJson?.configurationIncomplete).not.toHaveProperty("selectionFailure");
+          expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ runId, errorCode: "configuration_incomplete" }));
+        }
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+        const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+        expect(action).toMatchObject({ status: "active", kind: "configuration_validation", cause: "configuration_incomplete", ownerType: "board" });
+        const [wakeup] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId));
+        expect(wakeup.status).toBe("failed");
+      } finally {
+        prepare.mockRestore();
+        await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+      }
+    },
+  );
 
   it.each(["timeout", "upstream", "cleanup_pending", "cleanup_pending_edited", "cleanup_pending_exhausted", "edited", "exhausted", "new_message", "no_claim", "reassigned", "superseded", "stopped"])(
     "settles explicit retry admission through real executor cleanup: %s", async scenario => {
@@ -7924,7 +7980,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(next?.contextSnapshot?.wakeCommentIds).toEqual([pending!.id, go!.id]);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]).toMatchObject({ status: "coalesced", runId: next!.id });
-    await vi.waitFor(async () => expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running"));
+    await heartbeat.drainActiveRunExecutions();
+    expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running");
   });
 
   it.each(["dedicated deferred donor", "non-coalescing recipient", "persistent agent conversation"] as const)(
@@ -8989,7 +9046,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 81_501, processGroupId: 81_502 }),
-      { forceAfterMs: 3000 },
+      { forceAfterMs: 3000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });
@@ -16400,4 +16457,237 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+  describe("accepted Cursor planning boundaries", () => {
+  const nativeImplementation = mockExecutePaperclipNativeSession.getMockImplementation();
+  beforeEach(() => {
+    mockExecutePaperclipNativeSession.mockImplementation(async () => { throw new Error("Accepted-plan tests must never execute a provider"); });
+  });
+  afterEach(() => { mockExecutePaperclipNativeSession.mockImplementation(nativeImplementation!); });
+
+  async function seedAcceptedCursorPlanWait(semanticFinish = false, sourceSequenceOffset = 0) {
+    const f = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    const instance = randomUUID(), interactionId = randomUUID();
+    const contractInput = { db, companyId: f.companyId,
+      issue: { id: f.issueId, title: "Review the plan before further work", description: "Explicit completion required" }, actorId: "test" };
+    const { row: persistedContract, contract } = await ensureNativeCompletionContract(contractInput);
+    const reused = await ensureNativeCompletionContract(contractInput);
+    expect(reused.row.id).toBe(persistedContract.id);
+    expect(reused.contract).toEqual(contract);
+    const contractId = persistedContract.id, contractSha = persistedContract.canonicalSha256;
+    // Production binds policy/schema as well as the body; a body-only hash is not a valid contract receipt.
+    expect(contractSha).not.toBe(nativeSha256(contract));
+    const model = "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]";
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "cursor", model, acpxSessionMode: "plan", acpxPermissionMode: "approve-all" } }).where(eq(agents.id, f.agentId));
+    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, f.wakeupRequestId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId, nativeSessionId: f.runId,
+      completionContractId: contractId, completionContractSha256: contractSha, runnerInstanceId: instance,
+      runnerProfileJson: { nativeExecutionInput: { binding: { companyId: f.companyId, issueId: f.issueId, runId: f.runId, agentId: f.agentId }, provider: { kind: "acpx", agent: "cursor", model, mode: "plan", permissionMode: "approve-all",
+        profile: paperclipRunner.resolveQualifiedAcpxProfile("cursor", model) }, session: { normalizedSessionId: f.runId },
+        completionContract: { id: contractId, sha256: contractSha, contract } } } }).where(eq(heartbeatRuns.id, f.runId));
+    const planId = `plan-${"a".repeat(64)}`;
+    const questionSet = { schema: "paperclip.question_set.v1", title: "Native plan", description: "Exact accepted revision", questions: [{ id: planId, prompt: "Proceed?", required: true,
+      answerMode: "single_select", options: [{ id: "accept", label: "Accept" }, { id: "reject", label: "Reject" }, { id: "cancel", label: "Cancel" }] }] };
+    const [interaction] = await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: f.companyId, issueId: f.issueId, sourceRunId: f.runId,
+      createdByAgentId: f.agentId, kind: "ask_user_questions", status: "answered", continuationPolicy: "none",
+      idempotencyKey: `paperclip-runner-question:${f.runId}:request`, resolvedByUserId: "responsible-user", resolvedAt: new Date(Date.now() - 1000),
+      payload: { version: 1, questions: [{ id: planId, prompt: "Proceed?", selectionMode: "single", required: true, allowOther: false, options: [{ id: "accept", label: "Accept" }, { id: "reject", label: "Reject" }, { id: "cancel", label: "Cancel" }] }], runtimeRequestId: "request", questionSet: questionSet as never }, result: { version: 1, answers: [{ questionId: planId, optionIds: ["accept"] }] } }).returning();
+    const answer = buildQuestionResponseDeliveryEnvelope(interaction as never);
+    const [delivery] = await db.insert(issueQuestionResponseDeliveries).values({ companyId: f.companyId, issueId: f.issueId, interactionId,
+      sourceRunId: f.runId, targetRunId: f.runId, correlationId: randomUUID(), status: "delivered", deliveryMode: "steered", acknowledgedAt: new Date(), payloadSha256: nativeSha256(answer) }).returning();
+    const port = new PaperclipControlPlanePort(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, agentId: f.agentId,
+      sessionId: f.runId, completionContractId: contractId, completionContractSha256: contractSha, sourceInstanceId: instance, controlPlaneSourceInstanceId: `control-${f.runId}` });
+    const events = [
+      { eventType: "runtime_request.created", payload: { request: { schema: "paperclip.runtime_request.v2", requestKind: "runtime", requestId: "request", type: "input", status: "pending", turnId: "turn", itemId: "native-plan-tool", prompt: "Review plan",
+        origin: { adapter: "acpx-runtime-sidecar", provider: "cursor", method: "cursor/create_plan" }, input: questionSet } } },
+      { eventType: "tool.execution.started", payload: { schema: "paperclip.tool.execution.v1", executionId: "native-plan-tool", transport: "builtin", operation: "execute", status: "running", readOnly: false, namespace: null, name: "Create Plan", target: null, inputUpdated: true, output: null, outputBytes: 0, outputTruncated: false, outputDigest: null, progress: null, exitCode: null, durationMs: null } },
+      { eventType: "runtime_request.resolved", payload: { requestId: "request", turnId: "turn", action: "submit", response: answer.response } },
+      { eventType: "tool.execution.completed", payload: { schema: "paperclip.tool.execution.v1", executionId: "native-plan-tool", transport: "builtin", operation: "execute", status: "completed", readOnly: false, namespace: null, name: "Create Plan", target: null, inputUpdated: false, output: null, outputBytes: 0, outputTruncated: false, outputDigest: null, progress: null, exitCode: null, durationMs: null } },
+      { eventType: "turn.completed", payload: { status: "completed", error: null } },
+    ];
+    for (const [index, event] of events.entries()) await port.appendEvent({ schema: "paperclip.prp.event.v1", sourceEventId: `${instance}:${sourceSequenceOffset + index + 1}`, sourceSeq: sourceSequenceOffset + index + 1,
+      sourceInstanceId: instance, sourceKind: "runner", runId: f.runId, normalizedSessionId: f.runId, turnId: "turn", schemaVersion: 1, priority: 0,
+      emittedAt: new Date().toISOString(), ...event } as paperclipRunner.PrpEvent);
+    const proof = await readNativePlanWait(db, f);
+    expect(proof).not.toBeNull();
+    const result = semanticFinish ? { ...proof!.result, reportedWorkDisposition: "done" as const, summary: "Explicit semantic finish wins", continuation: undefined,
+      completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied" as const, evidenceRefs: [] }], remainingWork: [] } } : proof!.result;
+    await port.completeRun({ result, turnId: "turn", terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: result.reportedWorkDisposition } });
+    return { ...f, interactionId, deliveryId: delivery!.id, proof: proof! };
+  }
+
+  it("keeps an accepted Cursor plan passive across restart, future configuration changes, and paused recovery", async () => {
+    const f = await seedAcceptedCursorPlanWait();
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toEqual([expect.objectContaining({ reasonCode: "native_plan_accepted_waiting_for_continuation", toStatus: "in_progress" })]);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, f.issueId))).toEqual([expect.objectContaining({ effectKind: "issue_status_projection", targetType: "issue", deliveryState: "delivered" })]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.runId))).toEqual([expect.objectContaining({ body: expect.stringContaining("next message") })]);
+    const current = paperclipRunner.resolveQualifiedAcpxProfile("cursor", "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]");
+    const resolver = vi.spyOn(paperclipRunner, "resolveQualifiedAcpxProfile").mockReturnValue({ ...current,
+      agentProfileVersion: current.agentProfileVersion + 1, commandDigest: `sha256:${"b".repeat(64)}` });
+    try {
+      expect(await readNativePlanWait(db, f)).toBeNull(); // Old profile cannot create a new wait.
+      for (const status of ["idle", "paused"] as const) {
+        await db.update(agents).set({ status, adapterConfig: { provider: "acpx", acpxAgent: "cursor",
+          model: "future-model", acpxSessionMode: "agent", acpxPermissionMode: "approve-reads" } }).where(eq(agents.id, f.agentId));
+        expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+        const recovered = await heartbeatService(db).reconcileStrandedAssignedIssues();
+        expect(recovered.continuationRequeued).toBe(0); expect(recovered.escalated).toBe(0);
+      }
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const changed = structuredClone(run!.runnerProfileJson!);
+      (changed.nativeExecutionInput as { provider: { profile: { commandDigest: string } } }).provider.profile.commandDigest = "tampered-original-profile";
+      await db.update(heartbeatRuns).set({ runnerProfileJson: changed }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: run!.runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+      const [tool] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.eventType, "tool.execution.completed")));
+      const changedTool = structuredClone(tool!.payload!) as { prpEvent: { payload: { name: string } } };
+      changedTool.prpEvent.payload.name = "mutated committed tool evidence";
+      await db.update(heartbeatRunEvents).set({ payload: changedTool, sourcePayloadSha256: nativeSha256(changedTool.prpEvent) }).where(eq(heartbeatRunEvents.id, tool!.id));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+      await db.update(heartbeatRunEvents).set({ payload: tool!.payload, sourcePayloadSha256: tool!.sourcePayloadSha256 }).where(eq(heartbeatRunEvents.id, tool!.id));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+    } finally { resolver.mockRestore(); }
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect(mockAdapterExecute).not.toHaveBeenCalled(); expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+  });
+
+  it("retains an exact historical Cursor6 committed wait across more than 1000 ignored progress rows without allowing new unbound admission", async () => {
+    const progressCount = 1002;
+    const f = await seedAcceptedCursorPlanWait(false, progressCount);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const profile = structuredClone(run!.runnerProfileJson!) as any;
+    Object.assign(profile.nativeExecutionInput.provider.profile, { agentProfileVersion: 6, commandDigest: "sha256:377dcea64a727ce799cc112458d4b40ba4bc6574cd6c6f7233b6efd5917a6c4b" });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    await db.delete(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId), inArray(heartbeatRunEvents.eventType, ["tool.execution.started", "tool.execution.completed"])));
+    // Reconstruct the persisted Cursor6 receipt format using its unchanged
+    // source facts. This historical format had no tool lifecycle binding.
+    const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    const event = (kind: string) => (rows.find(r => r.eventType === kind)!.payload as any).prpEvent;
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.id, run!.completionContractId!));
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.interactionId));
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.id, f.deliveryId));
+    profile.nativeExecutionInput.provider.cursorMode = profile.nativeExecutionInput.provider.mode;
+    delete profile.nativeExecutionInput.provider.mode;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    const legacy = { ...f.proof.source, schema: "paperclip.native_cursor_plan_wait.v1" }; delete legacy.toolExecutionId; delete legacy.toolLifecycleSha256;
+    legacy.authoritySha256 = nativeSha256({ admission: profile.nativeExecutionInput, contract, created: event("runtime_request.created"), resolved: event("runtime_request.resolved"), terminal: event("turn.completed"), interaction, delivery, resolvedAt: interaction!.resolvedAt!.toISOString(), acknowledgedAt: delivery!.acknowledgedAt!.toISOString() });
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
+    const [savedResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+    const resultJson = structuredClone(savedResult!.resultJson!) as any;
+    resultJson.result.continuation.idempotencyKey = resultJson.result.continuation.idempotencyKey.replace("native-plan-wait:", "cursor-plan-wait:");
+    const canonicalSha256 = nativeSha256(resultJson);
+    await db.update(nativeRunResults).set({ resultJson, canonicalSha256 }).where(eq(nativeRunResults.id, savedResult!.id));
+    const decisionJson = { ...decision!.decisionJson } as any;
+    delete decisionJson.planWait; delete decisionJson.planWaitResult;
+    decisionJson.cursorPlanWait = legacy;
+    decisionJson.cursorPlanWaitResult = { resultId: savedResult!.id, resultSha256: canonicalSha256 };
+    await db.update(statusDecisions).set({ decisionJson }).where(eq(statusDecisions.id, decision!.id));
+    expect(await readNativePlanWait(db, f)).toBeNull();
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+    // Fill the reserved source prefix with genuine durable progress rows. Shift
+    // only DB ordering keys; the original PRP facts and committed receipt stay
+    // byte-identical. Cursor6 never queried these rows, even above its budget.
+    await db.update(heartbeatRunEvents).set({ seq: sql`${heartbeatRunEvents.seq} + ${progressCount}` }).where(eq(heartbeatRunEvents.runId, f.runId));
+    const progress = Array.from({ length: progressCount }, (_, index) => {
+      const seq = index + 1;
+      const prpEvent = { ...event("runtime_request.created"), sourceEventId: `${run!.runnerInstanceId}:${seq}`, sourceSeq: seq, eventType: "tool.execution.progressed",
+        payload: { schema: "paperclip.tool.execution.v1", executionId: "earlier-tool", transport: "builtin", operation: "read", status: "running" } };
+      return { companyId: f.companyId, runId: f.runId, agentId: f.agentId, seq, eventType: prpEvent.eventType, payload: { prpEvent }, sourceInstanceId: run!.runnerInstanceId,
+        sourceEventId: prpEvent.sourceEventId, sourceSeq: seq, sourcePayloadSha256: nativeSha256(prpEvent), protocolSchemaVersion: 1 };
+    });
+    await db.insert(heartbeatRunEvents).values(progress);
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+    const [unchangedDecision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, decision!.id));
+    expect(unchangedDecision!.decisionJson!.cursorPlanWait).toEqual(legacy);
+    // Completed rows belonged to the old query. A later completion must still
+    // invalidate the normal-terminal boundary rather than being filtered away.
+    const completion = { ...event("turn.completed"), sourceEventId: `${run!.runnerInstanceId}:99999`, sourceSeq: 99999, eventType: "tool.execution.completed", payload: { ...progress[0]!.payload.prpEvent.payload, status: "completed" } };
+    const [extra] = await db.insert(heartbeatRunEvents).values({ ...progress[0]!, seq: 99999, eventType: completion.eventType, payload: { prpEvent: completion }, sourceEventId: completion.sourceEventId, sourceSeq: 99999, sourcePayloadSha256: nativeSha256(completion) }).returning();
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, extra!.id));
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+    profile.nativeExecutionInput.provider.profile.commandDigest = "tampered-history";
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+  });
+
+  it("admits a later ordinary user message after an accepted Cursor plan without changing Plan mode or replaying its run", async () => {
+    const f = await seedAcceptedCursorPlanWait();
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    // Occupy the single dispatch slot: this checks actual user-wake admission
+    // without executing any provider or fabricating a second semantic result.
+    const occupied = randomUUID();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agentId));
+    await db.insert(heartbeatRuns).values({ id: occupied, companyId: f.companyId, agentId: f.agentId, status: "running", startedAt: new Date(), contextSnapshot: {} });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "responsible-user", body: "Continue reviewing the accepted plan in Plan mode." }).returning();
+    try {
+      const heartbeat = heartbeatService(db);
+      const next = await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
+        payload: { issueId: f.issueId, commentId: comment!.id }, contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: comment!.id, wakeCommentIds: [comment!.id] } });
+      expect(next).not.toBeNull(); expect(next!.id).not.toBe(f.runId);
+      const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, next!.id));
+      expect(admitted).toMatchObject({ status: "queued", retryOfRunId: null });
+      expect(admitted!.contextSnapshot?.wakeCommentIds).toContain(comment!.id);
+      const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(agent!.adapterConfig.acpxSessionMode).toBe("plan");
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+      expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(eq(heartbeatRuns.companyId, f.companyId), inArray(heartbeatRuns.status, ["running", "queued"])));
+      await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(and(eq(agentWakeupRequests.companyId, f.companyId), inArray(agentWakeupRequests.status, ["queued", "claimed"])));
+    }
+  });
+
+  it.each(["delivery", "assignment", "admission", "user_request", "result_or_decision"] as const)("revokes an accepted Cursor plan passive wait after %s changes", async change => {
+    const f = await seedAcceptedCursorPlanWait();
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    if (change === "delivery") await db.update(issueQuestionResponseDeliveries).set({ acknowledgedAt: null }).where(eq(issueQuestionResponseDeliveries.id, f.deliveryId));
+    if (change === "assignment") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+    if (change === "admission") {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const profile = structuredClone(run!.runnerProfileJson!);
+      (profile.nativeExecutionInput as { provider: { cursorMode: string } }).provider.cursorMode = "agent";
+      await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    }
+    if (change === "user_request") await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "responsible-user", body: "Continue reviewing this plan in Plan mode." });
+    if (change === "result_or_decision") {
+      const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+      await db.update(nativeRunResults).set({ canonicalSha256: "changed" }).where(eq(nativeRunResults.id, accepted!.id));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+      await db.update(nativeRunResults).set({ canonicalSha256: accepted!.canonicalSha256 }).where(eq(nativeRunResults.id, accepted!.id));
+      expect(await hasCommittedNativePlanWait(db, f)).toBe(true);
+      await db.update(issues).set({ lastStatusDecisionId: null }).where(eq(issues.id, f.issueId));
+    }
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+  });
+
+  it("rechecks accepted Cursor plan delivery under the status transaction before presentation or effects", async () => {
+    const f = await seedAcceptedCursorPlanWait();
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", failpoint: "status_projection" });
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    await db.update(issueQuestionResponseDeliveries).set({ payloadSha256: "changed" }).where(eq(issueQuestionResponseDeliveries.id, f.deliveryId));
+    await expect(commitNativeStatusDecision({ db, companyId: f.companyId, issueId: f.issueId, runId: f.runId, assessmentId: coordinator!.assessmentId!,
+      priorStatus: issue!.status, priorStatusVersion: issue!.statusVersion, priorDecisionId: issue!.lastStatusDecisionId,
+      decision: { policyVersion: "phase6-v7", statusAction: "in_progress", toStatus: "in_progress", reasonCode: "native_plan_accepted_waiting_for_continuation", unblockDescriptor: null, effects: [] },
+      requirePlanWaitSource: f.proof.source })).rejects.toBeInstanceOf(NativeStatusRaceError);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.runId))).toHaveLength(0);
+  });
+
+  it("preserves explicit semantic finish priority over accepted Cursor plan evidence", async () => {
+    const f = await seedAcceptedCursorPlanWait(true);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect(await hasCommittedNativePlanWait(db, f)).toBe(false);
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId));
+    expect(decisions).toHaveLength(1); expect(decisions[0]!.reasonCode).not.toBe("native_plan_accepted_waiting_for_continuation");
+  });
+
+  });
+
+
 });

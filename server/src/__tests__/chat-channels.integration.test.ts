@@ -1084,17 +1084,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(and(inArray(chatConversations.companyId, companyIds), inArray(chatConversations.state, ["active", "waiting"])));
   }
 
-  async function seedCompany() {
+  const companyPrefixAttempts = 8;
+  const freshCompanyPrefix = () => `C${randomUUID().replaceAll("-", "").slice(0, 7).toUpperCase()}`;
+
+  async function seedCompany(nextIssuePrefix = freshCompanyPrefix) {
     const companyId = randomUUID();
-    fixtureCompanies.add(companyId);
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replace(/-/g, "").toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    let inserted = false;
+    // Retired fixtures retain company rows. Retry only the short-prefix unique
+    // conflict; every other database error must still fail the test immediately.
+    for (let attempt = 0; attempt < companyPrefixAttempts; attempt += 1) {
+      const [company] = await db.insert(companies).values({
+        id: companyId,
+        name: `Chat Test ${companyId.slice(0, 8)}`,
+        issuePrefix: nextIssuePrefix(),
+        requireBoardApprovalForNewAgents: false,
+      }).onConflictDoNothing({ target: companies.issuePrefix }).returning({ id: companies.id });
+      if (company) {
+        inserted = true;
+        fixtureCompanies.add(companyId);
+        break;
+      }
+    }
+    if (!inserted) throw new Error(`Could not allocate a chat fixture company prefix after ${companyPrefixAttempts} attempts`);
     const now = new Date();
     await db
       .insert(authUsers)
@@ -1148,6 +1161,46 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("retries a colliding company fixture prefix and creates a distinct complete fixture", async () => {
+    const existing = await seedCompany();
+    const [original] = await db.select().from(companies).where(eq(companies.id, existing.companyId));
+    const candidates: string[] = [];
+    const nextPrefix = vi.fn(() => {
+      const prefix = candidates.length === 0 ? original!.issuePrefix : freshCompanyPrefix();
+      candidates.push(prefix);
+      return prefix;
+    });
+    const fixture = await seedCompany(nextPrefix);
+    const [allocated] = await db.select().from(companies).where(eq(companies.id, fixture.companyId));
+    expect(nextPrefix.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(allocated!.issuePrefix).toBe(candidates.at(-1));
+    expect(allocated!.issuePrefix).toMatch(/^C[A-F0-9]{7}$/);
+    expect(allocated!.issuePrefix).not.toBe(original!.issuePrefix);
+    expect(fixture.companyId).not.toBe(existing.companyId);
+    expect(await db.select().from(companies).where(eq(companies.id, existing.companyId))).toEqual([original]);
+    expect((await db.select().from(agents).where(eq(agents.companyId, fixture.companyId))).map(agent => agent.id).sort())
+      .toEqual([fixture.assignedAgentId, fixture.replacementAgentId].sort());
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, fixture.companyId)))
+      .toEqual([expect.objectContaining({ principalId: "owner-user", membershipRole: "operator" })]);
+  });
+
+  it("bounds company fixture prefix collision retries without creating a partial fixture", async () => {
+    const fixture = await seedCompany();
+    const [company] = await db.select().from(companies).where(eq(companies.id, fixture.companyId));
+    const before = await db.select({ id: companies.id }).from(companies);
+    const nextPrefix = vi.fn(() => company!.issuePrefix);
+    await expect(seedCompany(nextPrefix)).rejects.toThrow(`after ${companyPrefixAttempts} attempts`);
+    expect(nextPrefix).toHaveBeenCalledTimes(companyPrefixAttempts);
+    expect((await db.select({ id: companies.id }).from(companies)).map(row => row.id).sort())
+      .toEqual(before.map(row => row.id).sort());
+  });
+
+  it("does not retry unrelated company fixture database errors", async () => {
+    const nextPrefix = vi.fn(() => "C\0INVALID");
+    await expect(seedCompany(nextPrefix)).rejects.toMatchObject({ cause: { code: "22021" } });
+    expect(nextPrefix).toHaveBeenCalledOnce();
+  });
 
   // A truthy return is not a durable scheduler receipt. These transport tests
   // record the same exact receipt identity; real scheduling/coalescing is
@@ -1572,6 +1625,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
+    return setupFollowUpMessageId;
   }
 
   async function configuredSlackEndpoint(
@@ -4140,9 +4194,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       for (const canary of [configToken, signingSecret, clientSecret, f.token]) expect(publicState).not.toContain(canary);
       await request(f.app).patch(`/api/chat-endpoints/${f.endpoint.id}`).send({ slackApp: appDetails }).expect(409);
     });
-    it("uploads avatar bytes without fetching a tenant-session-protected URL, after app credentials are durable", async () => {
+    it.each([undefined, "22222222-2222-4222-8222-222222222222"])("uploads preset bytes after credentials are durable, even with private avatar %s", async customAvatarAssetId => {
       const f = await fixture();
-      await db.update(agents).set({ appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" } }).where(eq(agents.id, f.assignedAgentId));
+      await db.update(agents).set({ appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop", customAvatarAssetId } }).where(eq(agents.id, f.assignedAgentId));
       f.state.beforeIcon = async () => {
         const row = (await f.service.slackRegistration.registration(f.endpoint.id))!;
         expect(row).toMatchObject({ status: "install", appId: f.appId });
@@ -28288,8 +28342,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
         trigger: "direct_message",
       });
-      await qualifySetupRoundTrip(service, endpoint.id, userId);
+      const setupMessageId = await qualifySetupRoundTrip(service, endpoint.id, userId);
       await service.test(endpoint.id, "owner-user");
+      if (provider === "telegram") {
+        // Setup dispatches receipt cleanup asynchronously. Finish it before
+        // measuring reaction removals owned by this fixture's working run.
+        await service.processPendingReceiptReactions();
+        await waitForProcessedReceiptRemoval(endpoint.id, {
+          threadId: thread.thread.id,
+          messageId: setupMessageId,
+          emoji: "eyes",
+        });
+      }
       const [conversation] = await service.listConversations(endpoint.id);
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
@@ -31790,6 +31854,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it("quarantines Telegram maintenance success when credential-lease ownership is reclaimed", async () => {
+    // Global sweeps may also reconcile a retired fixture's receipt. Keep that
+    // work eligible so the fault hook proves it cannot steal another owner.
+    const retiredFixture = await seedCompany();
+    const retired = await configuredSlackEndpoint(retiredFixture);
+    const retiredThread = makeThread({ channelId: "C-LEASE-SCOPE", id: "slack:C-LEASE-SCOPE:7002.1" });
+    await deliverMessage({
+      callbacks: retired.callbacks,
+      endpointId: retired.endpoint.id,
+      thread: retiredThread.thread,
+      message: makeMessage({ id: "7002.1", text: "@maya check lease isolation", mentioned: true }),
+      trigger: "mention",
+    });
+    await retired.service.shutdown();
+    const [retiredReceipt] = await db.select().from(chatActions).where(and(
+      eq(chatActions.endpointId, retired.endpoint.id),
+      eq(chatActions.kind, "receipt_reaction"),
+    ));
+    expect(retiredReceipt).toBeDefined();
+    await db.update(chatActions).set({ status: "received" })
+      .where(eq(chatActions.id, retiredReceipt!.id));
+    await retireFixtureState([retiredFixture.companyId]);
+
     const fixture = await seedCompany();
     const botToken = "123456:telegram-lease-reclaim";
     let reclaimLease = false;
@@ -31842,7 +31928,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const { service } = createService(new FakeChatSdkRuntime(), providerFetch, {
       credentialMutationLeaseRenewalIntervalMs: 5,
       renewCredentialMutationLease: async (input) => {
-        if (!reclaimLease) return true;
+        // Force the unrelated receipt to reach its ownership check only
+        // after the Telegram fault is armed, independent of query timing.
+        if (blockCommands && input.companyId === retiredFixture.companyId) {
+          await leaseReclaimed;
+        }
+        if (input.companyId !== fixture.companyId || !reclaimLease) return true;
         const reclaimed = await db
           .update(chatEndpointLeases)
           .set({
@@ -31899,6 +31990,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     blockCommands = true;
 
     await service.processPendingDeliveries();
+
+    await expect(db.select({ status: chatActions.status }).from(chatActions)
+      .where(eq(chatActions.id, retiredReceipt!.id)))
+      .resolves.toEqual([{ status: "cancelled" }]);
+    await expect(db.select().from(chatEndpointLeases)
+      .where(eq(chatEndpointLeases.endpointId, retired.endpoint.id)))
+      .resolves.toEqual([]);
 
     await expect(
       db
@@ -62587,7 +62685,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it("orders reversed GitHub edit and delete callbacks behind their durable root", async () => {
+  it.each([false, true])("orders reversed GitHub edit and delete callbacks behind their durable root (root processed before replay: %s)", async (rootProcessedFirst) => {
     const fixture = await seedCompany();
     const deferred: Array<() => void | Promise<void>> = [];
     const { callbacks, endpoint, service, wakeup, webhookSecret } =
@@ -62690,8 +62788,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // One root-conversation drain plus one durable-ingress callback per HTTP
     // request is queued. The duplicate delivery callback becomes a no-op.
     expect(deferred).toHaveLength(4);
+    if (rootProcessedFirst) {
+      await deferred.shift()?.();
+      await vi.waitFor(async () => {
+        const [root] = await db
+          .select({ state: chatDeliveries.state })
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id));
+        expect(root.state).toBe("processed");
+      });
+    }
     await drainDeferred();
+    // The scheduler callbacks start background promises. Wait for durable
+    // replay admission before draining the conversation work it schedules.
     await vi.waitFor(async () => {
+      const deliveries = await db
+        .select({ id: chatDeliveries.id })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(deliveries).toHaveLength(3);
+    });
+    await vi.waitFor(async () => {
+      await drainDeferred();
       const deliveries = await db
         .select({
           eventKind: chatDeliveries.eventKind,

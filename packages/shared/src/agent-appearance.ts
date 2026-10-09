@@ -14,6 +14,8 @@ export const agentAppearanceSchema = z.object({
   schemaVersion: z.literal(1),
   characterVersion: z.literal("cap-v1"),
   paletteId: z.enum(AGENT_PALETTE_IDS),
+  /** Company-scoped normalized image, set through the avatar upload service. */
+  customAvatarAssetId: z.uuid().optional(),
 }).strict();
 export type AgentAppearance = z.infer<typeof agentAppearanceSchema>;
 
@@ -39,6 +41,7 @@ export function resolveAgentAppearance(appearance: unknown, id = "agent"): Agent
   return parsed.success ? parsed.data : legacyAgentAppearance(id);
 }
 export function agentAvatarUrl(appearance: AgentAppearance, size: AgentAvatarSize = 512, scale: 1 | 2 = 1, pose: CharacterState = "rest", muted = false, background: AgentAvatarBackground = "transparent"): string {
+  if (appearance.customAvatarAssetId) return `/api/assets/${appearance.customAvatarAssetId}/content`;
   return `/api/agent-avatars/${appearance.characterVersion}/${muted ? "muted-dream" : appearance.paletteId}/${pose}.png?size=${size}&scale=${scale}${background === "paperclip-dark" ? "&background=paperclip-dark" : ""}`;
 }
 export function characterStateForAgent(status: string): CharacterState {

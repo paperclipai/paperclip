@@ -335,7 +335,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]);
   });
 
-  it("requires agent JWT and atomically cascade-approves a secret plus binding with dual audits", async () => {
+  it("requires agent JWT and approves a secret before its binding with dual audits", async () => {
     const fixture = await seedRun();
     const denied = await request(createAgentApp(fixture, "agent_key"))
       .post("/api/agents/me/secret-proposals")
@@ -473,6 +473,46 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         body: expect.stringContaining("GET /api/agents/me/secrets"),
       }),
     ]);
+  });
+
+  it("keeps an approved secret after binding fails and reuses it on retry", async () => {
+    const fixture = await seedRun();
+    const agentApp = createAgentApp(fixture);
+    const boardApp = createBoardApp(fixture);
+    const secret = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "secret", name: "dev/retry/token", value: "retry-fixture", justification: "Needed by task",
+    });
+    const binding = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "binding", secretProposalId: secret.body.id, configPath: "env.RETRY_TOKEN", justification: "Use saved secret",
+    });
+    expect(secret.status).toBe(201);
+    expect(binding.status).toBe(201);
+    await db.update(agents).set({ adapterConfig: { env: { RETRY_TOKEN: "existing-value" } } })
+      .where(eq(agents.id, fixture.agentId));
+    const approve = () => request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${binding.body.id}/approve`).send({ cascade: true });
+
+    expect((await approve()).status).toBe(409);
+    const [saved] = await db.select().from(companySecrets);
+    expect(saved).toMatchObject({ name: "dev/retry/token", status: "active" });
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: secret.body.id, status: "approved", createdSecretId: saved.id, valueCiphertext: null }),
+      expect.objectContaining({ id: binding.body.id, status: "pending" }),
+    ]));
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect((await db.select().from(agents))[0].adapterConfig).toEqual({ env: { RETRY_TOKEN: "existing-value" } });
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+
+    await db.update(agents).set({ adapterConfig: {} }).where(eq(agents.id, fixture.agentId));
+    expect((await approve()).status).toBe(200);
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(await db.select().from(companySecretVersions)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({ secretId: saved.id, targetId: fixture.agentId, configPath: "env.RETRY_TOKEN" }),
+    ]);
+    const history = await db.select().from(activityLog);
+    expect(history.filter(row => row.action === "secret.created")).toHaveLength(1);
+    expect(history.filter(row => row.action === "secret.proposal.approved")).toHaveLength(2);
   });
 
   it("approves a binding without cascade after its secret proposal was approved separately", async () => {
@@ -1446,7 +1486,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]));
   });
 
-  it("holds the org graph stable until binding approval commits", async () => {
+  it("rechecks the org graph after secret approval commits", async () => {
     const fixture = await seedRun();
     const targetAgentId = randomUUID();
     await db.insert(agents).values({
@@ -1532,8 +1572,9 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       expect(reorgFinished).toBe(false);
 
       const approval = await approvalPromise;
-      expect(approval.status).toBe(200);
       await reorgPromise;
+      expect(approval.status).toBe(409);
+      expect(approval.body.error).toContain("chain-of-command policy");
     } finally {
       await db.execute(sql.raw(`
         DROP TRIGGER IF EXISTS paperclip_test_pause_secret_approval ON company_secrets;
@@ -1541,9 +1582,12 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       `));
     }
 
-    expect(await db.select().from(companySecretBindings)).toEqual([
-      expect.objectContaining({ targetId: targetAgentId, configPath: "access.CONCURRENT_REORG_TOKEN" }),
-    ]);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: secretProposal.body.id, status: "approved", valueCiphertext: null }),
+      expect.objectContaining({ id: bindingProposal.body.id, status: "pending" }),
+    ]));
     expect(await db.select({ reportsTo: agents.reportsTo }).from(agents).where(eq(agents.id, targetAgentId)))
       .toEqual([{ reportsTo: null }]);
   });

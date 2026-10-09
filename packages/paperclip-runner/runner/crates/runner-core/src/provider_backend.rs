@@ -3594,7 +3594,9 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
-        state.lifecycle = "provider_exited".to_owned();
+        // Deadline settlement retires this run permanently. Polling its terminal
+        // outbox must not reopen a provider that still reports the stopped turn.
+        state.lifecycle = "closed".to_owned();
         let terminal_event_type = if interrupt_accepted {
             "turn.interrupted"
         } else {
@@ -6308,7 +6310,7 @@ mod tests {
                 provider: "codex".to_owned(),
                 driver: "codex_app_server".to_owned(),
                 provider_version: "test".to_owned(),
-                command: PathBuf::from("codex"),
+                command: PathBuf::from("/definitely-missing-receipt-deadline-provider"),
                 args: vec!["app-server".to_owned()],
                 cwd: std::env::current_dir()
                     .unwrap()
@@ -6355,7 +6357,7 @@ mod tests {
         executor.maintain_backpressured_provider().unwrap();
 
         let state = executor.state.as_ref().unwrap();
-        assert_eq!(state.lifecycle, "provider_exited");
+        assert_eq!(state.lifecycle, "closed");
         assert!(state.active_provider_turn_id.is_none());
         assert!(!state.receipt_limit_interrupt_pending);
         assert!(state.pending_events.iter().any(|event| {
@@ -6373,6 +6375,13 @@ mod tests {
             settled
         );
         assert!(executor.provider.is_none());
+        // Reading terminal evidence must not restart work whose interruption
+        // exhausted its deadline, even after a controller reconnects.
+        assert!(!executor.poll_events().unwrap().is_empty());
+        assert!(executor.provider.is_none());
+        let mut restarted = CodexCommandExecutor::new(&directory);
+        assert!(!restarted.poll_events().unwrap().is_empty());
+        assert!(restarted.provider.is_none());
         fs::remove_dir_all(directory).unwrap();
     }
 }

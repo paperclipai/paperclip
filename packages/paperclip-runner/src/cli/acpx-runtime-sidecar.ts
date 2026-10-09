@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { parseProviderMode } from "../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
+
+import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
@@ -18,6 +20,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { createPiMessageProjection, type PiProjectedMessageEvent } from "../drivers/acpx/pi-message-projection.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -63,8 +66,11 @@ import {
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
+import { createCopilotToolEvidence, type CopilotToolEvidence } from "../drivers/acpx/copilot-tool-evidence.js";
+import { createCursorToolEvidence, type CursorToolEvidence } from "../drivers/acpx/cursor-tool-evidence.js";
 import {
   persistedAcpxTurnUsage,
+  persistedCursorUsageNotice,
   acpxUsageEstimateNotice,
   qualifiedAcpxUsageBreakdown,
 } from "../drivers/acpx/usage-accounting.js";
@@ -149,6 +155,7 @@ let failedAdmissionCleanup: Promise<void> | null = null;
 let openParams: AcpxSidecarOpenParams | null = null;
 let runId: string | null = null;
 let turnId: string | null = null;
+let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
 let closing = false;
@@ -289,6 +296,7 @@ async function dispatch(
         model: params.model,
         permissionMode: params.permissionMode,
         mode: params.mode,
+        piThinkingLevel: params.piThinkingLevel,
         providerPolicy: params.providerPolicy,
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
@@ -297,6 +305,7 @@ async function dispatch(
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+          ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {
           // Admission can emit a snapshot before the verified host is assigned.
@@ -379,6 +388,7 @@ async function dispatch(
       emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
       unavailable: () => diagnostic(`${openParams!.agent}_evidence_unavailable`, "ACP tool evidence is incomplete; permission and terminal outcomes are unchanged."),
     });
+    activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -510,19 +520,22 @@ async function dispatch(
   }
   if (request.command === "session.snapshot") {
     const activeHost = requireHost();
+    const status = sanitizeRuntimeStatus(await readSidecarHostStatusWithin(activeHost));
     return {
       identity: acpxProviderSessionIdentity(
         activeHost.identity(),
         activeHost.binding(),
       ),
-      status: sanitizeRuntimeStatus(
-        await readSidecarHostStatusWithin(activeHost),
-      ),
+      status,
       runId,
       turnId,
       sequence,
       pendingToolCount: tools.size,
       pendingInputCount: inputs.size,
+      pendingRuntimeRequests: [
+        ...Array.from(inputs, ([requestId, pending]) => ({ requestId, type: "input", turnId: pending.turnId })),
+        ...Array.from(permissions, ([requestId, pending]) => ({ requestId, type: "permission", turnId: pending.turnId })),
+      ],
     };
   }
   if (request.command === "session.goal.get") {
@@ -616,7 +629,8 @@ async function pumpTurn(
     // display metadata for later progress/completion frames before they cross
     // the sidecar boundary, matching the in-process ACPX driver path.
     const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-    const normalizeMessage = initializedAgent === "grok"
+    const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+    const normalizeMessage = piMessages ? piMessages.normalize : initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
       toolEvidence?.tool(event);
@@ -629,6 +643,7 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
+    if (result.status === "completed") piMessages?.settle();
     await drainExtensions();
     try {
       const usageAfter = await readSidecarHostStatusWithin(activeHost);
@@ -720,6 +735,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     // This is the same roundtrip used by ordinary dynamic tools; emitting a
     // local semantic_result here would let an invalid review handoff appear
     // accepted before the server has checked it.
+    const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
     const forwarded = emit(
       "runtime.tool_called",
       {
@@ -744,6 +760,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
           // A pipe write alone does not prove receiver admission. Only this
           // call's turn-bound tool.resolve success confirms runnerd accepted
           // the validated body; rejection, cancellation and timeout stay null.
+          commitNormalizedInput?.();
           settle(result);
         },
         reject,
@@ -970,7 +987,7 @@ function boundRuntimeEventForNormalization(
   } as BoundedRuntimeToolEvent;
 }
 
-function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
+function sanitizeRuntimeEvent(event: PiProjectedMessageEvent<AcpRuntimeEvent>): Record<string, unknown> {
   const runtimeType = text(record(event).type);
   if (runtimeType === "plan") {
     return {
@@ -984,6 +1001,8 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       text: boundedOptionalText(event.text, "", 64 * 1024),
       stream: event.stream,
       tag: event.tag ?? null,
+      ...(event.piMessageBoundary ? { piMessageBoundary: event.piMessageBoundary } : {}),
+      ...(event.piMessageHistory ? { piMessageHistory: true } : {}),
       messageId:
         typeof event.messageId === "string" && event.messageId.length > 0
           ? stableProviderIdentity(event.messageId, "message")
@@ -1190,10 +1209,12 @@ function safeOutput(value: unknown): Record<string, unknown> {
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
+  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
   if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
+  if (value.mode !== undefined && agent !== "cursor") throw new Error("mode is supported only for Cursor");
+  const piThinkingLevel = resolvePiThinkingLevel(agent, value.piThinkingLevel);
   resolveQualifiedAcpxProfile(agent, model);
   if (
     value.providerSessionKey !== undefined &&
@@ -1214,6 +1235,7 @@ function parseOpenParams(
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
     ...(value.mode === undefined ? {} : { mode: parseProviderMode(value.mode) }),
+    ...(piThinkingLevel ? { piThinkingLevel } : {}),
     permissionModePinned: value.permissionModePinned === true,
     ...(value.providerPolicy == null ? {} : { providerPolicy: parseProviderPolicy(value.providerPolicy) }),
     systemInstructions: boundedText(
@@ -1284,6 +1306,7 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
       ? {}
       : { permissionMode: requiredPermissionMode(input.permissionMode) }),
     ...(input.mode === undefined ? {} : { mode: parseProviderMode(input.mode) }),
+    ...(input.piThinkingLevel === undefined ? {} : { piThinkingLevel: resolvePiThinkingLevel("pi", input.piThinkingLevel) }),
     providerLifetimeFenceCandidates: requiredFenceCandidates(
       input.providerLifetimeFenceCandidates,
     ),
@@ -1306,6 +1329,11 @@ function requiredFenceCandidates(
     );
   }
   return Object.freeze([...value]) as readonly [number, number, number];
+}
+
+function requiredCursorMode(value: unknown): "agent" | "plan" | "ask" {
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("mode must be agent, plan, or ask");
 }
 
 function requiredPermissionMode(

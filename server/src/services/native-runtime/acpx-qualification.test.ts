@@ -8,7 +8,7 @@ const provider = { kind: "acpx", agent: "copilot", model: "exact-model", permiss
 const authorize = (value: unknown) => ({ [ACPX_QUALIFICATION_ENV]: JSON.stringify(value) });
 describe("host ACPX qualification admission", () => {
   afterEach(() => vi.unstubAllEnvs());
-  it.each(["copilot", "pi"])("admits %s through agent validation and native input only for the exact host pair", (agent) => {
+  it.each(["copilot"])("admits %s through agent validation and native input only for the exact host pair", (agent) => {
     const config = { provider: "acpx", acpxAgent: agent, model: "exact-model" };
     vi.stubEnv(ACPX_QUALIFICATION_ENV, undefined);
     expect(() => resolvePaperclipRunnerProviderProfile(config)).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_agent_unavailable" }));
@@ -18,6 +18,21 @@ describe("host ACPX qualification admission", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config })).toMatchObject({ acpxAgent: agent, model: config.model });
     expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "other-model" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_qualification_invalid" }));
     expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model: "" })).toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
+  });
+  it("admits only the exact Pi model without host authorization and preserves permission modes", () => {
+    const config = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" };
+    for (const authorization of [undefined, "malformed unrelated candidate authorization"]) {
+      vi.stubEnv(ACPX_QUALIFICATION_ENV, authorization);
+      expect(resolvePaperclipRunnerProviderProfile(config)).toMatchObject(config);
+      for (const acpxPermissionMode of [undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"]) {
+        expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...config, acpxPermissionMode } }))
+          .toMatchObject({ ...config, acpxPermissionMode: acpxPermissionMode ?? "approve-all" });
+      }
+      for (const model of [undefined, ""]) {
+        expect(() => resolvePaperclipRunnerProviderProfile({ ...config, model }))
+          .toThrow(expect.objectContaining({ code: "paperclip_runner_acpx_model_required" }));
+      }
+    }
   });
   it("keeps normal candidate execution closed and admits only the exact operator pair", () => {
     expect(resolveAcpxQualification(provider, {})).toBeUndefined();
@@ -43,7 +58,7 @@ describe("host ACPX qualification admission", () => {
   it("does not alter existing qualified providers", () => {
     expect(resolveAcpxQualification({ ...provider, agent: "codex" } as typeof provider, authorize([]))).toBeUndefined();
   });
-  it.each(["claude", "codex", "grok", "cursor"])("keeps %s model selection open to native verification", (acpxAgent) => {
+  it.each(["claude", "codex", "grok", "cursor", "pi"])("keeps %s model selection open to native verification", (acpxAgent) => {
     const adapterConfig = { provider: "acpx", acpxAgent, model: "explicit-new-model" };
     expect(resolvePaperclipRunnerProviderProfile(adapterConfig))
       .toMatchObject({ acpxAgent, model: "explicit-new-model" });
@@ -67,4 +82,10 @@ describe("host ACPX qualification admission", () => {
     expect(source).toContain("resolveAcpxQualification(input.execution.provider, process.env)");
     expect(source).not.toContain("resolveAcpxQualification(input.execution.provider, effectiveRunnerEnvironment)");
   });
+});
+
+it.each([undefined, "off", "low", "high", "max"] as const)("validates saved Pi thinking %s and projects it explicitly", piThinkingLevel => {
+  const adapterConfig = { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", piThinkingLevel };
+  expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig })).toMatchObject({ piThinkingLevel: piThinkingLevel ?? "low" });
+  for (const alias of ["medium", "minimal", "xhigh"]) expect(() => resolvePaperclipRunnerProviderProfile({ ...adapterConfig, piThinkingLevel: alias })).toThrow(expect.objectContaining({ code: "paperclip_runner_pi_thinking_invalid" }));
 });

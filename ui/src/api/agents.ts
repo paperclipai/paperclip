@@ -110,6 +110,8 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  setAvatar: (companyId: string, agentId: string, imageBase64: string | null) =>
+    api.put<{ agentId: string; appearance: import("@paperclipai/shared").AgentAppearance; avatarUrl: string }>(`/companies/${companyId}/agents/${agentId}/avatar`, { imageBase64 }),
   getIdentity: (id: string, companyId?: string) =>
     api.get<AgentPublicIdentity | null>(agentPath(id, companyId, "/identity")),
   adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>

@@ -27,6 +27,38 @@ it.skipIf(process.platform === "win32")("revalidates PID/start before signaling 
   } finally { f.owner.stopObserving(); }
 });
 
+it.skipIf(process.platform === "win32")("admits replacement group members only through a still-owned ancestor", async () => {
+  const f = fixture([row(100, process.pid, 100), row(200, 100, 200)]);
+  try {
+    await f.owner.observe();
+    // The short-lived group leader exited between polls. Its new member is
+    // independently owned through the original, still-live controller.
+    f.replace([row(100, process.pid, 100), row(300, 100, 200)]);
+    await f.owner.signal("SIGKILL");
+    expect(f.signals).toEqual([[200, "SIGKILL"], [100, "SIGKILL"]]);
+  } finally { f.owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("refuses replacement groups containing any unowned live member", async () => {
+  const f = fixture([row(100, process.pid, 100), row(200, 100, 200)]);
+  try {
+    await f.owner.observe();
+    f.replace([row(100, process.pid, 100), row(300, 100, 200), row(400, 1, 200)]);
+    await expect(f.owner.signal("SIGKILL")).rejects.toThrow("identity became uncertain");
+    expect(f.signals).toEqual([]);
+  } finally { f.owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("does not use a recycled controller as a replacement member's ownership anchor", async () => {
+  const f = fixture([row(100, process.pid, 100), row(200, 100, 200)]);
+  try {
+    await f.owner.observe();
+    f.replace([row(100, process.pid, 100, "recycled-controller"), row(300, 100, 200)]);
+    await expect(f.owner.signal("SIGKILL")).rejects.toThrow("identity became uncertain");
+    expect(f.signals).toEqual([]);
+  } finally { f.owner.stopObserving(); }
+});
+
 it.skipIf(process.platform === "win32")("retains observed descendants when the root exits and excludes the caller group", async () => {
   const f = fixture([row(100, process.pid, 100), row(200, 100, 200), row(300, 100, 10), row(999, process.pid, 999)]);
   try {

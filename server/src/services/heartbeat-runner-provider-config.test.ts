@@ -456,12 +456,12 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toThrow("provider changed after this run selected its native backend");
   });
 
-  it("rejects Pi before a native descriptor is persisted", () => {
-    expect(() =>
+  it("preserves a caller-selected Pi model in the native descriptor", () => {
+    expect(
       resolvePaperclipRunnerNativeProviderInput({
         backend: "acpx_runtime",
         adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "pi-model" },
       }),
-    ).toThrow("Pi is awaiting local and Daytona qualification");
+    ).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "pi-model" });
   });
 });

@@ -548,6 +548,15 @@ Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay
 current during that delay.
 
+### OpenCode native runtime
+
+Paperclip Runner resolves the pinned OpenCode platform package installed with
+Paperclip. On Apple Silicon and Intel Macs it runs the matching macOS binary;
+on Linux x64 it runs the qualified baseline binary. No global OpenCode command
+or dependency postinstall script is required. This also works when installation
+scripts are disabled. The published server declares the same pinned dependency
+as the source Runner package.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -1240,10 +1249,65 @@ Run preparation is in `server/src/services/heartbeat/run-preparation.ts`. It own
 issue and wake context, responsible-user resolution, routine environment snapshots,
 skill mentions, adapter environment configuration, and MCP/tool access setup.
 `createHeartbeatRunPreparation(db)` binds the context loaders to a service's database
-without doing database work during construction. `heartbeat.ts` keeps queueing,
-dispatch, retries, cancellation, and execution order, and re-exports the existing
+without doing database work during construction. `heartbeat.ts` composes queue
+dispatch with cancellation and execution, and re-exports the existing
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
+
+Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
+It owns bounded run projections, database encoding checks, task session reads and
+writes, explicit resumes, session compaction, and usage/billing helpers.
+`createHeartbeatRunState(db)` binds these operations without doing database work
+during construction. The encoding-check cache belongs to each factory instance.
+`heartbeat.ts` keeps run execution and session-goal recovery, and re-exports the
+existing public helpers. Keep session policy changes separate from run
+orchestration changes.
+
+Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
+retry schedules, connection and workspace contention deferrals, shared-workspace
+holder checks, due retry promotion, and retry-now requests. `createHeartbeatRetries`
+binds these operations to the service database and explicit lifecycle callbacks
+without doing work during construction. `heartbeat.ts` supplies status writes,
+run events, issue-lock release, plan-resume reporting, and worktree cutoffs. It
+re-exports the existing retry helpers and workspace-busy error class. Keep retry
+policy changes separate from this extraction.
+
+Restart recovery and lease cleanup are in `server/src/services/heartbeat/recovery.ts`.
+It owns hot-restart snapshots and adoption, native restart recovery, shutdown
+draining, orphaned-run reaping, and active/pending-cleanup lease sweeps.
+`createHeartbeatRecovery` binds the service database and explicit lifecycle
+callbacks without starting work. The service supplies its shutdown flag callback
+and shared execution sets so separate service instances keep the same ownership
+and shutdown barriers. Cleanup single-flight state stays at module scope.
+Keep recovery policy changes separate from retry scheduling and execution changes.
+
+Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
+It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents.
+`createHeartbeatQueue` binds these operations without querying or starting work.
+The service supplies lifecycle effects, execution callbacks, worktree gates, and
+its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
+construction order for retry and recovery services. Keep queue policy changes
+separate from this extraction and from adapter execution changes.
+
+Run lifecycle handling is in `server/src/services/heartbeat/run-lifecycle.ts`.
+It owns status transitions, run events and progress, liveness classification,
+completion handoffs, issue-comment finalization, and runtime/cost settlement.
+`createHeartbeatLifecycle` binds the database and explicit reporting, recovery,
+and wakeup callbacks without starting work. The service supplies terminal
+reporting and forwarding callbacks preserve construction order for the other
+heartbeat modules. Existing public helpers remain re-exported by `heartbeat.ts`.
+Keep lifecycle policy changes separate from this extraction and adapter execution.
+
+Run cancellation and cleanup are in `server/src/services/heartbeat/run-control.ts`.
+It owns Stop, agent and budget cancellation, environment lease release, and
+resumption of saved comments after execution stops. `createHeartbeatRunControl`
+binds the database, lifecycle and admission callbacks, and shared executor
+barriers without starting work. The service retains the process-wide execution
+and cancellation maps so scheduler and route instances observe the same owners.
+Forwarding callbacks preserve construction order for budget, retry, recovery,
+and queue services. Existing public helpers remain re-exported by `heartbeat.ts`.
+Keep cancellation policy changes separate from this extraction and execution.
 
 ## Wake Context Delivery
 
@@ -1391,6 +1455,14 @@ and verifies them without uploading a binary or installing packages. Deploy
 the updated sandbox image with the matching runner qualification changes.
 
 ### Native runner restart recovery
+
+Custom source-mode HTTP launchers should create their listener with
+`createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
+API origin as `apiUrl`. This registers the native Runner WebSocket transport
+before execution is admitted. Plain Express `app.listen()` or Node
+`createServer(app)` alone does not initialize that transport and native runs
+fail with `runner_prp_websocket_server_not_configured`. Browser live events still
+use their separate authenticated setup.
 
 Project discovery through `list_projects` returns up to 50 compact summaries.
 It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
@@ -1660,6 +1732,9 @@ Environment overrides:
 
 - `PAPERCLIP_DB_BACKUP_ENABLED=true|false`
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
+- `PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED=1` enables verified final backups
+  for owned idle sleep, with restart catch-up. Off by default; see
+  [idle sleep safety](idle-sleep-safety.md) for the hosting and storage contract.
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
 - `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`

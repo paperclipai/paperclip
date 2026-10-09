@@ -1404,6 +1404,38 @@ describe("Connectors landing page", () => {
     );
   });
 
+  it("resumes a hidden provider only from its existing draft account row", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "app-clickup",
+      name: "ClickUp",
+      applicationKey: "app-gallery:clickup:one",
+      metadata: { sourceTemplateKey: "clickup" },
+    })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({
+      id: "conn-clickup-draft",
+      applicationId: "app-clickup",
+      name: "ClickUp",
+      status: "draft",
+      config: { sourceTemplateKey: "clickup" },
+    })] });
+
+    await renderBrowse();
+
+    const row = container.querySelector('[data-app-slug="clickup"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Setup incomplete");
+    const finish = Array.from(row!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Finish setup",
+    );
+    await act(async () => {
+      finish?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/apps/connect?source=clickup&resume=conn-clickup-draft",
+    );
+    expect(getAppStoreDefinition("clickup")).toBeNull();
+  });
+
   it("filters the single list without restoring section chrome", async () => {
     await renderBrowse();
 

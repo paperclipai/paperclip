@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
@@ -158,6 +159,17 @@ describe("issue validators", () => {
     });
 
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
+  });
+
+  it("preserves literal escapes in multiline issue descriptions and comments", () => {
+    const content = `${"0123456789abcdef".repeat(2)}\n`;
+    const description = ["Write the exact JSON content.", "```json", JSON.stringify({ content }), "```"].join("\n");
+    expect(createIssueSchema.parse({ title: "Native memory", description }).description).toBe(description);
+    expect(updateIssueSchema.parse({ description, comment: description }).description).toBe(description);
+    expect(updateIssueSchema.parse({ comment: description }).comment).toBe(description);
+    const storedJson = createIssueSchema.parse({ title: "Native memory", description }).description!.split("\n")[2]!;
+    expect(JSON.parse(storedJson).content).toBe(content);
+    expect(Buffer.byteLength(JSON.parse(storedJson).content, "utf8")).toBe(33);
   });
 
   it("validates structured unblock descriptors", () => {
@@ -652,5 +664,29 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+
+describe("persisted canonical question initial text", () => {
+  const question = { id: "draft", prompt: "Edit", required: true, answerMode: "text" };
+  const input = (patch: Record<string, unknown>) => ({ schema: "paperclip.question_set.v1", questions: [{ ...question, ...patch }] });
+  it("retains exact editable content through the server payload validator", () => {
+    for (const initialText of ["", "  Draft\n漢字\n", "x".repeat(100_000)]) {
+      expect(paperclipQuestionSetPayloadSchema.parse(input({ initialText }))).toEqual(input({ initialText }));
+    }
+  });
+  it("counts mixed BMP and astral draft text like JSON Schema", () => {
+    for (const codePoints of [100_000, 100_001]) {
+      const initialText = "a".repeat(codePoints - 1) + "😀";
+      expect(Buffer.byteLength(JSON.stringify(input({ initialText })))).toBeLessThan(196 * 1024);
+      expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
+    }
+  });
+  it("rejects non-text modes and unbounded or nonstring defaults", () => {
+    for (const initialText of [null, 1, "x".repeat(100_001), "a".repeat(100_000) + "😀"]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(false);
+    }
+    expect(paperclipQuestionSetPayloadSchema.safeParse(input({ answerMode: "single_select", options: [{ id: "a", label: "A" }], initialText: "a" })).success).toBe(false);
   });
 });

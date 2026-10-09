@@ -20,8 +20,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
-import { writePortableCopilotShims, writePortableExecutableShim } from "./provider-pack-executable-shims.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
+import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -167,7 +167,7 @@ try {
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: provider === "cursor" ? "qualified" : "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: (provider === "cursor" || provider === "pi") ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 

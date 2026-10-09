@@ -1,5 +1,5 @@
 {
-  "id": "bd713d5b-478f-4a58-b761-30f51415c620",
+  "id": "af0b2d33-956b-4b12-8d68-8b4e14c991b2",
   "prevId": "541f5e10-e2f3-44e1-b238-4d1cbfba61f2",
   "version": "7",
   "dialect": "postgresql",
@@ -9479,13 +9479,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "require_at_mention": {
-          "name": "require_at_mention",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "allow_group_chats": {
           "name": "allow_group_chats",
@@ -56261,7 +56254,7 @@
           "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

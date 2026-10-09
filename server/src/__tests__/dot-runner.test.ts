@@ -10,7 +10,7 @@ import express, { type Request } from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
-  heartbeatRuns, agentWakeupRequests, issueComments, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
+  heartbeatRuns, agentWakeupRequests, issueComments, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, mcpEventSubscriptions, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
@@ -37,7 +37,7 @@ describe("durable Dot Runner integration", () => {
   let root: string;
   beforeAll(async () => {
     const runnerRoot = fileURLToPath(new URL("../../../packages/paperclip-runner/", import.meta.url));
-    execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "pipe", timeout: 300000 });
+    execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
     db = createDb(temporary.connectionString);
     root = await mkdtemp(join(tmpdir(), "paperclip-dot-state-"));
@@ -47,7 +47,17 @@ describe("durable Dot Runner integration", () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false });
   }, 360000);
-  afterAll(async () => { await temporary?.cleanup(); await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs(); });
+  afterAll(async () => {
+    try {
+      await temporary?.cleanup();
+    } finally {
+      try {
+        if (root) await rm(root, { recursive: true, force: true });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+  });
 
   it("requires each persisted prerequisite for pairing and new work without relying on the retired environment flag", async () => {
     const settings = instanceSettingsService(db);
@@ -125,7 +135,7 @@ describe("durable Dot Runner integration", () => {
     const events = createPublicMcpEvents(db, oauth, async () => { throw new Error("personal API dispatch forbidden"); }, { enableDotRunner: true, fetch: fetcher });
     const subscription = { name: "paperclip.dot.mailbox_updated", arguments: { companyId: company!.id, bindingId: pairing.bindingId }, delivery: { mode: "webhook", url: "https://example.com/dot-hook", secret } };
     await events.subscribe(principal, subscription);
-    await broker.challenge(company!.id, agent!.id); await events.tick();
+    await events.tick();
     if (!received.length) throw new Error("Dot readiness delivery missing: " + JSON.stringify(await db.select({ outcome: mcpEventDeliveries.outcome, event: mcpEventDeliveries.event }).from(mcpEventDeliveries)));
     expect(received.at(-1)?.data.kind).toBe("readiness_challenge");
     expect(received.at(-1)?.data).not.toHaveProperty("challenge");
@@ -165,6 +175,25 @@ describe("durable Dot Runner integration", () => {
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0317_messy_famine.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) await db.execute(sql.raw(statement));
+    }
+  });
+
+  it.each(["revoked binding", "removed subscription"])("handles an automatic event-test race with a %s", async change => {
+    const f = await fixture();
+    await db.update(dotAgentBindings).set({ readyAt: null, status: "connected" }).where(eq(dotAgentBindings.id, f.snapshot.bindingId));
+    const readBinding = f.broker.bindingForAgent.bind(f.broker);
+    const read = vi.spyOn(f.broker, "bindingForAgent").mockImplementationOnce(async (companyId, agentId) => {
+      const state = await readBinding(companyId, agentId);
+      if (change === "revoked binding") await db.update(dotAgentBindings).set({ revokedAt: new Date() }).where(eq(dotAgentBindings.id, f.snapshot.bindingId));
+      else await db.update(mcpEventSubscriptions).set({ stoppedAt: new Date() }).where(eq(mcpEventSubscriptions.bindingId, f.snapshot.bindingId));
+      return state;
+    });
+    try {
+      await expect(f.broker.challenge(f.company.id, f.agent.id, { automatic: true, bindingId: f.snapshot.bindingId })).resolves.toEqual({ status: "unavailable" });
+      await expect(f.broker.challenge(f.company.id, f.agent.id)).rejects.toThrow("Connect and subscribe");
+    } finally {
+      read.mockRestore();
+      await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
     }
   });
 

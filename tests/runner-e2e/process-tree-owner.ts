@@ -5,6 +5,29 @@ import {
   type ObservedProcessGroup, type ProcessObservation,
 } from "./process-tree.js";
 
+/** Supplied by the company-scoped run API, never by process-name discovery. */
+export interface RestartRunnerIdentity {
+  processPid: number;
+  processGroupId: number;
+  processStartedAt: string;
+}
+export function parseRestartRunnerIdentity(value: unknown): RestartRunnerIdentity {
+  const v = value as RestartRunnerIdentity | null;
+  if (!v || !Number.isSafeInteger(v.processPid) || v.processPid <= 1
+    || v.processGroupId !== v.processPid || typeof v.processStartedAt !== "string"
+    || !Number.isFinite(Date.parse(v.processStartedAt))) throw new Error("Invalid restart runner identity");
+  return { processPid: v.processPid, processGroupId: v.processGroupId, processStartedAt: v.processStartedAt };
+}
+
+/** Linux run receipts retain milliseconds; ps lstart retains whole seconds. */
+export function restartProcessStartMatches(observed: string, expected: string, platform = process.platform): boolean {
+  const actualTime = Date.parse(observed), expectedTime = Date.parse(expected);
+  if (!Number.isFinite(actualTime) || !Number.isFinite(expectedTime)) return false;
+  return platform === "linux"
+    ? Math.floor(actualTime / 1000) === Math.floor(expectedTime / 1000)
+    : actualTime === expectedTime;
+}
+
 export function createProcessTreeOwner(root: ChildProcess, options: {
   readTable?: () => Promise<ProcessObservation[] | null>;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
@@ -12,6 +35,8 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   let groups: ObservedProcessGroup[] = [];
   let table: ProcessObservation[] = [];
   let rootStarted: string | undefined;
+  let preserved: ObservedProcessGroup[] = [];
+  let restartRunner: ProcessObservation | undefined;
   let observing: Promise<void> | undefined;
   const covered = new Set<number>();
   const readTable = options.readTable ?? readProcessTable;
@@ -30,10 +55,20 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       const rootRow = next.find(row => row.pid === root.pid);
       if (!rootStarted && !exited()) rootStarted = rootRow?.started;
       const retained = revalidateObservedProcessGroups(groups, next);
-      // Never acquire a recycled group from its numeric ID alone.
+      const trustedAnchors = retained.flatMap(group => group.members
+        .filter(member => next.some(row => row.pid === member.pid && row.started === member.started
+          && row.processGroupId === group.processGroupId)).map(member => member.pid));
+      if (rootRow && rootStarted === rootRow.started) trustedAnchors.push(rootRow.pid);
+      const ownedNow = new Set(trustedAnchors.flatMap(pid =>
+        observeDescendantProcessTree(next, pid).members.map(member => member.process.pid)));
+      // A short-lived leader can exit between polls while its replacement
+      // remains a descendant of a separately validated owner. Admit that
+      // ancestry, never a recycled numeric group or a mixed ownership group.
       const lost = groups.filter(group => !retained.includes(group) && next.some(row => row.processGroupId === group.processGroupId && running(row)));
-      if (lost.length) throw new Error("Owned process group identity became uncertain");
-      const refreshed = refreshContinuouslyLiveProcessGroups(retained, next)
+      const uncertain = lost.filter(group => next.some(row => row.processGroupId === group.processGroupId
+        && running(row) && !ownedNow.has(row.pid)));
+      if (uncertain.length) throw new Error(`Owned process group identity became uncertain: ${uncertain.map(group => group.processGroupId).join(",")}`);
+      const refreshed = refreshContinuouslyLiveProcessGroups([...retained, ...lost], next)
         .filter(group => group.processGroupId !== callerGroup);
       const anchors = refreshed.flatMap(group => group.members.map(member => member.pid));
       if (rootRow && rootStarted === rootRow.started) anchors.push(rootRow.pid);
@@ -47,6 +82,14 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
         }
       }
       groups = [...byGroup.values()];
+      // Follow only continuously owned members of the admitted daemon tree.
+      // Orphaned descendants stay owned, but unrelated controller children do not.
+      const retainedPreserved = refreshContinuouslyLiveProcessGroups(revalidateObservedProcessGroups(preserved, next), next);
+      const preservedIds = new Set(retainedPreserved.map(group => group.processGroupId));
+      for (const member of retainedPreserved.flatMap(group => group.members)) {
+        for (const group of observeDescendantProcessTree(next, member.pid).groups) preservedIds.add(group.processGroupId);
+      }
+      preserved = groups.filter(group => preservedIds.has(group.processGroupId));
       table = next;
     })().finally(() => { observing = undefined; });
     return observing;
@@ -59,6 +102,33 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
 
   function liveGroups() {
     return groups.filter(group => table.some(row => row.processGroupId === group.processGroupId && running(row)));
+  }
+  async function preserveRunnerForRestart(identity: RestartRunnerIdentity) {
+    const expected = parseRestartRunnerIdentity(identity);
+    await observe();
+    if (restartRunner || exited()) throw new Error("Restart runner admission must precede controller exit");
+    const tree = observeDescendantProcessTree(table, root.pid!);
+    const candidate = tree.members.map(member => member.process).find(row => row.pid === expected.processPid);
+    if (!candidate || !running(candidate) || candidate.kind !== "paperclip-runnerd"
+      || candidate.processGroupId !== expected.processGroupId
+      || !restartProcessStartMatches(candidate.started, expected.processStartedAt)
+      || candidate.processGroupId === root.pid) throw new Error("Restart runner is not the exact owned durable daemon");
+    const subtree = observeDescendantProcessTree(table, candidate.pid);
+    const members = new Set(subtree.members.map(member => member.process.pid));
+    const ids = new Set(subtree.groups.map(group => group.processGroupId));
+    if (table.some(row => ids.has(row.processGroupId) && !members.has(row.pid) && running(row))) {
+      throw new Error("Restart runner shares a process group with an unrelated process");
+    }
+    restartRunner = { ...candidate };
+    preserved = groups.filter(group => ids.has(group.processGroupId));
+  }
+  function assertRestartRunnerAlive() {
+    if (!restartRunner || !table.some(row => row.pid === restartRunner!.pid && row.started === restartRunner!.started
+      && row.processGroupId === restartRunner!.processGroupId && running(row))) throw new Error("Admitted restart runner did not survive controller restart");
+  }
+  function restartCleanupGroups() {
+    const ids = new Set(preserved.map(group => group.processGroupId));
+    return new Set(liveGroups().filter(group => !ids.has(group.processGroupId)).map(group => group.processGroupId));
   }
   function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     const currentProcessGroupId = table.find(row => row.pid === process.pid)?.processGroupId ?? null;
@@ -118,6 +188,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     graceComplete = selected.size > 0 && delivered.length === selected.size;
   }
   return { observe, signal, liveGroups, gracefulRoots, signalGracefully,
+    preserveRunnerForRestart, assertRestartRunnerAlive, restartCleanupGroups,
     directGraceDelivered: () => directGraceDelivered, stopObserving: () => { if (timer) clearInterval(timer); } };
 }
 

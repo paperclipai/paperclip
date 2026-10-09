@@ -2186,6 +2186,35 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
   });
 
+  it("keeps a pending native permission answerable after same-turn steering", async () => {
+    const runId = "native-pending-steered";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      { kind: "runtime_request", ts: "2026-08-25T18:00:01.000Z", requestId: "permission-1",
+        requestKind: "permission_approval", turnId: "provider-turn-1", requestType: "permission", status: "pending",
+        prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] },
+      { kind: "assistant", ts: "2026-08-25T18:00:03.000Z", text: "Steering acknowledged.", channel: "progress" },
+    ]);
+    const resolve = vi.spyOn(heartbeatsApi, "resolveRuntimeRequest").mockResolvedValue({} as never);
+    render(<TaskChatThread comments={[{
+      id: "pending-steering-comment", companyId: "company-1", issueId: "issue-1", authorType: "user",
+      authorAgentId: null, authorUserId: "user-1", body: "Change course.", presentation: null, metadata: null,
+      runId: null, consumedByRunId: runId, steeredIntoRunId: runId,
+      conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+      createdAt: new Date("2026-08-25T18:00:02.000Z"), updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+    }]} onAdd={async () => {}} issueStatus="in_progress" activeRun={{
+      id: runId, runtimeMode: "native", status: "running", invocationSource: "issue", triggerDetail: null,
+      startedAt: "2026-08-25T18:00:00.000Z", finishedAt: null, createdAt: "2026-08-25T18:00:00.000Z",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+    }} />);
+    const deny = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(button => button.textContent === "Deny");
+    expect(deny).toHaveLength(1);
+    expect(deny[0].disabled).toBe(false);
+    expect(container.textContent).not.toContain("Cancelled");
+    await act(async () => deny[0].click());
+    expect(resolve).toHaveBeenCalledWith({ runId, requestId: "permission-1", turnId: "provider-turn-1",
+      requestKind: "permission_approval", resolution: { action: "decline" } });
+  });
+
   it("labels the live tail as a continuation after the steering bubble", () => {
     nativeTranscriptState.transcriptByRun.set("native-live-steered", [
       {

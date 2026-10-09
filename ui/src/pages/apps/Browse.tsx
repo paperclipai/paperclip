@@ -6,6 +6,7 @@ import { AggregatorAppManager } from "./AggregatorAppManager";
 import {
   aiConnectionRouterPluginKey,
   connectionSetupVerbForApp,
+  getConnectableAppDefinition,
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
@@ -314,6 +315,16 @@ function accountActionHref(
 ): string {
   if (connection.status === "draft" && row.entry) {
     return appSourceResumeHref(row.slug, connection.id);
+  }
+  // Hidden curated definitions are not included in the gallery, but their
+  // already-saved drafts still need the same exact-provider resume flow.
+  // Keep fresh setup hidden by only using this fallback for an existing draft
+  // whose company row and saved connection identify the same known provider.
+  if (connection.status === "draft") {
+    const sourceSlug = appConnectionSourceSlug(connection);
+    if (sourceSlug && sourceSlug === row.slug && getConnectableAppDefinition(sourceSlug)) {
+      return appSourceResumeHref(sourceSlug, connection.id);
+    }
   }
   return `/apps/${connection.id}/permissions`;
 }

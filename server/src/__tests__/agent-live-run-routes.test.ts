@@ -1940,3 +1940,9 @@ describe("agent live run routes", () => {
     expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
   });
 });
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
+});

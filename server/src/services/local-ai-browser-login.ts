@@ -4,11 +4,14 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
+import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
+import { resolveCodexCommand } from "../vendor/paperclip-runner/index.js";
 
 export type LocalBrowserLoginState = {
   authorizationUrl?: string;
   code?: string;
   outcome?: "success" | "failure";
+  error?: string;
   submitCode?: (code: string) => void;
   abort: () => void;
 };
@@ -47,11 +50,31 @@ sys.exit(os.waitstatus_to_exitcode(status))
 export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: string): LocalBrowserLoginState {
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
-  const executable = provider === "anthropic" ? "claude" : "codex";
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
-    start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
+    async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
+      let executable = "claude";
+      if (provider === "openai") {
+        // Linux ARM64 retains its supported legacy CLI path; it is not a
+        // qualified native runner target. Other hosts prefer the installed
+        // dependency, then an existing CLI when the dependency is absent.
+        const legacyPlatform = process.platform === "linux" && process.arch === "arm64";
+        try {
+          if (legacyPlatform) {
+            await ensureCommandResolvable("codex", home, process.env);
+            executable = path.resolve(home, await resolveCommandForLogs("codex", home, process.env));
+          } else {
+            executable = resolveCodexCommand();
+          }
+        } catch {
+          state.error = legacyPlatform
+            ? "Codex browser sign-in requires the Codex CLI on this platform. Install Codex on this execution host and ensure codex is on Paperclip's PATH, then start sign-in again."
+            : "Codex browser sign-in requires an installed Codex CLI. Install Codex on this execution host or restore Paperclip's runtime dependencies, then start sign-in again.";
+          throw new Error("Browser login runtime unavailable");
+        }
+      }
+      if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
       const env = { ...process.env,
         ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "",
         OPENAI_API_KEY: "", CODEX_API_KEY: "",
@@ -64,7 +87,10 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: s
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
         // Provider output may contain secrets. Never log or retain stderr.
         child.stderr.resume();
-        child.once("error", reject);
+        child.once("error", () => {
+          state.error = "Browser sign-in requires Python 3 and a working local terminal. Install Python 3 on this execution host, then start sign-in again.";
+          reject(new Error("Browser login terminal unavailable"));
+        });
         child.once("close", (exitCode) => resolve({ exitCode }));
       });
     },

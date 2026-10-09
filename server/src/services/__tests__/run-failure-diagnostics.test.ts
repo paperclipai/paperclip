@@ -342,3 +342,33 @@ describe("run failure diagnostics", () => {
     expect(collectRunFailureDiagnostics(run({ startedAt: new Date(NaN), finishedAt: new Date() }), {}).execution).not.toHaveProperty("durationMs");
   });
 });
+
+
+it("revalidates persisted transfer evidence and excludes arbitrary nested payloads", () => {
+  for (const known of [true, false]) {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: {
+        phase: "workspace", step: "workspace_transfer", errorCode: "unknown",
+        transferStep: known ? "archive_create" : "private-command",
+        transferFailureKind: known ? "command_failed" : "private-output", rpcCode: known ? -32003 : -12345,
+        command: "private-command", cause: { message: "private-nested-message" },
+      },
+    } }), {}));
+    expect(result.execution.workspaceRestoreTransferStep).toBe(known ? "archive_create" : undefined);
+    expect(result.execution.workspaceRestoreTransferFailureKind).toBe(known ? "command_failed" : undefined);
+    expect(result.execution.workspaceRestoreRpcCode).toBe(known ? -32003 : undefined);
+    expect(JSON.stringify(result)).not.toContain("private-");
+  }
+});
+
+it("does not project transfer fields into an unrelated restore step", () => {
+  const result = collectRunFailureDiagnostics(run({ resultJson: {
+    workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: {
+      phase: "workspace", step: "git_import", errorCode: "unknown",
+      transferStep: "archive_create", transferFailureKind: "command_failed", rpcCode: -32003,
+    },
+  } }), {});
+  expect(result.execution).not.toHaveProperty("workspaceRestoreTransferStep");
+  expect(result.execution).not.toHaveProperty("workspaceRestoreTransferFailureKind");
+  expect(result.execution).not.toHaveProperty("workspaceRestoreRpcCode");
+});

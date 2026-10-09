@@ -89,6 +89,8 @@ export function isSecretSensitiveHttpRequest(
   if (isPrivateWebhookHttpRequest(method, url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
   if (isPrivateAgentCommentaryHttpRequest(url)) return true;
+  // Avatar uploads and dedicated Dot MCP calls may contain private image bytes.
+  if (url && /^(?:\/mcp\/runner(?:\/|$)|\/api\/companies\/[^/]+\/agents\/[^/]+\/avatar(?:\/|$))/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (!method || !url) return false;
   if (/^\/api\/chat-slack\/oauth(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (/^\/api\/chat-endpoints\/[^/]+\/slack(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;

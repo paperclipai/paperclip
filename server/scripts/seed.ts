@@ -1,5 +1,11 @@
-import { createDb } from "./client.js";
-import { companies, agents, goals, projects, issues } from "./schema/index.js";
+import { createDb } from "@paperclipai/db";
+import { createAgentLifecycle } from "../src/services/agent-lifecycle.js";
+import {
+  companies,
+  goals,
+  projects,
+  issues,
+} from "@paperclipai/db";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is required");
@@ -18,10 +24,7 @@ const [company] = await db
   })
   .returning();
 
-const [ceo] = await db
-  .insert(agents)
-  .values({
-    companyId: company!.id,
+const ceo = await createAgentLifecycle(db).requestHire(company!.id, {
     name: "CEO Agent",
     role: "ceo",
     title: "Chief Executive Officer",
@@ -29,13 +32,9 @@ const [ceo] = await db
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from ceo"] },
     budgetMonthlyCents: 15000,
-  })
-  .returning();
+  });
 
-const [engineer] = await db
-  .insert(agents)
-  .values({
-    companyId: company!.id,
+const engineer = await createAgentLifecycle(db).requestHire(company!.id, {
     name: "Engineer Agent",
     role: "engineer",
     title: "Software Engineer",
@@ -44,8 +43,7 @@ const [engineer] = await db
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from engineer"] },
     budgetMonthlyCents: 10000,
-  })
-  .returning();
+  });
 
 const [goal] = await db
   .insert(goals)

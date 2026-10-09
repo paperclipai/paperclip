@@ -1097,6 +1097,9 @@ export async function prepareSandboxManagedRuntime(input: {
   client: SandboxManagedRuntimeClient;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  /** Host-owned transfer scratch within the lease's reserved runtime tree.
+   * Persistent subdirectories can keep scratch outside their native file root. */
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
   /** Selects authoritative host staging, exact durable-seed replay, or no-overwrite adoption. */
   workspaceInboundMode?: WorkspaceInboundMode;
@@ -1127,7 +1130,14 @@ export async function prepareSandboxManagedRuntime(input: {
   runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const runtimeRootDir = input.runtimeRootDir ?? path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  if (input.runtimeRootDir !== undefined) {
+    const reservedRoot = path.posix.join(input.spec.remoteCwd, ".paperclip-runtime");
+    if (!path.posix.isAbsolute(runtimeRootDir) || path.posix.normalize(runtimeRootDir) !== runtimeRootDir
+      || runtimeRootDir.includes("\0") || runtimeRootDir.endsWith("/") || !runtimeRootDir.startsWith(`${reservedRoot}/`)) {
+      throw new Error("Transfer scratch must remain within the lease runtime tree");
+    }
+  }
   // A workspace directory that does not exist on this host has nothing to
   // stage, no files for ignore rules to govern, and nothing to restore into —
   // callers that only stage credential assets (the adapter env tests) hand

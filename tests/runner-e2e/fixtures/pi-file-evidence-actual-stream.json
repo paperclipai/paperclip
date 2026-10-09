@@ -1,0 +1,798 @@
+{
+  "schema": "paperclip.e2e.sanitized-pi-file-stream.v1",
+  "description": "44 retained native Rust-projected edit/bash rows; only fixture nonce and execution identities replaced. Timestamps, private identities and unrelated events omitted. This calibrates the oracle, not the original failed attempt result.",
+  "events": [
+    {
+      "seq": 71,
+      "sourceSeq": 46,
+      "eventType": "tool.execution.started",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "edit (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 72,
+      "sourceSeq": 47,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 73,
+      "sourceSeq": 48,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 74,
+      "sourceSeq": 49,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 75,
+      "sourceSeq": 50,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 76,
+      "sourceSeq": 51,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 77,
+      "sourceSeq": 52,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 78,
+      "sourceSeq": 53,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 79,
+      "sourceSeq": 54,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 80,
+      "sourceSeq": 55,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 81,
+      "sourceSeq": 56,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 82,
+      "sourceSeq": 57,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 83,
+      "sourceSeq": 58,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 84,
+      "sourceSeq": 59,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "tool call (pending)",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 85,
+      "sourceSeq": 60,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": "extended-fixture.txt",
+        "exitCode": null,
+        "progress": "tool call (pending): extended-fixture.txt",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 86,
+      "sourceSeq": 61,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": "extended-fixture.txt",
+        "exitCode": null,
+        "progress": "tool call (pending): extended-fixture.txt",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 88,
+      "sourceSeq": 63,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "running",
+        "target": "extended-fixture.txt",
+        "exitCode": null,
+        "progress": "tool call (in_progress): extended-fixture.txt",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 89,
+      "sourceSeq": 64,
+      "eventType": "tool.execution.completed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "edit",
+        "operation": "edit",
+        "transport": "builtin",
+        "status": "completed",
+        "target": "extended-fixture.txt",
+        "exitCode": null,
+        "progress": null,
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "edit"
+      }
+    },
+    {
+      "seq": 92,
+      "sourceSeq": 66,
+      "eventType": "tool.execution.started",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 93,
+      "sourceSeq": 67,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 94,
+      "sourceSeq": 68,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 95,
+      "sourceSeq": 69,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 96,
+      "sourceSeq": 70,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 97,
+      "sourceSeq": 71,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 98,
+      "sourceSeq": 72,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 99,
+      "sourceSeq": 73,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 100,
+      "sourceSeq": 74,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 101,
+      "sourceSeq": 75,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 102,
+      "sourceSeq": 76,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 103,
+      "sourceSeq": 77,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 104,
+      "sourceSeq": 78,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 105,
+      "sourceSeq": 79,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 106,
+      "sourceSeq": 80,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 107,
+      "sourceSeq": 81,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 108,
+      "sourceSeq": 82,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 109,
+      "sourceSeq": 83,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 110,
+      "sourceSeq": 84,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 111,
+      "sourceSeq": 85,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "bash (pending): [terminal] validate",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 112,
+      "sourceSeq": 86,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")' (pending): node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")'",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 113,
+      "sourceSeq": 87,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")' (pending): node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")'",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 115,
+      "sourceSeq": 89,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")' (in_progress): node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")'",
+        "output": "null",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 116,
+      "sourceSeq": 90,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")' (in_progress): node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")'",
+        "output": "{\"content\":[]}",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 117,
+      "sourceSeq": 91,
+      "eventType": "tool.execution.progressed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "running",
+        "target": null,
+        "exitCode": null,
+        "progress": "node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")' (in_progress): node -e 'if(require(\"node:fs\").readFileSync(\"extended-fixture.txt\",\"utf8\")!==\"verified-fixture\\n\")throw Error(\"mismatch\");console.log(\"PI-VALIDATED-fixture\")'",
+        "output": "{\"content\":[{\"type\":\"text\",\"text\":\"PI-VALIDATED-fixture\\n\"}],\"details\":{}}",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    },
+    {
+      "seq": 118,
+      "sourceSeq": 92,
+      "eventType": "tool.execution.completed",
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "name": "bash",
+        "operation": "execute",
+        "transport": "builtin",
+        "status": "completed",
+        "target": null,
+        "exitCode": null,
+        "progress": null,
+        "output": "{\"content\":[{\"type\":\"text\",\"text\":\"PI-VALIDATED-fixture\\n\"}],\"structuredContent\":{\"output\":\"PI-VALIDATED-fixture\\n\",\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":0}}",
+        "outputTruncated": false,
+        "executionId": "validate"
+      }
+    }
+  ]
+}

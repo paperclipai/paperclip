@@ -283,6 +283,65 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ agentAdapter: "unknown" }));
   });
 
+  function aiSelectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "ai_connection_unavailable",
+          selectionFailure: "ai_connection_default_missing",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    "ai_connection_responsible_user_missing", "ai_connection_default_missing",
+    "ai_connection_missing", "ai_connection_incompatible", "ai_connection_unavailable",
+  ])("keeps the proven AI selection blocker local: %s", async (selectionFailure) => {
+    await seedCompanyAndAgent();
+    const run = aiSelectionRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+    const saved = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([undefined, null, {}, [], "", "database_error", "ai_connection_busy"])(
+    "reports AI connection wrappers without a known selection cause: %j", async (selectionFailure) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: {} } },
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { executionStage: null }, { exitCode: 1 }, { exitCode: 0 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "resume", providerWorkStarted: false } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap" } } },
+    { resultJson: { configurationIncomplete: { reason: "controller_environment_unsupported", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+  ])("reports AI configuration without pre-provider selection proof: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports AI selection failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   function missingSecretRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "configuration_incomplete",

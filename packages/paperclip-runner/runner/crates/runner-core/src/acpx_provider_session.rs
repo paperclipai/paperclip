@@ -36,6 +36,24 @@ pub enum AcpxPermissionMode {
     DenyAll,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorMode {
+    Agent,
+    Plan,
+    Ask,
+}
+
+/// Exact native Pi modes. No aliases, clamping, or implicit Rust default.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PiThinkingLevel {
+    Off,
+    Low,
+    High,
+    Max,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpxProviderSessionIdentity {
@@ -52,6 +70,8 @@ pub struct AcpxProviderSessionIdentity {
     pub permission_mode: Option<AcpxPermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_thinking_level: Option<PiThinkingLevel>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -73,6 +93,7 @@ pub struct AcpxProviderSessionConfig {
     pub working_directory: PathBuf,
     pub permission_mode: AcpxPermissionMode,
     pub mode: Option<String>,
+    pub pi_thinking_level: Option<PiThinkingLevel>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -88,6 +109,11 @@ impl AcpxProviderSessionConfig {
             LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
+        if (self.agent == "pi") != self.pi_thinking_level.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX Pi thinking level must be explicit for Pi and absent for other agents",
+            ));
+        }
         if let Some(mode) = self.mode.as_deref() {
             validate_text(mode, MAX_ID_CHARS, "ACPX provider mode")?;
         }
@@ -161,6 +187,7 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.effective_model != self.model
                 || expected_identity.permission_mode != Some(self.permission_mode)
                 || expected_identity.mode != self.mode
+                || expected_identity.pi_thinking_level != self.pi_thinking_level
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -313,6 +340,35 @@ impl AcpxProviderSession {
 
     pub fn state(&self) -> &AcpxProviderState {
         &self.state
+    }
+
+    /// Read the same live sidecar before exposing its in-memory pending ledger.
+    /// A durable file alone cannot authorize a request after process loss.
+    pub fn verify_live_request_snapshot(
+        &mut self,
+    ) -> Result<std::collections::BTreeMap<String, String>, LocalRunnerError> {
+        self.ensure_open()?;
+        if self.runtime_retired || self.transport_terminated {
+            return Err(LocalRunnerError::invalid(
+                "ACPX request snapshot requires a live provider",
+            ));
+        }
+        let snapshot = self
+            .transport
+            .request(GeneratedAcpxSidecarCommand::SessionSnapshot, json!({}))?;
+        let identity: AcpxProviderSessionIdentity =
+            serde_json::from_value(snapshot["identity"].clone()).map_err(|_| {
+                LocalRunnerError::invalid("ACPX request snapshot identity is invalid")
+            })?;
+        if identity != self.identity
+            || snapshot["runId"].as_str() != Some(self.config.run_id.as_str())
+            || snapshot["turnId"].as_str() != self.state.active_turn_id()
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX request snapshot changed session or turn",
+            ));
+        }
+        live_snapshot_requests(&snapshot, self.state.active_turn_id())
     }
 
     pub fn catalog_revision(&self) -> u64 {
@@ -947,6 +1003,20 @@ impl AcpxProviderSession {
         self.terminate_transport()
     }
 
+    /// Retires an idle provider at the same owned-process boundary as an active
+    /// turn. The caller must prove the inherited lifetime fence before making
+    /// the persisted identity attachable; an RPC close cannot supply that proof.
+    pub fn terminate_idle_for_suspension(&mut self) -> Result<(), LocalRunnerError> {
+        self.ensure_open()?;
+        if self.state.active_turn_id().is_some() || self.state.has_pending_requests() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX idle suspension requires a settled turn and no pending requests",
+            ));
+        }
+        self.closed = true;
+        self.terminate_transport()
+    }
+
     fn terminate_transport(&mut self) -> Result<(), LocalRunnerError> {
         if self.transport_terminated {
             return Ok(());
@@ -1243,6 +1313,9 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(level) = config.pi_thinking_level {
+        params["piThinkingLevel"] = json!(level);
+    }
     if let Some(mode) = config.mode.as_deref() {
         params["mode"] = json!(mode);
     }
@@ -1356,6 +1429,7 @@ fn verify_open_response(
         || identity.effective_model != config.model
         || identity.permission_mode != Some(config.permission_mode)
         || identity.mode != config.mode
+        || identity.pi_thinking_level != config.pi_thinking_level
         || config
             .expected_identity
             .as_ref()
@@ -1393,6 +1467,45 @@ fn verify_suspend_response(
         ));
     }
     Ok(())
+}
+
+fn live_snapshot_requests(
+    snapshot: &Value,
+    active_turn_id: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, String>, LocalRunnerError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LiveRequest {
+        request_id: String,
+        r#type: String,
+        turn_id: String,
+    }
+    let requests = snapshot["pendingRuntimeRequests"]
+        .as_array()
+        .ok_or_else(|| {
+            LocalRunnerError::invalid("ACPX live request snapshot omitted its pending callbacks")
+        })?;
+    if requests.len() > 1_024 {
+        return Err(LocalRunnerError::invalid(
+            "ACPX live request snapshot exceeds its request bound",
+        ));
+    }
+    let mut live = std::collections::BTreeMap::new();
+    for value in requests {
+        let request: LiveRequest = serde_json::from_value(value.clone()).map_err(|_| {
+            LocalRunnerError::invalid("ACPX live request snapshot callback is invalid")
+        })?;
+        validate_text(&request.request_id, MAX_ID_CHARS, "live callback id")?;
+        if !matches!(request.r#type.as_str(), "input" | "permission")
+            || Some(request.turn_id.as_str()) != active_turn_id
+            || live.insert(request.request_id, request.r#type).is_some()
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX live request snapshot callback binding is invalid",
+            ));
+        }
+    }
+    Ok(live)
 }
 
 fn validate_text(value: &str, max_chars: usize, label: &str) -> Result<(), LocalRunnerError> {
@@ -1486,6 +1599,45 @@ fn with_cleanup_error(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_request_snapshot_requires_current_unique_typed_callbacks() {
+        use super::*;
+        let request = json!({"requestId":"input-1","type":"input","turnId":"turn-1"});
+        let snapshot = json!({"pendingRuntimeRequests":[request.clone(),
+            {"requestId":"permission-1","type":"permission","turnId":"turn-1"}]});
+        let live = live_snapshot_requests(&snapshot, Some("turn-1")).unwrap();
+        assert_eq!(live.get("input-1").map(String::as_str), Some("input"));
+        assert_eq!(
+            live.get("permission-1").map(String::as_str),
+            Some("permission")
+        );
+        for invalid in [
+            json!({}),
+            json!({"pendingRuntimeRequests":null}),
+            json!({"pendingRuntimeRequests":[request.clone(),request.clone()]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"","type":"input","turnId":"turn-1"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"tool","turnId":"turn-1"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"input","turnId":"turn-2"}]}),
+            json!({"pendingRuntimeRequests":[{"requestId":"input-1","type":"input","turnId":"turn-1","extra":true}]}),
+        ] {
+            assert!(
+                live_snapshot_requests(&invalid, Some("turn-1")).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(live_snapshot_requests(&snapshot, None).is_err());
+        assert!(live_snapshot_requests(
+            &json!({"pendingRuntimeRequests":vec![request;1_025]}),
+            Some("turn-1")
+        )
+        .is_err());
+        assert!(
+            live_snapshot_requests(&json!({"pendingRuntimeRequests":[]}), None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn turn_controls_require_exact_live_pi_capability_fields() {
         use super::*;
@@ -1602,6 +1754,7 @@ mod mode_tests {
             working_directory: std::env::temp_dir(),
             permission_mode: AcpxPermissionMode::ApproveReads,
             mode: Some("plan".to_owned()),
+            pi_thinking_level: None,
             permission_mode_pinned: true,
             provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
             system_instructions: String::new(),
@@ -1628,6 +1781,7 @@ mod mode_tests {
             effective_model: "explicit-model".to_owned(),
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
             mode: Some("plan".to_owned()),
+            pi_thinking_level: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
@@ -1636,6 +1790,11 @@ mod mode_tests {
         let mut config = config();
         for agent in ["claude", "codex", "pi", "grok", "cursor", "copilot"] {
             config.agent = agent.to_owned();
+            config.pi_thinking_level = if agent == "pi" {
+                Some(PiThinkingLevel::Low)
+            } else {
+                None
+            };
             config.model = "custom/model[context=272k,reasoning=medium]".to_owned();
             config.validate().unwrap();
             assert_eq!(
@@ -1742,5 +1901,138 @@ mod mode_tests {
             &identity
         )
         .is_err());
+    }
+
+    fn pi_config() -> AcpxProviderSessionConfig {
+        let mut config = config();
+        config.agent = "pi".to_owned();
+        config.model = "openrouter/deepseek/deepseek-v4-flash-0731".to_owned();
+        config.mode = None;
+        config.pi_thinking_level = Some(PiThinkingLevel::Low);
+        config
+    }
+
+    fn pi_identity(config: &AcpxProviderSessionConfig) -> AcpxProviderSessionIdentity {
+        let mut identity = identity();
+        identity.requested_model = config.model.clone();
+        identity.effective_model = config.model.clone();
+        identity.mode = None;
+        identity.pi_thinking_level = config.pi_thinking_level;
+        identity
+    }
+
+    #[test]
+    fn pi_thinking_level_is_closed_explicit_and_pi_only() {
+        for (name, level) in [
+            ("off", PiThinkingLevel::Off),
+            ("low", PiThinkingLevel::Low),
+            ("high", PiThinkingLevel::High),
+            ("max", PiThinkingLevel::Max),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<PiThinkingLevel>(json!(name)).unwrap(),
+                level
+            );
+            assert_eq!(serde_json::to_value(level).unwrap(), json!(name));
+        }
+        for value in [
+            json!("medium"),
+            json!("minimal"),
+            json!("xhigh"),
+            json!("Low"),
+            json!(" low"),
+            json!(null),
+            json!(1),
+        ] {
+            assert!(serde_json::from_value::<PiThinkingLevel>(value).is_err());
+        }
+        let mut config = pi_config();
+        config.validate().unwrap();
+        config.pi_thinking_level = None;
+        assert!(config.validate().is_err());
+        config = self::config();
+        config.pi_thinking_level = Some(PiThinkingLevel::Low);
+        assert!(config.validate().is_err());
+        config.pi_thinking_level = None;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn pi_thinking_open_requires_exact_effective_ack_for_every_level() {
+        let mut config = pi_config();
+        for level in [
+            PiThinkingLevel::Off,
+            PiThinkingLevel::Low,
+            PiThinkingLevel::High,
+            PiThinkingLevel::Max,
+        ] {
+            config.pi_thinking_level = Some(level);
+            assert_eq!(
+                session_open_params(&config, &[])["piThinkingLevel"],
+                json!(level)
+            );
+            let identity = pi_identity(&config);
+            let response = json!({"sidecarPid": 100, "status": {}, "identity": identity});
+            assert_eq!(
+                verify_open_response(&response, 100, &config).unwrap(),
+                identity
+            );
+            for wrong in [
+                None,
+                Some(PiThinkingLevel::Off),
+                Some(PiThinkingLevel::Low),
+                Some(PiThinkingLevel::High),
+                Some(PiThinkingLevel::Max),
+            ] {
+                if wrong == Some(level) {
+                    continue;
+                }
+                let mut changed = response.clone();
+                changed["identity"]["piThinkingLevel"] = json!(wrong);
+                assert!(verify_open_response(&changed, 100, &config).is_err());
+            }
+            let mut missing = response.clone();
+            missing["identity"]
+                .as_object_mut()
+                .unwrap()
+                .remove("piThinkingLevel");
+            assert!(verify_open_response(&missing, 100, &config).is_err());
+            let mut alias = response.clone();
+            alias["identity"]["piThinkingLevel"] = json!("medium");
+            assert!(verify_open_response(&alias, 100, &config).is_err());
+        }
+        let non_pi = self::config();
+        assert!(session_open_params(&non_pi, &[])
+            .get("piThinkingLevel")
+            .is_none());
+        let mut foreign = identity();
+        foreign.pi_thinking_level = Some(PiThinkingLevel::Low);
+        assert!(verify_open_response(
+            &json!({"sidecarPid":100,"status":{},"identity":foreign}),
+            100,
+            &non_pi
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn pi_thinking_reopen_and_suspend_reject_missing_or_changed_mode() {
+        let mut config = pi_config();
+        let identity = pi_identity(&config);
+        config.expected_identity = Some(identity.clone());
+        config.validate().unwrap();
+        for level in [None, Some(PiThinkingLevel::High)] {
+            let mut old = identity.clone();
+            old.pi_thinking_level = level;
+            config.expected_identity = Some(old.clone());
+            assert!(config.validate().is_err());
+            assert!(
+                verify_suspend_response(&json!({"suspended":true,"identity":old}), &identity)
+                    .is_err()
+            );
+        }
+        config.expected_identity = Some(identity.clone());
+        config.pi_thinking_level = Some(PiThinkingLevel::High);
+        assert!(config.validate().is_err());
     }
 }

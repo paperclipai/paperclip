@@ -1,6 +1,10 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
+import { setAgentAvatarSchema, type SetAgentAvatarInput } from "@paperclipai/shared";
+import { setAgentProfileAvatar } from "./agent-profile-avatar.js";
+import { getStorageService } from "../storage/index.js";
 import { agents, companies, heartbeatRuns, issues, agentWakeupRequests, nativeRunFinalizations, mcpOauthGrants,
   mcpEventSubscriptions, dotAgentBindings as bindings, dotRunnerAssignments as assignments,
   dotRunnerOperations as operations, dotMailboxItems as mailbox, type Db } from "@paperclipai/db";
@@ -10,7 +14,7 @@ import type { PublicMcpToolExtension } from "./public-mcp/dot-runner.js";
 import { boardAuthService } from "./board-auth.js";
 import { logActivity } from "./activity-log.js";
 import { authorizationService } from "./authorization.js";
-import { agentService } from "./agents.js";
+import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
@@ -30,7 +34,7 @@ function createBroker(db: Db) {
     const experimental = await settings.getExperimental();
     return experimental.enableOpenAiDot && experimental.enablePublicMcp;
   }
-  const ports = new Map<string, { token: symbol; send: (op: ExternalProviderOperation) => Promise<void>; revoke?: () => Promise<void> }>();
+  const ports = new Map<string, { token: symbol; controllerGeneration: number; send: (op: ExternalProviderOperation) => Promise<void>; revoke?: () => Promise<void> }>();
   async function principalBinding(principal: McpPrincipal, requireReady = true, allowPaused = false) {
     if (principal.grant.purpose !== "agent" || !principal.grant.scopes.includes("paperclip:agent")) throw fail("Use the dedicated Dot agent connection.");
     const [binding] = await db.select().from(bindings).where(and(eq(bindings.grantId, principal.grant.id),
@@ -40,7 +44,9 @@ function createBroker(db: Db) {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId)));
     const access = grant ? await boardAuthService(db).resolveBoardAccess(grant.userId) : null;
     const membership = access?.memberships.find(m => m.companyId === binding.companyId && m.status === "active");
-    if (!access?.user || !membership || membership.membershipRole === "viewer" || !grant || grant.agentId !== binding.agentId || !agent || ["terminated", "pending_approval", ...(allowPaused ? [] : ["paused"])].includes(agent.status)) throw fail("Agent connection authority is unavailable.");
+    if (!access?.user || !membership || membership.membershipRole === "viewer" || !grant || grant.agentId !== binding.agentId || !agent
+      || ["terminated", "pending_approval"].includes(agent.status)
+      || (!allowPaused && (requireReady ? agent.status === "paused" : !canConfigureAgentConnection(agent)))) throw fail("Agent connection authority is unavailable.");
     return binding;
   }
 
@@ -85,6 +91,9 @@ function createBroker(db: Db) {
     const [a] = await db.select().from(assignments).where(eq(assignments.id, row.assignmentId));
     const port = a && ports.get(a.runId);
     if (!port || !["reserved", "admitted"].includes(row.status)) return;
+    const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, a.runId));
+    if (!owner || owner.controllerGeneration !== port.controllerGeneration || a.controllerGeneration !== port.controllerGeneration
+      || !owner.leaseExpiresAt || owner.leaseExpiresAt <= new Date()) return;
     // Sending the same stable command is safe after a lost ACK. The Runner's
     // command/semantic receipts decide whether it was already admitted.
     if (!a || a.status === "fenced" || a.expiresAt <= new Date()) return;
@@ -103,22 +112,31 @@ function createBroker(db: Db) {
 
   return {
     enabled,
-    async createPairing(input: { companyId: string; agentId: string; operatorId: string; dotUrl?: string }) {
+    async createPairing(input: { companyId: string; agentId: string; operatorId: string; dotUrl?: string; replaceBindingId?: string }) {
       if (!await enabled()) throw fail("Enable OpenAI Dot and Assistant connections (MCP) in experimental settings.");
       if (input.dotUrl && !/^https:\/\/chatgpt\.com\/dots\/[A-Za-z0-9-]+$/.test(input.dotUrl)) throw fail("Use the Dot's ChatGPT URL.");
       const code = randomBytes(24).toString("base64url");
       const binding = await db.transaction(async tx => {
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).for("update");
-        if (!agent || agent.adapterType !== "paperclip_runner" || agent.status === "pending_approval" || agent.status === "terminated") throw fail("Choose an approved Paperclip Runner agent.");
+        if (!agent || agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "openai_dot" || !canConfigureAgentConnection(agent)) throw fail("Choose an approved Paperclip Runner agent.");
         const [existing] = await tx.select().from(bindings).where(and(eq(bindings.companyId, input.companyId), eq(bindings.agentId, input.agentId), isNull(bindings.revokedAt)));
-        if (existing) throw fail("Revoke the existing connection before creating another pairing code.");
-        const [created] = await tx.insert(bindings).values({ ...input, pairingCodeHash: hash(code), pairingExpiresAt: new Date(Date.now() + 15 * 60_000) }).returning();
+        if (existing) {
+          if (existing.id !== input.replaceBindingId || existing.status !== "pairing" || existing.operatorId !== input.operatorId) {
+            throw fail("This invitation changed. Refresh before creating a new prompt.");
+          }
+          // Consume only the pending binding named by the caller. An OAuth race
+          // cannot revoke a connection that has already been established.
+          const [replaced] = await tx.update(bindings).set({ revokedAt: new Date(), status: "revoked", pairingCodeHash: null, updatedAt: new Date() })
+            .where(and(eq(bindings.id, existing.id), eq(bindings.status, "pairing"), isNull(bindings.revokedAt))).returning();
+          if (!replaced) throw fail("Dot connected while this prompt was being replaced. Refresh the connection.");
+        } else if (input.replaceBindingId) throw fail("This invitation changed. Refresh before creating a new prompt.");
+        const [created] = await tx.insert(bindings).values({ companyId: input.companyId, agentId: input.agentId, operatorId: input.operatorId, dotUrl: input.dotUrl, pairingCodeHash: hash(code), pairingExpiresAt: new Date(Date.now() + 15 * 60_000) }).returning();
         await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "user", actorId: input.operatorId,
           action: "dot.pairing_created", entityType: "agent", entityId: input.agentId, details: { bindingId: created!.id } });
         return created!;
       });
       return { bindingId: binding.id, pairingCode: code, expiresAt: binding.pairingExpiresAt,
-        instructions: "Connect the private Paperclip Dot plugin at /mcp/runner, approve agent access, then call paperclip_dot_pair with this code. Subscribe to paperclip.dot.mailbox_updated for the returned binding. Run the event test before assigning work." };
+        instructions: "Connect the private Paperclip Dot plugin at /mcp/runner, approve agent access, then call paperclip_dot_pair with this code. Subscribe to paperclip.dot.mailbox_updated for the returned binding. Paperclip sends the event test automatically before work can be assigned." };
     },
     async pair(principal: McpPrincipal, code: string) {
       if (!await enabled() || principal.grant.purpose !== "agent" || !principal.grant.scopes.includes("paperclip:agent")) throw fail("A dedicated Dot agent grant is required.");
@@ -128,10 +146,10 @@ function createBroker(db: Db) {
         if (!b || b.status !== "pairing" || !b.pairingExpiresAt || b.pairingExpiresAt <= new Date()) throw fail("Pairing code expired or was consumed.");
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, b.agentId), eq(agents.companyId, b.companyId))).for("update");
         const [grant] = await tx.select().from(mcpOauthGrants).where(and(eq(mcpOauthGrants.id, principal.grant.id), isNull(mcpOauthGrants.revokedAt))).for("update");
-        if (!grant || grant.agentId || !agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw fail("Pairing authority is unavailable.");
+        if (!grant || grant.agentId || !agent || !canConfigureAgentConnection(agent)) throw fail("Pairing authority is unavailable.");
         await tx.update(bindings).set({ grantId: grant.id, status: "connected", pairingCodeHash: null, pairingExpiresAt: null, updatedAt: new Date() }).where(eq(bindings.id, b.id));
         await tx.update(mcpOauthGrants).set({ agentId: b.agentId }).where(eq(mcpOauthGrants.id, grant.id));
-        await agentService(tx as unknown as Db).update(agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: b.id } },
+        await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: b.id } },
           { recordRevision: { createdByUserId: b.operatorId, source: "dot-pairing" } });
         await logActivity(tx as unknown as Db, { companyId: b.companyId, actorType: "user", actorId: b.operatorId,
           action: "dot.paired", entityType: "agent", entityId: b.agentId, details: { bindingId: b.id, generation: b.generation } });
@@ -149,7 +167,7 @@ function createBroker(db: Db) {
       const [active] = await db.select({ id: assignments.id, runId: assignments.runId, status: assignments.status, lastActivityAt: assignments.lastActivityAt }).from(assignments)
         .where(and(eq(assignments.bindingId, b.id), inArray(assignments.status, ["offered", "accepted"])));
       return { id: b.id, companyId: b.companyId, agentId: b.agentId, generation: b.generation, status: b.status, dotUrl: b.dotUrl,
-        readyAt: b.readyAt, connected: !!b.grantId, subscriptionVerified: activeSubscriptions.length > 0,
+        readyAt: b.readyAt, pairingExpiresAt: b.pairingExpiresAt, challengeExpiresAt: b.challengeExpiresAt, connected: !!b.grantId, subscriptionVerified: activeSubscriptions.length > 0,
         hasPendingChallenge: !!b.challengeHash && !!b.challengeExpiresAt && b.challengeExpiresAt > new Date(),
         assignment: active ? { ...active, attentionRequired: active.status === "accepted" && active.lastActivityAt.getTime() < Date.now() - 15 * 60_000 } : null };
     },
@@ -182,9 +200,10 @@ function createBroker(db: Db) {
         const [agent] = await tx.select().from(agents).where(eq(agents.id, b.agentId));
         if (!agent || ["terminated", "pending_approval"].includes(agent.status)) throw fail("Agent connection authority is unavailable.");
         const paused = agent.status === "paused";
+        const visibleKinds: Array<typeof mailbox.$inferSelect.kind> = canConfigureAgentConnection(agent) ? ["authority_revoked", "readiness_challenge"] : ["authority_revoked"];
         const items = await tx.select().from(mailbox).where(and(eq(mailbox.companyId, b.companyId), eq(mailbox.bindingId, b.id),
-          eq(mailbox.bindingGeneration, b.generation), gt(mailbox.id, after), paused ? eq(mailbox.kind, "authority_revoked") : undefined)).orderBy(asc(mailbox.id)).limit(50);
-        // Paused reads expose fences only and never consume hidden task items.
+          eq(mailbox.bindingGeneration, b.generation), gt(mailbox.id, after), paused ? inArray(mailbox.kind, visibleKinds) : undefined)).orderBy(asc(mailbox.id)).limit(50);
+        // Setup reads expose challenges and fences without consuming hidden work.
         return { bindingId: b.id, generation: b.generation, items, nextCursor: paused ? after : items.at(-1)?.id ?? after };
       });
     },
@@ -228,6 +247,12 @@ function createBroker(db: Db) {
       return db.select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status }).from(issues)
         .where(and(eq(issues.companyId, b.companyId), eq(issues.assigneeAgentId, b.agentId), inArray(issues.status, ["todo", "in_progress", "blocked"]), after ? gt(issues.id, after) : undefined)).orderBy(asc(issues.id)).limit(50);
     },
+    async setAvatar(principal: McpPrincipal, input: SetAgentAvatarInput) {
+      if (!await enabled()) throw fail("Dot is disabled in experimental settings.");
+      const b = await principalBinding(principal, false);
+      return setAgentProfileAvatar(db, getStorageService(), b.companyId, b.agentId, input,
+        { actorType: "agent", actorId: b.agentId, agentId: b.agentId });
+    },
     async capabilities(principal: McpPrincipal) {
       const b = await principalBinding(principal, false);
       const [agent] = await db.select().from(agents).where(eq(agents.id, b.agentId));
@@ -235,9 +260,10 @@ function createBroker(db: Db) {
       const access = await boardAuthService(db).resolveBoardAccess(b.operatorId);
       return { companyId: b.companyId, agentId: b.agentId, agentName: agent!.name,
         responsibleUser: access.user ? { id: access.user.id, name: access.user.name } : null,
-        permissions: agent!.permissions, ready: state?.status === "ready" && state.subscriptionVerified,
+        permissions: agent!.permissions, ready: agent!.lifecycleState === "ready" && state?.status === "ready" && state.subscriptionVerified,
         assignment: state?.assignment ?? null,
         idle: { read: ["paperclip_dot_capabilities", "paperclip_dot_tasks", "paperclip_dot_inbox"],
+          profile: "paperclip_dot_set_avatar",
           start: "paperclip_dot_request_turn", instruction: "You can start work without an existing task. Call paperclip_dot_request_turn with the user's request and a stable UUID. Drain the inbox, read and accept the assignment, then use its full catalog through paperclip_dot_tool. Task tools run as this agent under normal permissions, never as the owner." },
         runtime: { skills: "pinned_read", mcp: "assigned_gateway", taskAttachments: agent!.adapterConfig?.dotAttachmentAccess === true ? "assigned_task_read" : "disabled",
           attachmentPrerequisite: "Enable task attachment reading on this Dot agent to send verified contents of its current assigned task files to OpenAI. This does not enable workspace commands.", workspace: agent!.adapterConfig?.dotWorkspaceAccess === true ? "sandboxed_tool_bridge" : "disabled",
@@ -355,19 +381,35 @@ function createBroker(db: Db) {
         return outcome;
       });
     },
-    async challenge(companyId: string, agentId: string) {
+    async challenge(companyId: string, agentId: string, options: { automatic?: boolean; bindingId?: string } = {}) {
       const state = await this.bindingForAgent(companyId, agentId);
-      if (!await enabled() || !state || !state.subscriptionVerified) throw fail("Connect and subscribe the Dot first.");
+      if (!await enabled() || !state || !state.subscriptionVerified || (options.bindingId && options.bindingId !== state.id)) {
+        if (options.automatic) return { status: "unavailable" };
+        throw fail("Connect and subscribe the Dot first.");
+      }
       const nonce = randomBytes(24).toString("base64url");
-      await db.transaction(async tx => {
+      const available = await db.transaction(async tx => {
         const [b] = await tx.select().from(bindings).where(eq(bindings.id, state.id)).for("update");
-        if (!b || b.revokedAt || b.challengeHash && b.challengeExpiresAt && b.challengeExpiresAt > new Date()) throw fail("An event test is already pending.");
+        if (!b || b.revokedAt || b.generation !== state.generation) {
+          if (options.automatic) return false;
+          throw fail("Binding authority changed.");
+        }
+        if (options.automatic && (b.challengeHash || b.readyAt)) return;
+        if (b.challengeHash && b.challengeExpiresAt && b.challengeExpiresAt > new Date()) return;
+        const [subscription] = await tx.select({ id: mcpEventSubscriptions.id }).from(mcpEventSubscriptions).where(and(
+          eq(mcpEventSubscriptions.bindingId, b.id), eq(mcpEventSubscriptions.grantId, b.grantId!),
+          isNull(mcpEventSubscriptions.stoppedAt), gt(mcpEventSubscriptions.expiresAt, new Date())));
+        if (!subscription) {
+          if (options.automatic) return false;
+          throw fail("The event subscription is no longer verified.");
+        }
         await tx.update(bindings).set({ challengeHash: hash(nonce), challengeExpiresAt: new Date(Date.now() + 10 * 60_000), updatedAt: new Date() }).where(eq(bindings.id, b.id));
         await tx.insert(mailbox).values({ companyId, bindingId: b.id, bindingGeneration: b.generation,
           kind: "readiness_challenge", sourceEventId: "challenge_" + randomUUID(), references: { challenge: nonce } });
         await logActivity(tx as unknown as Db, { companyId, actorType: "user", actorId: b.operatorId,
           action: "dot.event_test_requested", entityType: "agent", entityId: agentId, details: { bindingId: b.id } });
       });
+      if (available === false) return { status: "unavailable" };
       return { status: "pending", message: "Waiting for the Dot to receive the event, read its mailbox and complete the harmless challenge." };
     },
     async confirmChallenge(principal: McpPrincipal, nonce: string) {
@@ -375,7 +417,7 @@ function createBroker(db: Db) {
       const connection = await this.bindingForAgent(b.companyId, b.agentId);
       if (!connection?.subscriptionVerified) throw fail("The event subscription is no longer verified.");
       const [updated] = await db.update(bindings).set({ status: "ready", readyAt: new Date(), challengeHash: null, challengeExpiresAt: null, updatedAt: new Date() })
-        .where(and(eq(bindings.id, b.id), eq(bindings.generation, b.generation), eq(bindings.challengeHash, hash(nonce)), gt(bindings.challengeExpiresAt, new Date()))).returning();
+        .where(and(eq(bindings.id, b.id), eq(bindings.generation, b.generation), isNull(bindings.revokedAt), eq(bindings.grantId, principal.grant.id), eq(bindings.challengeHash, hash(nonce)), gt(bindings.challengeExpiresAt, new Date()))).returning();
       if (!updated) throw fail("Event test expired or does not match.");
       await logActivity(db, { companyId: b.companyId, actorType: "agent", actorId: b.agentId,
         action: "dot.event_test_completed", entityType: "agent", entityId: b.agentId, details: { bindingId: b.id } });
@@ -391,7 +433,7 @@ function createBroker(db: Db) {
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).for("update");
         if (agent?.adapterConfig.dotBindingId === b.id) {
           const { dotBindingId: _removed, ...adapterConfig } = agent.adapterConfig;
-          await agentService(tx as unknown as Db).update(agentId, { adapterConfig },
+          await updateAgentConfigurationInTransaction(tx as unknown as Db, agentId, { adapterConfig },
             { recordRevision: { createdByUserId: operatorId, source: "dot-revoke" } });
         }
         await tx.update(assignments).set({ status: "fenced" }).where(and(eq(assignments.bindingId, b.id), inArray(assignments.status, ["offered", "accepted"])));
@@ -422,14 +464,34 @@ function createBroker(db: Db) {
           if (existing && hasProviderCheckpoint !== true) throw fail("Dot bridge checkpoint missing; reconcile external work before continuing.");
           const token = Symbol(runId);
           if (ports.has(runId)) throw fail("A Dot run controller is already attached.");
-          ports.set(runId, { token, send, revoke });
           const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
-          if (!coordinator) { ports.delete(runId); throw fail("Run controller ownership is unavailable."); }
-          await db.update(assignments).set({ controllerGeneration: coordinator.controllerGeneration }).where(and(eq(assignments.runId, runId), eq(assignments.bindingGeneration, execution.provider.binding.bindingGeneration)));
-          const rows = await db.select({ operation: operations }).from(operations).innerJoin(assignments, eq(assignments.id, operations.assignmentId))
-            .where(and(eq(assignments.runId, runId), inArray(operations.status, ["reserved", "admitted"]))).orderBy(asc(operations.createdAt));
-          for (const { operation } of rows) void forward(operation).catch(() => {});
-          return async () => { if (ports.get(runId)?.token === token) ports.delete(runId); };
+          if (!coordinator?.leaseExpiresAt || coordinator.leaseExpiresAt <= new Date()) throw fail("Run controller ownership is unavailable.");
+          // Reserve synchronously after the ownership read; another attachment
+          // may have completed while that read was in flight.
+          if (ports.has(runId)) throw fail("A Dot run controller is already attached.");
+          ports.set(runId, { token, send, revoke, controllerGeneration: coordinator.controllerGeneration });
+          try {
+            await db.update(assignments).set({ controllerGeneration: coordinator.controllerGeneration }).where(and(eq(assignments.runId, runId),
+              eq(assignments.bindingGeneration, execution.provider.binding.bindingGeneration), sql`${assignments.controllerGeneration} <= ${coordinator.controllerGeneration}`));
+          } catch (error) { if (ports.get(runId)?.token === token) ports.delete(runId); throw error; }
+          // Any HTTP replica can reserve an operation. Only this run's current
+          // controller drains it. No Runner/sandbox is needed for an idle binding.
+          let timer: NodeJS.Timeout | undefined;
+          const drain = async () => {
+            try {
+              if (ports.get(runId)?.token !== token) return;
+              const rows = await db.select({ operation: operations }).from(operations).innerJoin(assignments, eq(assignments.id, operations.assignmentId))
+                .where(and(eq(assignments.runId, runId), inArray(operations.status, ["reserved", "admitted"]))).orderBy(asc(operations.createdAt)).limit(32);
+              for (const { operation } of rows) {
+                if (ports.get(runId)?.token !== token) break;
+                await forward(operation).catch(() => {}); // durable rows remain retryable
+              }
+            } finally {
+              if (ports.get(runId)?.token === token) { timer = setTimeout(() => { void drain().catch(() => {}); }, 2000); timer.unref(); }
+            }
+          };
+          void drain().catch(() => {});
+          return async () => { if (timer) clearTimeout(timer); if (ports.get(runId)?.token === token) ports.delete(runId); };
         },
         dispatch: async event => {
           const p = event.payload;
@@ -499,6 +561,7 @@ export function createDotRunnerMcpTools(db: Db): PublicMcpToolExtension {
   const broker = dotRunnerBroker(db);
   const request = { assignmentId: z.uuid(), requestId: z.uuid() };
   const definitions = [
+    { name: "paperclip_dot_set_avatar", description: "Update only your bound Paperclip agent's avatar, including while idle after pairing. If you can obtain your own avatar, send its PNG/JPEG/WebP bytes as raw base64 (max 512 KiB, static image). Do not send a URL or invent an image. Use imageBase64: null to restore the Paperclip character. Repeating the same image is safe. No active assignment is needed.", schema: setAgentAvatarSchema },
     { name: "paperclip_dot_capabilities", description: "Discover your agent identity, responsible person, configured permissions, enforcement limits, idle entry point, runtime capabilities, and prerequisites. Use this before concluding you cannot act.", schema: z.object({}).strict() },
     { name: "paperclip_dot_request_turn", description: "Start a governed Runner turn for a request from your Dot conversation, even when no task is assigned. Creates one auditable intake task using normal permissions and admission. Retry the exact prompt with the same UUID.", schema: z.object({ prompt: z.string().trim().min(1).max(20_000), requestId: z.uuid() }).strict() },
     { name: "paperclip_dot_renew", description: "Renew an accepted assignment before expiry. Choose an expiry no more than two hours ahead or 24 hours after admission. Cannot revive expired, stopped, or revoked work.", schema: z.object({ ...request, expiresAtUnixMs: z.number().int().positive() }).strict() },
@@ -523,7 +586,8 @@ export function createDotRunnerMcpTools(db: Db): PublicMcpToolExtension {
       const definition = definitions.find(d => d.name === name); if (!definition) throw fail("Unknown Dot tool.");
       const input = definition.schema.parse(raw) as Record<string, unknown>;
       let result: unknown;
-      if (name === "paperclip_dot_capabilities") result = await broker.capabilities(principal);
+      if (name === "paperclip_dot_set_avatar") result = await broker.setAvatar(principal, setAgentAvatarSchema.parse(input));
+      else if (name === "paperclip_dot_capabilities") result = await broker.capabilities(principal);
       else if (name === "paperclip_dot_request_turn") result = await broker.requestTurn(principal, String(input.prompt), String(input.requestId));
       else if (name === "paperclip_dot_tasks") result = await broker.tasks(principal, input.after ? String(input.after) : null);
       else if (name === "paperclip_dot_request_work") result = await broker.requestWork(principal, String(input.issueId), String(input.requestId));

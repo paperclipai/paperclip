@@ -16,6 +16,7 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
@@ -60,6 +61,25 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
+    const owner = "selection-blocker-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const expectSelectionFailure = async (promise: Promise<unknown>, reason: string) => {
+      const error = await promise.catch((error: unknown) => error);
+      expect(error).toMatchObject({ status: 422, details: { code: reason } });
+      expect(readAiConnectionConfigurationFailure(error)).toBe(reason);
+    };
+    await expectSelectionFailure(service.select({ ...input, userId: null }), "ai_connection_responsible_user_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, adapterType: "codex_local" }), "ai_connection_incompatible");
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_default_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, binding: {
+      ...binding, mode: "delegated", connectionId: randomUUID(), grantId: randomUUID(),
+    } }), "ai_connection_missing");
+    const account = await create(owner, "Selection blocker account");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
+  });
+
   it("persists first-time recovery directories before consuming a single-use token", async () => {
     const owner = "quota-durable-path";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });

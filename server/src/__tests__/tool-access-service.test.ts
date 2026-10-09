@@ -52,6 +52,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  APP_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
@@ -110,6 +111,17 @@ function createTestToolAccessService(
     remoteHttpRequest: async (url, init) => fetch(url, init),
     ...options,
   });
+}
+
+function optIntoAirtableDcrRegistration() {
+  const method = APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods
+    .find((entry) => entry.key === "mcp-oauth")!;
+  const original = method.oauthClientRegistration;
+  method.oauthClientRegistration = "dcr";
+  return () => {
+    if (original === undefined) delete method.oauthClientRegistration;
+    else method.oauthClientRegistration = original;
+  };
 }
 
 function fakeGoogleWorkspaceConnector(
@@ -5214,7 +5226,18 @@ describeEmbeddedPostgres("tool access service", () => {
         "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(68);
+    expect(res.body.apps.length).toBeGreaterThanOrEqual(69);
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual(
+      expect.arrayContaining([
+        "calendly",
+        "exa",
+        "firecrawl",
+        "gsc-wizard",
+        "parallel-search",
+        "tavily",
+        "windsor-ai",
+      ]),
+    );
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -11073,6 +11096,204 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("uses Airtable DCR when both DCR and CIMD are advertised", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const restoreMethod = optIntoAirtableDcrRegistration();
+    try {
+      const company = await createCompany(db);
+      let metadataLookups = 0;
+      let registrations = 0;
+      const service = createTestToolAccessService(db, {
+        oauthClientMetadataLookup: async () => {
+          metadataLookups++;
+          return [{ address: "93.184.216.34", family: 4 }];
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable DCR",
+      });
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+          return mcpHttpResponse({
+            resource: "https://mcp.airtable.com",
+            authorization_servers: ["https://airtable.com/oauth2/v1"],
+            scopes_supported: ["data.records:read", "data.records:write"],
+          });
+        }
+        if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+          return mcpHttpResponse({
+            issuer: "https://airtable.com/oauth2/v1",
+            authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+            token_endpoint: "https://airtable.com/oauth2/v1/token",
+            registration_endpoint: "https://airtable.com/oauth2/v1/register",
+            client_id_metadata_document_supported: true,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        if (href === "https://airtable.com/oauth2/v1/register") {
+          registrations++;
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+            application_type: "web",
+          });
+          return mcpHttpResponse({
+            client_id: "airtable-dcr-client",
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+      const start = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+
+      expect(start.registrationSource).toBe("dcr");
+      expect(new URL(start.authorizationUrl).searchParams.get("client_id")).toBe("airtable-dcr-client");
+      expect(registrations).toBe(1);
+      expect(metadataLookups).toBe(0);
+    } finally {
+      restoreMethod();
+    }
+  });
+
+  it("rebinds an Airtable CIMD client through DCR when the curated method opts in", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db, {
+      oauthClientMetadataLookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    });
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable migration",
+    });
+    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+    let registrations = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.airtable.com",
+          authorization_servers: ["https://airtable.com/oauth2/v1"],
+        });
+      }
+      if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+        return mcpHttpResponse({
+          issuer: "https://airtable.com/oauth2/v1",
+          authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+          token_endpoint: "https://airtable.com/oauth2/v1/token",
+          registration_endpoint: "https://airtable.com/oauth2/v1/register",
+          client_id_metadata_document_supported: true,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://airtable.com/oauth2/v1/register") {
+        registrations++;
+        return mcpHttpResponse({
+          client_id: "airtable-rebound-dcr-client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const airtableMethod = APP_DEFINITIONS.find((app) => app.slug === "airtable")!.methods
+      .find((entry) => entry.key === "mcp-oauth")!;
+    const originalRegistration = airtableMethod.oauthClientRegistration;
+    try {
+      // Generated Airtable metadata now opts into DCR. Remove that curated
+      // flag here to model an existing client binding created before the opt-in.
+      delete airtableMethod.oauthClientRegistration;
+      const cimdStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+      expect(cimdStart.registrationSource).toBe("cimd");
+
+      airtableMethod.oauthClientRegistration = "dcr";
+      const dcrStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri, actor: { actorType: "user", actorId: "board" },
+      });
+      expect(dcrStart.registrationSource).toBe("dcr");
+      expect(new URL(dcrStart.authorizationUrl).searchParams.get("client_id")).toBe("airtable-rebound-dcr-client");
+      expect(registrations).toBe(1);
+    } finally {
+      if (originalRegistration === undefined) delete airtableMethod.oauthClientRegistration;
+      else airtableMethod.oauthClientRegistration = originalRegistration;
+    }
+  });
+
+  it("does not fall back to Airtable CIMD when DCR is required but unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_AIRTABLE_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const restoreMethod = optIntoAirtableDcrRegistration();
+    try {
+      const company = await createCompany(db);
+      let metadataLookups = 0;
+      const service = createTestToolAccessService(db, {
+        oauthClientMetadataLookup: async () => {
+          metadataLookups++;
+          return [{ address: "93.184.216.34", family: 4 }];
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "airtable", connectionMethodKey: "mcp-oauth", name: "Airtable DCR unavailable",
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        const href = String(url);
+        if (href === "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp") {
+          return mcpHttpResponse({
+            resource: "https://mcp.airtable.com",
+            authorization_servers: ["https://airtable.com/oauth2/v1"],
+          });
+        }
+        if (href === "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1") {
+          return mcpHttpResponse({
+            issuer: "https://airtable.com/oauth2/v1",
+            authorization_endpoint: "https://airtable.com/oauth2/v1/authorize",
+            token_endpoint: "https://airtable.com/oauth2/v1/token",
+            client_id_metadata_document_supported: true,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+      await expect(service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      })).rejects.toMatchObject({ details: { code: "oauth_dcr_not_supported" } });
+      expect(metadataLookups).toBe(0);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect((connection.config.oauth as Record<string, unknown> | undefined)?.clientId).toBeUndefined();
+    } finally {
+      restoreMethod();
+    }
+  });
+
   it("registers Linear against its MCP authorization server instead of the pinned console endpoints", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_ID", "");
@@ -11121,7 +11342,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
-      .send({ galleryKey: "linear", name: "Linear", grantKind: "user" })
+      .send({ galleryKey: "linear", connectionMethodKey: "mcp-oauth", name: "Linear", grantKind: "user" })
       .expect(201);
 
     const startUrl = new URL(connectRes.body.auth.startUrl);
@@ -11129,6 +11350,52 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("client_id")).toBe("linear-registered-client");
     expect(fetched).toContain("https://mcp.linear.app/register");
     expect(fetched.some((href) => href.startsWith("https://linear.app/"))).toBe(false);
+  });
+
+  it("registers Calendly with a provider-compatible DCR client name", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "calendly", connectionMethodKey: "mcp-oauth", name: "Calendly",
+    });
+    const redirectUri = "http://localhost:3105/api/tools/oauth/callback";
+    let registrationBody: Record<string, unknown> | null = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href.includes("oauth-protected-resource")) return mcpHttpResponse({
+        resource: "https://mcp.calendly.com/", authorization_servers: ["https://calendly.com/"],
+        scopes_supported: ["mcp:scheduling:read", "mcp:scheduling:write"],
+      });
+      if (href.includes("oauth-authorization-server")) return mcpHttpResponse({
+        issuer: "https://calendly.com/", authorization_endpoint: "https://calendly.com/oauth/authorize",
+        token_endpoint: "https://calendly.com/oauth/token", registration_endpoint: "https://calendly.com/oauth/register",
+        code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+      });
+      if (href === "https://calendly.com/oauth/register") {
+        registrationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return mcpHttpResponse({
+          client_id: "calendly-public-client", redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const result = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri, actor: { actorType: "user", actorId: "board" },
+    });
+
+    expect(registrationBody).toMatchObject({
+      client_name: "Paperclip localhost-3105",
+      redirect_uris: [redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      application_type: "web",
+    });
+    expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
+    expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
   });
 
   it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
@@ -12038,7 +12305,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe("notion-dcr-client");
     expect(registrationBodies).toEqual([
       {
-        client_name: "Paperclip (paperclip-dev.tail29c1aa.ts.net)",
+        client_name: "Paperclip paperclip-dev-tail29c1aa-ts-net",
         redirect_uris: [redirectUri],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
@@ -12296,122 +12563,147 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(completed)).not.toContain("supabase-dcr-secret");
   });
 
-  it("preserves the provider's DCR client-auth ordering for Miro token exchange", async () => {
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
-    const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
-    const service = createTestToolAccessService(db);
-    const connected = await service.connectGalleryApp(company.id, {
-      galleryKey: "miro",
-      connectionMethodKey: "mcp-oauth",
-      name: "Miro DCR",
-    });
-    const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      const href = String(url);
-      if (
-        href === "https://mcp.miro.com/.well-known/oauth-protected-resource"
-      ) {
-        return mcpHttpResponse({
-          resource: "https://mcp.miro.com/",
-          authorization_servers: ["https://mcp.miro.com/"],
-        });
+  it.each(["default", "none", "agent", "company"] as const)(
+    "negotiates JSON OAuth tokens and preserves MCP agent reach (%s)", async (reach) => {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+      const company = await createCompany(db);
+      await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "miro",
+        connectionMethodKey: "mcp-oauth",
+        name: "Miro DCR",
+      });
+      const agent = await createAgent(db, company.id);
+      const installs = reach === "company" || reach === "default"
+        ? [{ targetType: "company" as const, targetId: company.id }]
+        : reach === "agent"
+          ? [{ targetType: "agent" as const, targetId: agent.id }]
+          : [];
+      if (reach !== "default") {
+        await service.putConnectionInstalls(connected.connectionId, { installs });
       }
-      if (
-        href === "https://mcp.miro.com/.well-known/oauth-authorization-server"
-      ) {
-        return mcpHttpResponse({
-          issuer: "https://mcp.miro.com/",
-          authorization_endpoint: "https://mcp.miro.com/authorize",
-          token_endpoint: "https://mcp.miro.com/token",
-          registration_endpoint: "https://mcp.miro.com/register",
-          grant_types_supported: ["authorization_code", "refresh_token"],
-          code_challenge_methods_supported: ["S256"],
-          token_endpoint_auth_methods_supported: [
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (
+          href === "https://mcp.miro.com/.well-known/oauth-protected-resource"
+        ) {
+          return mcpHttpResponse({
+            resource: "https://mcp.miro.com/",
+            authorization_servers: ["https://mcp.miro.com/"],
+          });
+        }
+        if (
+          href === "https://mcp.miro.com/.well-known/oauth-authorization-server"
+        ) {
+          return mcpHttpResponse({
+            issuer: "https://mcp.miro.com/",
+            authorization_endpoint: "https://mcp.miro.com/authorize",
+            token_endpoint: "https://mcp.miro.com/token",
+            registration_endpoint: "https://mcp.miro.com/register",
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: [
+              "client_secret_post",
+              "client_secret_basic",
+            ],
+          });
+        }
+        if (href === "https://mcp.miro.com/register") {
+          const requestBody = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          expect(requestBody.token_endpoint_auth_method).toBe(
             "client_secret_post",
-            "client_secret_basic",
-          ],
-        });
-      }
-      if (href === "https://mcp.miro.com/register") {
-        const requestBody = JSON.parse(String(init?.body)) as Record<
-          string,
-          unknown
-        >;
-        expect(requestBody.token_endpoint_auth_method).toBe(
-          "client_secret_post",
-        );
-        return mcpHttpResponse({
-          client_id: "miro-dcr-client",
-          client_secret: "miro-dcr-secret",
-          redirect_uris: [redirectUri],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "client_secret_post",
-        });
-      }
-      if (href === "https://mcp.miro.com/token") {
-        const headers = new Headers(init?.headers);
-        const body = init?.body as URLSearchParams;
-        expect(headers.get("authorization")).toBeNull();
-        expect(body.get("client_id")).toBe("miro-dcr-client");
-        expect(body.get("client_secret")).toBe("miro-dcr-secret");
-        expect(body.get("code")).toBe("miro-code");
-        return mcpHttpResponse({
-          access_token: "miro-access-token",
-          refresh_token: "miro-refresh-token",
-          expires_in: 3600,
-          token_type: "Bearer",
-        });
-      }
-      if (href === "https://mcp.miro.com/") {
-        expect(new Headers(init?.headers).get("authorization")).toBe(
-          "Bearer miro-access-token",
-        );
-        return mcpHttpResponse({
-          jsonrpc: "2.0",
-          id: "paperclip-catalog-refresh",
-          result: {
-            tools: [{ name: "whoami", annotations: { readOnlyHint: true } }],
-          },
-        });
-      }
-      throw new Error(`unexpected fetch ${href}`);
-    });
+          );
+          return mcpHttpResponse({
+            client_id: "miro-dcr-client",
+            client_secret: "miro-dcr-secret",
+            redirect_uris: [redirectUri],
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "client_secret_post",
+          });
+        }
+        if (href === "https://mcp.miro.com/token") {
+          const headers = new Headers(init?.headers);
+          const body = init?.body as URLSearchParams;
+          // Match providers that negotiate JSON only when explicitly requested.
+          if (headers.get("accept") !== "application/json") {
+            return new Response("access_token=miro-access-token", {
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+            });
+          }
+          expect(headers.get("authorization")).toBeNull();
+          expect(body.get("client_id")).toBe("miro-dcr-client");
+          expect(body.get("client_secret")).toBe("miro-dcr-secret");
+          expect(body.get("code")).toBe("miro-code");
+          return mcpHttpResponse({
+            access_token: "miro-access-token",
+            refresh_token: "miro-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          });
+        }
+        if (href === "https://mcp.miro.com/") {
+          expect(new Headers(init?.headers).get("authorization")).toBe(
+            "Bearer miro-access-token",
+          );
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: {
+              tools: [{ name: "whoami", annotations: { readOnlyHint: true } }],
+            },
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
 
-    const started = await service.startOAuth(
-      company.id,
-      connected.connectionId,
-      {
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri,
+          actor: { actorType: "user", actorId: "board" },
+        },
+      );
+      const state = new URL(started.authorizationUrl).searchParams.get("state");
+      expect(state).toBeTruthy();
+      const completed = await service.completeOAuthCallback({
+        state: state!,
+        code: "miro-code",
         redirectUri,
         actor: { actorType: "user", actorId: "board" },
-      },
-    );
-    const state = new URL(started.authorizationUrl).searchParams.get("state");
-    expect(state).toBeTruthy();
-    const completed = await service.completeOAuthCallback({
-      state: state!,
-      code: "miro-code",
-      redirectUri,
-      actor: { actorType: "user", actorId: "board" },
-    });
+      });
 
-    expect(completed.actions.readOnly).toEqual([
-      expect.objectContaining({ toolName: "whoami", riskLevel: "read" }),
-    ]);
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, connected.connectionId));
-    expect(connection.config).toMatchObject({
-      oauth: { clientTokenEndpointAuthMethod: "client_secret_post" },
-    });
-    expect(JSON.stringify(connection.config)).not.toContain("miro-dcr-secret");
-    expect(JSON.stringify(completed)).not.toContain("miro-dcr-secret");
-  });
+      expect(completed.actions.readOnly).toEqual([
+        expect.objectContaining({ toolName: "whoami", riskLevel: "read" }),
+      ]);
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      expect(connection.config).toMatchObject({
+        oauth: { clientTokenEndpointAuthMethod: "client_secret_post" },
+      });
+      expect(JSON.stringify(connection.config)).not.toContain("miro-dcr-secret");
+      expect(JSON.stringify(completed)).not.toContain("miro-dcr-secret");
+      const installed = await db.select().from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connected.connectionId));
+      expect(installed.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(installs);
+      const [profile] = await db.select().from(toolProfiles)
+        .where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+      const bindings = await db.select().from(toolProfileBindings)
+        .where(eq(toolProfileBindings.profileId, profile.id));
+      expect(bindings.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(installs);
+    },
+  );
 
   it("accepts provider-added DCR grants without adopting them", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_HUGGING_FACE_CLIENT_ID", "");

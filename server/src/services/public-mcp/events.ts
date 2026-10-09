@@ -212,7 +212,12 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   async function enqueue(s: Subscription) {
     if (s.bindingId) {
       if (!options.enableDotRunner) return;
-      const [b] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, s.bindingId), eq(dotAgentBindings.companyId, s.companyId), isNull(dotAgentBindings.revokedAt)));
+      const [binding] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, s.bindingId), eq(dotAgentBindings.companyId, s.companyId), isNull(dotAgentBindings.revokedAt)));
+      if (!binding) return;
+      // SQL idempotency makes this safe across restarts, replicas and callback
+      // renewals. Reload before filtering delivery against the newly issued test.
+      await dotRunnerBroker(db).challenge(binding.companyId, binding.agentId, { automatic: true, bindingId: binding.id });
+      const [b] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, binding.id), isNull(dotAgentBindings.revokedAt)));
       if (!b) return;
       // Materialize only references to newly recorded task input. This does not steer
       // an external provider or create execution authority; the current run reads its history.

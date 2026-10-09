@@ -22,6 +22,7 @@ import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -374,7 +375,7 @@ describe("agent-created hires use managed AI connections", () => {
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Other provider", role: "engineer", adapterType }));
     expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: otherProvider, mode: "responsible_user" });
     await expect(prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: agent.id, responsibleUserId: f.userId, adapterType, binding: agent.runtimeConfig.aiConnection, config: agent.adapterConfig })).rejects.toMatchObject({ details: { code: "ai_connection_default_missing" } });
-    expect(agent.status).toBe("idle");
+    expect(agent).toMatchObject({ status: "paused", lifecycleState: "preparing" });
   });
 
   for (const endpoint of ["agent-hires", "agents"]) {
@@ -486,11 +487,17 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
+  async function finishSetup(agentId: string) {
+    // These tests cover task credentials after setup; lifecycle tests cover verification.
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    try { await worker.process(agentId); } finally { await worker.stop(); }
+  }
   it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {
     const f = await fixture("openai", "subscription");
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Only an operator may set host execution paths after the agent is hired.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Wait for credential rotation", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, resultJson: {} }));
     registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
@@ -534,6 +541,7 @@ describe("hired agents sharing a subscription", () => {
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Host working directories are configured by an operator, not an agent key.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {

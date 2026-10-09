@@ -33,9 +33,11 @@ export async function inspectIdleSpool(directory: string): Promise<IdleLocalWork
   }
 }
 
-export async function readIdleLocalWork(): Promise<IdleLocalWork> {
+export async function readIdleLocalWork(options: { backupCheckpoint?: boolean } = {}): Promise<IdleLocalWork> {
   if (!startupComplete || !ingressTracked) return "unknown";
-  if (scheduledBackups || idleWorkSnapshot().active !== 0) return "present";
+  // This exemption belongs only to a scan which will finish a new backup
+  // under the same admission hold before it can return an empty report.
+  if ((scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
   const directories = new Set([...spoolDirectories, idleAccountingSpoolPath(), idleOrphanSpoolPath()]);
   const results = await Promise.all([...directories].map(inspectIdleSpool));
   if (results.includes("unknown")) return "unknown";

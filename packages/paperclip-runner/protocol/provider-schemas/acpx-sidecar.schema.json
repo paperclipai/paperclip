@@ -52,10 +52,42 @@
         "params": { "type": "object" }
       },
       "additionalProperties": false,
-      "allOf": [{
-        "if": { "properties": { "command": { "const": "turn.steer" } } },
-        "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
-      }]
+      "allOf": [
+        {
+          "if": { "properties": { "command": { "const": "turn.steer" } } },
+          "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
+        },
+        {
+          "if": { "properties": { "command": { "const": "session.open" } } },
+          "then": { "properties": { "params": { "$ref": "#/$defs/sessionOpenThinkingLevel" } } }
+        }
+      ]
+    },
+    "piThinkingLevel": { "enum": ["off", "low", "high", "max"] },
+    "sessionOpenThinkingLevel": {
+      "type": "object",
+      "properties": {
+        "agent": { "type": "string" },
+        "piThinkingLevel": { "$ref": "#/$defs/piThinkingLevel" }
+      },
+      "if": { "properties": { "agent": { "const": "pi" } }, "required": ["agent"] },
+      "then": {
+        "required": ["piThinkingLevel"],
+        "properties": {
+          "piThinkingLevel": { "$ref": "#/$defs/piThinkingLevel" },
+          "expectedIdentity": {
+            "type": ["object", "null"],
+            "properties": { "piThinkingLevel": { "$ref": "#/$defs/piThinkingLevel" } },
+            "required": ["piThinkingLevel"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "piThinkingLevel": false,
+          "expectedIdentity": { "type": ["object", "null"], "properties": { "piThinkingLevel": false } }
+        }
+      }
     },
     "response": {
       "type": "object",

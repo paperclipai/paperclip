@@ -46,6 +46,10 @@ function stopper(gracefulTimeoutMs = 2_000) {
   });
   return { stop, logs, errors };
 }
+function expectSuccessfulWrapperReceipt(wrapper: ChildProcess, messages: unknown[], diagnostics = "") {
+  expect([wrapper.exitCode, wrapper.signalCode], diagnostics).toEqual([0, null]);
+  expect(messages, diagnostics).toContainEqual({ exitCode: 0, signalCode: null });
+}
 afterEach(async () => {
   for (const child of children.splice(0)) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
@@ -153,20 +157,39 @@ it.skipIf(process.platform === "win32")("lets launcher cancellation join wrapper
     // during the async close even though the helper sends only one signal.
     const messages: unknown[] = [];
     wrapper.on("message", message => messages.push(message));
-    const exited = once(wrapper, "exit");
+    // Process exit is not IPC completion. Register both barriers before
+    // cancellation so the final worker receipt is drained before asserting it.
+    const closed = once(wrapper, "close");
+    const disconnected = once(wrapper, "disconnect");
     await owner.observe();
     const cancellation = stopOwnedProcessTree(wrapper, owner, 2_000, 2_000);
     await new Promise(resolve => setTimeout(resolve, 250));
     if (wrapper.connected) wrapper.send("finish");
-    await exited;
+    await Promise.all([closed, disconnected]);
     await cancellation;
-    expect(messages, wrapperErrors).toContainEqual({ message: "close-complete", pid: workerPid });
-    expect(messages).toContainEqual({ exitCode: 0, signalCode: null });
+    const diagnostics = `${wrapperErrors}\nwrapper exit=${wrapper.exitCode} signal=${wrapper.signalCode} connected=${wrapper.connected}`;
+    expect(messages, diagnostics).toContainEqual({ message: "close-complete", pid: workerPid });
+    expectSuccessfulWrapperReceipt(wrapper, messages, diagnostics);
     expect(() => process.kill(workerPid!, 0)).toThrow();
   } finally {
     owner.stopObserving();
     if (workerPid) { try { process.kill(-workerPid, "SIGKILL"); } catch { /* reaped */ } }
   }
+});
+
+it.each(["failed", "missing"] as const)("rejects a %s worker receipt even when the wrapper closes successfully", async receipt => {
+  const { entry } = await fixture(receipt === "failed"
+    ? "process.send({ exitCode: 23, signalCode: null }, () => process.exit(0));"
+    : "process.exit(0);");
+  const wrapper = start(entry);
+  const messages: unknown[] = [];
+  wrapper.on("message", message => messages.push(message));
+  const closed = once(wrapper, "close");
+  const disconnected = once(wrapper, "disconnect");
+  await Promise.all([closed, disconnected]);
+  expect([wrapper.exitCode, wrapper.signalCode]).toEqual([0, null]);
+  expect(messages).toEqual(receipt === "failed" ? [{ exitCode: 23, signalCode: null }] : []);
+  expect(() => expectSuccessfulWrapperReceipt(wrapper, messages)).toThrow();
 });
 
 
@@ -255,8 +278,8 @@ it.skipIf(process.platform === "win32")("recovers a failed cleanup without repea
   });
   try {
     const failed = expect(stop(child)).rejects.toThrow("transient inspection failure");
-    // Process-table inspection can take longer than 100ms on a loaded host.
-    // Keep the child alive until the intended inspection failure actually occurs.
+    // Hold the child until the one-shot failure is actually injected. A fixed
+    // delay can let it exit during the preceding successful inspection.
     await inspectionFailed;
     if (child.connected) child.send("finish");
     await failed;

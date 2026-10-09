@@ -14,6 +14,7 @@ import type {
   PluginSyncFileMapping,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
+import { recordEnvironmentSyncError, withEnvironmentSyncTransferStep } from "@paperclipai/plugin-sdk";
 import { getPluginTracer } from "./plugin.js";
 
 const execFileAsync = promisify(execFile);
@@ -318,9 +319,13 @@ export async function assertTarballEntriesConfined(
   const validateLine = (line: Buffer) => {
     // Count empty lines too, so whitespace cannot evade the parsing-work quota.
     if (++entries > TAR_LISTING_MAX_ENTRIES) {
-      throw new Error("Daytona syncOut tar listing entry limit exceeded (250000)");
+      throw recordEnvironmentSyncError(new Error("Daytona syncOut tar listing entry limit exceeded (250000)"), { transferFailureKind: "listing_entry_limit" });
     }
-    assertTarListingLineConfined(line.toString("utf8"));
+    try { assertTarListingLineConfined(line.toString("utf8")); }
+    catch (error) {
+      if (error instanceof UnsafeOutboundArchiveError) recordEnvironmentSyncError(error, { transferFailureKind: "unsafe_archive" });
+      throw error;
+    }
   };
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once("error", (error) => { spawnError = error; });
@@ -331,11 +336,11 @@ export async function assertTarballEntriesConfined(
     child.kill("SIGKILL");
   };
   const timer = setTimeout(() => {
-    stop(new Error("Daytona syncOut tar listing validation timed out"));
+    stop(recordEnvironmentSyncError(new Error("Daytona syncOut tar listing validation timed out"), { transferFailureKind: "listing_timeout", errorCode: "ETIMEDOUT" }));
   }, Math.max(1, Math.min(timeoutMs, TAR_LISTING_TIMEOUT_MS)));
   child.stderr.on("data", (chunk: Buffer) => {
     if (stderr.length + chunk.length > TAR_LISTING_MAX_STDERR_BYTES) {
-      stop(new Error("Daytona syncOut tar listing diagnostics exceed the byte limit"));
+      stop(recordEnvironmentSyncError(new Error("Daytona syncOut tar listing diagnostics exceed the byte limit"), { transferFailureKind: "listing_stderr_limit" }));
       return;
     }
     stderr = Buffer.concat([stderr, chunk]);
@@ -346,14 +351,14 @@ export async function assertTarballEntriesConfined(
       const bytes = chunk as Buffer;
       totalBytes += bytes.length;
       if (totalBytes > TAR_LISTING_MAX_TOTAL_BYTES) {
-        throw new Error("Daytona syncOut tar total listing byte limit exceeded (64 MiB)");
+        throw recordEnvironmentSyncError(new Error("Daytona syncOut tar total listing byte limit exceeded (64 MiB)"), { transferFailureKind: "listing_byte_limit" });
       }
       let start = 0;
       while (start < bytes.length) {
         const newline = bytes.indexOf(10, start);
         const end = newline < 0 ? bytes.length : newline;
         if (pending.length + end - start > TAR_LISTING_MAX_LINE_BYTES) {
-          throw new Error("Daytona syncOut refusing tarball with an entry listing exceeding the byte limit");
+          throw recordEnvironmentSyncError(new Error("Daytona syncOut refusing tarball with an entry listing exceeding the byte limit"), { transferFailureKind: "listing_line_limit" });
         }
         pending = Buffer.concat([pending, bytes.subarray(start, end)]);
         if (newline < 0) break;
@@ -367,7 +372,9 @@ export async function assertTarballEntriesConfined(
     if (failure) throw failure;
     if (spawnError) throw spawnError;
     if (result.code !== 0) {
-      throw new Error(`Daytona syncOut tar listing failed (${result.signal ?? result.code}): ${stderr.toString("utf8").trim()}`);
+      throw recordEnvironmentSyncError(new Error(`Daytona syncOut tar listing failed (${result.signal ?? result.code}): ${stderr.toString("utf8").trim()}`), {
+        transferFailureKind: "command_failed", exitCode: result.code ?? undefined,
+      });
     }
   } catch (error) {
     stop(error instanceof Error ? error : new Error(String(error)));
@@ -381,11 +388,13 @@ export async function assertTarballEntriesConfined(
 async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await assertTarballEntriesConfined(input.archivePath);
-  await fs.mkdir(input.localDir, { recursive: true });
-  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
-    env: { ...process.env, COPYFILE_DISABLE: "1" },
-    maxBuffer: 32 * 1024 * 1024,
+  await withEnvironmentSyncTransferStep("archive_validate", () => assertTarballEntriesConfined(input.archivePath));
+  await withEnvironmentSyncTransferStep("archive_extract", async () => {
+    await fs.mkdir(input.localDir, { recursive: true });
+    await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+      maxBuffer: 32 * 1024 * 1024,
+    });
   });
 }
 
@@ -423,7 +432,9 @@ async function assertSandboxCommandOkWithOutput(
   const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.result ?? result.artifacts?.stdout ?? "").toString().trim();
-    throw new Error(`Daytona ${label} command failed (exit ${result.exitCode ?? "unknown"})${detail ? `: ${detail}` : ""}`);
+    throw recordEnvironmentSyncError(new Error(`Daytona ${label} command failed (exit ${result.exitCode ?? "unknown"})${detail ? `: ${detail}` : ""}`), {
+      transferFailureKind: "command_failed", exitCode: result.exitCode,
+    });
   }
   return (result.result ?? result.artifacts?.stdout ?? "").toString();
 }
@@ -1143,17 +1154,14 @@ async function syncOutFileMappings(input: {
   const { sandbox, mappings, remoteDir, timeoutSeconds } = input;
   if (mappings.length === 0) return { filesTransferred: 0, bytesTransferred: 0 };
 
-  for (const mapping of mappings) {
-    assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
-  }
   // Close the validation→download TOCTOU: instead of re-opening each mutable
   // source, validate-and-snapshot it in one atomic sandbox-side step and download
   // the immutable snapshot. `snapshots` is index-aligned with `mappings`.
-  const snapshots = await snapshotOutboundFileSources({
-    sandbox,
-    remoteDir,
-    sources: mappings.map((mapping) => mapping.sourcePath),
-    timeoutSeconds,
+  const snapshots = await withEnvironmentSyncTransferStep("sandbox_guard", async () => {
+    for (const mapping of mappings) assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
+    return snapshotOutboundFileSources({
+      sandbox, remoteDir, sources: mappings.map((mapping) => mapping.sourcePath), timeoutSeconds,
+    });
   });
 
   const requests: FileDownloadRequest[] = [];
@@ -1179,6 +1187,7 @@ async function syncOutFileMappings(input: {
       await fs.mkdir(path.dirname(entry.target), { recursive: true });
     }
   } catch (error) {
+    recordEnvironmentSyncError(error, { transferStep: "file_finalize" });
     await cleanup();
     throw error;
   }
@@ -1193,7 +1202,7 @@ async function syncOutFileMappings(input: {
   try {
     // One batched bulk download for all file mappings, reading the snapshots.
     // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
-    responses = await withProviderSpan({
+    responses = await withEnvironmentSyncTransferStep("file_download", () => withProviderSpan({
       name: "transfer",
       wallMsAttr: SPAN_ATTR.transferWallMs,
       attributes: {
@@ -1201,7 +1210,7 @@ async function syncOutFileMappings(input: {
         [SPAN_ATTR.transferDirection]: "outbound",
       },
       run: () => sandbox.fs.downloadFiles(requests, timeoutSeconds),
-    });
+    }));
   } catch (error) {
     await cleanup();
     throw error;
@@ -1215,9 +1224,9 @@ async function syncOutFileMappings(input: {
     const response = bySource.get(entry.snapshot);
     if (!response || response.error) {
       await cleanup();
-      throw new Error(
+      throw recordEnvironmentSyncError(new Error(
         `Daytona syncOut download failed for ${entry.source}: ${response?.error ?? "no response returned"}`,
-      );
+      ), { transferStep: "file_download", transferFailureKind: response ? "download_failed" : "download_missing" });
     }
   }
 
@@ -1233,6 +1242,7 @@ async function syncOutFileMappings(input: {
       await fs.rename(entry.temp, entry.target);
     }
   } catch (error) {
+    recordEnvironmentSyncError(error, { transferStep: "file_finalize" });
     await cleanup();
     throw error;
   }
@@ -1251,16 +1261,15 @@ async function syncOutDirectoryMapping(input: {
   onArchiveRecovery?: () => void;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
-  assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   // Count the serial sandbox round trips before the transfer, so the transfer
   // span records how much of the wall time is guard cost.
   let guardRoundTrips = 0;
-  await assertSandboxPathsConfined({
-    sandbox,
-    remoteDir,
-    paths: [mapping.sourcePath],
-    timeoutSeconds,
-    label: "outbound symlink-escape guard",
+  await withEnvironmentSyncTransferStep("sandbox_guard", async () => {
+    assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
+    await assertSandboxPathsConfined({
+      sandbox, remoteDir, paths: [mapping.sourcePath], timeoutSeconds,
+      label: "outbound symlink-escape guard",
+    });
   });
   guardRoundTrips += 1;
 
@@ -1310,10 +1319,11 @@ async function syncOutDirectoryMapping(input: {
     let bytesTransferred = 0;
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : confinedEntriesScript)}`, timeoutSeconds, "syncOut tar");
+        await withEnvironmentSyncTransferStep("archive_create", () =>
+          assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : confinedEntriesScript)}`, timeoutSeconds, "syncOut tar"));
         guardRoundTrips += 1;
         // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
-        const responses = await withProviderSpan({
+        const responses = await withEnvironmentSyncTransferStep("archive_download", () => withProviderSpan({
           name: "transfer",
           wallMsAttr: SPAN_ATTR.transferWallMs,
           attributes: {
@@ -1322,14 +1332,14 @@ async function syncOutDirectoryMapping(input: {
           },
           run: () =>
             sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
-        });
+        }));
         const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
         if (!response || response.error) {
-          throw new Error(
+          throw recordEnvironmentSyncError(new Error(
             `Daytona syncOut directory download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
-          );
+          ), { transferStep: "archive_download", transferFailureKind: response ? "download_failed" : "download_missing" });
         }
-        bytesTransferred += (await fs.stat(localTar)).size;
+        bytesTransferred += await withEnvironmentSyncTransferStep("archive_download", async () => (await fs.stat(localTar)).size);
         try {
           await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
           break;
