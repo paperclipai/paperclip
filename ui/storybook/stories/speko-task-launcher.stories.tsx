@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { TaskVoiceLauncher } from "@/components/voice/TaskVoiceLauncher";
 import { AgentChannelsPanel } from "@/components/chat/AgentChannelsPanel";
 import { ExternallyConnectedTaskBanner } from "@/components/chat/ExternallyConnectedTaskBanner";
@@ -44,6 +44,7 @@ function TaskConnectionFailure({ bound = false }: { bound?: boolean }) {
     chatEndpointsApi.list = async () => [spekoEndpoint];
     const queryKey = ["task-voice-endpoints", spekoCompanyId];
     client.removeQueries({ queryKey });
+    client.setQueryDefaults(queryKey, { retryOnMount: false });
     client.getQueryCache().build(client, { queryKey }).setState({ status: "error", error: new Error("Fixture connection failure"), fetchStatus: "idle" });
     setReady(true);
     return () => { chatEndpointsApi.list = original; client.removeQueries({ queryKey }); };
@@ -55,11 +56,11 @@ export const BoundConnectionRecovery: Story = {
   render: () => <SpekoQueryFixture><TaskConnectionFailure bound /></SpekoQueryFixture>,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("alert")).toHaveTextContent("Voice connections could not be loaded.");
+    await expect(await canvas.findByRole("alert")).toHaveTextContent("Voice connections could not be loaded.");
     canvas.getByRole("button", { name: "Retry voice connections" }).focus();
     await userEvent.keyboard("{Enter}");
     await expect(canvas.getByRole("button", { name: `Talk to ${spekoAgent.name}` })).toBeVisible();
     await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
-    await expect(canvas.getByRole("button", { name: `Talk to ${spekoAgent.name}` })).toHaveFocus();
+    await waitFor(() => expect(canvas.getByRole("button", { name: `Talk to ${spekoAgent.name}` })).toHaveFocus());
   },
 };
