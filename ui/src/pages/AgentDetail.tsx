@@ -555,6 +555,8 @@ function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
       return "Teardown";
     case "worktree_cleanup":
       return "Worktree cleanup";
+    case "provider_tool_execution":
+      return "Provider tool calls";
     default:
       return phase;
   }
