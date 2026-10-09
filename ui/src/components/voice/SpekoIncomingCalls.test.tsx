@@ -22,9 +22,11 @@ describe("incoming call task selection", () => {
     mocks.list.mockRejectedValueOnce(new Error("Offline")).mockResolvedValue(tasks); await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Task list could not be loaded"));
     const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry tasks")!;
+    retry.focus();
     await act(async () => retry.click());
     await vi.waitFor(() => expect(container.querySelector('option[value="task"]')).not.toBeNull());
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector("select"));
   });
   it("preserves previously loaded tasks when a background task request fails", async () => {
     mocks.list.mockResolvedValue(tasks); await render();
