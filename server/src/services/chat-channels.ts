@@ -6028,6 +6028,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // destination toggle. Keep it closed until the operator explicitly
         // enables that surface, even when this process is running against a
         // database created before the column default was hardened.
+        requireAtMention: input.provider === "slack",
         allowGroupChats: input.provider !== "microsoft-teams",
         allowUnlinkedPeople: !["slack", "imessage-photon"].includes(input.provider),
         capabilities: CAPABILITIES[input.provider],

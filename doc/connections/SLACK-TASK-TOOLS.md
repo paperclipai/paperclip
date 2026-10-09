@@ -201,7 +201,8 @@ ordinary task finals are not automatically broadcast to Slack.
 ## Require an at-mention for inbound messages
 
 Slack app settings include **Require at-mention** directly below **Allow direct
-messages**. It defaults to off, preserving existing thread and DM behavior.
+messages**. It defaults to on for new Slack connections. Existing connections
+keep their saved setting and thread and DM behavior.
 When enabled, each inbound message must explicitly @mention the connected bot,
 including replies in existing channel threads and direct messages. DMs must also
 be enabled with **Allow direct messages**. Unmentioned messages do not create

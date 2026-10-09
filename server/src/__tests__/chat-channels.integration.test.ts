@@ -1576,7 +1576,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   async function configuredSlackEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
-    overrides: { allowUnlinkedPeople?: boolean; linkedBoardUser?: boolean } & Partial<
+    overrides: { allowUnlinkedPeople?: boolean; linkedBoardUser?: boolean; requireAtMention?: boolean } & Partial<
       Pick<
         ChatChannelServiceOptions,
         | "credentialMutationLeaseRenewalIntervalMs"
@@ -1619,6 +1619,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // Slack creation defaults to linked accounts only (covered separately).
     await context.service.update(endpoint.id, {
       allowUnlinkedPeople: overrides.allowUnlinkedPeople ?? true,
+      // Existing transport tests explicitly exercise the optional unmentioned mode.
+      requireAtMention: overrides.requireAtMention ?? false,
     }, "owner-user");
     await context.service.configure(
       endpoint.id,
@@ -5277,6 +5279,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it.each([false, true])("requires at-mentions by default for new Slack connections (DM=%s)", async (isDM) => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, { requireAtMention: true });
+    // The returned endpoint is the original creation result, before fixture updates.
+    expect(endpoint.requireAtMention).toBe(true);
+    expect((await service.get(endpoint.id)).requireAtMention).toBe(true);
+    const thread = makeThread({ channelId: isDM ? "D-DEFAULT" : "C-DEFAULT", id: `slack:${isDM ? "D-DEFAULT" : "C-DEFAULT"}:7500.1`, isDM });
+    const send = (id: string, mentioned: boolean) => deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id, text: mentioned ? "@maya start" : "Start", mentioned }), trigger: isDM ? "direct_message" : mentioned ? "mention" : "subscribed_message" });
+    await send("7500.1", false);
+    expect(wakeup).not.toHaveBeenCalled();
+    await send("7500.2", true);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    await service.update(endpoint.id, { requireAtMention: false });
+    await send("7500.3", false);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    const other = await service.create(fixture.companyId, { provider: "github", assignedAgentId: fixture.assignedAgentId });
+    expect(other.requireAtMention).toBe(false);
+    expect((await service.get(endpoint.id)).requireAtMention).toBe(false);
+    await service.shutdown();
+  });
+
   it("preserves running Slack tool authority after Require at-mention is enabled", async () => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const { resolveSlackTaskAuthority } = await import("../services/connectors/slack-authority.js");
@@ -5306,7 +5330,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const send = (id: string, mentioned: boolean, trigger: ChatSdkMessageTrigger = isDM ? "direct_message" : "subscribed_message") =>
       deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
         message: makeMessage({ id, text: mentioned ? "@maya continue" : "Continue", mentioned }), trigger });
-    // The default preserves unmentioned DMs and subscribed thread replies.
+    // Disabled mode preserves unmentioned DMs and subscribed thread replies.
     await send("7100.1", true, isDM ? "direct_message" : "mention");
     await send("7100.2", false);
     expect(wakeup).toHaveBeenCalledTimes(2);
