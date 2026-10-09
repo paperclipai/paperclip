@@ -583,6 +583,10 @@ import {
   readChatControlRecoveryStop,
 } from "./chat-control-recovery-stop.js";
 import {
+  agentActivityRunEventCondition,
+  isAgentActivityRunEventType,
+} from "./run-event-activity.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -1748,16 +1752,27 @@ function readLiveRunAssistantSnippet(
   return null;
 }
 
-function buildRunEventRuntimeProgress(input: {
+export function buildRunEventRuntimeProgress(input: {
   eventType: string;
   message: string | null;
   payload: Record<string, unknown> | null;
   at: Date;
 }) {
   const normalizedEventType = input.eventType.toLowerCase();
+  // An event that is not the agent acting must not displace the live progress line. This call site
+  // shares its definition of that with the two liveness evidence counts (see run-event-activity.ts)
+  // because keeping three inline lists is how `sandbox.network.*` came to overwrite `message` and
+  // `currentToolName` once per egress decision, unthrottled — the path these events moved off was
+  // throttled and only touched the timestamp, so a confined agent's operator lost the progress
+  // signal exactly when it was worth watching.
+  //
+  // `error` is the one deliberate difference from that predicate, and it is a difference in the
+  // question rather than in the answer: an error is not evidence the agent advanced the work, but it
+  // is the most useful thing an operator can be shown, and it was already displayed here before this
+  // change. One named exception at one site is not the drift this consolidation removes.
   if (
-    normalizedEventType === "lifecycle" ||
-    normalizedEventType === "adapter.invoke"
+    !isAgentActivityRunEventType(normalizedEventType) &&
+    normalizedEventType !== "error"
   ) {
     return null;
   }
@@ -7496,8 +7511,8 @@ export function heartbeatService(
 
     const [eventStats] = await db
       .select({
-        count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
-        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        count: sql<number>`count(*) filter (where ${agentActivityRunEventCondition(heartbeatRunEvents.eventType)})::int`,
+        latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${agentActivityRunEventCondition(heartbeatRunEvents.eventType)})`,
       })
       .from(heartbeatRunEvents)
       .where(

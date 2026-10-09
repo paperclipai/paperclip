@@ -61,6 +61,7 @@ import {
   parseLocalProcessNetworkScope,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
+import { createSandboxNetworkEventChannel } from "@paperclipai/adapter-utils/sandbox-network-event-channel";
 import {
   parseCodexJsonl, createCodexJsonlParser,
   classifyCodexAuthRefreshFailure,
@@ -1017,6 +1018,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               paperclipBaseEnv.PAPERCLIP_API_URL,
               ...runtimeMcpGateways.map((gateway) => gateway.endpointPath),
             ],
+            // Host-authored run-event channel, never the child's log stream: a confined process can
+            // forge and suppress lines on its own stdout, and it cannot write a run event at all.
+            // See createSandboxNetworkEventChannel for the full reasoning and the ordering guarantee.
+            onNetworkDecision: createSandboxNetworkEventChannel({
+              identity: { runId, agentId: agent.id, companyId: agent.companyId },
+              onEvent,
+              onLog,
+            }),
             command: asString(config.filesystemSandboxCommand, "bwrap"),
           }
         : null;
