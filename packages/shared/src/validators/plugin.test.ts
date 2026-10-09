@@ -33,12 +33,6 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
-  it("requires readiness authority for a native agent readiness declaration", () => {
-    const manifest = { id: "example.execution", apiVersion: 1, version: "0.1.0", displayName: "Execution", description: "Execution setup", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentReadiness: { dataKey: "readiness" } };
-    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
-    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["agents.readiness.provide"] }).agentReadiness).toEqual(manifest.agentReadiness);
-    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.readiness.provide"], agentReadiness: { dataKey: "../status" } }).success).toBe(false);
-  });
   it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
     const manifest = { id: "example.pool", apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Pool", author: "Tests", categories: ["connector"], entrypoints: { worker: "worker.js" }, aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" } };
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["ui.page.register"] }).success).toBe(false);

@@ -687,8 +687,6 @@ export interface PaperclipPluginManifestV1 {
   minimumPaperclipVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
-  /** Optional worker data handler that reports agent execution readiness. */
-  agentReadiness?: { dataKey: string };
   /** Opt into the native pooled-connection catalog, setup, and management UI. */
   aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */
@@ -1013,11 +1011,4 @@ export interface PluginWebhookDeliveryRecord {
   finishedAt: Date | null;
   /** ISO 8601 creation timestamp. */
   createdAt: Date;
-}
-
-/** Live readiness supplied by a company-configured execution plugin. */
-export interface PluginAgentReadiness {
-  state: "ready" | "pending" | "blocked" | "unavailable";
-  label: string;
-  message?: string;
 }

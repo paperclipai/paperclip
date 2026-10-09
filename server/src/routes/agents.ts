@@ -1,4 +1,3 @@
-import { getAgentReadiness } from "../services/agent-readiness.js";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
@@ -4082,13 +4081,6 @@ export function agentRoutes(
       res.json(cancelled ?? owner);
     },
   );
-
-  router.get("/agents/:id/readiness", async (req, res) => {
-    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id), "Agent not found");
-    if (!agent || !(await assertAgentReadAllowed(req, res, agent))) return;
-    res.set("Cache-Control", "no-store");
-    res.json(await getAgentReadiness(db, options.pluginWorkerManager, agent));
-  });
 
   router.get("/agents/:id/skills", async (req, res) => {
     const id = req.params.id as string;

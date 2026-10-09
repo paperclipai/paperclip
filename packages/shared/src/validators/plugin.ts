@@ -782,7 +782,6 @@ export const pluginManifestV1Schema = z.object({
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
-  agentReadiness: z.object({ dataKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/) }).strict().optional(),
   aiConnectionRouter: z.object({ name: z.string().trim().min(1).max(100), description: z.string().trim().min(1).max(500) }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
@@ -807,10 +806,6 @@ export const pluginManifestV1Schema = z.object({
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
-  if (manifest.agentReadiness && !manifest.capabilities.includes("agents.readiness.provide")) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "agentReadiness requires agents.readiness.provide", path: ["agentReadiness"] });
-  }
-
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
   // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).
@@ -1302,9 +1297,3 @@ export const listPluginStateSchema = z.object({
 });
 
 export type ListPluginState = z.infer<typeof listPluginStateSchema>;
-
-export const pluginAgentReadinessSchema = z.object({
-  state: z.enum(["ready", "pending", "blocked", "unavailable"]),
-  label: z.string().trim().min(1).max(100),
-  message: z.string().trim().max(500).optional(),
-}).strict();

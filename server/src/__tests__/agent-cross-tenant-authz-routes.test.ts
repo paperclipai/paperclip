@@ -46,9 +46,6 @@ const baseKey = {
 let currentKeyAgentId = agentId;
 let currentAccessCanUser = false;
 
-const mockReadiness = vi.hoisted(() => vi.fn());
-vi.mock("../services/agent-readiness.js", () => ({ getAgentReadiness: mockReadiness }));
-
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   pause: vi.fn(),
@@ -349,29 +346,6 @@ function resetMockDefaults() {
 describe("agent cross-tenant route authorization", () => {
   beforeEach(() => {
     resetMockDefaults();
-  });
-
-  it("scopes live readiness to accessible agents before calling the provider", async () => {
-    mockReadiness.mockResolvedValue([{ state: "pending", label: "Preparing agent" }]);
-    for (const actor of [
-      { type: "none" },
-      { type: "board", userId: "outsider", companyIds: [], source: "session", isInstanceAdmin: false },
-    ]) {
-      const res = await requestApp(await createApp(actor), baseUrl => request(baseUrl).get(`/api/agents/${agentId}/readiness`));
-      expect([401, 404]).toContain(res.status);
-      expect(mockReadiness).not.toHaveBeenCalled();
-    }
-    const deniedPeer = { type: "agent", agentId: "peer-agent", companyId, source: "api_key" };
-    const denied = await requestApp(await createApp(deniedPeer), baseUrl => request(baseUrl).get(`/api/agents/${agentId}/readiness`));
-    expect(denied.status).toBe(403);
-    expect(mockReadiness).not.toHaveBeenCalled();
-    currentAccessCanUser = true;
-    const actor = { type: "board", userId: "owner", companyIds: [companyId], source: "session", isInstanceAdmin: false };
-    const res = await requestApp(await createApp(actor), baseUrl => request(baseUrl).get(`/api/agents/${agentId}/readiness`));
-    expect(res.status).toBe(200);
-    expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.body).toEqual([{ state: "pending", label: "Preparing agent" }]);
-    expect(mockReadiness.mock.calls[0][2]).toMatchObject({ id: agentId, companyId });
   });
 
   it("enforces company boundaries before mutating or reading agent keys", async () => {

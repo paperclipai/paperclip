@@ -334,7 +334,6 @@ export type {
 // dependency (@paperclipai/plugin-sdk) for all plugin authoring needs.
 export type {
   PaperclipPluginManifestV1,
-  PluginAgentReadiness,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,

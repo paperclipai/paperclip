@@ -1,4 +1,3 @@
-import { installAfterCommitHooks } from "./after-commit.js";
 import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
@@ -277,7 +276,6 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
   const db = drizzlePg(sql, { schema });
-  installAfterCommitHooks(db);
   dedicatedDbFactories.set(db, () => createDb(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }));

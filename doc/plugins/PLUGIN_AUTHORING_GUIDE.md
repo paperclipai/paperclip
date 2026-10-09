@@ -68,29 +68,6 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
-## Immediate lifecycle hints and agent readiness
-
-Subscribe to `resource.lifecycle.changed` to start a journal sweep immediately after
-an outer resource transaction commits. The event contains the company, resource type,
-and resource id. It is a hint, not an acknowledgment or a replacement for polling.
-Coalesce hints during a sweep into another sweep, and keep a scheduled recovery job.
-After acknowledgment, read again to drain successor events for the same resource.
-
-Plugins can declare `agentReadiness: { dataKey: "readiness" }`
-and `agents.readiness.provide`. Register that data key with `ctx.data.register()`.
-The host calls it with the actual agent's company, `agentId`, and
-`lifecycleCreatedAt` from the durable creation journal, falling back to agent creation.
-Return `null` when the plugin has no readiness requirement for this agent. Otherwise return
-`{ state, label, message? }`, with state `ready`, `pending`, `blocked`, or `unavailable`. Labels and messages are plain text; never include credentials.
-The host does not persist readiness responses. Plugins decide how to evaluate their requirements.
-
-The native agent page displays these results and refreshes incomplete setup.
-Before claiming a new run, the host requires every configured readiness plugin
-to return `ready` (or `null` for unmanaged agents). Other states, worker outages,
-and malformed results leave the existing run queued for normal queue recovery.
-Companies without a readiness provider keep their existing execution behavior.
-This introduces a live plugin dependency for task admission in configured companies.
-
 ## External object reference providers
 
 Plugins can contribute provider-neutral object reference detection and status

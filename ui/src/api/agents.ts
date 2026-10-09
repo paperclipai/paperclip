@@ -35,7 +35,6 @@ import type {
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
-  PluginAgentReadiness,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -111,7 +110,6 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
-  getReadiness: (id: string, companyId?: string) => api.get<PluginAgentReadiness[]>(agentPath(id, companyId, "/readiness")),
   getIdentity: (id: string, companyId?: string) =>
     api.get<AgentPublicIdentity | null>(agentPath(id, companyId, "/identity")),
   adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>

@@ -11,7 +11,6 @@
 
 import type {
   PaperclipPluginManifestV1,
-  PluginAgentReadiness,
   PluginStateScopeKind,
   PluginEventType,
   PluginToolDeclaration,
@@ -66,7 +65,6 @@ import type { PluginPerformActionContext } from "./protocol.js";
 
 export type {
   PaperclipPluginManifestV1,
-  PluginAgentReadiness,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,

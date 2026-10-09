@@ -345,14 +345,6 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
-  it("documents generic readiness results and the target-agent permission boundary", () => {
-    const operation = buildOpenApiSpec().paths["/api/agents/{id}/readiness"].get;
-    expect(operation.responses["200"].content["application/json"].schema).toMatchObject({
-      type: "array", items: { properties: { state: { enum: ["ready", "pending", "blocked", "unavailable"] } } },
-    });
-    for (const status of ["401", "403", "404"]) expect(operation.responses[status]).toBeDefined();
-  });
-
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;

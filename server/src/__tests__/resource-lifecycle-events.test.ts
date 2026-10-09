@@ -14,12 +14,6 @@ import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { createPluginEventBus } from "../services/plugin-event-bus.js";
 
-const lifecycleHints = vi.hoisted(() => vi.fn());
-vi.mock("../services/activity-log.js", async () => ({
-  ...await vi.importActual<typeof import("../services/activity-log.js")>("../services/activity-log.js"),
-  publishPluginDomainEvent: lifecycleHints,
-}));
-
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping lifecycle event database tests: ${support.reason}`);
@@ -37,7 +31,6 @@ describePostgres("Resource lifecycle events", () => {
   beforeEach(async () => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
-    lifecycleHints.mockClear();
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle fixture", issuePrefix: `L${companyId.replaceAll("-", "").slice(0, 6)}` });
   });
@@ -50,27 +43,6 @@ describePostgres("Resource lifecycle events", () => {
     const [plugin] = await db.insert(plugins).values({ pluginKey: randomUUID(), packageName: "lifecycle-fixture", version: "1.0.0", status: "ready", manifestJson: {} as never }).returning();
     return plugin;
   };
-
-  it("delivers lifecycle hints only after the outer commit, and drops rolled-back hires", async () => {
-    let agentId = "";
-    await db.transaction(async tx => {
-      const agent = await createAgent("idle", tx as unknown as Db);
-      agentId = agent.id;
-      expect(lifecycleHints).not.toHaveBeenCalled();
-      expect(await events()).toEqual([]);
-    });
-    expect(lifecycleHints).toHaveBeenCalledWith(expect.objectContaining({
-      eventType: "resource.lifecycle.changed", companyId, entityId: agentId,
-      payload: { companyId, resourceType: "agent", resourceId: agentId },
-    }));
-    lifecycleHints.mockClear();
-    await expect(db.transaction(async tx => {
-      await createAgent("idle", tx as unknown as Db);
-      throw new Error("rollback hire");
-    })).rejects.toThrow("rollback hire");
-    expect(lifecycleHints).not.toHaveBeenCalled();
-    expect(await events()).toHaveLength(1);
-  });
 
   it("records direct and approval-free hires once, including concurrent duplicate submissions", async () => {
     const agent = await createAgent();

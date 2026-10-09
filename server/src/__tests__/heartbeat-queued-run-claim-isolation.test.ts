@@ -15,9 +15,6 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
-const mockReadiness = vi.hoisted(() => vi.fn(async (_db?: unknown, _workers?: unknown, _agent?: { id: string }) => [] as Array<{ state: string }>));
-vi.mock("../services/agent-readiness.js", () => ({ getAgentReadiness: mockReadiness }));
-
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
@@ -64,8 +61,6 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
   afterEach(async () => {
     await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockClear();
-    mockReadiness.mockReset();
-    mockReadiness.mockResolvedValue([]);
     runningProcesses.clear();
     // Executed runs write to many company-scoped tables; clear them all.
     await db.execute(sql`truncate table ${companies} cascade`);
@@ -181,68 +176,6 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
       .where(sql`${heartbeatRuns.id} = ${runId}`)
       .then((rows) => rows[0] ?? null);
   }
-
-  it("checks once per agent and lets healthy queues run while another readiness check waits", async () => {
-    const slow = await insertAgent(); const healthy = await insertAgent();
-    const first = await insertClaimableRun(slow.companyId, slow.agentId);
-    const second = await insertClaimableRun(slow.companyId, slow.agentId);
-    const running = await insertClaimableRun(healthy.companyId, healthy.agentId);
-    let release!: () => void;
-    const waiting = new Promise<void>(resolve => { release = resolve; });
-    mockReadiness.mockImplementation(async (_db, _workers, agent) => {
-      if (agent?.id === slow.agentId) { await waiting; return [{ state: "unavailable" }]; }
-      return [{ state: "ready" }];
-    });
-    const recovery = heartbeat.resumeQueuedRuns();
-    try {
-      await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalledTimes(1));
-      await heartbeat.drainActiveRunExecutions();
-      expect(await runStatus(running.runId)).toMatchObject({ status: "succeeded" });
-      expect(await runStatus(first.runId)).toMatchObject({ status: "queued" });
-      expect(await runStatus(second.runId)).toMatchObject({ status: "queued" });
-      expect(mockReadiness.mock.calls.filter(call => call[2]?.id === slow.agentId)).toHaveLength(1);
-    } finally { release(); await recovery; }
-  });
-
-  it("bounds and coalesces recovery while scanning every page of held agents", async () => {
-    for (let index = 0; index < 101; index++) {
-      const agent = await insertAgent();
-      await insertClaimableRun(agent.companyId, agent.agentId);
-    }
-    let release!: () => void;
-    const waiting = new Promise<void>(resolve => { release = resolve; });
-    let active = 0; let peak = 0;
-    mockReadiness.mockImplementation(async () => {
-      active++; peak = Math.max(peak, active);
-      try { await waiting; return [{ state: "pending" }]; }
-      finally { active--; }
-    });
-    const recovery = heartbeat.resumeQueuedRuns();
-    try {
-      await vi.waitFor(() => expect(mockReadiness).toHaveBeenCalledTimes(8));
-      expect(heartbeat.resumeQueuedRuns()).toBe(recovery);
-    } finally { release(); await recovery; }
-    expect(peak).toBe(8);
-    expect(mockReadiness).toHaveBeenCalledTimes(101);
-    expect(new Set(mockReadiness.mock.calls.map(call => call[2]?.id)).size).toBe(101);
-    expect(mockAdapterExecute).not.toHaveBeenCalled();
-  }, 30_000);
-
-  it("keeps the same run queued through setup and provider outage, then executes when ready", async () => {
-    const { companyId, agentId } = await insertAgent();
-    const { runId } = await insertClaimableRun(companyId, agentId);
-    for (const state of ["pending", "unavailable", "blocked"]) {
-      mockReadiness.mockResolvedValue([{ state }]);
-      await heartbeat.resumeQueuedRuns();
-      expect(await runStatus(runId)).toMatchObject({ status: "queued" });
-      expect(mockAdapterExecute).not.toHaveBeenCalled();
-    }
-    mockReadiness.mockResolvedValue([{ state: "ready" }]);
-    await heartbeat.resumeQueuedRuns();
-    await heartbeat.drainActiveRunExecutions();
-    expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
-  });
 
   it("cancels a queued run whose claim is rejected instead of failing recovery", async () => {
     const { companyId, agentId } = await insertAgent();

@@ -111,7 +111,6 @@ import { recordLegacyWorkspaceRestoreFailure } from "./legacy-execution-recovery
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../vendor/paperclip-runner/index.js";
 import { decisionModelService } from "./decision-models.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
-import { getAgentReadiness } from "./agent-readiness.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "./agent-identity.js";
 import { buildAgentIdentityEnv } from "@paperclipai/adapter-utils/server-utils";
@@ -13686,7 +13685,6 @@ export function heartbeatService(
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
-    knownReadiness?: Awaited<ReturnType<typeof getAgentReadiness>>,
   ) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -13707,9 +13705,6 @@ export function heartbeatService(
       );
       return null;
     }
-
-    const readiness = knownReadiness ?? await getAgentReadiness(db, options.pluginWorkerManager, agent);
-    if (readiness.some(provider => provider.state !== "ready")) return null;
 
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
@@ -15957,12 +15952,7 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
-  let queuedRecovery: Promise<void> | null = null;
-  function resumeQueuedRuns() {
-    return queuedRecovery ??= resumeQueuedRunsPass().finally(() => { queuedRecovery = null; });
-  }
-
-  async function resumeQueuedRunsPass() {
+  async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
@@ -16048,34 +16038,22 @@ export function heartbeatService(
       });
     }
 
-    // Bound database/RPC fan-out and scan distinct agents in keyset pages.
-    let afterAgentId: string | undefined;
-    let failure: { reason: unknown } | undefined;
-    for (;;) {
-      const queuedAgents = await db
-        .selectDistinct({ agentId: heartbeatRuns.agentId })
-        .from(heartbeatRuns)
-        .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
-        .where(and(
+    const queuedRuns = await db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(
+        and(
           eq(heartbeatRuns.status, "queued"),
           eq(companies.status, "active"),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
-          afterAgentId ? gt(heartbeatRuns.agentId, afterAgentId) : undefined,
-        ))
-        .orderBy(asc(heartbeatRuns.agentId))
-        .limit(100);
-      if (queuedAgents.length === 0) break;
-      const pending = queuedAgents.values();
-      // Independent workers let healthy queues progress while a provider waits.
-      await Promise.all(Array.from({ length: Math.min(8, queuedAgents.length) }, async () => {
-        for (const { agentId } of pending) {
-          try { await startNextQueuedRunForAgent(agentId); }
-          catch (reason) { failure ??= { reason }; }
-        }
-      }));
-      afterAgentId = queuedAgents[queuedAgents.length - 1].agentId;
+        ),
+      );
+
+    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    for (const agentId of agentIds) {
+      await startNextQueuedRunForAgent(agentId);
     }
-    if (failure) throw failure.reason;
   }
 
   async function recoverActiveSessionGoals() {
@@ -16413,8 +16391,6 @@ export function heartbeatService(
         )
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
-      const readiness = await getAgentReadiness(db, options.pluginWorkerManager, agent);
-      if (readiness.some(plugin => plugin.state !== "ready")) return [];
 
       const dependencyReadiness = await listQueuedRunDependencyReadiness(
         agent.companyId,
@@ -16494,7 +16470,7 @@ export function heartbeatService(
         if (claimedRuns.length >= availableSlots) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
-          claimed = await claimQueuedRun(queuedRun, companyAgents, readiness);
+          claimed = await claimQueuedRun(queuedRun, companyAgents);
         } catch (err) {
           if (isPermanentClaimRejection(err)) {
             rejectedClaims.push({ run: queuedRun, err });

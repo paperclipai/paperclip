@@ -811,7 +811,6 @@ export {
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
   pluginManifestV1Schema,
-  pluginAgentReadinessSchema,
   installPluginSchema,
   upsertPluginConfigSchema,
   patchPluginConfigSchema,
