@@ -31,6 +31,7 @@ export const FinishingAgentSetup: Story = {
   },
 };
 export const DotReady: Story = { name: "Dot · Ready for tasks", args: { initialScreen: "setup", initialConnection: { phase: "ready" } } };
+export const PausedAgent: Story = { name: "Recovery · Connected agent paused", args: { initialScreen: "setup", initialConnection: { phase: "ready", problem: "agent_unavailable" }, simulate: false } };
 export const RetryEvent: Story = { name: "Recovery · Retry the test event", args: { initialScreen: "setup", initialConnection: { phase: "testing", problem: "event_timeout" } } };
 export const RefreshingPrompt: Story = { name: "Setup · Preparing a fresh prompt automatically", args: { initialScreen: "setup", preparing: true, simulate: false } };
 export const WatchingInterrupted: Story = { name: "Recovery · Connection updates interrupted", args: { initialScreen: "setup", initialConnection: { phase: "connected", problem: "offline" } } };

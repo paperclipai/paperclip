@@ -463,3 +463,19 @@ it("keeps watching after the event check until hire verification completes", asy
   await click("Done");
   expect(state.close).toHaveBeenCalledTimes(1);
 });
+
+it("keeps completed checks but shows a pause blocker for a paired paused Dot", async () => {
+  dotApi.create.mockResolvedValue({ agent: { id: "dot-agent", status: "paused" }, approvalId: null, binding: null });
+  dotApi.connection.mockResolvedValue({ enabled: true, resourceUrl: "https://paperclip.example/mcp/runner",
+    agentStatus: "paused", agentLifecycleState: "paused", canConfigureConnection: false,
+    binding: { ...pendingDotBinding("binding", new Date(Date.now() + 900000).toISOString()),
+      status: "ready", connected: true, subscriptionVerified: true, hasPendingChallenge: false } });
+  await openDotSetup();
+  expect(document.body.textContent).toContain("Test event confirmed: complete");
+  expect(document.body.textContent).toContain("Resume this agent before connecting Dot.");
+  expect(document.body.textContent).not.toContain("Finishing setup…");
+  expect(document.body.textContent).not.toContain("Paperclip is finishing agent setup.");
+  const blocked = Array.from(document.querySelectorAll("button")).find(button => button.textContent?.includes("Agent unavailable"));
+  expect(blocked?.disabled).toBe(true);
+  expect(dotApi.pair).not.toHaveBeenCalled();
+});
