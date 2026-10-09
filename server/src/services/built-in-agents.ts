@@ -22,7 +22,7 @@ import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
   withBuiltInAgentMarker,
-} from "./built-in-agent-metadata.js";
+} from "../lib/built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";

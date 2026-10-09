@@ -7,7 +7,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type Agent
 
 import { conflict, notFound, unprocessable } from "../errors.js";
 
-import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 
 import {
   agentRecordQueries,

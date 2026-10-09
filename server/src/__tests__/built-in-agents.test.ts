@@ -46,7 +46,7 @@ import {
   reconcileBuiltInAgentsOnStartup,
   validateBuiltInAgentDefinitions,
 } from "../services/built-in-agents.ts";
-import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../lib/built-in-agent-metadata.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

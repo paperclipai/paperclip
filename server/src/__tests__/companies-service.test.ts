@@ -36,7 +36,7 @@ vi.mock("../services/cloud-lifecycle-sync.js", () => ({
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { companyService } from "../services/companies.js";
 import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
-import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

@@ -11,7 +11,7 @@ import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
