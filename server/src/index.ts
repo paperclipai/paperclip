@@ -1604,6 +1604,15 @@ async function startServerWithDatabaseTeardown(
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
+
+        const reconciledAgents =
+          await heartbeat.reconcileStrandedAgentStatuses();
+        if (reconciledAgents.reconciled > 0) {
+          logger.warn(
+            { ...reconciledAgents },
+            "startup stranded-agent-status watchdog reconciled agents stuck at running",
+          );
+        }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
@@ -1847,6 +1856,16 @@ async function startServerWithDatabaseTeardown(
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+            })
+            .then(async () => {
+              const reconciledAgents =
+                await heartbeat.reconcileStrandedAgentStatuses();
+              if (reconciledAgents.reconciled > 0) {
+                logger.warn(
+                  { ...reconciledAgents },
+                  "periodic stranded-agent-status watchdog reconciled agents stuck at running",
+                );
               }
             })
             .catch((err) => {
