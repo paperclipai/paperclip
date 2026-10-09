@@ -2,23 +2,23 @@
 
 Current release checklist, updated 2026-10-09 (America/Chicago).
 
-## Current shipping gate: freeze profile 35 and qualify the cloud build
+## Current shipping gate: repair native package authority, then qualify profile 37
 
-Frozen **v33 qualification is complete**: **20/20 Product cells**, **7/7 protocol cases** (46 assertions), and both ordinary installed local and Daytona canaries passed. Those results retain their original build identities and do not qualify different runtime bytes.
+The current master baseline is `0726a00e80f392598b17b847a2bb7fa663f25dcd`. Copilot remains pinned to **1.0.88**, with exact **gpt-5.6-luna** for qualification. Pi 22, Cursor 15, and the shared mainline sandbox remain unchanged. Docker images build in the cloud.
 
-The candidate incorporates master `2bc88ca1c53a9be2d0edbfd31ff8ce60c1ddecad`, including its agent lifecycle services and dependency updates. Copilot remains **1.0.88**, with exact **gpt-5.6-luna** selected for qualification. Copilot **profile 35** is `sha256:6ecb42102c9440e5c8fe5b462b894f9457f255b29f8c584d8b713057cffe4327`. Pi and Cursor retain their current mainline identities. The shared sandbox file matches mainline exactly; Copilot owns its instruction composition.
+Profile 36 source `9769279bb712cec9c5aa1d814e82f369129149bf` passed **7/7 live Runner protocol cases** and actual installed runtime smokes on macOS ARM64, macOS x64, and Linux x64. Its first local Product attached-command case failed before native session startup; it has **0/20 Product passes** and has not shipped. Historical v33 results below remain historical.
 
-| Current gate | State |
+The retained failure was reproduced through the native controller without sending a model prompt. The controller selected a workspace dependency root with a nested runner manifest; the native asset guard rejected it as “Runner provider manifest is outside its package root.” An independent no-prompt probe with the correct runner package root opened and closed successfully. The repair binds Copilot's native closure to its owning package while preserving the existing JS-provider authority and asset guard. Regressions exercise source, scoped npm, and deployment layouts. The qualification wrapper also uses the canonical temporary path so owned cleanup can complete.
+
+| Next gate | Required evidence |
 |---|---|
-| Current-master integration | Copilot metadata checks use the current environment-test/lifecycle services; mainline migration 0320 is preserved and Copilot follows with 0321 |
-| Demonstrated blockers | Metadata CLI packaging, Rust fixture identity, exact instruction ownership, read-only model access, durable catalog source and stale pending-admission assertions repaired |
-| Focused verification | Runtime/profile checks: 74 pass, one platform-specific skip; package/shim contracts: 15 pass; ACPX Rust: 28 pass; setup/access/UI: 51 pass; ordinary admission: 95 pass; exact guarded recovery: pass; catalog regeneration: pass |
-| Full validation | Prior full suite retained: 15,880 passed; failures include stale admission assertions, missing system-tool PATH, embedded Postgres bootstrap failures and fixture provider selection. Required checks on the integrated current-master source remain pending |
-| Cloud image | v34 build-only cloud export retained; superseded before publication/live inference by demonstrated repairs. Build and scan the exact profile-35 image in the cloud |
-| Live qualification | Freeze source, profile, model, packs, case definitions and image; require exact 20 Product cells, seven protocol cases, three installed-platform smokes and both ordinary canaries |
-| Shipping | Current-head CI/review, separate code-owner approval, normal merge and shipped-build canary pending |
+| Repaired candidate | Mint profile 37; synchronized TypeScript/Rust identity, regression pass, full native no-prompt startup/cleanup |
+| Local Product | Exact attached-command case first, then nine remaining local cells; no automatic behavior retries |
+| Daytona | Scan and publish the exact cloud-built repaired image, then ten exact remote cells |
+| Ordinary installation | Saved-token setup, save/reopen, metadata-only Test and a completed file task locally and remotely |
+| Handoff and shipping | Current-head CI/review, separate code-owner approval, normal merge, and shipped-build canary |
 
-No live profile-35 qualification or production rollout is claimed. Failed attempts and original assertions remain retained. Future Docker image builds run in the cloud. The approved budget retains historical exposure and infrastructure holds; it is not reset again. GitHub-attributed native per-run USD remains unknown.
+Failed attempts, assertions, and private evidence remain retained. No current release readiness is claimed. The approved budget retains historical exposure and infrastructure reservations and is not reset. GitHub-attributed native per-run USD remains unknown.
 
 ## Completed frozen v33 qualification
 
