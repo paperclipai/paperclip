@@ -13,6 +13,7 @@ import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } 
 import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import { TAILSCALE_APP_SLUG, TAILSCALE_DEFAULT_AGENT_TAG, TAILSCALE_DEFAULT_TAILNET, type TailscaleConnectionHealth } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
 import { browserUseService } from "./browser-use.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "./cognee-connection.js";
@@ -238,6 +239,7 @@ import {
 import { secretService } from "./secrets.js";
 import { connectionCredentialConfigPath as credentialRefConfigPath, connectionGrantCredentialRef, connectionSecretsUsedByOtherConsumers, resolveConnectionGrantSecret, validateConnectionGrantSecretOwnership, writeConnectionCredential } from "./connection-credentials.js";
 import { agentmailApi } from "./agentmail-api.js";
+import { isTailscaleConnection, tailscaleApi, tailscaleHealthMessage } from "./tailscale-api.js";
 import type { ConfigureRailwaySsh, RailwaySshSetup } from "@paperclipai/shared";
 import { generateRailwaySshKey, RAILWAY_SSH_SECRET_PATH, validateRailwayKnownHosts } from "./railway-ssh.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, railwayRisk, RailwayError } from "./railway.js";
@@ -2893,7 +2895,59 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
+  if (failure.code === "tailscale_connection_changed") return 409;
+  if (isActionableTailscaleCode(failure.code)) return 422;
   return 502;
+}
+
+/** A Tailscale probe result newer than this is reused by catalog discovery right after a health check. */
+const TAILSCALE_PROBE_REUSE_MS = 60_000;
+
+function isTailscaleHealth(value: unknown): value is TailscaleConnectionHealth {
+  const record = asRecord(value);
+  return typeof record.tailnet === "string" && Array.isArray(record.scopes) && Array.isArray(record.tags)
+    && typeof record.deviceCount === "number" && typeof record.checkedAt === "string";
+}
+
+/** The settings and vault secret versions a Tailscale check depends on. */
+function tailscaleProbeInputs(connection: typeof toolConnections.$inferSelect) {
+  const methodConfig = asRecord(asRecord(connection.config).methodConfig);
+  const tailnet = typeof methodConfig.tailnet === "string" && methodConfig.tailnet.trim() ? methodConfig.tailnet.trim() : TAILSCALE_DEFAULT_TAILNET;
+  const agentTag = typeof methodConfig.agentTag === "string" && methodConfig.agentTag.trim() ? methodConfig.agentTag.trim() : TAILSCALE_DEFAULT_AGENT_TAG;
+  const refs = connection.credentialSecretRefs
+    .map((ref) => [ref.configPath, ref.secretId, ref.versionSelector ?? "latest"] as const)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const fingerprint = createHash("sha256").update(JSON.stringify({ tailnet, agentTag, refs })).digest("hex").slice(0, 32);
+  return { methodConfig, tailnet, agentTag, fingerprint };
+}
+
+/**
+ * A stored Tailscale summary stands in for a new probe only when it is recent,
+ * the connection's latest health check succeeded, and the settings and
+ * credentials it was computed from are unchanged. A failed check after a good
+ * probe, a new tailnet or tag, or rotated credentials all force a fresh probe.
+ */
+function tailscaleProbeIsReusable(connection: typeof toolConnections.$inferSelect): boolean {
+  if (connection.healthStatus !== "ok") return false;
+  const recent = asRecord(connection.config).tailscale;
+  if (!isTailscaleHealth(recent) || typeof recent.probeFingerprint !== "string") return false;
+  const checkedAt = Date.parse(recent.checkedAt);
+  if (!Number.isFinite(checkedAt) || Date.now() - checkedAt >= TAILSCALE_PROBE_REUSE_MS) return false;
+  const lastHealthAt = connection.healthCheckedAt?.getTime() ?? Number.NaN;
+  // The summary must come from the check that produced the current "ok" status.
+  if (!Number.isFinite(lastHealthAt) || lastHealthAt < checkedAt) return false;
+  return recent.probeFingerprint === tailscaleProbeInputs(connection).fingerprint;
+}
+
+/** Tailscale codes the operator fixes in the provider console, not transient provider failures. */
+function isActionableTailscaleCode(code: string): boolean {
+  return code.startsWith("tailscale_") && ![
+    "tailscale_unreachable",
+    "tailscale_rate_limited",
+    "tailscale_request_failed",
+    "tailscale_test_key_cleanup_failed",
+    "tailscale_connection_changed",
+  ].includes(code);
 }
 
 function unsupportedToolConnectionTransport() {
@@ -2930,6 +2984,10 @@ function sanitizeHttpFailure(error: unknown): {
     }
     if (typeof code === "string" && code.startsWith("remote_http_")) {
       return { status: "error", message: error.message, code };
+    }
+    if (typeof code === "string" && code.startsWith("tailscale_")) {
+      // The message names the scope, tag, or tailnet to fix; never a provider body.
+      return { status: isActionableTailscaleCode(code) ? "error" : "degraded", message: error.message, code };
     }
     if (isOAuthEndpointRejection(error)) {
       return { status: "error", message: error.message, code: String(code) };
@@ -7454,6 +7512,67 @@ export function toolAccessService(
     await agentmailApi(key).whoami();
   }
 
+  /**
+   * Tailscale keeps its OAuth client in the vault and exchanges it for a
+   * short-lived token server-side. The check lists devices and mints/deletes a
+   * one-off ephemeral tagged key; the redacted summary is stored on the
+   * connection so later features (device picker, sandbox join) can read scopes
+   * and tags without another provider round trip.
+   */
+  async function validateTailscaleConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<TailscaleConnectionHealth> {
+    const resolve = async (configPath: string) => {
+      const ref = connection.credentialSecretRefs.find((candidate) => candidate.configPath === configPath);
+      if (!ref) {
+        throw unprocessable("Reconnect Tailscale to restore its OAuth client", { code: "missing_secret" });
+      }
+      return secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest", {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      });
+    };
+    const { methodConfig, tailnet, agentTag, fingerprint } = tailscaleProbeInputs(connection);
+    const [clientId, clientSecret] = await Promise.all([
+      resolve("credentials.oauthClientId"),
+      resolve("credentials.oauthClientSecret"),
+    ]);
+    const verified = await tailscaleApi({
+      clientId,
+      clientSecret,
+      tailnet,
+      request: (url, init) => requestRemoteHttpEndpoint(new URL(url), init),
+    }).verify({ agentTag });
+    const health: TailscaleConnectionHealth = { ...verified, probeFingerprint: fingerprint };
+    // Merge only the summary into the stored config, and only while the
+    // settings and credentials the probe used are still the ones on the row.
+    // A save that lands during the probe wins; the stale evidence is dropped.
+    const [stored] = await db
+      .update(toolConnections)
+      .set({
+        config: sql`${toolConnections.config} || ${JSON.stringify({ tailscale: health })}::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(toolConnections.id, connection.id),
+          sql`coalesce(${toolConnections.config} -> 'methodConfig', '{}'::jsonb) = ${JSON.stringify(methodConfig)}::jsonb`,
+          sql`${toolConnections.credentialSecretRefs} = ${JSON.stringify(connection.credentialSecretRefs)}::jsonb`,
+        ),
+      )
+      .returning({ config: toolConnections.config });
+    if (!stored) {
+      throw conflict("Tailscale settings or credentials changed while the check was running. Run the check again.", {
+        code: "tailscale_connection_changed",
+      });
+    }
+    connection.config = stored.config;
+    return health;
+  }
+
   function assertSupportedConnection(connection: typeof toolConnections.$inferSelect) {
     if (isRetiredComposioConnection(connection)) {
       throw unprocessable(RETIRED_COMPOSIO_MESSAGE, { code: "composio_broker_retired" });
@@ -7474,6 +7593,17 @@ export function toolAccessService(
     }
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
+      return [];
+    }
+    if (isTailscaleConnection(connection)) {
+      // No agent-facing tools in this version. Setup runs the health probe and
+      // catalog discovery back to back; reuse the summary of a check that just
+      // succeeded on these exact settings so one setup mints one test key, not
+      // two. Anything else (a failed check, new settings, rotated credentials)
+      // probes again.
+      if (!tailscaleProbeIsReusable(connection)) {
+        await validateTailscaleConnection(connection);
+      }
       return [];
     }
     if (connection.transport === "mcp_remote")
@@ -7581,6 +7711,7 @@ export function toolAccessService(
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
+    let tailscaleHealth: TailscaleConnectionHealth | null = null;
     try {
       assertSupportedConnection(connection);
       const config = asRecord(connection.config);
@@ -7626,6 +7757,8 @@ export function toolAccessService(
         await discoverTools(connection, undefined, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
+      } else if (isTailscaleConnection(connection)) {
+        tailscaleHealth = await validateTailscaleConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         const canProbeWithoutAuthorization =
           options.allowUnauthenticatedProbe === true &&
@@ -7660,6 +7793,8 @@ export function toolAccessService(
             ? "Browser Use API key is connected."
           : isAgentMailConnection(connection)
             ? "AgentMail API key is connected."
+          : tailscaleHealth
+            ? tailscaleHealthMessage(tailscaleHealth)
             : connection.transport === "local_stdio"
               ? "Approved stdio template is ready."
               : "Remote MCP server responded to tools/list.",
@@ -7930,7 +8065,9 @@ export function toolAccessService(
         healthStatus: "ok",
         healthMessage: isAgentMailConnection(connection)
           ? "AgentMail API key is connected."
-          : "Tool catalog refreshed.",
+          : isTailscaleConnection(connection) && isTailscaleHealth(asRecord(connection.config).tailscale)
+            ? tailscaleHealthMessage(asRecord(connection.config).tailscale as TailscaleConnectionHealth)
+            : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,
@@ -13102,7 +13239,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && galleryEntry?.slug === "browser-use-cloud" ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "rest_api" && (galleryEntry?.slug === "browser-use-cloud" || galleryEntry?.slug === TAILSCALE_APP_SLUG) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -18056,7 +18193,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: isBrowserUseConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isBrowserUseConnection({ transport, config }) || isTailscaleConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })
@@ -20103,6 +20240,7 @@ export function toolAccessService(
         input.companyId,
       );
       if (isBrowserUseConnection(connection)) throw forbidden("Browser Use credentials stay in the governed tool gateway and cannot be exported.");
+      if (isTailscaleConnection(connection)) throw forbidden("The Tailscale OAuth client stays on the server and cannot be exported.");
       if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);

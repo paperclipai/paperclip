@@ -211,6 +211,23 @@
       "keyPermissions": "Create/stop browser sessions and run browser tasks under the API key. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
     },
     {
+      "app": "tailscale",
+      "method": "oauth-client",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Server-side only: exchange the OAuth client for a token, list tailnet devices, mint and delete short-lived tagged auth keys, and delete devices Paperclip created. No agent-facing tools in this version.",
+      "evidence": [
+        "https://tailscale.com/kb/1215/oauth-clients",
+        "https://tailscale.com/api",
+        "https://github.com/tailscale/tailscale-client-go-v2"
+      ],
+      "reviewedAt": "2026-10-09",
+      "liveProof": "not-run",
+      "providerRestrictions": "The OAuth client fixes its scopes and tags at creation. Paperclip needs auth_keys (with the tags agents carry) and devices:core; it cannot widen an existing client. Tags must be owned by the client under the tailnet policy tagOwners."
+    },
+    {
       "app": "candid",
       "method": "mcp-oauth",
       "auth": "oauth",

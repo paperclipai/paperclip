@@ -225,6 +225,36 @@ describe("AppDefinition catalog", () => {
     expect(APP_DEFINITIONS.some(app => app.slug === "browser-use")).toBe(false);
     expect(getAppDefinitionForUrl("https://cloud.browser-use.com/agents")?.slug).toBe("browser-use-cloud");
   });
+  it("ships Tailscale as a server-side REST OAuth-client credential without agent tools", () => {
+    const tailscale = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "tailscale")!;
+    expect(tailscale).toMatchObject({
+      name: "Tailscale",
+      branding: { logoUrl: "/brands/apps/tailscale.svg", darkLogoUrl: "/brands/apps/tailscale-dark.svg" },
+    });
+    expect(tailscale.methods.map((candidate) => candidate.key)).toEqual(["oauth-client"]);
+    const oauthClient = tailscale.methods[0]!;
+    expect(oauthClient).toMatchObject({
+      transport: "rest_api",
+      auth: "api_key",
+      grantKinds: ["organization"],
+      ownershipModes: ["customer"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://api.tailscale.com/api/v2" },
+    });
+    expect(oauthClient.credentialFields?.map((field) => [field.key, field.type, field.secret, field.required])).toEqual([
+      ["oauthClientId", "password", true, true],
+      ["oauthClientSecret", "password", true, true],
+    ]);
+    // Neither field is a request header: the client is exchanged in the token
+    // request body, so only vault secret refs are written at setup.
+    expect(oauthClient.keyPlacement?.location).not.toBe("header");
+    expect(oauthClient.tenantFields?.map((field) => [field.key, field.defaultValue, field.advanced ?? false])).toEqual([
+      ["tailnet", "-", false],
+      ["agentTag", "tag:paperclip-agent", true],
+    ]);
+    expect(oauthClient.consoleLinks?.keys).toBe("https://login.tailscale.com/admin/settings/oauth");
+    expect(getAppDefinitionForUrl("https://login.tailscale.com/admin/machines")?.slug).toBe("tailscale");
+  });
   it("offers Anthropic runtime authentication without the unsupported REST tool method", () => {
     const anthropic = APP_DEFINITIONS.find((app) => app.slug === "anthropic")!;
     expect(anthropic.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
@@ -845,7 +875,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(70);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

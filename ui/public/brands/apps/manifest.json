@@ -575,6 +575,15 @@
       "retrievedAt": "2026-09-29"
     },
     {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/tailscale.svg",
+      "darkAsset": "/brands/apps/tailscale-dark.svg",
+      "sourceUrl": "https://tailscale.com/favicon.svg",
+      "retrievedAt": "2026-10-09"
+    },
+    {
       "slug": "chat-completions-api",
       "provider": "Chat Completions API",
       "catalogVisible": true,
