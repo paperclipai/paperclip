@@ -249,8 +249,44 @@ def parent(relative,create=False):
  return directory(parts[:-1],create,rootfd),parts[-1]
 path=p.get('path','');safe(path)
 lock=os.open('.paperclip-editor.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=rootfd)
+lock_info=os.fstat(lock)
+if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink!=1:fail('invalid')
 fcntl.flock(lock,fcntl.LOCK_EX)
+def clear_write_receipt():
+ os.ftruncate(lock,0);os.fsync(lock)
+def recover_write():
+ os.lseek(lock,0,os.SEEK_SET);raw=os.read(lock,4097)
+ if not raw:return
+ if len(raw)>4096:fail('invalid')
+ try:receipt=json.loads(raw)
+ except (ValueError,UnicodeDecodeError):
+  # Content is written only after the complete receipt has been fsynced. A
+  # torn receipt can leave an empty temp, but gives no authority to delete it.
+  clear_write_receipt();return
+ if not isinstance(receipt,dict) or receipt.get('version')!=1:fail('invalid')
+ relative=receipt.get('path');name=relative.rsplit('/',1)[-1] if isinstance(relative,str) else ''
+ if not name.startswith('.paperclip-write-') or len(name)!=49 or any(c not in '0123456789abcdef' for c in name[17:]):fail('invalid')
+ if relative.startswith('/') or '\x00' in relative or '..' in relative.split('/'):fail('invalid')
+ parentfd=None
+ try:
+  parentfd=directory(relative.split('/')[:-1],start=rootfd)
+  info=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+  if stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_dev==receipt.get('device') and info.st_ino==receipt.get('inode'):
+   os.unlink(name,dir_fd=parentfd)
+ except FileNotFoundError:pass
+ finally:
+  if parentfd is not None:os.close(parentfd)
+ clear_write_receipt()
+def record_write(relative,fd):
+ info=os.fstat(fd)
+ receipt=json.dumps({'version':1,'path':relative,'device':info.st_dev,'inode':info.st_ino}).encode()
+ if len(receipt)>4096:fail('invalid')
+ os.lseek(lock,0,os.SEEK_SET);os.ftruncate(lock,0)
+ while receipt:
+  written=os.write(lock,receipt);receipt=receipt[written:]
+ os.fsync(lock)
 try:
+ recover_write()
  if act=='list':
   fd=directory(path.split('/'),start=rootfd)
   try:
@@ -320,11 +356,13 @@ try:
     temp='.paperclip-write-'+secrets.token_hex(16)
     fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
     try:
-     with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+     with os.fdopen(fd,'wb') as f:
+      relative='/'.join([part for part in path.split('/') if part not in ('','.')][:-1]+[temp])
+      record_write(relative,f.fileno())
+      f.write(data);f.flush();os.fsync(f.fileno())
      os.replace(temp,name,src_dir_fd=parentfd,dst_dir_fd=parentfd)
     finally:
-     try:os.unlink(temp,dir_fd=parentfd)
-     except FileNotFoundError:pass
+     recover_write()
     print(json.dumps({'sha256':digest(data)}))
    elif act=='remove':
     if old is None:fail('not_found')
