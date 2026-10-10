@@ -1017,6 +1017,159 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
+  it("waits inside the sandbox for a request file in one exec on the command-managed queue client", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    await mkdir(requestsDir, { recursive: true });
+    const inner = createExecRunner();
+    const runner = { execute: vi.fn((input: Parameters<typeof inner.execute>[0]) => inner.execute(input)) };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    const startedAt = Date.now();
+    setTimeout(() => {
+      void writeFile(path.join(requestsDir, "req-1.json"), "{}", "utf8");
+    }, 300);
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 5_000, pollIntervalMs: 50 })).resolves.toEqual(["req-1.json"]);
+    expect(Date.now() - startedAt).toBeLessThan(2_500);
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty listing after the wait when no request file arrives", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-empty-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    await mkdir(requestsDir, { recursive: true });
+    await writeFile(path.join(requestsDir, "partial.json.tmp"), "{}", "utf8");
+    const inner = createExecRunner();
+    const runner = { execute: vi.fn((input: Parameters<typeof inner.execute>[0]) => inner.execute(input)) };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    const startedAt = Date.now();
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 1_000, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    // Without a wait the client keeps the single immediate listing.
+    await expect(client.listJsonFiles(path.join(rootDir, "missing"))).resolves.toEqual([]);
+    expect(runner.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the in-sandbox wait within a short wait limit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-short-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    await mkdir(requestsDir, { recursive: true });
+    const inner = createExecRunner();
+    const runner = { execute: vi.fn((input: Parameters<typeof inner.execute>[0]) => inner.execute(input)) };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    // A 200 ms limit must not stretch to the next whole second.
+    const startedAt = Date.now();
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 200, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(800);
+  });
+
+  it("does not sleep past a short wait limit when the target rejects a fractional sleep", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-whole-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    const binDir = path.join(rootDir, "bin");
+    const sleepLog = path.join(rootDir, "sleeps.log");
+    await mkdir(requestsDir, { recursive: true });
+    await mkdir(binDir, { recursive: true });
+    // A `sleep` like the ones on minimal images: whole seconds only.
+    await writeFile(
+      path.join(binDir, "sleep"),
+      [
+        "#!/bin/sh",
+        'case "$1" in *[!0-9]*) exit 1 ;; esac',
+        `echo "$1" >> '${sleepLog}'`,
+        'exec /bin/sleep "$1"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const inner = createExecRunner();
+    const runner = {
+      execute: vi.fn((input: Parameters<typeof inner.execute>[0]) =>
+        inner.execute({ ...input, env: { ...input.env, PATH: `${binDir}:${process.env.PATH}` } })),
+    };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    // Under one second there is no whole-second sleep that fits, so the call lists once and returns.
+    const startedAt = Date.now();
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 900, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(700);
+    await expect(readFile(sleepLog, "utf8")).rejects.toThrow();
+
+    // Two seconds fit two whole-second sleeps and no more.
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 2_100, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect((await readFile(sleepLog, "utf8")).trim().split("\n")).toEqual(["1", "1"]);
+  });
+
+  it("asks an idle queue client to wait inside the sandbox instead of polling every interval", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-idle-wait-"));
+    cleanupDirs.push(rootDir);
+    const listCalls: Array<{ waitMs?: number; pollIntervalMs?: number }> = [];
+    const fsClient = createFileSystemSandboxCallbackBridgeQueueClient();
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...fsClient,
+      supportsListWait: true,
+      listJsonFiles: async (remotePath, options = {}) => {
+        listCalls.push(options);
+        if (options.waitMs) await new Promise((resolve) => setTimeout(resolve, options.waitMs));
+        return fsClient.listJsonFiles(remotePath);
+      },
+    };
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir: path.join(rootDir, "queue"),
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "{}" }),
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0]).toEqual({ waitMs: 5_000, pollIntervalMs: 100 });
+
+    // A stop during the idle wait has nothing to drain, so it does not hold for the rest of the wait.
+    const stopStartedAt = Date.now();
+    await worker.stop();
+    expect(Date.now() - stopStartedAt).toBeLessThan(1_000);
+  });
+
+  it("keeps polling every interval when the idle wait is turned off", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-no-wait-"));
+    cleanupDirs.push(rootDir);
+    const listCalls: Array<{ waitMs?: number }> = [];
+    const fsClient = createFileSystemSandboxCallbackBridgeQueueClient();
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        ...fsClient,
+        supportsListWait: true,
+        listJsonFiles: async (remotePath, options = {}) => {
+          listCalls.push(options);
+          return fsClient.listJsonFiles(remotePath);
+        },
+      },
+      queueDir: path.join(rootDir, "queue"),
+      listWaitMs: 0,
+      pollIntervalMs: 20,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "{}" }),
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(listCalls.length).toBeGreaterThan(3);
+    expect(listCalls.every((options) => options.waitMs === 0)).toBe(true);
+  });
+
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
     cleanupDirs.push(rootDir);
