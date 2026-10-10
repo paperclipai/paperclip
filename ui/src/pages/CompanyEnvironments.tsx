@@ -56,6 +56,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { environmentDisplayLabel, isPlatformManagedEnvironment } from "@/lib/managed-sandbox-environment";
+import { Input } from "@/components/ui/input";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
@@ -67,7 +68,10 @@ import {
 type EnvironmentFormState = {
   name: string;
   description: string;
-  driver: "local" | "ssh" | "sandbox";
+  driver: "local" | "ssh" | "sandbox" | "computer";
+  boatId: string;
+  boatApiKey: string;
+  boatApiKeySecretId: string;
   sshHost: string;
   sshPort: string;
   sshUsername: string;
@@ -119,7 +123,13 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
     driver: form.driver,
     envVars: form.envVars,
     config:
-      form.driver === "ssh"
+      form.driver === "computer" ? {
+        provider: "boat",
+        sandboxId: form.boatId.trim(),
+        ...(form.boatApiKey.trim() ? { apiKey: form.boatApiKey.trim() } : {
+          apiKeySecretRef: { type: "secret_ref" as const, secretId: form.boatApiKeySecretId, version: "latest" as const },
+        }),
+      } : form.driver === "ssh"
         ? {
             host: form.sshHost.trim(),
             port: Number.parseInt(form.sshPort || "22", 10) || 22,
@@ -147,6 +157,9 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     name: "",
     description: "",
     driver: "ssh",
+    boatId: "",
+    boatApiKey: "",
+    boatApiKeySecretId: "",
     sshHost: "",
     sshPort: "22",
     sshUsername: "",
@@ -215,6 +228,14 @@ function readSandboxConfig(environment: Environment) {
 }
 
 function createEnvironmentFormFromEnvironment(environment: Environment): EnvironmentFormState {
+  if (environment.driver === "computer") {
+    const ref = environment.config.apiKeySecretRef;
+    return { ...createEmptyEnvironmentForm(), name: environment.name,
+      description: environment.description ?? "", driver: "computer",
+      boatId: typeof environment.config.sandboxId === "string" ? environment.config.sandboxId : "",
+      boatApiKeySecretId: ref && typeof ref === "object" && "secretId" in ref && typeof ref.secretId === "string" ? ref.secretId : "",
+      envVars: environment.envVars ?? {} };
+  }
   if (environment.driver === "ssh") {
     const ssh = readSshConfig(environment);
     return {
@@ -1567,9 +1588,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       navigate(ENVIRONMENTS_PATH, { replace: true });
       const destroyedCount = environment.destroyedReusableSandboxLeaseCount ?? 0;
       pushToast({
-        title: "Environment deleted",
+        title: environment.driver === "computer" ? "Computer disconnected" : "Environment deleted",
         body:
-          destroyedCount > 0
+          environment.driver === "computer" ? `${environment.name} was disconnected. Its files are retained on Boat.` : destroyedCount > 0
             ? `${environment.name} was deleted. Destroyed ${destroyedCount === 1 ? "1 reusable sandbox" : `${destroyedCount} reusable sandboxes`}.`
             : `${environment.name} was deleted.`,
         tone: "success",
@@ -1834,6 +1855,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
   const environmentFormValid =
     environmentForm.name.trim().length > 0 &&
+    (environmentForm.driver !== "computer" ||
+      /^bx_[a-zA-Z0-9]+$/.test(environmentForm.boatId.trim()) &&
+      Boolean(environmentForm.boatApiKey.trim() || environmentForm.boatApiKeySecretId)) &&
     (environmentForm.driver !== "ssh" ||
       (
         environmentForm.sshHost.trim().length > 0 &&
@@ -1900,7 +1924,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         `${selectionCount} workspace, issue, or project environment ${selectionCount === 1 ? "selection" : "selections"} will be cleared.`,
       );
     }
-    if (deleteBlastRadius.staticReferences.secretBindingCount > 0) {
+    if (editingEnvironment?.driver !== "computer" && deleteBlastRadius.staticReferences.secretBindingCount > 0) {
       deleteImpactNotes.push(
         `${deleteBlastRadius.staticReferences.secretBindingCount} secret ${deleteBlastRadius.staticReferences.secretBindingCount === 1 ? "binding" : "bindings"} will be removed.`,
       );
@@ -2016,7 +2040,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       <span>
                         {environment.name}
                         {isPlatformManagedEnvironment(environment) ? null : (
-                          <span className="text-muted-foreground"> · {environment.driver}</span>
+                          <span className="text-muted-foreground"> · {environment.driver === "computer" ? "Boat" : environment.driver}</span>
                         )}
                       </span>
                       {isPlatformManagedEnvironment(environment) ? (
@@ -2195,8 +2219,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   size="icon-sm"
                   variant="ghost"
                   className="text-muted-foreground hover:text-destructive"
-                  aria-label={`Delete ${editingEnvironment.name}`}
-                  title="Delete environment"
+                  aria-label={`${editingEnvironment.driver === "computer" ? "Disconnect" : "Delete"} ${editingEnvironment.name}`}
+                  title={editingEnvironment.driver === "computer" ? "Disconnect computer" : "Delete environment"}
                   data-testid="environment-delete-button"
                   onClick={() => {
                     setReassignEnvironmentTargetId("");
@@ -2231,7 +2255,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
                 />
               </Field>
-              <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
+              <Field label="Environment type" hint="Choose where your agents run.">
                 <select
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                   value={environmentForm.driver}
@@ -2252,18 +2276,31 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                                   : {}
                             )
                           : current.sandboxConfig,
-                      driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
+                      driver: e.target.value === "computer" ? "computer" : e.target.value === "sandbox" ? "sandbox" : "ssh",
                     }))}
                 >
                   {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
                     <option value="sandbox">Sandbox</option>
                   ) : null}
                   <option value="ssh">SSH</option>
+                  {(experimentalSettings?.enableBoatEnvironments || environmentForm.driver === "computer") && <option value="computer">Boat</option>}
                   {environmentForm.driver === "local" ? (
                     <option value="local">Local</option>
                   ) : null}
                 </select>
               </Field>
+
+              {environmentForm.driver === "computer" && <>
+                <Field label="Boat ID" hint="Attach an existing Boat with persistent storage enabled.">
+                  <Input value={environmentForm.boatId} placeholder="bx_…"
+                    onChange={(event) => setEnvironmentForm(current => ({ ...current, boatId: event.target.value }))} />
+                </Field>
+                <Field label="Boat API key" hint={environmentForm.boatApiKeySecretId ? "A key is saved. Leave blank to keep it." : "Stored as an encrypted secret."}>
+                  <Input type="password" autoComplete="new-password" value={environmentForm.boatApiKey}
+                    onChange={(event) => setEnvironmentForm(current => ({ ...current, boatApiKey: event.target.value }))} />
+                </Field>
+                <p className="text-sm text-muted-foreground">Agents share this computer’s desktop and have separate personal folders. Paperclip connects when needed and suspends it after the last runner’s warm timeout. Disconnecting the environment keeps its files.</p>
+              </>}
 
               {environmentForm.driver === "ssh" ? (
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2470,7 +2507,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             >
               Cancel
             </Button>
-            {environmentForm.driver !== "local" ? (
+            {environmentForm.driver !== "local" && environmentForm.driver !== "computer" ? (
               <Button
                 variant="outline"
                 onClick={() => draftEnvironmentProbeMutation.mutate(flushEnvironmentForm())}
@@ -2503,7 +2540,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             >
               <AlertDialogContent data-testid="environment-delete-dialog">
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Delete {editingEnvironment.name}?</AlertDialogTitle>
+                  <AlertDialogTitle>{editingEnvironment.driver === "computer" ? "Disconnect" : "Delete"} {editingEnvironment.name}?</AlertDialogTitle>
                   <AlertDialogDescription>
                     {deleteUsageLoading
                       ? "Checking what uses this environment..."
@@ -2511,6 +2548,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         ? "Could not check what uses this environment. Close this dialog and retry."
                         : deleteBlockMessage
                           ?? ([
+                            editingEnvironment.driver === "computer" ? "Paperclip will stop using this computer. Its filesystem will be retained on Boat." : null,
                             reusableLeaseOnlyBlock && deleteBlastRadius
                               ? `${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 reusable sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} reusable sandboxes`} will be destroyed; the workspaces holding them stay open and provision a fresh sandbox on their next run.`
                               : null,
@@ -2615,7 +2653,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     }}
                   >
                     {deleteEnvironmentMutation.isPending
-                      ? "Deleting..."
+                      ? editingEnvironment.driver === "computer" ? "Disconnecting..." : "Deleting..."
+                      : editingEnvironment.driver === "computer" ? "Disconnect computer"
                       : reusableLeaseOnlyBlock && deleteBlastRadius
                         ? `Destroy ${deleteBlastRadius.reusableSandboxLeaseCount === 1 ? "1 sandbox" : `${deleteBlastRadius.reusableSandboxLeaseCount} sandboxes`} and delete`
                         : "Delete environment"}

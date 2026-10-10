@@ -244,6 +244,7 @@ export function InstanceExperimentalSettings() {
   const showDeveloperSection = showWorktreeRunExecution || ([
     "autoRestartDevServerWhenIdle",
     "enableManagedSandboxOnly",
+    "enableBoatEnvironments",
     "enablePaperclipDeveloperMode",
     "enableServerInfoDebugView",
     "enableSmokeLab",
@@ -618,6 +619,17 @@ export function InstanceExperimentalSettings() {
             settingKey="enableManagedSandboxOnly"
             managed={managedKeys.enableManagedSandboxOnly}
             ariaLabel="Toggle managed environment only experimental setting"
+          />
+
+          <ExperimentalToggleCard
+            title="Boat Environments"
+            description="Attach an existing Boat to run agents with persistent files and a shared desktop."
+            checked={experimentalQuery.data?.enableBoatEnvironments === true}
+            onCheckedChange={(checked) => toggleMutation.mutate({ enableBoatEnvironments: checked })}
+            disabled={toggleMutation.isPending}
+            settingKey="enableBoatEnvironments"
+            managed={managedKeys.enableBoatEnvironments}
+            ariaLabel="Toggle Boat environments"
           />
 
           <ExperimentalToggleCard

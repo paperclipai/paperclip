@@ -1205,6 +1205,8 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions {
+  /** Server-authorized local computer MCP on the selected execution environment. */
+  computerTool?: { command: string; args: readonly string[] } | null;
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -4731,6 +4733,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        computerTool: this.options.computerTool,
       });
     }
     const opencodeProxyPath =
@@ -5632,6 +5635,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        computerTool: this.options.computerTool,
       });
     }
     const adoptedRunner = this.options.adoptExistingRunner;

@@ -44,6 +44,7 @@ import {
   collectEnvironmentSecretRefs,
   normalizeEnvironmentConfigForPersistence,
   normalizeEnvironmentConfigForProbe,
+  parseEnvironmentDriverConfig,
   readSshEnvironmentPrivateKeySecretId,
   type ParsedEnvironmentConfig,
 } from "../services/environment-config.js";
@@ -54,7 +55,8 @@ import {
   type ReadyPluginWorkerRecovery,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { computerService, ComputerError } from "../modules/computers/index.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -1014,6 +1016,11 @@ export function environmentRoutes(
   router.post("/companies/:companyId/environments", validate(createEnvironmentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCanAccessInstanceEnvironments(req);
+    assertCompanyAccess(req, companyId);
+    if (req.body.metadata?.computerCompanyId !== undefined) throw unprocessable("Computer ownership is assigned by Paperclip.");
+    if (req.body.driver === "computer" && !(await instanceSettings.getExperimental()).enableBoatEnvironments) {
+      throw unprocessable("Enable Boat environments in experimental settings first.");
+    }
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     if (req.body.driver === "local") {
       const existingLocal = await svc.list({ driver: "local" });
@@ -1024,6 +1031,10 @@ export function environmentRoutes(
     const actor = getActorInfo(req);
     const input = {
       ...req.body,
+      ...(req.body.driver === "computer" ? {
+        status: "inactive" as const,
+        metadata: { ...req.body.metadata, computerCompanyId: companyId },
+      } : {}),
       envVars: await secrets.normalizeEnvBindingsForPersistence(
         companyId,
         req.body.envVars,
@@ -1045,7 +1056,7 @@ export function environmentRoutes(
     };
     // Create the row and its binding rows atomically so an invalid secret
     // ref cannot leave an environment persisted without its bindings.
-    const environment = await db.transaction(async (tx) => {
+    let environment = await db.transaction(async (tx) => {
       const created = await svc.create(input, undefined, { db: tx });
       await secrets.replaceSecretRefsForInstanceTarget(
         { targetType: "environment", targetId: created.id },
@@ -1060,6 +1071,13 @@ export function environmentRoutes(
       );
       return created;
     });
+    if (environment.driver === "computer") {
+      const parsed = parseEnvironmentDriverConfig(environment);
+      if (parsed.driver !== "computer") throw unprocessable("Invalid Boat configuration.");
+      await computerService(db).attach({ companyId, environmentId: environment.id,
+        sandboxId: parsed.config.sandboxId, apiKeySecretRef: parsed.config.apiKeySecretRef });
+      environment = (await svc.update(environment.id, { status: "active" }))!;
+    }
     await logInstanceEnvironmentActivity({
       actor,
       action: "environment.created",
@@ -1137,6 +1155,24 @@ export function environmentRoutes(
         }),
     });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
+    if (req.body.metadata?.computerCompanyId !== undefined && req.body.metadata.computerCompanyId !== existing.metadata?.computerCompanyId) {
+      throw unprocessable("Computer ownership cannot be changed.");
+    }
+    if (existing.driver === "computer" || req.body.driver === "computer") {
+      if (existing.driver !== "computer" || req.body.driver && req.body.driver !== "computer") {
+        throw unprocessable("Create a separate environment to change its type.");
+      }
+      if (req.body.config?.sandboxId !== undefined && req.body.config.sandboxId !== existing.config.sandboxId) {
+        throw unprocessable("Disconnect this environment and attach the other Boat separately.");
+      }
+      const computerCompanyId = existing.metadata?.computerCompanyId;
+      if (typeof computerCompanyId !== "string") throw unprocessable("Computer attachment has no company.");
+      assertCompanyAccess(req, computerCompanyId);
+      if ((req.body.config !== undefined || req.body.status === "active") && !(await instanceSettings.getExperimental()).enableBoatEnvironments) {
+        throw unprocessable("Boat environments are disabled.");
+      }
+      if (req.body.metadata) req.body.metadata = { ...req.body.metadata, computerCompanyId };
+    }
     // The durable `pending_cleanup` lease row stores the provider, the provider
     // lease id, and the immutable config metadata for an orphan sandbox. The
     // teardown retry reads that row alone and never reads the current environment
@@ -1163,7 +1199,9 @@ export function environmentRoutes(
     const nextName = req.body.name ?? existing.name;
     const companyIdForSecrets =
       req.body.config !== undefined || req.body.driver !== undefined || req.body.envVars !== undefined
-        ? await resolveEnvironmentSecretContextCompanyId(req, existing.id, { required: true })
+        ? existing.driver === "computer"
+          ? String(existing.metadata?.computerCompanyId)
+          : await resolveEnvironmentSecretContextCompanyId(req, existing.id, { required: true })
         : null;
     const configSource =
       req.body.config !== undefined
@@ -1208,7 +1246,7 @@ export function environmentRoutes(
     // Persist the config change and its binding rows atomically: a binding
     // ref that fails validation (e.g. a deleted secret) must roll the whole
     // save back instead of leaving the config re-pointed with stale bindings.
-    const environment = await db.transaction(async (tx) => {
+    let environment = await db.transaction(async (tx) => {
       const updated = await svc.update(existing.id, patch, { db: tx });
       if (!updated) return null;
       if (patch.config !== undefined || patch.driver !== undefined) {
@@ -1231,6 +1269,14 @@ export function environmentRoutes(
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
+    }
+    if (environment.driver === "computer" && (req.body.config !== undefined || req.body.status === "active")) {
+      const computerCompanyId = String(environment.metadata?.computerCompanyId);
+      const parsed = parseEnvironmentDriverConfig(environment);
+      if (parsed.driver !== "computer") throw unprocessable("Invalid Boat configuration.");
+      await computerService(db).attach({ companyId: computerCompanyId, environmentId: environment.id,
+        sandboxId: parsed.config.sandboxId, apiKeySecretRef: parsed.config.apiKeySecretRef });
+      if (req.body.status !== "inactive") environment = (await svc.update(environment.id, { status: "active" }))!;
     }
     let customImageReconciliation: Awaited<
       ReturnType<typeof customImages.reconcileActiveTemplateForConfigChange>
@@ -1270,6 +1316,23 @@ export function environmentRoutes(
     let impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
       res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    if (existing.driver === "computer") {
+      const companyId = existing.metadata?.computerCompanyId;
+      if (typeof companyId !== "string") throw unprocessable("Computer attachment has no company.");
+      assertCompanyAccess(req, companyId);
+      if (impact.staticReferences.isInstanceDefault) throw conflict("Choose another default environment before disconnecting this computer.");
+      await svc.update(existing.id, { status: "inactive" });
+      await computerService(db).detach({ companyId, environmentId: existing.id });
+      await Promise.all([
+        executionWorkspaces.clearEnvironmentSelection(companyId, existing.id),
+        issues.clearExecutionWorkspaceEnvironmentSelection(companyId, existing.id),
+        projects.clearExecutionWorkspaceEnvironmentSelection(companyId, existing.id),
+      ]);
+      await logInstanceEnvironmentActivity({ actor, action: "environment.disconnected", entityId: existing.id,
+        details: { name: existing.name, driver: "computer", filesRetained: true } });
+      res.json({ ...existing, status: "inactive", disconnected: true, destroyedReusableSandboxLeaseCount: 0 });
       return;
     }
     // With explicit consent, destroy the environment's reusable sandbox leases
@@ -1476,5 +1539,9 @@ export function environmentRoutes(
     },
   );
 
+  router.use((error: unknown, _req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+    if (!(error instanceof ComputerError)) return next(error);
+    res.status(error.code === "conflict" ? 409 : error.code === "invalid" ? 422 : error.code === "not_found" ? 404 : 502).json({ error: error.message, code: error.code });
+  });
   return router;
 }

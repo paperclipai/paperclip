@@ -27,6 +27,7 @@ import { nativeMcpLaunchBinding } from "./native-mcp.js";
 import {
   materializeNativeRuntimeSkills,
   prepareIsolatedCodexHome,
+  releaseMaterializedNativeRuntimeSkills,
 } from "./runtime-context-materializer.js";
 
 const roots: string[] = [];
@@ -93,6 +94,19 @@ function context(
 }
 
 describe("runtime context materialization", () => {
+  it("installs only the trusted environment computer binding and removes it on refresh without that capability", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-computer-context-"));
+    roots.push(root);
+    const codexHome = join(root, "codex-home");
+    await prepareIsolatedCodexHome({ context: null, codexHome,
+      computerTool: { command: "/opt/ascii/cua-driver/cua-driver", args: ["mcp", "--socket", "/run/ascii-cua/driver.sock"] } });
+    const config = await readFile(join(codexHome, "config.toml"), "utf8");
+    expect(config).toContain("[mcp_servers.paperclip_computer]");
+    expect(config).toContain('command = "/opt/ascii/cua-driver/cua-driver"');
+    await releaseMaterializedNativeRuntimeSkills(join(codexHome, "skills"));
+    await prepareIsolatedCodexHome({ context: null, codexHome });
+    expect(await readFile(join(codexHome, "config.toml"), "utf8")).not.toContain("paperclip_computer");
+  });
   it("restores the legacy working-copy contract without changing its digest or adding new fields", () => {
     const old = context("/skills", "/instructions");
     old.instructions.workingCopy = { rootPath: "/old-run/copy", entryPath: "AGENTS.md" };

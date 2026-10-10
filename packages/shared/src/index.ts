@@ -2869,3 +2869,5 @@ export { EXTERNAL_AGENT_TOOL_GUIDANCE, DOT_AGENT_TOOL_GUIDANCE } from "./externa
 export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOperation } from "./types/agent-lifecycle.js";
 
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
+
+export type { ComputerViewer, TaskComputer } from "./types/computer-view.js";
