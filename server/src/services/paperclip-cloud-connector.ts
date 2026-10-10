@@ -180,12 +180,19 @@ async function readBrokerRejectionReason(response: Response): Promise<string> {
   }
 }
 
+export function safePaperclipCloudConnectorBrokerReason(value: unknown): string | undefined {
+  return typeof value === "string" && BROKER_REJECTION_REASONS.has(value)
+    ? value
+    : undefined;
+}
+
 /** Stable public code/status with only allowlisted broker diagnostics. */
 export class PaperclipCloudConnectorError extends Error {
   constructor(
     message: string,
     readonly code: string,
     readonly status?: number,
+    readonly brokerReason?: string,
   ) {
     super(message);
     this.name = "PaperclipCloudConnectorError";
@@ -320,6 +327,7 @@ export function createPaperclipCloudConnector(input: {
         `Paperclip Cloud connector rejected the request (operation=${operation}, status=${response.status}, reason=${reason})`,
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
+        reason,
       );
     }
     try {

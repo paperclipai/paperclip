@@ -83,6 +83,7 @@ describe("Paperclip Cloud connector", () => {
     expect(error).toBeInstanceOf(PaperclipCloudConnectorError);
     expect(error).toMatchObject({
       code: "CONNECTOR_REQUEST_FAILED", status: 400,
+      brokerReason: "RETURN_ORIGIN_NOT_ENROLLED",
       message: "Paperclip Cloud connector rejected the request (operation=session, status=400, reason=RETURN_ORIGIN_NOT_ENROLLED)",
     });
     expect(JSON.stringify(error)).not.toMatch(/DO_NOT_REPORT|private-state|access-secret|private\.example/);

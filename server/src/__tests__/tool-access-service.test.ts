@@ -90,7 +90,11 @@ import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
 import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import {
+  invalidatePaperclipCloudConnectorCapabilities,
+  PaperclipCloudConnectorError,
+  type PaperclipCloudConnector,
+} from "../services/paperclip-cloud-connector.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -7593,6 +7597,109 @@ describeEmbeddedPostgres("tool access service", () => {
       await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
     }
   }, 15_000);
+
+  it("records safe callback diagnostics when a managed GitHub claim fails", async () => {
+    const company = await createCompany(db);
+    const userId = `github-callback-diagnostics-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGitHubConnector(company.id, userId);
+    connector.claim = vi.fn(async () => {
+      throw new PaperclipCloudConnectorError(
+        "provider response body must not be retained",
+        "CONNECTOR_REQUEST_FAILED",
+        502,
+        "PROVIDER_OPERATION_FAILED",
+      );
+    });
+    const service = createTestToolAccessService(db, {
+      paperclipCloudConnector: connector,
+    });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const githubDefinition = getConnectableAppDefinition("github")!;
+    const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
+    githubDefinition.ownershipAvailability = {
+      ...previousOwnershipAvailability,
+      platform_shared: true,
+    };
+
+    try {
+      const connected = await service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "github",
+          connectionMethodKey: "managed",
+          grantKind: "user",
+          name: "GitHub callback diagnostics",
+        },
+        actor,
+      );
+      const started = await service.startOAuth(
+        company.id,
+        connected.connectionId,
+        {
+          redirectUri:
+            "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+          actor,
+        },
+      );
+      const state = new URL(started.authorizationUrl).searchParams.get(
+        "state",
+      )!;
+      const app = createRouteApp(
+        db,
+        boardSessionActor(company.id, "owner", userId),
+        undefined,
+        { paperclipCloudConnector: connector },
+      );
+
+      const callback = await request(app)
+        .get("/api/tools/oauth/cloud-connector/callback")
+        .query({ state, claim_id: "github-safe-claim" })
+        .set("accept", "text/html");
+
+      expect(callback.status).toBe(303);
+      expect(callback.headers.location).toContain("oauth=failed");
+      expect(callback.headers.location).toContain(
+        "code=CONNECTOR_REQUEST_FAILED",
+      );
+      expect(connector.claim).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: company.id,
+          subject: userId,
+          profile: "github.code",
+          claimId: "github-safe-claim",
+          redemptionId: state,
+        }),
+      );
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityId, connected.connectionId),
+            eq(activityLog.action, "tool_app.oauth_failed"),
+          ),
+        );
+      expect(activity?.details).toMatchObject({
+        code: "CONNECTOR_REQUEST_FAILED",
+        status: 502,
+        provider: "paperclip_cloud_connector",
+        brokerReason: "PROVIDER_OPERATION_FAILED",
+        errorClass: "PaperclipCloudConnectorError",
+        originLayer: "paperclip_cloud_connector",
+        isPaperclipCloudConnectorError: true,
+        isHttpError: false,
+        isProviderError: false,
+        isGenericError: false,
+      });
+      expect(JSON.stringify(activity?.details)).not.toContain(
+        "provider response body",
+      );
+    } finally {
+      githubDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
 
   it("reports GitHub reauthorization for the viewer without borrowing another user's grant", async () => {
     const company = await createCompany(db);
