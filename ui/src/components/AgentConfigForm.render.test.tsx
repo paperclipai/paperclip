@@ -112,7 +112,7 @@ vi.mock("../adapters", () => ({
     // adapter's fields.
     ConfigFields: (props: AdapterConfigFieldsProps) => {
       if (type === "paperclip_runner") return <CodexLocalConfigFields {...props} />;
-      const { adapterType, hideInstructionsFile, managedSandboxOnly } = props;
+      const { adapterType, hideInstructionsFile, managedSandboxOnly, allowExecutionEngineSelection } = props;
       return adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
         : (
@@ -120,6 +120,7 @@ vi.mock("../adapters", () => ({
             data-testid="adapter-config-fields"
             data-hide-instructions-file={String(hideInstructionsFile === true)}
             data-managed-sandbox-only={String(managedSandboxOnly === true)}
+            data-allow-execution-engine={String(allowExecutionEngineSelection === true)}
           />
         );
     },
@@ -3875,6 +3876,30 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     // The stored values stay untouched: hiding is presentation, and an import
     // that carries adapter configuration from another instance must still save.
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it.each(["active", "archived"] as const)("only exposes the engine for a resolved active Boat, keeping managed host paths hidden (%s)", async status => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status, config: { provider: "boat" } })],
+      { adapterType: "claude_local", defaultEnvironmentId: "boat-1", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels.includes("Execution engine")).toBe(status === "active");
+    for (const label of ["Working directory (deprecated)", "Command", "ACP server command", "ACP state directory"]) {
+      expect(labels).not.toContain(label);
+    }
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
+    expect(adapterFields?.getAttribute("data-allow-execution-engine")).toBe(String(status === "active"));
   });
 
   it("keeps the non-path ACP controls visible when the policy hides the engine choice", async () => {

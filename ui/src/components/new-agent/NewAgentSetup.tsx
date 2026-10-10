@@ -146,6 +146,7 @@ function Setup({
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
+  const [boatEngine, setBoatEngine] = useState<"cli" | "acp" | undefined>();
   const [provider, setProvider] = useState("openrouter");
   const [apiKey, setApiKey] = useState("");
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
@@ -272,6 +273,10 @@ function Setup({
         : "Could not resolve the environment.";
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
+  const boatLegacyEngine = environment?.status === "active"
+    && environment.driver === "computer"
+    && environment.config.provider === "boat"
+    && (adapterType === "codex_local" || adapterType === "claude_local");
   const sandboxProvider =
     typeof environment?.config?.provider === "string"
       ? environment.config.provider
@@ -339,6 +344,23 @@ function Setup({
     (!(managedOnly || forced.forced) || environmentId),
   );
   const busy = testState === "running" || saving;
+  const boatEngineField = ready && boatLegacyEngine ? (
+    <Field label="Execution engine">
+      <select
+        aria-label="Execution engine"
+        className={controlClass}
+        value={boatEngine ?? "cli"}
+        disabled={busy}
+        onChange={(event) => {
+          setBoatEngine(event.target.value === "acp" ? "acp" : "cli");
+          resetTest();
+        }}
+      >
+        <option value="cli">{adapterType === "codex_local" ? "Codex CLI" : "Claude CLI"}</option>
+        <option value="acp">ACP</option>
+      </select>
+    </Field>
+  ) : null;
 
   function buildConfig(
     nextConnection = connection,
@@ -363,6 +385,7 @@ function Setup({
         : {}),
     };
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    if (boatLegacyEngine) config.engine = boatEngine ?? "cli";
     if (isRunner)
       Object.assign(config, {
         provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
@@ -733,6 +756,7 @@ function Setup({
                         center
                       />
                     </div>
+                    {boatEngineField && <div className="mb-6">{boatEngineField}</div>}
                     {ready ? <AgentProviderConnection
                       key={environmentId ?? "local"}
                       companyId={companyId}
@@ -849,6 +873,7 @@ function Setup({
                       Configure your agent
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
+                      {boatEngineField}
                       <section className="space-y-5">
                         {isDot && <>
                           <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
