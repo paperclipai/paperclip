@@ -12237,7 +12237,7 @@ async function createRunnerdBackendWithinSessionClaim(
           timeoutMs: 180_000,
         });
         if (installResult.exitCode !== 0 || installResult.timedOut) {
-          throw new Error("runner_remote_codex_install_failed");
+          throw new Error(`runner_remote_codex_install_failed exitCode=${installResult.exitCode} timedOut=${installResult.timedOut}: ${redactSensitiveText(installResult.stderr).slice(-2_000).trim()}`);
         }
       }
       await measureNativeRunnerSpan(
