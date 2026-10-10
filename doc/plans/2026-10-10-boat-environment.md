@@ -221,8 +221,8 @@ The computer ledger, Boat backend, execution target, persistent file access, and
 Computer panel are integrated. Legacy Codex and Claude use explicit CLI engines
 for in-place homes. Native Codex and Claude retain their native runner configuration.
 
-Local qualification has demonstrated real native Codex, legacy Codex, and legacy
-Claude execution; separate durable personal directories; native desktop capture
+Local qualification has demonstrated real native Codex, native Claude, legacy
+Codex, and legacy Claude execution; separate durable personal directories; native desktop capture
 and app launch; browser desktop rendering and human mouse input; and bounded
 viewer expiry. Native Codex's Vite source and proof file survived a Boat stop and
 resume. A private Vite preview opened from the Computer panel passed the real
@@ -254,16 +254,29 @@ Qualification found IBus listening on a persistent-home socket whose filesystem
 node refused connections. The bounded readiness check uses the desktop user's
 home and repairs the official daemon onto a private runtime socket when needed.
 
-Native Claude's first provider-pack upload exceeded the existing 15-minute
-bootstrap budget. The qualified pack includes all supported providers; measured
-cold setup takes about 24 minutes at the observed transfer rate. Computer-backed
-ACPX startup now has a finite 30-minute bootstrap budget. Warm, turn, recovery,
-finalization, and per-command deadlines are unchanged. Real compressed-byte
-uploads with remote file writes and hash verification support eight concurrent
-4 MiB chunks under a controller-wide limit of eight. The full native Claude run
-still needs to pass with that change.
+Native Claude completed locally on controller source `be0d04df4e`, run
+`695cca11-a784-4d2d-b1d4-2f513bc386e6`. Its persistent personal file contained
+`boat-native-claude-ok` with SHA-256
+`86f79c3f7bb0ba133b56edbda1b5ca461ac3a0d6b8e57094ae91c29346179a56`.
+The full cold run took 12 minutes 11 seconds, including pack compression,
+transfer, extraction, verification, and the provider turn. The 1,158 MiB
+compressed provider pack transferred in 341 seconds without transport errors.
 
-Required remaining evidence includes native Claude completion and warm turns,
-post-idle task continuation, exact last-owner process retirement, and the
+Earlier cold attempts exposed the SSH daemon's unauthenticated connection cap
+and exceeded the old 15-minute bootstrap deadline. A per-Boat admission queue
+now allows at most eight SSH operations, six ordinary operations, and four
+bulk uploads; it reserves capacity for lifecycle/process control. Queue wait
+consumes the original operation deadline. Computer-backed ACPX startup has a
+finite 30-minute bootstrap budget; warm, turn, recovery, finalization, and
+per-command deadlines remain unchanged.
+
+The native Claude warm follow-up `199cb94d-d6c0-4675-9719-d65b2daf761b`
+succeeded in 89 seconds and read the same file hash. Runner PID 51467
+(start ticks 89621), runner identity `34cbf0a2`, listener 43127, and provider
+processes remained the same; owner generation advanced from 1 to 2 while launch
+generation stayed 1. Evidence: [Claude warm follow-up](assets/2026-10-10-boat/native-claude-warm.jpg).
+
+Required remaining evidence includes post-idle task continuation,
+exact last-owner process retirement, and the
 same matrix on the final source revision at the designated staging instance.
 Provider-only smoke checks do not substitute for these product journeys.
