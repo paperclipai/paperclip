@@ -15,7 +15,7 @@ Keep `wiki/index.md` accurate and scannable. The index is the maintainer's first
 ## Workflow
 
 1. **Read the target space's `wiki/index.md`** as it currently stands.
-2. **Walk the target space's `wiki/`.** `wiki/projects/<slug>/standup.md` entries are current-state companions for durable `wiki/projects/<slug>/index.md` pages; index them only as links attached to the matching project entry. Walk `wiki/` by category (`sources/`, `projects/`, `entities/`, `concepts/`, `synthesis/`, plus any custom subdirectories the wiki schema added).
+2. **Walk the target space's `wiki/`.** Call `wiki_list_pages` repeatedly, passing each `pageInfo.nextCursor`, until `pageInfo.complete` is true. Never treat one page of results as the full tree. `wiki/projects/<slug>/standup.md` entries are current-state companions for durable `wiki/projects/<slug>/index.md` pages; index them only as links attached to the matching project entry. Walk `wiki/` by category (`sources/`, `projects/`, `entities/`, `concepts/`, `synthesis/`, plus any custom subdirectories the wiki schema added).
 3. **Read the target space's last ~50 entries of `wiki/log.md`** to spot pages that were created or substantially changed but never made it to the index.
 4. **Per category, produce sorted entries** of the form:
    ```
@@ -62,4 +62,4 @@ Before closing the operation issue:
 
 ## Tools
 
-`wiki_search`, `wiki_read_page`, `wiki_write_page` (for `wiki/index.md` and `wiki/log.md` only). Always include the operation issue's `wikiId` and `spaceSlug`.
+`wiki_list_pages`, `wiki_search`, `wiki_read_page`, `wiki_write_page` (for `wiki/index.md` and `wiki/log.md` only). Always include the operation issue's `wikiId` and `spaceSlug`.
