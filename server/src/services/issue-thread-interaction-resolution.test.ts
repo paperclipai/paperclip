@@ -51,6 +51,26 @@ describe("issue-thread interaction resolver audience", () => {
     expect(decision).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
   });
 
+  it("identifies the expected addressee when resolution is denied", () => {
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: interaction({ addresseeAgentId: "agent-2" }),
+    })).toMatchObject({
+      allowed: false,
+      code: "interaction_addressee_mismatch",
+      details: { addresseeAgentId: "agent-2" },
+    });
+
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: interaction({ addresseeUserId: "user-1" }),
+    })).toMatchObject({
+      allowed: false,
+      code: "interaction_addressee_mismatch",
+      details: { addresseeUserId: "user-1" },
+    });
+  });
+
   it("allows only the addressed user to resolve a user-addressed interaction", () => {
     expect(evaluateIssueThreadInteractionResolverAudience({
       actor: { type: "user", userId: "alice" },
