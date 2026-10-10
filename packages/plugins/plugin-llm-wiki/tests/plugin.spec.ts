@@ -1248,6 +1248,43 @@ Duplicate headings receive stable suffixes.
     expect(markup).not.toContain("Monthly plugin cap");
   });
 
+  it("themes form controls with host background tokens instead of a hardcoded dark surface", () => {
+    mockPathname = "/PAP/wiki/ingest";
+    const ingestMarkup = renderToStaticMarkup(createElement(WikiPage, {
+      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+    } as never));
+
+    // Ingest view renders TextInput, TextArea, and the SpacePicker button.
+    expect(ingestMarkup).toContain("<input");
+    expect(ingestMarkup).toContain("<textarea");
+    expect(ingestMarkup).toContain('aria-haspopup="listbox"');
+    expect(ingestMarkup).toContain("background:var(--background");
+    expect(ingestMarkup).not.toContain("oklch(0.2 0 0)");
+
+    mockPathname = "/PAP/wiki/settings/distillation";
+    mockDistillationOverviewData = {
+      counts: { cursors: 1, runningRuns: 0, failedRuns24h: 0, reviewRequired: 0 },
+      cursors: [{
+        id: "cursor-1",
+        projectId: "project-1",
+        rootIssueId: null,
+        projectName: "Existing Wiki Project",
+        rootIssueIdentifier: null,
+        sourceScope: "project",
+        scopeKey: "project-1",
+      }],
+      runs: [],
+    };
+    const settingsMarkup = renderToStaticMarkup(createElement(WikiPage, {
+      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+    } as never));
+
+    // Distillation settings render TextInput and SelectInput controls.
+    expect(settingsMarkup).toContain("<select");
+    expect(settingsMarkup).toContain("background:var(--background");
+    expect(settingsMarkup).not.toContain("oklch(0.2 0 0)");
+  });
+
   it("renders managed routines as normal routine rows with run, toggle, and configure controls", () => {
     mockPathname = "/PAP/wiki/settings/routines";
     mockSettingsManagedRoutines = [{

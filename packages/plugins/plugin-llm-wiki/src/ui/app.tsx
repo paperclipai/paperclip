@@ -576,7 +576,7 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       style={{
-        background: "oklch(0.2 0 0)",
+        background: tokens.bg,
         border: `1px solid ${tokens.border}`,
         borderRadius: 6,
         padding: "6px 10px",
@@ -597,7 +597,7 @@ function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
     <textarea
       {...props}
       style={{
-        background: "oklch(0.2 0 0)",
+        background: tokens.bg,
         border: `1px solid ${tokens.border}`,
         borderRadius: 6,
         padding: "6px 10px",
@@ -4187,7 +4187,7 @@ function SpacePicker({
           display: "flex",
           alignItems: "center",
           gap: 8,
-          background: "oklch(0.2 0 0)",
+          background: tokens.bg,
           border: `1px solid ${tokens.border}`,
           borderRadius: 6,
           padding: "8px 10px",
@@ -5772,7 +5772,7 @@ function SelectInput({ defaultValue, options }: { defaultValue: string; options:
     <select
       defaultValue={defaultValue}
       style={{
-        background: "oklch(0.2 0 0)",
+        background: tokens.bg,
         color: tokens.fg,
         border: `1px solid ${tokens.border}`,
         borderRadius: 6,
