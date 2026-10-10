@@ -1,10 +1,12 @@
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
+  isMutableQueuedRun,
+  mutableQueuedRunWhere,
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
@@ -25,31 +27,6 @@ import type {
 
 type WakeRow = typeof agentWakeupRequests.$inferSelect;
 type RunRow = typeof heartbeatRuns.$inferSelect;
-const PROVIDER_QUOTA_HOLD_RETRY_REASON = "provider_quota_hold";
-
-function mutableQueuedRunWhere(queueRunId: string, companyId: string) {
-  return and(
-    eq(heartbeatRuns.id, queueRunId),
-    eq(heartbeatRuns.companyId, companyId),
-    or(
-      eq(heartbeatRuns.status, "queued"),
-      and(
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        eq(heartbeatRuns.scheduledRetryReason, PROVIDER_QUOTA_HOLD_RETRY_REASON),
-        isNull(heartbeatRuns.startedAt),
-      ),
-    ),
-  );
-}
-
-function isMutableQueuedRun(row: RunRow) {
-  return (
-    row.status === "queued" ||
-    (row.status === "scheduled_retry" &&
-      row.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON &&
-      row.startedAt === null)
-  );
-}
 
 function toWakeRow(row: WakeRow): QueuedCommentWakeRow {
   return { id: row.id, agentId: row.agentId, status: row.status, runId: row.runId, payload: parseObject(row.payload) };

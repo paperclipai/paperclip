@@ -17,7 +17,6 @@ import {
   deferQueuedRunForProviderQuotaHold,
   providerQuotaResetAtFromRun,
   providerQuotaScopeForAgent,
-  providerQuotaScopeForRun,
   recordProviderQuotaDispatchHold,
 } from "./provider-quota-dispatch-hold.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -73,26 +72,6 @@ describe("provider quota dispatch hold parsing", () => {
     );
   });
 
-  it("uses the run's concrete router selection for both capture and dispatch", () => {
-    const routedRun = {
-      contextSnapshot: {
-        aiRouterSelection: {
-          runtimeConfig: { provider: "acpx", acpxAgent: "claude" },
-        },
-      },
-    } as Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot">;
-    const savedAgent = {
-      adapterType: "paperclip_runner",
-      adapterConfig: { provider: "codex" },
-    } as unknown as typeof agents.$inferSelect;
-
-    expect(providerQuotaScopeForRun(routedRun, savedAgent)).toEqual(
-      providerQuotaScopeForAgent({
-        adapterType: "paperclip_runner",
-        adapterConfig: { provider: "acpx", acpxAgent: "claude" },
-      } as unknown as typeof agents.$inferSelect),
-    );
-  });
 });
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -275,5 +254,57 @@ describe.skipIf(!support.supported)("provider quota dispatch hold database bound
       failureRetriesBeforeProviderQuotaHold: 0,
     });
     expect(executionFailureRetryCount(deferred!.run)).toBe(0);
+  });
+
+  it("suppresses a fresh router-mode run using a hold captured after routing", async () => {
+    const [company] = await db
+      .insert(companies)
+      .values({ name: "Router quota gate", issuePrefix: "RQG" })
+      .returning();
+    const [routerAgent] = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "Router",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "router" },
+      })
+      .returning();
+    const [sourceRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: routerAgent.id,
+        status: "failed",
+        errorCode: "provider_quota",
+        contextSnapshot: {
+          aiRouterSelection: {
+            runtimeConfig: { provider: "acpx", acpxAgent: "claude" },
+          },
+        },
+        resultJson: {
+          errorFamily: "provider_quota",
+          providerQuotaRetryNotBefore: resetAt.toISOString(),
+        },
+      })
+      .returning();
+    const hold = await recordProviderQuotaDispatchHold(db, {
+      run: sourceRun,
+      agent: routerAgent,
+      now: detectedAt,
+    });
+    expect(hold?.scopeKey).toBe(providerQuotaScopeForAgent(routerAgent).scopeKey);
+
+    const freshRun = await queuedRun(company.id, routerAgent.id);
+    expect(freshRun.contextSnapshot).toBeNull();
+    expect(
+      await deferQueuedRunForProviderQuotaHold(db, {
+        run: freshRun,
+        agent: routerAgent,
+        now: detectedAt,
+      }),
+    ).toMatchObject({
+      run: { status: "scheduled_retry", scheduledRetryReason: "provider_quota_hold" },
+    });
   });
 });

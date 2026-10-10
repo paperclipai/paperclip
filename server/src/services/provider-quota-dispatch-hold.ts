@@ -48,23 +48,6 @@ export function providerQuotaScopeForAgent(agent: Pick<Agent, "adapterType" | "a
   return { scopeKey, provider };
 }
 
-/** Prefer the concrete provider selected for this run over the agent's saved
- * router configuration. Completion and later dispatch checks must name the
- * same provider scope even when a connection pool rewrote the runtime config. */
-export function providerQuotaScopeForRun(
-  run: Pick<HeartbeatRun, "contextSnapshot">,
-  agent: Pick<Agent, "adapterType" | "adapterConfig">,
-) {
-  const context = objectValue(run.contextSnapshot);
-  const selection = objectValue(context.aiRouterSelection);
-  const runtimeConfig = objectValue(selection.runtimeConfig);
-  return providerQuotaScopeForAgent({
-    adapterType: agent.adapterType,
-    adapterConfig:
-      Object.keys(runtimeConfig).length > 0 ? runtimeConfig : agent.adapterConfig,
-  });
-}
-
 export function providerQuotaResetAtFromRun(
   run: Pick<HeartbeatRun, "errorCode" | "resultJson">,
   now = new Date(),
@@ -91,7 +74,10 @@ export async function recordProviderQuotaDispatchHold(
   const now = input.now ?? new Date();
   const holdUntil = providerQuotaResetAtFromRun(input.run, now);
   if (!holdUntil) return null;
-  const scope = providerQuotaScopeForRun(input.run, input.agent);
+  // Router selection is not available until execution. Key capture and
+  // pre-execution dispatch from the same durable agent configuration so a
+  // fresh queued run cannot miss a hold recorded by a routed source run.
+  const scope = providerQuotaScopeForAgent(input.agent);
   const evidence = {
     sourceRunId: input.run.id,
     errorCode: input.run.errorCode,
@@ -147,7 +133,7 @@ export async function deferQueuedRunForProviderQuotaHold(
   input: { run: HeartbeatRun; agent: Agent; now?: Date },
 ) {
   const now = input.now ?? new Date();
-  const scope = providerQuotaScopeForRun(input.run, input.agent);
+  const scope = providerQuotaScopeForAgent(input.agent);
   return db.transaction(async (tx) => {
     const hold = await tx
       .select()
@@ -181,6 +167,8 @@ export async function deferQueuedRunForProviderQuotaHold(
       .set({
         status: "scheduled_retry",
         scheduledRetryAt: hold.holdUntil,
+        // Preserve the attempt counter, but snapshot its failure-lane meaning
+        // before replacing the resource-wait reason below.
         scheduledRetryReason: PROVIDER_QUOTA_HOLD_RETRY_REASON,
         contextSnapshot: {
           ...objectValue(input.run.contextSnapshot),

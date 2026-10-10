@@ -365,6 +365,8 @@ import {
 import {
   buildQueuedCommentQueueSnapshot,
   decideQueuedCommentQueueSteering,
+  isMutableQueuedRun,
+  mutableQueuedRunWhere,
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
@@ -7329,11 +7331,9 @@ export function issueRoutes(
         .from(heartbeatRuns)
         .where(
           and(
-            eq(heartbeatRuns.id, wake.runId),
-            eq(heartbeatRuns.companyId, issue.companyId),
+            mutableQueuedRunWhere(wake.runId, issue.companyId),
             eq(heartbeatRuns.agentId, issue.assigneeAgentId),
             eq(heartbeatRuns.wakeupRequestId, wake.id),
-            eq(heartbeatRuns.status, "queued"),
           ),
         )
         .limit(1)
@@ -7522,7 +7522,7 @@ export function issueRoutes(
         .for("update")
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (!queueRun || queueRun.status !== "queued") {
+      if (!queueRun || !isMutableQueuedRun(queueRun)) {
         throw conflict("The queued message is already being dispatched", {
           code: "queued_comment_already_dispatching",
         });
