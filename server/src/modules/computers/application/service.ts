@@ -358,14 +358,16 @@ finally:
   }
   async function admit(
     input: Scope & {
-      agentId: string;
+      agentId?: string;
       runId?: string;
       probeId?: string;
       sessionKey: string;
       idleTimeoutMs: number;
     },
   ) {
-    segment(input.agentId);
+    if (input.agentId) segment(input.agentId);
+    if (!input.agentId && !input.probeId)
+      throw new ComputerError("invalid", "A computer run requires an agent");
     if ((!input.runId && !input.probeId) || (input.runId && input.probeId))
       throw new ComputerError(
         "invalid",
@@ -414,17 +416,22 @@ finally:
         };
         record.ledger.owners.push(owner);
       }
-      record.ledger.placements[input.agentId] ??= {
-        id: randomUUID(),
-        root: `${base(record)}/agents/${input.agentId}`,
-        cwd: `${base(record)}/agents/${input.agentId}`,
-      };
+      const agentHome = input.agentId
+        ? `${base(record)}/agents/${input.agentId}`
+        : `${base(record)}/probes/${input.probeId}`;
+      if (input.agentId) {
+        record.ledger.placements[input.agentId] ??= {
+          id: randomUUID(),
+          root: agentHome,
+          cwd: agentHome,
+        };
+      }
       record.ledger.placements[input.sessionKey] ??= {
         id: randomUUID(),
-        root: `${base(record)}/agents/${input.agentId}`,
+        root: agentHome,
         cwd: input.probeId
           ? `${base(record)}/probes/${input.probeId}`
-          : `${base(record)}/agents/${input.agentId}`,
+          : agentHome,
       };
       return { record: structuredClone(record), owner: structuredClone(owner) };
     });
@@ -795,7 +802,7 @@ finally:
     },
   ) {
     const { record, owner } = await scoped(input);
-    if (!owner.agentId || owner.phase !== "active")
+    if (owner.phase !== "active" || (!owner.agentId && input.projectId))
       throw new ComputerError("conflict", "Workspace owner is not active");
     const placement = record.ledger.placements[owner.sessionKey!]!;
     if (!input.projectId)
@@ -976,7 +983,7 @@ finally:
     admit,
     admitProbe(
       input: Scope & {
-        agentId: string;
+        agentId?: string;
         probeId: string;
         idleTimeoutMs: number;
       },
