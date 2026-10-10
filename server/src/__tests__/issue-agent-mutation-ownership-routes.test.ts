@@ -162,8 +162,10 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
+const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
+  vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
@@ -2005,6 +2007,37 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("resumes a verified stopped workspace owner without waking the provider", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    mockResumeWorkspaceFinalization.mockResolvedValue({ runId: ownerRunId, status: "queued" });
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resume-workspace-finalization`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, ownerToken: ownerRunId,
+        controllerAndCopybackStopped: true, stopEvidence: "Deployment platform confirms the exact old container and all its processes exited." });
+    expect(res.status).toBe(202);
+    expect(mockResumeWorkspaceFinalization).toHaveBeenCalledWith(expect.objectContaining({ companyId, issueId, runId: ownerRunId, ownerToken: ownerRunId, actorId: "board-user" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([{ controllerAndCopybackStopped: false }, { stopEvidence: "" }])("requires explicit stop evidence: %j", async invalid => {
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resume-workspace-finalization`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, ownerToken: ownerRunId,
+        controllerAndCopybackStopped: true, stopEvidence: "Deployment platform confirms the exact old container and all its processes exited.", ...invalid });
+    expect(res.status).toBe(400);
+    expect(mockResumeWorkspaceFinalization).not.toHaveBeenCalled();
+  });
+
+  it.each(["agent", "viewer"])("rejects %s workspace-owner release before admission", async kind => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({ allowed: input.action === "issue:read", explanation: "No runtime access" }));
+    const res = await request(await createApp(kind === "agent" ? ownerActor() : boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resume-workspace-finalization`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, ownerToken: ownerRunId,
+        controllerAndCopybackStopped: true, stopEvidence: "Deployment platform confirms the exact old container and all its processes exited." });
+    expect(res.status).toBe(403);
+    expect(mockResumeWorkspaceFinalization).not.toHaveBeenCalled();
+  });
+
   it("queues board export-only recovery without calling provider wake", async () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true });
     mockRetryWorkspaceExport.mockResolvedValue({ runId: ownerRunId, status: "queued" });
@@ -2026,7 +2059,25 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403); expect(mockRetryWorkspaceExport).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "done", "in_review"].flatMap(sourceIssueStatus => ["native_workspace_sync_out_unsafe_archive", "native_workspace_sync_out_retry_exhausted"].map(cause => ({ sourceIssueStatus, cause }))))("does not resolve accepted export recovery through an ordinary $sourceIssueStatus transition: $cause", async ({ sourceIssueStatus, cause }) => {
+  it.each(["done", "in_review"])("does not bypass unverified copyback via false_positive to %s", async sourceIssueStatus => {
+    const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+    mockIssueService.getById.mockResolvedValue(sourceIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...sourceIssue, ...patch }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId, status: "active", kind: "active_run_watchdog", ownerType: "board",
+      ownerAgentId: null, returnOwnerAgentId: ownerAgentId,
+      cause: "native_workspace_finalization_owner_unverified", evidence: { runId: ownerRunId },
+    });
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({ actionId: recoveryActionId, outcome: "false_positive", sourceIssueStatus });
+    expect(res.status).toBe(409);
+    expect(res.body.details?.code).toBe("workspace_owner_stop_required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["todo", "done", "in_review"].flatMap(sourceIssueStatus => ["native_workspace_sync_out_unsafe_archive", "native_workspace_sync_out_retry_exhausted", "native_workspace_finalization_owner_unverified"].map(cause => ({ sourceIssueStatus, cause }))))("does not resolve accepted export recovery through an ordinary $sourceIssueStatus transition: $cause", async ({ sourceIssueStatus, cause }) => {
     const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
     mockIssueService.getById.mockResolvedValue(sourceIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...sourceIssue, ...patch }));
@@ -2039,7 +2090,7 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus });
     expect.soft(res.status).toBe(409);
-    expect.soft(res.body.details?.code).toBe(cause === "native_workspace_sync_out_unsafe_archive" ? "workspace_export_automatic_recovery" : "workspace_export_retry_required");
+    expect.soft(res.body.details?.code).toBe(cause === "native_workspace_sync_out_unsafe_archive" ? "workspace_export_automatic_recovery" : cause === "native_workspace_finalization_owner_unverified" ? "workspace_owner_stop_required" : "workspace_export_retry_required");
     expect.soft(mockIssueService.update).not.toHaveBeenCalled();
     expect.soft(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

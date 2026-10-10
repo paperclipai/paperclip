@@ -1,3 +1,7 @@
+import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { nativeSha256 } from "./canonical.js";
+import { resumeNativeWorkspaceAfterOwnerStop } from "./native-workspace-owner-recovery.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { readProcessStartedAt } from "../hot-restart.js";
@@ -9,6 +13,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
+  activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -19,11 +25,13 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   issueRecoveryActions,
+  issueThreadInteractions,
   projects,
   workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 
 describe("native workspace finalization recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -157,6 +165,171 @@ describe("native workspace finalization recovery", () => {
     } else {
       process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorLogRoot;
     }
+  });
+
+  async function seedAbandonedCopyback() {
+    const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Accepted yield, abandoned copyback" });
+    const owner = { token: randomUUID(), hostname: "replaced-controller", pid: 2,
+      processStartedAt: "2026-10-10T00:02:55.560Z", controllerBootId: randomUUID() };
+    await db.update(heartbeatRuns).set({ status: "running", nativePhase: "workspace_finalizing",
+      runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner, preserved: "workspace descriptor" },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: seeded.runId }).where(eq(issues.id, seeded.issueId));
+    await db.update(nativeRunFinalizations).set({ phase: "workspace_finalizing" }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    const recovery = issueRecoveryActionService(db);
+    const hold = { companyId, sourceIssueId: seeded.issueId, kind: "active_run_watchdog" as const,
+      ownerType: "board" as const, cause: "native_workspace_finalization_owner_unverified",
+      fingerprint: nativeSha256({ runId: seeded.runId, owner }), evidence: { runId: seeded.runId, owner }, maxAttempts: 1,
+      nextAction: "Verify the previous controller and its workspace-copyback processes have stopped. Resume workspace finalization without another provider turn." };
+    const action = await recovery.upsertSourceScoped(hold);
+    await recovery.upsertSourceScoped(hold);
+    return { ...seeded, owner, actionId: action.id, companyId, db, ownerToken: owner.token,
+      actorId: "operator", controllerAndCopybackStopped: true as const,
+      stopEvidence: "Deployment platform confirms the exact old container and all its processes exited." };
+  }
+
+  it("retains copyback-specific instructions after repeated recovery sweeps", async () => {
+    const seed = await seedAbandonedCopyback();
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
+    expect(action.status).toBe("escalated");
+    expect(action.nextAction).toContain("workspace-copyback processes have stopped");
+    expect(action.nextAction).not.toContain("replacement run");
+    await db.update(issueRecoveryActions).set({ nextAction: "Start a replacement run" }).where(eq(issueRecoveryActions.id, seed.actionId));
+    await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected");
+    const [repaired] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
+    expect(repaired.nextAction).toContain("workspace-copyback processes have stopped");
+    expect(repaired.attemptCount).toBe(action.attemptCount);
+    expect(repaired.evidence?.recoveryBudget).toEqual(action.evidence?.recoveryBudget);
+  });
+
+  it("releases only the verified owner and resumes the saved result without changing its disposition", async () => {
+    const seed = await seedAbandonedCopyback();
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
+    expect(await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected")).toEqual({ acquired: false });
+    const receipt = await resumeNativeWorkspaceAfterOwnerStop(seed);
+    expect(receipt).toEqual({ runId: seed.runId, resultId: before.resultId, status: "queued" });
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
+    expect(after).toEqual(before);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    expect(run.runnerProfileJson).toEqual({ preserved: "workspace descriptor" });
+    expect(run.status).toBe("running");
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
+    expect(action.evidence?.workspaceOwnerStop).toMatchObject({ owner: seed.owner, actorId: "operator", resultId: before.resultId, stopEvidence: seed.stopEvidence });
+    expect(action.status).toBe("escalated"); // Only commitment resolves the hold.
+    expect(action.wakePolicy).toBeNull();
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, seed.runId))).toHaveLength(1);
+    const file = path.join(workspaceRoot, seed.runId);
+    expect(await withNativeWorkspaceFinalizationOwnership(seed, async () => {
+      await fs.writeFile(file, "accepted work");
+      return "resumed";
+    })).toEqual({ acquired: true, value: "resumed" });
+    expect(await fs.readFile(file, "utf8")).toBe("accepted work");
+    // A duplicate confirmation neither clears a newer owner nor writes another audit.
+    await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).resolves.toEqual(receipt);
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, seed.runId))).toHaveLength(1);
+  });
+
+  it.each(["monitor", "approval"] as const)("commits the saved yield through reconciliation while preserving its %s wait", async wait => {
+    const seed = await seedAbandonedCopyback();
+    const workspaceId = randomUUID();
+    const cwd = path.join(workspaceRoot, seed.runId);
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "saved.txt"), "accepted work");
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId,
+      mode: "local", strategyType: "local_directory", name: "Retained workspace", cwd });
+    const nextCheckAt = new Date(Date.now() - 60_000); // Already due, like the staging runs.
+    const policy = { monitor: { nextCheckAt: nextCheckAt.toISOString(), notes: "Check the existing PR." } };
+    await db.update(issues).set({ executionWorkspaceId: workspaceId,
+      ...(wait === "monitor" ? { executionPolicy: policy, monitorNextCheckAt: nextCheckAt } : {}),
+    }).where(eq(issues.id, seed.issueId));
+    const interactionId = randomUUID();
+    if (wait === "approval") await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId, issueId: seed.issueId, sourceRunId: seed.runId,
+      createdByAgentId: agentId, kind: "request_confirmation", status: "pending",
+      payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document",
+        issueId: seed.issueId, key: "plan", revisionId: randomUUID() } },
+    });
+    const resultJson = {
+      result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+        summary: "Wait for the existing continuation.",
+        completionClaim: { contractRevision: "test", objectiveSatisfied: false, criteria: [],
+          remainingWork: [{ description: "Wait for the check or plan confirmation.", blocksCompletion: true }] },
+        continuation: { kind: wait === "monitor" ? "monitor" : "response_wake",
+          summary: "Wait for the existing continuation.", idempotencyKey: "saved-wait" },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [] },
+      terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed",
+        runTerminalState: "succeeded", reportedWorkDisposition: "yielded" },
+    };
+    await db.update(nativeRunResults).set({ resultJson }).where(eq(nativeRunResults.runId, seed.runId));
+    const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, seed.runId));
+
+    // The real reconciler must remain fenced before operator confirmation.
+    await reconcileNativeFinalizations(db, [seed.runId]);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0].phase).toBe("workspace_finalizing");
+    await resumeNativeWorkspaceAfterOwnerStop(seed);
+    await reconcileNativeFinalizations(db, [seed.runId]);
+
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0]).toMatchObject({ phase: "committed", resultId: accepted.id });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId)))[0]).toMatchObject({ status: "succeeded", nativePhase: "committed" });
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, seed.runId))).toEqual([accepted]);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId)))[0].status).toBe("resolved");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seed.issueId));
+    expect(issue.status).toBe(wait === "monitor" ? "in_progress" : "in_review");
+    if (wait === "monitor") {
+      expect(issue.monitorNextCheckAt).toEqual(nextCheckAt);
+      expect(issue.executionPolicy).toEqual(policy);
+    } else {
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("pending");
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, seed.issueId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.payload}->>'issueId' = ${seed.issueId}`)).toHaveLength(0);
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, seed.runId),
+      eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")))).toHaveLength(1);
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("accepted work");
+  });
+
+  it.each(["token", "company", "result", "newer owner", "missing confirmation", "malformed owner"])("rejects stale or unverified copyback recovery: %s", async changed => {
+    const seed = await seedAbandonedCopyback();
+    if (changed === "malformed owner") {
+      const owner = { token: seed.ownerToken };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
+      await db.update(issueRecoveryActions).set({ evidence: { runId: seed.runId, owner } }).where(eq(issueRecoveryActions.id, seed.actionId));
+    }
+    if (changed === "token") seed.ownerToken = randomUUID();
+    if (changed === "company") seed.companyId = foreignCompanyId;
+    if (changed === "result") await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, seed.runId));
+    if (changed === "newer owner") await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: { ...seed.owner, token: randomUUID() } } }).where(eq(heartbeatRuns.id, seed.runId));
+    if (changed === "missing confirmation") Object.assign(seed, { controllerAndCopybackStopped: false });
+    await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    expect(run.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeDefined();
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, seed.runId))).toHaveLength(0);
+  });
+
+  it("rejects a locally live owner even after its advisory connection is gone", async () => {
+    const seed = await seedAbandonedCopyback();
+    const identity = await currentNativeControllerIdentity();
+    const owner = { ...seed.owner, hostname: os.hostname(), pid: identity.pid,
+      processStartedAt: identity.processStartedAt.toISOString(), controllerBootId: identity.bootId };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
+    await db.update(issueRecoveryActions).set({ evidence: { runId: seed.runId, owner } }).where(eq(issueRecoveryActions.id, seed.actionId));
+    await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("still active");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+    expect(run.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toEqual(owner);
+  });
+
+  it("does not reopen an old result after a newer task execution exists", async () => {
+    const seed = await seedAbandonedCopyback();
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", nativeIssueId: seed.issueId });
+    await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("no longer current");
+  });
+
+  it("rejects stop confirmation while another controller holds the physical lock", async () => {
+    const seed = await seedAbandonedCopyback();
+    await db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`native-workspace-finalization:${companyId}:${seed.runId}`}, 0))`);
+      await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).rejects.toThrow("still active");
+    });
   });
 
   it("reuses a successful export even if an old controller wrote a later failed barrier", async () => {

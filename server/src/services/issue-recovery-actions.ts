@@ -375,6 +375,18 @@ export function issueRecoveryActionService(db: Db) {
       // beyond the advertised cap. A distinct identity can still supersede the
       // exhausted action through the branch above.
       if (isRecoveryBudgetExhausted(existing.evidence ?? {})) {
+        // Older sweeps replaced this operator-only hold with instructions to
+        // start another run. Restore the exact copyback recovery instructions
+        // without reopening its budget or erasing a recorded stop confirmation.
+        if (existing.cause === "native_workspace_finalization_owner_unverified"
+          && input.cause === existing.cause && input.fingerprint === existing.fingerprint
+          && !existing.evidence?.workspaceOwnerStop && existing.nextAction !== input.nextAction) {
+          const [updated] = await db.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
+            .where(and(eq(issueRecoveryActions.id, existing.id),
+              inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning();
+          if (updated) return toReadModel(updated);
+        }
         return existing;
       }
       const nextAttemptCount =
@@ -417,8 +429,9 @@ export function issueRecoveryActionService(db: Db) {
                 fingerprint: existing.fingerprint,
               },
             },
-            nextAction:
-              `Automatic recovery exhausted after ${attemptsUsed}/${effectiveMaxAttempts} attempts. ` +
+            nextAction: existing.cause === "native_workspace_finalization_owner_unverified"
+              ? input.nextAction
+              : `Automatic recovery exhausted after ${attemptsUsed}/${effectiveMaxAttempts} attempts. ` +
               "Review the infrastructure failure and explicitly choose a replacement run or provider configuration.",
             wakePolicy: null,
             monitorPolicy: null,

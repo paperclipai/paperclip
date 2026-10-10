@@ -57,6 +57,41 @@ exact prior controller **and its copyback subprocesses** have stopped. Retain th
 sandbox, accepted native result, and workspace descriptor. Do not run a new
 provider turn, delete workspace contents, or relax archive confinement.
 
+After that platform verification, open the task's **Workspace finalization needs
+recovery** notice. A board member with runtime-management access records the
+platform stop evidence, confirms that the exact controller and all its copyback
+processes have stopped, and selects **Resume saved result**. The equivalent API is
+`POST /api/issues/:id/recovery-actions/resume-workspace-finalization` with:
+
+```json
+{
+  "actionId": "<recovery-action-id>",
+  "runId": "<run-id>",
+  "ownerToken": "<owner-token-from-recovery-evidence>",
+  "controllerAndCopybackStopped": true,
+  "stopEvidence": "<deployment-platform evidence for this controller and its children>"
+}
+```
+
+This is an operator attestation, not an automatic deployment-platform probe. A
+missing advisory connection alone is insufficient. Admission rejects an active
+copyback lock, an observably live local controller, a changed owner, a newer run,
+or an unbound result. It records the exact owner and operator evidence atomically
+with releasing the receipt. The accepted result, workspace descriptor, source
+lease, task status, monitors, and approval waits are unchanged. The ordinary
+reconciler performs copyback and applies the saved result through the status
+arbiter. No provider wake is enqueued. The recovery action remains visible until
+finalization commits. Repeating the same confirmation before reconciliation is
+idempotent; it cannot release a newer owner. Generic recovery resolution, including
+false-positive dispositions, cannot dismiss this hold or bypass saved-result
+finalization.
+
+Repeated sweeps preserve these copyback-specific instructions, including for
+older actions whose recovery budget was already exhausted. They must never
+recommend starting a replacement provider run for this hold.
+
+For older servers without this action, the maintenance fallback follows.
+
 After that platform verification, use a database maintenance transaction to
 release only the exact receipt shown by the recovery action. Replace the four
 placeholders with the action's company, run, token, and source issue. The advisory
