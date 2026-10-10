@@ -109,3 +109,28 @@ this slice to `paperclipai/paperclip`; subsequent extractions are not part of
 this PR.
 
 Review and final verification: [PR #15823](https://github.com/paperclipai/paperclip/pull/15823).
+
+## Authorized stacked continuation
+
+The user requested at least five stacked PRs on 2026-10-10. Continue the four
+remaining boundaries in order, with each branch based on its predecessor. Keep
+merge and deployment outside this series. Each PR carries its own current-head
+verification and review results; do not transfer a prior head's pass to a new one.
+
+### Slice 2: resource reconciliation and availability
+
+The lifecycle handler also owns credential replacement, delivery claims and
+runtime shutdown. Keep those responsibilities in the service. Extract the full
+non-GitHub availability transaction, inventory reconciliation, repository rename
+handling, provider ordering, resource listing and audited selection together.
+The factory takes the database, endpoint lookup, existing credential lease
+function, generation reader and error text limit. It creates no worker or cache.
+
+- Source: 38,633 lines / 1,491,422 bytes → 37,720 lines / 1,454,762 bytes.
+- Destination: 947 lines / 39,584 bytes in `resource-reconciliation.ts`.
+- Mechanical comparison: 14 declarations and the complete availability
+  transaction are unchanged; all other function bodies remain unchanged.
+- Baseline: all three complete chat CI shards passed on predecessor `cbba30a526`.
+- Local baseline and after selections could not start PostgreSQL and skipped
+  the suite. They are not passes. Server typecheck and module boundaries pass.
+- Require complete chat CI on this slice before starting the next extraction.
