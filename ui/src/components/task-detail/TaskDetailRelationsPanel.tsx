@@ -49,7 +49,7 @@ export function RelationNavigationList({
               title={`${item.identifier ? `${item.identifier} — ` : ""}${item.title}`}
             >
               {item.status ? (
-                <StatusIcon status={item.status} className="h-3.5 w-3.5 shrink-0" />
+                <StatusIcon status={item.status} issueId={item.id} className="h-3.5 w-3.5 shrink-0" />
               ) : null}
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
               {item.identifier ? (

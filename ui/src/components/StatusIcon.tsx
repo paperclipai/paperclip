@@ -22,6 +22,14 @@ interface StatusIconProps {
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
+  /**
+   * Issue this icon stands for (PAP-640). Pass it wherever the icon represents
+   * a real task: the in-progress glyph then spins only while an agent is
+   * actively working on it, and sits still between runs.
+   */
+  issueId?: string | null;
+  /** Force the in-progress animation on/off instead of deriving it from agent activity. */
+  animated?: boolean;
 }
 
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
@@ -77,8 +85,22 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * A "covered" blocked task (waiting on active work) maps to the `in_queue`
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
+ *
+ * Pass `issueId` whenever the icon stands for a real task: the in-progress
+ * glyph then animates only while an agent is actively working on it (PAP-640).
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({
+  status,
+  externalConversationState,
+  blockerAttention,
+  onChange,
+  className,
+  glyphContainerClassName,
+  showLabel,
+  size = "md",
+  issueId,
+  animated,
+}: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
@@ -89,6 +111,8 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
     <StatusGlyph
       status={glyphStatus}
       size={size}
+      issueId={issueId}
+      animated={animated}
       className={cn(onChange && !showLabel && "cursor-pointer", className)}
       title={ariaLabel}
     />
