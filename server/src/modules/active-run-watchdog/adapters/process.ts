@@ -52,6 +52,7 @@ export function createProcessAdapter(): RunProcessController {
       }
 
       try {
+        running?.markStopRequested?.();
         await terminateLocalService(
           {
             pid: terminationPid,
