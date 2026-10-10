@@ -455,6 +455,7 @@ describe("AgentMail durable email pipeline", () => {
   });
 
   it("publishes one sponsored fast response only to the originating email sender", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
     const f = await fixture();
     const binding = await aiConnectionService(db).save(f.companyId, "email-board", { provider: "openrouter", method: "api_key", name: "Fast email", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
     const provider = vi.fn(async () => ({ text: "I’ll check the settings panel border.", receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 9 }, response: { body: { usage: { cost: 0.00001 } } } }) }));

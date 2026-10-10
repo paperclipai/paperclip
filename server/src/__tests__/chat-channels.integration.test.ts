@@ -2474,6 +2474,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.responseComments.size).toBe(0);
     });
     it.each(["published", "failed", "delivery_unknown"] as const)("coordinates GitHub working feedback with a %s fast response", async outcome => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
       const f = await reviewBotFixture();
       const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
       const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse,
@@ -6940,7 +6941,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each(["slack", "github"] as const)("publishes fast responses to the accepted %s thread without completing its work", async channelProvider => {
-    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true, enableFastResponses: true });
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } = channelProvider === "github" ? await configuredGitHubEndpoint(fixture) : await configuredSlackEndpoint(fixture);
     await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
