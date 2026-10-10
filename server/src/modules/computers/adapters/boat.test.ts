@@ -56,11 +56,39 @@ describe("Boat transport validation", () => {
     }));
     try {
       await backend.remote(scoped, { action: "read", path: "AGENTS.md" }, { deadlineMs: 1_120_000 });
-      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+        command: "timeout", args: expect.arrayContaining(["--signal=KILL", "30s", "python3"]), timeoutMs: 30_000,
+      }));
       clock = 1_120_000;
       await expect(backend.remote(scoped, { action: "write" }, { deadlineMs: clock })).rejects.toThrow("timed out");
       expect(execute).toHaveBeenCalledOnce();
     } finally { time.mockRestore(); sshFactory.mockReset(); }
+  });
+  it("kills the remote Python group at the file deadline, independent of SSH closure", async () => {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "boat-file-deadline-")));
+    const lateWrite = join(temp, "late-write");
+    let pid: number | undefined;
+    const scoped = { ...record, id: randomUUID(), providerId: `bx_${randomUUID()}` };
+    const execute = vi.fn(async (input: { command: string; args: string[]; stdin?: string }) => {
+      expect(input.command).toBe("timeout");
+      const args = [...input.args];
+      args[args.length - 1] = `import os,time;print(os.getpid(),flush=True);time.sleep(2);open(${JSON.stringify(lateWrite)},'w').write('late')`;
+      const result = spawnSync(input.command, args, { encoding: "utf8", input: input.stdin });
+      pid = Number(result.stdout.trim());
+      expect(pid).toBeGreaterThan(0);
+      return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr, timedOut: false, signal: result.signal, pid: null, startedAt: "" };
+    });
+    sshFactory.mockReturnValue({ execute });
+    const backend = boatBackend(async () => "fixture", vi.fn(async () => json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" })));
+    try {
+      await expect(backend.remote(scoped, { action: "read" }, { deadlineMs: Date.now() + 300 })).rejects.toThrow("Computer operation failed");
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow(), { timeout: 2000 });
+      expect(existsSync(lateWrite)).toBe(false);
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      sshFactory.mockReset();
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
   it("expires only the file waiter while shared SSH initialization remains usable", async () => {
     vi.useFakeTimers();

@@ -340,7 +340,7 @@ export function boatBackend(
     }
     return pending;
   }
-  async function runner(record: ComputerRecord, options?: { control?: boolean }): Promise<CommandManagedRuntimeRunner> {
+  async function runner(record: ComputerRecord, options?: { control?: boolean; remoteTimeout?: boolean }): Promise<CommandManagedRuntimeRunner> {
     const raw = await rawRunner(record);
     let admission = transportAdmission.get(record.providerId);
     if (!admission) {
@@ -348,7 +348,17 @@ export function boatBackend(
       transportAdmission.set(record.providerId, admission);
     }
     const execute = admission;
-    return { ...raw, execute: (input) => execute(raw, input, options?.control === true) };
+    const bounded = options?.remoteTimeout ? {
+      ...raw,
+      execute: (input: CommandInput) => raw.execute({
+        ...input,
+        // Admission has already deducted queue time. Bound the remote process
+        // group as well as the local SSH child; socket closure is not stop proof.
+        command: "timeout",
+        args: ["--signal=KILL", `${input.timeoutMs! / 1000}s`, input.command, ...(input.args ?? [])],
+      }),
+    } : raw;
+    return { ...raw, execute: (input) => execute(bounded, input, options?.control === true) };
   }
   async function fileTransport(
     record: ComputerRecord,
@@ -356,7 +366,7 @@ export function boatBackend(
     options?: ComputerOperationOptions,
   ) {
     remaining(options, 120_000);
-    const pending = runner(record, { control });
+    const pending = runner(record, { control, remoteTimeout: options?.deadlineMs !== undefined });
     if (options?.deadlineMs === undefined) return pending;
     // Initialization is shared with unrelated owners. Expire this waiter only;
     // the cached promise retains its normal success/eviction behavior.
