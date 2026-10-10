@@ -2360,6 +2360,34 @@ describe("issue thread interaction routes", () => {
     );
   });
 
+  it("denies interaction creation by a task-bridge-key actor on an assigned issue", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_TASK_BRIDGE,
+      source: "agent_key",
+      keyId: "bridge-key",
+      keyScope: { kind: "task_bridge" },
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        idempotencyKey: "interaction:task-bridge-confirm",
+        payload: { version: 1, prompt: "Approve this owner decision?" },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "interaction_scope_denied" });
+    expect(res.body.error).toContain("Maria");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("allows a different in-scope agent run to respond when policy permits", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
     const app = await createApp({
