@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { createLocalAgentJwt, MIN_AGENT_JWT_TTL_SECONDS, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -103,12 +103,32 @@ describe("agent local JWT", () => {
   });
 
   it("rejects expired tokens", () => {
-    process.env[ttlEnv] = "1";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
 
-    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    vi.setSystemTime(new Date("2026-01-03T00:00:05.000Z"));
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("never mints a run token shorter than the 48h floor", () => {
+    // Run tokens are minted once per adapter spawn and never refreshed, so a
+    // TTL below a run's own length is what silently 401s the run mid-flight
+    // (AUT-2259 / AUT-4454). Operator TTLs may only extend past the floor.
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    for (const requestedTtl of ["1", "3600", String(60 * 60 * 24)]) {
+      process.env[ttlEnv] = requestedTtl;
+      const claims = verifyLocalAgentJwt(
+        createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1")!,
+      );
+      expect(claims!.exp - claims!.iat).toBe(MIN_AGENT_JWT_TTL_SECONDS);
+    }
+
+    // Longer operator TTLs are still honoured.
+    process.env[ttlEnv] = String(MIN_AGENT_JWT_TTL_SECONDS * 3);
+    const extended = verifyLocalAgentJwt(
+      createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1")!,
+    );
+    expect(extended!.exp - extended!.iat).toBe(MIN_AGENT_JWT_TTL_SECONDS * 3);
   });
 
   it("rejects issuer/audience mismatch", () => {

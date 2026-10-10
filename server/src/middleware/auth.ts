@@ -312,6 +312,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      // A run-scoped request that carries no credentials used to fall through
+      // with `actor.type === "none"`, so every company-scoped route answered the
+      // existence-oracle 404 ("Issue not found") and the agent concluded the API
+      // was down. This is the same dead end an expired run token produced
+      // (AUT-2259 / AUT-4454), only without the 401 that names the cause. Fail
+      // here instead, with the actionable message. Only unauthenticated `/api`
+      // requests are affected: `local_trusted` instances already resolve to the
+      // implicit board actor above, and browsers and unauthenticated public
+      // routes never send this header.
+      if (runIdHeader && req.actor.type === "none" && req.path.startsWith("/api")) {
+        next(
+          unauthorized(
+            "Run-scoped request is missing or unusable agent credentials; obtain a fresh token and retry",
+          ),
+        );
+        return;
+      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
