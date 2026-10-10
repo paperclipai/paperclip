@@ -298,6 +298,30 @@ describe("computer ownership", () => {
     await f.service.reconcile();
     expect(f.backend.stop).toHaveBeenCalledOnce();
   });
+  it("disconnects only the exact company-scoped viewer owned by the current user without provider access", async () => {
+    const f = fixture();
+    await f.attach();
+    const viewer = await f.service.connect({ ...f.scope, userId: "alice", idleTimeoutMs: 60_000 });
+    const other = await f.service.connect({ ...f.scope, userId: "bob", idleTimeoutMs: 60_000 });
+    const runner = await f.admit();
+    vi.clearAllMocks();
+    const input = { ...f.scope, owner: viewer.owner, userId: "alice" };
+    await expect(f.service.disconnectViewer({ ...input, companyId: "foreign-company" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(f.service.disconnectViewer({ ...input, environmentId: "foreign-environment" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(f.service.disconnectViewer({ ...input, userId: "bob" })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(f.service.disconnectViewer({ ...input, owner: { ...viewer.owner, generation: viewer.owner.generation + 1 } })).rejects.toMatchObject({ code: "conflict" });
+    await expect(f.service.disconnectViewer({ ...input, owner: { ...viewer.owner, computerId: "another-computer" } })).rejects.toMatchObject({ code: "conflict" });
+    await expect(f.service.disconnectViewer({ ...input, owner: runner.owner })).rejects.toMatchObject({ code: "forbidden" });
+    expect((await f.repository.get(f.scope)).ledger.owners.every(owner => owner.phase === "active")).toBe(true);
+    await f.service.disconnectViewer(input);
+    const owners = (await f.repository.get(f.scope)).ledger.owners;
+    expect(owners.find(owner => owner.id === viewer.owner.ownerId)?.phase).toBe("retired");
+    expect(owners.find(owner => owner.id === other.owner.ownerId)?.phase).toBe("active");
+    expect(owners.find(owner => owner.id === runner.owner.ownerId)?.phase).toBe("active");
+    for (const method of [f.backend.inspect, f.backend.ready, f.backend.retire, f.backend.stop, f.backend.renew, f.backend.desktop]) {
+      expect(method).not.toHaveBeenCalled();
+    }
+  });
   it("prunes retired viewers while preserving active viewers and runner stop proof", async () => {
     const f = fixture();
     await f.attach();

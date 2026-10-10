@@ -28,6 +28,13 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
     if (!issue) return;
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
+    if (req.method === "POST" && req.path === "/disconnect") {
+      // A task may have moved since this viewer connected. Cleanup is scoped
+      // by the module to the posted environment, exact owner, and current user.
+      res.locals.computer = { issue };
+      next();
+      return;
+    }
     if (!(await settings.getExperimental()).enableBoatEnvironments && !req.path.endsWith("/disconnect")) {
       if (req.method === "GET") { res.json(null); return; }
       throw unprocessable("Boat environments are disabled.");
@@ -76,13 +83,12 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
 
   router.post("/issues/:issueId/computer/disconnect", async (req, res) => {
     const input = presenceSchema.parse(req.body);
-    const { environment, issue } = res.locals.computer;
-    if (input.environmentId !== environment.id) throw notFound("Computer not available for this task");
+    const { issue } = res.locals.computer;
     const actor = getActorInfo(req);
-    await computers.disconnectViewer({ companyId: issue.companyId, environmentId: environment.id,
+    await computers.disconnectViewer({ companyId: issue.companyId, environmentId: input.environmentId,
       owner: input.owner, userId: actor.actorId });
     await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
-      action: "computer.disconnected", entityType: "environment", entityId: environment.id, details: { issueId: issue.id } });
+      action: "computer.disconnected", entityType: "environment", entityId: input.environmentId, details: { issueId: issue.id } });
     res.status(204).end();
   });
 
