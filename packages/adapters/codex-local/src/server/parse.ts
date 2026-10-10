@@ -169,23 +169,10 @@ export function classifyCodexAuthRefreshFailure(input: {
   // treating that as a provider failure would revoke a healthy shared account.
   // Use only the last protocol error, plus process diagnostics. Retain plain
   // stdout support for CLI failures that occur before the protocol starts.
-  const events = (input.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => parseJson(line.trim()));
-  const hasProtocolEvents = events.some((event) => event && typeof event.type === "string");
-  let protocolError: string | null = null;
-  for (const event of events) {
-    if (event?.type === "error") {
-      const message = asString(event.message, "").trim();
-      if (message) protocolError = message;
-    } else if (event?.type === "turn.failed") {
-      const message = asString(parseObject(event.error).message, "").trim();
-      if (message) protocolError = message;
-    }
-  }
+  const parsed = parseCodexJsonl(input.stdout ?? "");
   const haystack = buildCodexErrorHaystack({
     ...input,
-    stdout: hasProtocolEvents ? protocolError : input.stdout,
+    stdout: parsed.sawProtocolEvent ? parsed.errorMessage : input.stdout,
   });
 
   if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
