@@ -10249,7 +10249,7 @@ export function assertRemoteRunnerBuildMetadata(
   }
 }
 
-async function stageRemoteRunnerFile(input: {
+export async function stageRemoteRunnerFile(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
   sourcePath: string;
@@ -10284,9 +10284,10 @@ async function stageRemoteRunnerFile(input: {
     args: ["-c", script],
     stdin: bytes.toString("base64"),
     bypassSession: true,
+    timeoutMs: 180_000,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_staging_failed");
+    throw new Error(`runner_remote_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
   }
 }
 
@@ -10365,7 +10366,7 @@ export async function stageRemoteRunnerDirectory(input: {
       bypassSession: true, timeoutMs: 180_000,
     });
     if (result.exitCode !== 0 || result.timedOut) {
-      throw new Error("runner_remote_directory_staging_failed");
+      throw new Error(`runner_remote_directory_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
     }
   };
   const pending: Promise<void>[] = [];
@@ -12587,7 +12588,7 @@ async function createRunnerdBackendWithinSessionClaim(
         timeoutMs: 10_000,
       });
       if (created.exitCode !== 0 || created.timedOut) {
-        throw new Error("runner_remote_directory_staging_failed");
+        throw new Error(`runner_remote_directory_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
       }
 
       // Codex launch credentials are intentionally excluded from failover

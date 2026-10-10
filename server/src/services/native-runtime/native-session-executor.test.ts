@@ -366,6 +366,7 @@ import {
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
+  stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -2465,6 +2466,23 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it("budgets artifact upload time and retains redacted staging diagnostics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runner-file-"));
+    const sourcePath = join(root, "runner");
+    await writeFile(sourcePath, "fixture binary");
+    const execute = vi.fn(async () => ({ exitCode: 255, timedOut: true,
+      stdout: "", stderr: "Host key verification failed; Bearer abcdefghijkl" }));
+    try {
+      const stage = stageRemoteRunnerFile({
+        target: { kind: "remote", transport: "computer" } as never,
+        runner: { execute } as never, sourcePath, targetPath: "/private/runner", mode: 0o700,
+      });
+      await expect(stage).rejects.toThrow("exit=255 timedOut=true Host key verification failed");
+      await expect(stage).rejects.not.toThrow("abcdefghijkl");
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 180_000 }));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it.each([{ sizeMiB: 0, corrupt: false }, { sizeMiB: 65, corrupt: false }, { sizeMiB: 0, corrupt: true }])("stages a $sizeMiB MiB provider pack through a command-only computer runner (corrupt=$corrupt)", async ({ sizeMiB, corrupt }) => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-computer-pack-"));
     const sourcePath = join(root, "source");
