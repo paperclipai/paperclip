@@ -238,8 +238,8 @@ describe("claude remote execution", () => {
       runId: "run-in-place",
       agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
       runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-      config: { engine: "cli", command: "claude" },
-      context: { paperclipWorkspace: { cwd: rootDir, source: "task_session" } },
+      config: { engine: "cli", command: "claude", cwd: "/stale-host-cwd" },
+      context: { paperclipWorkspace: { cwd: "/remote-only-agent-home", source: "agent_home" } },
       executionTarget: {
         kind: "remote", transport: "ssh", remoteCwd: "/old-copied-workspace",
         workspaceRealization: { mode: "in_place", authoritativeRoot: "/persistent-project", pathAliases: [], outboundRestorePaths: [] },

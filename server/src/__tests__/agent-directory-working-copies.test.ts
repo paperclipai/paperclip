@@ -10,7 +10,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
+import { agentFileStore, preparePersistentAgentExecutionHome, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
 import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
@@ -73,6 +73,46 @@ describe("persistent agent directories", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agentId] } });
     await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true });
     await fs.writeFile(path.join(root, entryFile), initial);
+  });
+
+  it("seeds a persistent execution home before a run or instruction-copy receipt exists", async () => {
+    const remoteRoot = "/home/user/paperclip/test/agents/target";
+    let exists = false;
+    const seedBytes = vi.fn(async () => { exists = true; });
+    const remote = { root: remoteRoot, list: async () => {
+      if (!exists) throw { code: "not_found" };
+      return [];
+    }, seedBytes };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    const environmentId = randomUUID();
+    const executionTarget = { kind: "remote", transport: "computer", environmentId,
+      fileAuthority: { kind: "remote-persistent", agentHome: remoteRoot } } as never;
+    try {
+      await fs.writeFile(path.join(root, "memory.bin"), Buffer.from([0, 255, 7]));
+      expect(await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget })).toBe(remoteRoot);
+      expect(lookup).toHaveBeenCalledWith(db, companyId, agentId, environmentId);
+      expect(seedBytes).toHaveBeenCalledOnce();
+      expect(seedBytes).toHaveBeenCalledWith(expect.objectContaining({
+        [entryFile]: Buffer.from(initial), "memory.bin": Buffer.from([0, 255, 7]),
+      }));
+      // Subsequent setup adopts the remote tree, regardless of controller edits.
+      await fs.writeFile(path.join(root, "memory.bin"), "stale controller bytes");
+      await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget });
+      expect(seedBytes).toHaveBeenCalledOnce();
+      expect(await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.agentId, agentId))).toEqual([]);
+    } finally { lookup.mockRestore(); }
+  });
+
+  it("creates an external-instruction agent home without importing the external path", async () => {
+    await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "external", instructionsFilePath: "/private/external.md" } }).where(eq(agents.id, agentId));
+    const remote = { root: "/home/user/agents/external", seedBytes: vi.fn(async () => ({ seeded: true })) };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    try {
+      const executionTarget = { kind: "remote", transport: "computer", environmentId: randomUUID(),
+        fileAuthority: { kind: "remote-persistent", agentHome: remote.root } } as never;
+      await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget });
+      expect(remote.seedBytes).toHaveBeenCalledWith({});
+    } finally { lookup.mockRestore(); }
   });
 
   it("keeps Boat personal bytes authoritative through warm checkpoints, collection, and editor conflicts", async () => {

@@ -1,4 +1,5 @@
 import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { cachedAgentFileManifest, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
@@ -160,6 +161,32 @@ export async function inspectAgentDirectory(root: string, enforceLimits = true) 
 }
 export async function snapshotAgentFiles(root: string, enforceLimits = true): Promise<DirectorySnapshot> {
   return (await inspectAgentDirectory(root, enforceLimits)).snapshot;
+}
+
+/** Realize personal authority before any remote command needs it as cwd.
+ * This is runtime setup, not a working-copy checkout: no run receipt or copyback
+ * is created, and an existing remote home is always adopted untouched. */
+export async function preparePersistentAgentExecutionHome(db: Db, input: {
+  companyId: string; agentId: string; target?: AdapterExecutionTarget | null;
+}): Promise<string | null> {
+  const target = input.target;
+  if (target?.kind !== "remote" || target.transport !== "computer") return null;
+  if (!target.environmentId) throw conflict("Persistent agent environment is missing");
+  return db.transaction(async tx => {
+    const [agent] = await tx.select().from(agents)
+      .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId))).for("update");
+    if (!agent) throw notFound("Agent not found");
+    const remote = await persistentAgentFiles(db, input.companyId, input.agentId, target.environmentId!);
+    if (!remote || remote.root !== target.fileAuthority.agentHome) throw conflict("Persistent agent placement changed");
+    if (agentInstructionsBundleMode(agent) === "managed") {
+      await seedPersistentAgentHome(remote, await adoptAgentFiles(tx, agent));
+    } else {
+      // An external instruction path is not an authority for personal files.
+      // The seed primitive atomically creates an absent home or adopts it.
+      await remote.seedBytes({});
+    }
+    return remote.root;
+  });
 }
 
 export function agentFileStore(db: Db) {
