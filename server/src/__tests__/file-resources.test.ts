@@ -288,6 +288,41 @@ describeEmbeddedPostgres("workspace file resources", () => {
     } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
   });
 
+  it.each([["not_found", 404], ["forbidden", 403], ["provider_error", 502]] as const)("keeps recursive persistent searches scoped when a child returns %s", async (code, status) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId: crypto.randomUUID(), placementId: crypto.randomUUID() } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.mkdir(path.join(workspace.projectRoot, "docs"));
+    await fs.writeFile(path.join(workspace.projectRoot, "docs", "guide-local.md"), "must not replace remote matches");
+    const listPage = vi.fn(async (relative: string) => {
+      if (relative === "docs/vanished") throw Object.assign(new Error("Child unavailable"), { code });
+      expect(relative).toBe("docs");
+      return { entries: [
+        { name: "guide-before.md", kind: "file", size: 12, mtimeMs: 1 },
+        { name: "vanished", kind: "directory", size: 0, mtimeMs: 1 },
+        { name: "guide-after.md", kind: "file", size: 12, mtimeMs: 1 },
+      ], truncated: false };
+    });
+    const workspaceFiles = vi.fn(async () => ({ root: workspace.executionRoot, listPage }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const result = service.list(graph.issueId, { path: "docs/", q: "guide" });
+      if (code === "not_found") {
+        const listed = await result;
+        expect(listed.items.map(item => item.title)).toEqual(["guide-after.md", "guide-before.md"]);
+        expect(listed.items.every(item => item.workspaceKind === "execution_workspace")).toBe(true);
+        expect(listed.scannedCount).toBe(3);
+        expect(listed.truncated).toBe(false);
+      } else {
+        await expect(result).rejects.toMatchObject({ status });
+      }
+      expect(listPage.mock.calls.map(([relative]) => relative)).toEqual(["docs", "docs/vanished"]);
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
   it.each([["forbidden", 403], ["provider_error", 502]] as const)("does not fall back from a persistent %s error", async (code, status) => {
     const workspace = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
