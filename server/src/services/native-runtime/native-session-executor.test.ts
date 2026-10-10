@@ -13459,6 +13459,7 @@ describe("runnerd provider runtime wiring", () => {
     { condition: "workspace-coordinate", expected: "verified" },
     { condition: "warm-origin", expected: "verified" },
     { condition: "origin-other-session", expected: "scope_mismatch" },
+    { condition: "origin-wrong-profile-run", expected: "scope_mismatch" },
     { condition: "origin-other-owner", expected: "scope_mismatch" },
     { condition: "origin-newer-generation", expected: "scope_mismatch" },
     { condition: "origin-active", expected: "scope_mismatch" },
@@ -13487,7 +13488,7 @@ describe("runnerd provider runtime wiring", () => {
     const originDescriptor = { ...descriptor, leaseId: "origin-lease",
       providerLeaseId: condition === "origin-other-owner" ? "other-owner" : owner.ownerId,
       ownerGeneration: condition === "origin-newer-generation" ? 3 : 1 };
-    const originRow = { status: condition === "origin-active" ? "running" : "succeeded",
+    const originRow = { id: condition === "origin-wrong-profile-run" ? "other-run" : originExecution.binding.runId, status: condition === "origin-active" ? "running" : "succeeded",
       runnerProfileJson: { nativeExecutionInput: originExecution, nativeComputerWorkspace: originDescriptor } };
     const workspaceCoordinate = ["workspace-coordinate", "wrong-workspace-run"].includes(condition);
     const db = { select: () => ({ from: (table: unknown) => ({ where: (query: SQL) => { if (table === environmentLeases) leaseQuery = query; return ({ limit: async (limit: number) =>
