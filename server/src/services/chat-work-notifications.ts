@@ -11,6 +11,9 @@ export async function notifyChatPublicationWork(tx: object): Promise<void> {
 }
 
 export const CHAT_ACTION_QUEUES = {
+  provider_effect: DELIVERY_QUEUES.chatProviderEffects,
+  github_webhook_ingress: DELIVERY_QUEUES.chatGitHubIngress,
+  slack_session_sync: DELIVERY_QUEUES.chatSessionSyncs,
   slack_board_message: DELIVERY_QUEUES.chatBoardMessages,
   slash_task_start: DELIVERY_QUEUES.chatTaskStarts,
   receipt_reaction: DELIVERY_QUEUES.chatReceiptReactions,

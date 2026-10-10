@@ -4581,6 +4581,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       runtimeContext: LifecycleRuntimeFence;
     },
   ) {
+    await notifyChatActionWork(database, "provider_effect");
     const [inserted] = await database
       .insert(chatActions)
       .values({
@@ -4718,6 +4719,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ["verifying", "active"],
             )
           : null;
+      await notifyChatActionWork(tx, "provider_effect");
       const [ownedAction] = await tx
         .update(chatActions)
         .set({
@@ -4819,6 +4821,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const failure =
       "Provider delivery could not be confirmed after the worker stopped. The effect will not be replayed automatically.";
     await db.transaction(async (tx) => {
+      await notifyChatActionWork(tx, "provider_effect");
       const [quarantined] = await tx
         .update(chatActions)
         .set({
@@ -5093,6 +5096,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     action: typeof chatActions.$inferSelect,
     attempt: number,
   ): Promise<boolean> {
+    await notifyChatActionWork(tx, "provider_effect");
     const [cancelled] = await tx
       .update(chatActions)
       .set({
@@ -5161,14 +5165,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (!action) return "failed";
       const payload = providerEffectPayload(action.payload);
       if (!payload) {
-        await db
-          .update(chatActions)
-          .set({
-            status: "failed",
-            result: { code: "provider_effect_payload_invalid" },
-            updatedAt: new Date(),
-          })
-          .where(eq(chatActions.id, action.id));
+        await db.transaction(async (tx) => {
+          await notifyChatActionWork(tx, "provider_effect");
+          return tx
+            .update(chatActions)
+            .set({
+              status: "failed",
+              result: { code: "provider_effect_payload_invalid" },
+              updatedAt: new Date(),
+            })
+            .where(eq(chatActions.id, action.id));
+        });
         return "failed";
       }
       if (action.status === "processed") return "processed";
@@ -5238,6 +5245,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     payload,
                   )
                 : false;
+              await notifyChatActionWork(tx, "provider_effect");
               const [transportClaim] = await tx
                 .update(chatActions)
                 .set({
@@ -5355,6 +5363,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 },
                 ["verifying", "active"],
               );
+              await notifyChatActionWork(tx, "provider_effect");
               const [completed] = await tx
                 .update(chatActions)
                 .set({
@@ -5481,23 +5490,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const actions = await db
       .select()
       .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "provider_effect"),
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
+      .where(dueChatAction("provider_effect", now.getTime()))
       .orderBy(asc(chatActions.createdAt))
       .limit(limit);
     for (const action of actions) {
@@ -25203,6 +25196,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           runtimeGeneration: context.generation,
           credentialFingerprint: context.credentialFingerprint,
         };
+        await notifyChatActionWork(tx, "github_webhook_ingress");
         const inserted = await tx
           .insert(chatActions)
           .values({
@@ -25229,6 +25223,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // currently authenticated body after a terminal processing failure.
         // Successful, cancelled, retryable, and in-flight receipts remain
         // immutable deduplication fences.
+        await notifyChatActionWork(tx, "github_webhook_ingress");
         const [rearmed] = await tx
           .update(chatActions)
           .set({
@@ -25312,32 +25307,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       Date.now() +
         Math.min(60_000, 1_000 * 2 ** Math.max(0, input.attempts - 1)),
     );
-    await db
-      .update(chatActions)
-      .set({
-        status: cancelled ? "cancelled" : processed ? "processed" : "failed",
-        payload: terminal
-          ? redactedGitHubWebhookIngressPayload(input.payload)
-          : input.payload,
-        result: {
-          attempts: input.attempts,
-          ...(input.cancelledCode ? { code: input.cancelledCode } : {}),
-          ...(input.response
-            ? { httpStatus: input.response.status }
-            : { error: redactError(input.error) }),
-          retryable: !terminal,
-          ...(!terminal ? { retryAt: retryAt.toISOString() } : {}),
-        },
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(chatActions.id, actionId),
-          eq(chatActions.kind, "github_webhook_ingress"),
-          eq(chatActions.status, "processing"),
-          sql`(${chatActions.result}->>'attempts')::int = ${input.attempts}`,
-        ),
-      );
+    await db.transaction(async (tx) => {
+      await notifyChatActionWork(tx, "github_webhook_ingress");
+      return tx
+        .update(chatActions)
+        .set({
+          status: cancelled ? "cancelled" : processed ? "processed" : "failed",
+          payload: terminal
+            ? redactedGitHubWebhookIngressPayload(input.payload)
+            : input.payload,
+          result: {
+            attempts: input.attempts,
+            ...(input.cancelledCode ? { code: input.cancelledCode } : {}),
+            ...(input.response
+              ? { httpStatus: input.response.status }
+              : { error: redactError(input.error) }),
+            retryable: !terminal,
+            ...(!terminal ? { retryAt: retryAt.toISOString() } : {}),
+          },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatActions.id, actionId),
+            eq(chatActions.kind, "github_webhook_ingress"),
+            eq(chatActions.status, "processing"),
+            sql`(${chatActions.result}->>'attempts')::int = ${input.attempts}`,
+          ),
+        );
+    });
   }
 
   async function processGitHubWebhookIngress(
@@ -25361,18 +25359,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return githubIngressAcceptedResponse();
     const payload = githubWebhookIngressPayload(action.payload);
     if (!payload) {
-      await db
-        .update(chatActions)
-        .set({
-          status: "failed",
-          payload: {},
-          result: {
-            code: "github_webhook_ingress_payload_invalid",
-            retryable: false,
-          },
-          updatedAt: new Date(),
-        })
-        .where(eq(chatActions.id, action.id));
+      await db.transaction(async (tx) => {
+        await notifyChatActionWork(tx, "github_webhook_ingress");
+        return tx
+          .update(chatActions)
+          .set({
+            status: "failed",
+            payload: {},
+            result: {
+              code: "github_webhook_ingress_payload_invalid",
+              retryable: false,
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(chatActions.id, action.id));
+      });
       return githubIngressAcceptedResponse();
     }
     const now = new Date();
@@ -25407,21 +25408,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               sql`coalesce((${chatActions.result}->>'attempts')::int, 0) = ${previousAttempts}`,
             )
           : eq(chatActions.status, "received");
-    const [claimed] = await db
-      .update(chatActions)
-      .set({
-        status: "processing",
-        result: { attempts },
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(chatActions.id, action.id),
-          eq(chatActions.kind, "github_webhook_ingress"),
-          claimGuard,
-        ),
-      )
-      .returning();
+    const [claimed] = await db.transaction(async (tx) => {
+      await notifyChatActionWork(tx, "github_webhook_ingress");
+      return tx
+        .update(chatActions)
+        .set({
+          status: "processing",
+          result: { attempts },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatActions.id, action.id),
+            eq(chatActions.kind, "github_webhook_ingress"),
+            claimGuard,
+          ),
+        )
+        .returning();
+    });
     if (!claimed) return null;
     action = claimed;
 
@@ -26192,28 +26196,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     onlyActionId?: string,
   ) {
     const now = new Date();
-    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
       .select({ id: chatActions.id })
       .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "github_webhook_ingress"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
+      .where(and(
+        onlyActionId ? eq(chatActions.id, onlyActionId) : undefined,
+        dueChatAction("github_webhook_ingress", now.getTime()),
+      ))
       .orderBy(asc(chatActions.createdAt))
       .limit(limit);
     for (const action of actions) await processGitHubWebhookIngress(action.id);
@@ -28092,8 +28081,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function processPendingChatMaintenance(limit = 25) {
     return Promise.allSettled([
-      processPendingGitHubWebhookIngress(limit),
-      processPendingProviderEffects(limit),
       processPendingTelegramMaintenance(limit),
       processFailedChatRunRetries(limit),
     ]);
@@ -28106,7 +28093,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // so a crashed processing claim is quarantined before the delivery worker
     // could otherwise replay it.
     const actionRecovery = onlyDeliveryId || !maintenance ? null : Promise.allSettled([
-      processPendingChatMaintenance(limit), processPendingSlackBoardMessages(limit),
+      processPendingChatMaintenance(limit), processPendingGitHubWebhookIngress(limit),
+      processPendingProviderEffects(limit), processPendingSlackBoardMessages(limit),
       processPendingSlackTaskStarts(limit), processPendingReceiptReactions(limit),
       processPendingSlackSessionStops(limit), slackRegistration.processPendingVerificationMessages(limit),
     ]);
@@ -30095,6 +30083,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 );
             }
             const now = new Date();
+            await notifyChatActionWork(tx, "provider_effect");
             const [claimed] = await tx
               .update(chatActions)
               .set({
@@ -30206,6 +30195,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const now = new Date();
           const nextStatus =
             resolution === "mark_delivered" ? "processed" : "cancelled";
+          await notifyChatActionWork(tx, "provider_effect");
           const [resolved] = await tx
             .update(chatActions)
             .set({
@@ -36931,43 +36921,36 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     const now = new Date();
     const actions = await db
-      .select()
+      .select({ action: chatActions })
       .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "slack_session_sync"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
-          or(
-            and(
-              eq(chatActions.status, "received"),
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, new Date(now.getTime() - 60_000)),
-            ),
-          ),
-        ),
-      )
+      .leftJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
+      .where(and(
+        onlyActionId ? eq(chatActions.id, onlyActionId) : undefined,
+        dueChatAction("slack_session_sync", now.getTime()),
+      ))
       .orderBy(asc(chatActions.updatedAt))
-      .limit(limit);
+      .limit(limit)
+      .then(rows => rows.map(row => row.action));
     await options.slackSessionSyncSelectionBarrier?.();
     for (const action of actions) {
       const payload = slackSessionSyncPayload(action.payload);
       if (!payload || !action.conversationId) {
-        await db
-          .update(chatActions)
-          .set({
-            status: "failed",
-            result: { code: "slack_session_payload_invalid" },
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(chatActions.id, action.id),
-              eq(chatActions.updatedAt, action.updatedAt),
-            ),
-          );
+        await db.transaction(async (tx) => {
+          await notifyChatActionWork(tx, "slack_session_sync");
+          return tx
+            .update(chatActions)
+            .set({
+              status: "failed",
+              result: { code: "slack_session_payload_invalid" },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(chatActions.id, action.id),
+                eq(chatActions.updatedAt, action.updatedAt),
+              ),
+            );
+        });
         continue;
       }
       const revisionWhere = and(
@@ -36980,26 +36963,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         eq(chatActions.updatedAt, action.updatedAt),
       );
       const record = await endpointRecord(action.endpointId);
-      if (record && ["paused", "attention"].includes(record.endpoint.status)) {
-        await db
-          .update(chatActions)
-          .set({
-            status: "received",
-            result: { retryAt: new Date(Date.now() + 30_000).toISOString() },
-            updatedAt: new Date(),
-          })
-          .where(selectedSnapshotWhere);
-        continue;
-      }
+      if (record && ["paused", "attention"].includes(record.endpoint.status)) continue;
       if (!record || record.endpoint.provider !== "slack") {
-        await db
-          .update(chatActions)
-          .set({
-            status: "cancelled",
-            result: { code: "slack_session_endpoint_unavailable" },
-            updatedAt: new Date(),
-          })
-          .where(selectedSnapshotWhere);
+        await db.transaction(async (tx) => {
+          await notifyChatActionWork(tx, "slack_session_sync");
+          return tx
+            .update(chatActions)
+            .set({
+              status: "cancelled",
+              result: { code: "slack_session_endpoint_unavailable" },
+              updatedAt: new Date(),
+            })
+            .where(selectedSnapshotWhere);
+        });
         continue;
       }
       const attempts =
@@ -37084,6 +37060,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 ? endpoint.allowDirectMessages
                 : nonDirectDestinationAllowed(endpoint, resource))
             ) {
+              await notifyChatActionWork(tx, "slack_session_sync");
               await tx
                 .update(chatActions)
                 .set({
@@ -37118,6 +37095,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               .limit(1)
               .then((rows) => rows[0] ?? null);
             if (!publication) {
+              await notifyChatActionWork(tx, "slack_session_sync");
               await tx
                 .update(chatActions)
                 .set({
@@ -37150,6 +37128,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               if (!run || !["queued", "running"].includes(run.status))
                 status = "active";
             }
+            await notifyChatActionWork(tx, "slack_session_sync");
             const claimed = await tx
               .update(chatActions)
               .set({
@@ -37195,6 +37174,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               outcome === "updated" && claim.status === "processing"
                 ? 30 * 60_000
                 : null;
+            await notifyChatActionWork(tx, "slack_session_sync");
             await tx
               .update(chatActions)
               .set({
@@ -37232,35 +37212,38 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           disposition.kind === "retry"
             ? disposition.retryAfterMs
             : Math.min(5 * 60_000, 1_000 * 2 ** Math.min(attempts, 8));
-        await db
-          .update(chatActions)
-          .set({
-            status: retryable ? "received" : "failed",
-            result: {
-              attempts,
-              code: retryable
-                ? "slack_session_sync_retry"
-                : "slack_session_sync_rejected",
-              ...(retryable
-                ? { retryAt: new Date(Date.now() + retryMs).toISOString() }
-                : {}),
-            },
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              revisionWhere,
-              ownsAttempt
-                ? and(
-                    eq(chatActions.status, "processing"),
-                    sql`${chatActions.result}->>'ownerToken' = ${ownerToken}`,
-                  )
-                : and(
-                    eq(chatActions.status, "received"),
-                    eq(chatActions.updatedAt, action.updatedAt),
-                  ),
-            ),
-          );
+        await db.transaction(async (tx) => {
+          await notifyChatActionWork(tx, "slack_session_sync");
+          return tx
+            .update(chatActions)
+            .set({
+              status: retryable ? "received" : "failed",
+              result: {
+                attempts,
+                code: retryable
+                  ? "slack_session_sync_retry"
+                  : "slack_session_sync_rejected",
+                ...(retryable
+                  ? { retryAt: new Date(Date.now() + retryMs).toISOString() }
+                  : {}),
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                revisionWhere,
+                ownsAttempt
+                  ? and(
+                      eq(chatActions.status, "processing"),
+                      sql`${chatActions.result}->>'ownerToken' = ${ownerToken}`,
+                    )
+                  : and(
+                      eq(chatActions.status, "received"),
+                      eq(chatActions.updatedAt, action.updatedAt),
+                    ),
+              ),
+            );
+        });
         logger.warn(
           {
             endpointId: action.endpointId,
