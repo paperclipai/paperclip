@@ -5705,8 +5705,22 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      // SIA-1900: cross-agent heartbeat/wake is allowed when the access
+      // service approves the actor (self, manager-of-target, or board-grant).
+      // Failure to delegate here is what produced the 'Agent can only invoke
+      // itself' 403 that blocked the COO scrum-master wake pipeline.
+      const crossWakeDecision = await access.decide({
+        actor: req.actor,
+        action: "agent:wake",
+        resource: { type: "agent", companyId: agent.companyId, agentId: id },
+      });
+      if (!crossWakeDecision.allowed) {
+        const details = authorizationDeniedDetails(crossWakeDecision);
+        if (details) {
+          res.status(403).json({ error: crossWakeDecision.explanation, ...details });
+        } else {
+          res.status(403).json({ error: crossWakeDecision.explanation });
+        }
         return;
       }
     } else {
@@ -5982,8 +5996,19 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      // SIA-1900: see handleWakeupRoute for the cross-agent wake delegation.
+      const crossWakeDecision = await access.decide({
+        actor: req.actor,
+        action: "agent:wake",
+        resource: { type: "agent", companyId: agent.companyId, agentId: id },
+      });
+      if (!crossWakeDecision.allowed) {
+        const details = authorizationDeniedDetails(crossWakeDecision);
+        if (details) {
+          res.status(403).json({ error: crossWakeDecision.explanation, ...details });
+        } else {
+          res.status(403).json({ error: crossWakeDecision.explanation });
+        }
         return;
       }
     } else {

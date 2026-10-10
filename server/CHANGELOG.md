@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
+- Allow an agent to wake a direct or transitive reportee via `POST /api/agents/:id/heartbeat/invoke` and `POST /api/agents/:id/wakeup` by routing the agent-actor branch through `access.decide({action:'agent:wake'})`. Self-invoke continues to work; cross-company targets remain denied. Regression test added in `server/src/__tests__/authorization-service.test.ts`.
 
 ## 0.3.1
 
