@@ -8829,6 +8829,7 @@ describe("native warm session supervision", () => {
                 provider: first.provider,
                 driverKind: first.session.driverKind,
                 lifecyclePolicy: first.session.lifecyclePolicy,
+                workMode: first.task.workMode,
                 executionMode: "default",
                 runtimeContextDigest: null,
                 nativeToolContractFingerprint:
@@ -8839,6 +8840,7 @@ describe("native warm session supervision", () => {
                           ? "local"
                           : "remote",
                       ),
+                runtimeContract: nativeSessionResume.nativeRuntimeContractForProvider(first.provider),
               }),
             )
             .digest("hex")}`;
