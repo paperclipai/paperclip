@@ -3765,13 +3765,21 @@ export function issueRoutes(
    * Default structural parent for a delegated follow-up: the task the agent's
    * run is executing. Returns null when the new task should stay standalone:
    * no run-bound task, a conversation (chat handoffs are top-level by design),
-   * a task the agent may not mutate, or a parent that would create a delegation
-   * cycle with the requested assignee. Callers only use this when the request
+   * a task the agent may not mutate, a parent that would create a delegation
+   * cycle with the requested assignee, or a parent the agent may not create
+   * children under (for example a protected assignment policy without a
+   * grant). The default must never turn a previously allowed standalone
+   * create into a denial; an explicitly requested parent is still rejected by
+   * the ordinary assignment check. Callers only use this when the request
    * omitted `parentId`; an explicit `parentId: null` keeps the task standalone.
    */
   async function resolveRunDelegationParentDefault(
     req: Request,
     companyId: string,
+    rawCreateBody: Omit<
+      Parameters<typeof resolveCreateAssignmentProjectId>[0],
+      "companyId" | "parentId"
+    > & { assigneeUserId?: string | null },
     assigneeAgentId: string | null,
   ): Promise<string | null> {
     if (
@@ -3803,6 +3811,38 @@ export function issueRoutes(
       );
       if (ancestor) return null;
     }
+    // Mirror the assignment check the create path runs with the defaulted
+    // parent in scope. A protected parent (or project it supplies) denies
+    // child creation without a grant; that must fall back to standalone work
+    // rather than fail a request that succeeded before the default existed.
+    const assignmentScope: TaskAssignmentAuthorizationScope = {
+      projectId: await resolveCreateAssignmentProjectId({
+        ...rawCreateBody,
+        companyId,
+        parentId: source.id,
+      }),
+      parentIssueId: source.id,
+      assigneeAgentId,
+      assigneeUserId:
+        typeof rawCreateBody.assigneeUserId === "string"
+          ? rawCreateBody.assigneeUserId
+          : null,
+    };
+    const assignment = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: null,
+        projectId: assignmentScope.projectId ?? null,
+        parentIssueId: source.id,
+        assigneeAgentId,
+        assigneeUserId: assignmentScope.assigneeUserId ?? null,
+      },
+      scope: assignmentScope,
+    });
+    if (!assignment.allowed) return null;
     return source.id;
   }
 
@@ -12162,6 +12202,7 @@ export function issueRoutes(
           ? await resolveRunDelegationParentDefault(
               req,
               companyId,
+              rawCreateBody,
               normalizedAssigneeAgentId ?? null,
             )
           : null;

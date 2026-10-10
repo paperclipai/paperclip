@@ -22,10 +22,12 @@ describePostgres("agent-created follow-ups: parent links and creation source", (
   const sourceId = randomUUID();
   const conversationId = randomUUID();
   const privateSourceId = randomUUID();
+  const protectedSourceId = randomUUID();
   const foreignSourceId = randomUUID();
   const runOnSource = randomUUID();
   const runOnConversation = randomUUID();
   const runOnPrivate = randomUUID();
+  const runOnProtected = randomUUID();
   const foreignRun = randomUUID();
   const legacyRun = randomUUID();
 
@@ -45,12 +47,14 @@ describePostgres("agent-created follow-ups: parent links and creation source", (
       { id: sourceId, companyId, title: "Verify Tailscale fix", identifier: "PAP-168", issueNumber: 168, status: "in_progress", assigneeAgentId: qaAgentId, createdByAgentId: engineerAgentId },
       { id: conversationId, companyId, title: "Chat with QA", identifier: "PAP-170", issueNumber: 170, status: "in_review", assigneeAgentId: qaAgentId, conversationAgentId: qaAgentId, conversationUserId: "board-user", conversationState: "waiting" },
       { id: privateSourceId, companyId, title: "Private finding", identifier: "PAP-171", issueNumber: 171, status: "in_progress", visibility: "private", privacyRootIssueId: privateSourceId, assigneeAgentId: qaAgentId },
+      { id: protectedSourceId, companyId, title: "Protected task", identifier: "PAP-172", issueNumber: 172, status: "in_progress", assigneeAgentId: qaAgentId, executionPolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } },
       { id: foreignSourceId, companyId: otherCompanyId, title: "Foreign source", identifier: "OTH-1", issueNumber: 1 },
     ]);
     await db.insert(heartbeatRuns).values([
       { id: runOnSource, companyId, agentId: qaAgentId, scopeKind: "issue", issueId: sourceId, nativeIssueId: sourceId, status: "running", contextSnapshot: { issueId: sourceId } },
       { id: runOnConversation, companyId, agentId: qaAgentId, scopeKind: "issue", issueId: conversationId, status: "running", contextSnapshot: { issueId: conversationId } },
       { id: runOnPrivate, companyId, agentId: qaAgentId, scopeKind: "issue", issueId: privateSourceId, status: "running", contextSnapshot: { issueId: privateSourceId } },
+      { id: runOnProtected, companyId, agentId: qaAgentId, scopeKind: "issue", issueId: protectedSourceId, status: "running", contextSnapshot: { issueId: protectedSourceId } },
       { id: foreignRun, companyId: otherCompanyId, agentId: foreignAgentId, scopeKind: "issue", issueId: foreignSourceId, status: "running" },
       { id: legacyRun, companyId, agentId: qaAgentId, status: "succeeded", contextSnapshot: { taskKey: "PAP-168" } },
     ]);
@@ -138,6 +142,25 @@ describePostgres("agent-created follow-ups: parent links and creation source", (
     expect(created.body.assigneeAgentId).toBe(engineerAgentId);
     const detail = await request(app(boardActor)).get(`/api/issues/${created.body.id}`);
     expect(detail.body.createdFrom).toMatchObject({ issue: { id: sourceId } });
+  });
+
+  it("stays standalone instead of failing when the default parent is protected without a grant", async () => {
+    // The agent runs the protected task, so it may mutate it, but a protected
+    // assignment policy denies child creation without an explicit grant.
+    const created = await request(app(agentActor(qaAgentId, runOnProtected)))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Follow-up from a protected task" });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.parentId).toBeNull();
+    const activity = await createdActivity(created.body.id);
+    expect(activity?.details).not.toHaveProperty("parentDefaultedFromRunIssue");
+    const detail = await request(app(boardActor)).get(`/api/issues/${created.body.id}`);
+    expect(detail.body.createdFrom).toMatchObject({ issue: { id: protectedSourceId, identifier: "PAP-172" } });
+
+    const explicit = await request(app(agentActor(qaAgentId, runOnProtected)))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Explicit child of a protected task", parentId: protectedSourceId });
+    expect(explicit.status, JSON.stringify(explicit.body)).toBe(403);
   });
 
   it("still honors an explicit parent and rejects an explicit delegation cycle", async () => {

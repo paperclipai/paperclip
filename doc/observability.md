@@ -48,8 +48,9 @@ There are no custom attributes, identifiers, content, or exception messages.
 The closed phase names in `server/src/services/issue-read-timing.ts` are:
 `lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
 `relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
-`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
-`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `created_from`,
+`execution_blocker`, `relation_recovery`, `revalidate_recovery`, and
+`mentioned_projects`.
 Without an OTLP endpoint, spans remain no-ops. This adds no first-party
 Telemetry events or run-log events.
 
