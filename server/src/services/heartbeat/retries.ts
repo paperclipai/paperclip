@@ -282,6 +282,60 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+function readStructuredProviderErrorMessages(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+): string[] {
+  const messages: string[] = [];
+  const push = (value: unknown) => {
+    const message = readNonEmptyString(value);
+    if (message) messages.push(message);
+  };
+  const resultJson = parseObject(run.resultJson);
+  push(run.error);
+  push(resultJson.errorMessage);
+  const considerRecord = (record: unknown) => {
+    if (!record || typeof record !== "object") return;
+    const value = record as Record<string, unknown>;
+    if (value.type !== "error") return;
+    const error = value.error;
+    if (!error || typeof error !== "object") return;
+    const errorValue = error as Record<string, unknown>;
+    const data = errorValue.data;
+    if (data && typeof data === "object") {
+      push((data as Record<string, unknown>).message);
+    }
+    push(errorValue.message);
+  };
+  const stdout = readNonEmptyString(resultJson.stdout);
+  if (stdout) {
+    const trimmed = stdout.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        considerRecord(JSON.parse(trimmed));
+      } catch {}
+    }
+    for (const line of stdout.split(/\r?\n/)) {
+      const candidate = line.trim();
+      if (!candidate.startsWith("{")) continue;
+      try {
+        considerRecord(JSON.parse(candidate));
+      } catch {}
+    }
+  }
+  return messages;
+}
+
+function isProviderAdmissionFailureRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+) {
+  return readStructuredProviderErrorMessages(run).some(
+    (message) =>
+      /failed to read request body/i.test(message) ||
+      /too many images were provided/i.test(message) ||
+      /\bspawn\s+E2BIG\b/i.test(message),
+  );
+}
+
 // A sandbox provider plugin's worker can be briefly down during its own
 // restart window (e.g. a rolling deploy of the plugin worker process). Lease
 // acquisition fails immediately in that window, but the condition is
@@ -657,6 +711,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(isProviderAdmissionFailureRun(run)
+          ? { forceFreshSession: true, providerSessionRotated: true }
+          : {}),
       },
       "normal_model",
     );
@@ -1014,6 +1071,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
                   : {}),
                 ...(codexTransientFallbackMode
                   ? { codexTransientFallbackMode }
+                  : {}),
+                ...(isProviderAdmissionFailureRun(run)
+                  ? { forceFreshSession: true, providerSessionRotated: true }
                   : {}),
               },
               "normal_model",

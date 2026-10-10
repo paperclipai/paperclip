@@ -2483,6 +2483,87 @@ export class ChatSdkEndpointRuntime {
     return this.chat.thread(threadId);
   }
 
+  /**
+   * Create or recover the provider thread rooted at one message the bot already
+   * posted into a channel. Only providers with a real create-thread contract
+   * are supported; every other provider fails closed. Slack and Teams threads
+   * are derived from the root message, so their thread id is computed without
+   * an extra provider call.
+   */
+  async ensureThreadFromMessage(input: {
+    provider: ChatSdkProvider;
+    channelThreadId: string;
+    messageId: string;
+    name: string;
+  }): Promise<{ threadId: string; providerUrl?: string | null }> {
+    if (input.provider === "discord") {
+      const decode = (
+        this.adapter as unknown as {
+          decodeThreadId?: (threadId: string) => {
+            guildId: string;
+            channelId: string;
+            threadId?: string;
+          };
+        }
+      ).decodeThreadId;
+      if (typeof decode !== "function") {
+        throw new DiscordAdapterCompatibilityError(
+          "decodeThreadId is unavailable",
+        );
+      }
+      const channel = decode.call(this.adapter, input.channelThreadId);
+      await this.ensureDiscordRootThread({
+        channelId: channel.channelId,
+        content: input.name,
+        messageId: input.messageId,
+      });
+      // Discord assigns a message-started public thread the source message id.
+      return {
+        threadId: `${input.channelThreadId}:${input.messageId}`,
+      };
+    }
+    if (input.provider === "slack") {
+      // Slack threads are keyed by the root message timestamp, which the
+      // channel post returns as its message id. A channel destination is
+      // already `slack:<channel>:`; strip the prefix and any trailing separator
+      // so the thread id is `slack:<channel>:<messageId>`, never `...::<id>`.
+      const channelId = input.channelThreadId
+        .replace(/^slack:/, "")
+        .replace(/:+$/, "");
+      return { threadId: `slack:${channelId}:${input.messageId}` };
+    }
+    if (input.provider === "microsoft-teams") {
+      const teams = this.adapter as unknown as TeamsAdapterInternals;
+      if (typeof teams.decodeThreadId !== "function") {
+        throw new TeamsAdapterCompatibilityError(
+          "decodeThreadId is unavailable",
+        );
+      }
+      // `channelThreadId` is the encoded conversation destination
+      // (`teams:<base64url(conversationId)>`). Decode it to the plain
+      // conversation id before building the message-rooted id. Encoding the
+      // already-encoded segment again produces an id that decodes to the
+      // base64 text instead of the conversation id, so later replies cannot
+      // match the created thread.
+      const decoded = teams.decodeThreadId(input.channelThreadId);
+      const conversationId =
+        typeof decoded.conversationId === "string"
+          ? decoded.conversationId.trim()
+          : "";
+      if (!conversationId) {
+        throw new TeamsAdapterCompatibilityError(
+          "Teams destination is missing its conversation identity",
+        );
+      }
+      return {
+        threadId: `teams:${Buffer.from(
+          `${conversationId};messageid=${input.messageId}`,
+        ).toString("base64url")}`,
+      };
+    }
+    throw new Error("Provider does not support agent-created threads");
+  }
+
   async streamTelegramDraft(
     threadId: string,
     textStream: AsyncIterable<string>,

@@ -117,3 +117,59 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+/**
+ * Strip assistant-visible output (`text` parts and `tool_use` parts) from the
+ * OpenCode JSONL stream. A failed run can echo a provider error verbatim in its
+ * own reply or inside tool output; that quoted text must not be mistaken for a
+ * real provider error. Structured `error` events and non-JSONL diagnostic lines
+ * are kept.
+ */
+function openCodeProviderErrorOutput(stdout: string): string {
+  const kept: string[] = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) {
+      // A non-JSONL line is process diagnostics, not assistant text.
+      kept.push(line);
+      continue;
+    }
+    const type = asString(event.type, "");
+    if (type === "text" || type === "tool_use") continue;
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Provider admission failures caused by an oversized/poisoned request body.
+ *
+ * When a saved OpenCode session grows large (for example because image
+ * binaries or long tool output entered its history), every resumed wake
+ * replays that history to the model provider. The provider rejects the
+ * request before reading it and returns a non-retryable 400 such as
+ * `failed to read request body` or `Too many images were provided`. The
+ * command may also fail to spawn once the serialized session body exceeds
+ * the OS argv/env limit (`spawn E2BIG`). Retrying the identical saved session
+ * produces the identical failure, so the run must rotate to a fresh session
+ * instead of replaying the poisoned one.
+ *
+ * Only the structured error surface is matched: assistant text and tool output
+ * are excluded, so a run that merely quotes these phrases does not discard a
+ * resumable session.
+ */
+export function isOpenCodeProviderAdmissionError(
+  stdout: string,
+  stderr: string,
+): boolean {
+  const haystack = `${openCodeProviderErrorOutput(stdout)}\n${stderr}`;
+  if (!haystack.trim()) return false;
+  return (
+    /failed to read request body/i.test(haystack) ||
+    /invalid_request_error[\s\S]{0,200}request body/i.test(haystack) ||
+    /too many images were provided/i.test(haystack) ||
+    /\bspawn\s+E2BIG\b/i.test(haystack)
+  );
+}
