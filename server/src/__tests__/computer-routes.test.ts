@@ -195,6 +195,51 @@ beforeEach(() => {
 });
 
 describe("Computer routes", () => {
+  it.each(["changed", "removed"])("disconnects the previous viewer when the task computer has %s", async state => {
+    const f = fixture();
+    const nextEnvironmentId = "77777777-7777-4777-8777-777777777777";
+    f.rows.set(environmentLeases, state === "changed" ? [{ ...f.lease, environmentId: nextEnvironmentId }] : []);
+    f.rows.set(environments, state === "changed" ? [{ ...f.environment, id: nextEnvironmentId }] : []);
+    const response = await request(f.app).post(`${endpoint}/disconnect`).send({ environmentId, owner });
+    expect(response.status).toBe(204);
+    expect(f.select).toHaveBeenCalledTimes(1); // Task authorization precedes cleanup; no current-computer lookup.
+    expect(f.computers.disconnectViewer).toHaveBeenCalledExactlyOnceWith({ companyId, environmentId, owner, userId: "alice" });
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "computer.disconnected", companyId, entityId: environmentId,
+    }));
+    for (const action of ["connect", "presence", "preview"]) {
+      const input = action === "connect" ? { environmentId }
+        : action === "preview" ? { environmentId, port: 5173 } : { environmentId, owner };
+      expect((await request(f.app).post(`${endpoint}/${action}`).send(input)).status).toBe(404);
+    }
+    expect(f.computers.connect).not.toHaveBeenCalled();
+    expect(f.computers.renewViewer).not.toHaveBeenCalled();
+    expect(f.computers.preview).not.toHaveBeenCalled();
+  });
+
+  it.each(["not_found", "forbidden", "conflict"] as const)("preserves scoped disconnect ownership failures (%s)", async code => {
+    const f = fixture();
+    f.rows.set(environments, []);
+    f.computers.disconnectViewer.mockRejectedValue(new ComputerError(code, "Viewer unavailable"));
+    const response = await request(f.app).post(`${endpoint}/disconnect`).send({ environmentId, owner });
+    expect(response.status).toBe(code === "not_found" ? 404 : code === "forbidden" ? 403 : 409);
+    expect(f.computers.disconnectViewer).toHaveBeenCalledExactlyOnceWith({ companyId, environmentId, owner, userId: "alice" });
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it("authorizes the task and validates the exact owner before requesting stale-viewer cleanup", async () => {
+    const foreign = fixture({ issueCompanyId: otherCompanyId });
+    expect((await request(foreign.app).post(`${endpoint}/disconnect`).send({ environmentId, owner })).status).toBe(404);
+    expect(foreign.computers.disconnectViewer).not.toHaveBeenCalled();
+    const agent = fixture({ actor: "agent" });
+    expect((await request(agent.app).post(`${endpoint}/disconnect`).send({ environmentId, owner })).status).toBe(403);
+    expect(agent.computers.disconnectViewer).not.toHaveBeenCalled();
+    const board = fixture();
+    expect((await request(board.app).post(`${endpoint}/disconnect`).send({ environmentId, owner: { ...owner, generation: 0 } })).status).toBe(400);
+    expect(board.computers.disconnectViewer).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("uses the latest admission despite an older lease's later finalization (latest live=%s)", async latestLive => {
     const f = fixture();
     const older = { ...f.lease, id: "older", createdAt: "2026-10-10T20:00:00Z", updatedAt: "2026-10-10T20:12:00Z" };
