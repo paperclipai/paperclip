@@ -1862,7 +1862,10 @@ apply; AI credentials have no separate agent-delegation exception. Selection pre
 harness/model routing and fails closed without ambient credential fallback.
 Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
-methods, lifecycle, runtime enforcement, and migration details.
+methods, lifecycle, runtime enforcement, and migration details. The authoritative
+provider/method compatibility map is `AI_CONNECTION_CAPABILITIES` (for example
+DeepSeek is a native `api_key` provider compatible with OpenCode, Hermes, Codex,
+and Claude).
 
 Missing personal AI credentials detected before adapter dispatch also produce
 the inline connection card. Every missing binding must belong to the same

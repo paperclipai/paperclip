@@ -173,7 +173,9 @@ function PoolConnector({ companyId, pluginKey, connection }: { companyId: string
 }
 function ConnectionPicker({ accounts, selected, disabled, onChange, onRefresh }: { accounts: AiManagedConnectionSummary[]; selected: AiConnectionPoolMember[]; disabled: boolean; onChange: (members: AiConnectionPoolMember[]) => void; onRefresh: () => void }) {
   const [search, setSearch] = useState("");
-  const filtered = accounts.filter(account => `${account.name} ${AI_PROVIDERS[account.provider].name}`.toLowerCase().includes(search.toLowerCase()));
+  // Connection pools do not support DeepSeek yet, so keep those accounts out
+  // of the picker instead of assigning them an OpenRouter default model.
+  const filtered = accounts.filter(account => account.provider !== "deepseek").filter(account => `${account.name} ${AI_PROVIDERS[account.provider].name}`.toLowerCase().includes(search.toLowerCase()));
   return <div className="space-y-4">
     <div className="relative"><Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search connections" placeholder="Search connections…" value={search} onChange={event => setSearch(event.target.value)} className="pl-9" /></div>
     <div className="max-h-80 overflow-y-auto rounded-lg border border-border divide-y divide-border">

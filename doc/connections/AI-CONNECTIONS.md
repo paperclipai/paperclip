@@ -28,6 +28,7 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | OpenRouter (legacy, no routing metadata) | API key | OpenCode, with an `openrouter/` model |
 | Google | API key | Gemini CLI |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
+| DeepSeek | DeepSeek API key | OpenCode, Hermes, Codex, Claude |
 
 Native runner supports the corresponding existing Codex, OpenCode, and Claude
 ACP profiles. Connections creation and reconnect mount `AgentProviderConnection`,
@@ -75,6 +76,17 @@ update stays visible and can be retried without another login. New account
 setup shows an agent-access checkbox, enabled for all company agents by default
 for connection managers. The owner can limit access to the current agent. This access applies only to
 the owner's tasks. Reconnect never expands existing access.
+
+DeepSeek is a first-class native provider with only an API-key method (no
+subscription), like Google. One connection can be installed on agents of any of
+its four harnesses; the server derives the protocol and base URL from the
+harness (`https://api.deepseek.com` for Chat Completions and Responses,
+`https://api.deepseek.com/anthropic` for Anthropic Messages) and does not expose
+a user-selected route. Claude uses the `deepseek-flash[1m]` window; Codex keeps
+the internal `paperclip` provider stanza with `wire_api = "responses"`.
+OpenClaw Gateway is not projected by Paperclip: configure DeepSeek on the
+OpenClaw host itself (`openclaw onboard` → provider **DeepSeek** → key →
+`deepseek-flash` / `deepseek-v4-pro`); a DeepSeek connection is not needed there.
 
 ## Storage and API
 
@@ -159,6 +171,7 @@ does not establish usage access. This probe cannot add scopes to a stored token.
 | Claude subscription | `GET https://api.anthropic.com/api/oauth/usage`, with stored OAuth token and `anthropic-beta: oauth-2025-04-20` | Legacy and structured session/weekly/scoped windows, monthly extra usage, structured spend when legacy extra usage is absent |
 | Grok subscription | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`, with stored token and `x-xai-token-auth: xai-grok-cli` | Included-plan utilization/period when reported, separately reported on-demand allowance and prepaid balance in USD cents |
 | OpenRouter API key | `GET https://openrouter.ai/api/v1/key` | Key credit cap, reset cadence, free-model daily request cap when returned |
+| DeepSeek API key | `GET https://api.deepseek.com/user/balance` | Prepaid balance as overage (`unit` = reported currency, CNY/USD), `is_available` as adapter availability; no limit windows. Unknown values stay `null`. |
 | Other API-key methods | No supported single-key allowance endpoint | Explicit `unsupported`; no provider or secret read |
 
 These subscription sources are provider-client endpoints, not a promise of a
@@ -598,6 +611,10 @@ credentials belong to the connection; the model belongs to the agent.
 | OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
 | Hermes local | OpenRouter; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
+
+DeepSeek is not an Advanced/custom-gateway route: it is a first-class native
+provider (compatibility table above). Only its API key is user-supplied; the
+protocol and base URL are derived per harness and shown as no user-facing route.
 
 Migration `0306` adds Google to both account-default provider constraints. Local
 Gemini connections seed the API-key auth choice in their disposable home before

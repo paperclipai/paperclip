@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Value-free routing stored on the connection, never supplied by an agent binding. */
 export const aiProviderRoutingSchema = z
   .object({
-    kind: z.enum(["openrouter", "bedrock", "gateway", "local"]),
+    kind: z.enum(["openrouter", "deepseek", "bedrock", "gateway", "local"]),
     protocol: z.enum(["responses", "messages", "chat", "bedrock"]),
     baseUrl: z.string().trim().max(2048).optional(),
     auth: z
@@ -49,6 +49,13 @@ export const aiProviderRoutingSchema = z
       (route.baseUrl || route.auth !== "bearer")
     )
       invalid("OpenRouter uses its official endpoint and an API key.");
+    if (
+      route.kind === "deepseek" &&
+      (route.baseUrl || route.auth !== "bearer" || route.protocol === "bedrock")
+    )
+      invalid(
+        "DeepSeek uses its official endpoint, an API key, and a text protocol.",
+      );
     if (route.auth === "api_key" && route.protocol !== "messages")
       invalid("API-key header authentication requires Anthropic Messages.");
     if (route.kind === "gateway" || route.kind === "local") {
@@ -116,9 +123,13 @@ export function aiRoutingBaseUrl(
   route: AiProviderRouting,
   harness: string,
 ): string {
-  return route.kind === "openrouter"
-    ? `https://openrouter.ai/api${harness === "claude_local" ? "" : "/v1"}`
-    : (route.baseUrl ?? "").replace(/\/+$/, "");
+  if (route.kind === "openrouter")
+    return `https://openrouter.ai/api${harness === "claude_local" ? "" : "/v1"}`;
+  if (route.kind === "deepseek")
+    return route.protocol === "messages"
+      ? "https://api.deepseek.com/anthropic"
+      : "https://api.deepseek.com";
+  return (route.baseUrl ?? "").replace(/\/+$/, "");
 }
 
 /** OpenCode names models with a provider prefix; other harnesses use the raw ID. */

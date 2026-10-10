@@ -147,3 +147,47 @@ it("uses the server's connection-manager permission for company-wide access", as
   await click("Connect another account");
   expect(credentialProps).toMatchObject({ allAgents: true });
 });
+
+it("offers DeepSeek for a reusable harness and creates it without guessing the provider", async () => {
+  await mount([]);
+  await click("Connect another account");
+  const select = document.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+  expect(select).not.toBeNull();
+  expect(Array.from(select.options).map(option => option.value)).toEqual(["anthropic", "deepseek"]);
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "deepseek");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+  expect(credentialProps).toMatchObject({ provider: "deepseek", initialMethod: "api_key" });
+  credentialProps!.onComplete({ connectionId: "ds-connection", grantId: "ds-grant", method: "api_key" });
+  await settle();
+  expect(mocks.setDefault).toHaveBeenCalledWith("company", "ds-grant");
+  expect(onChange).toHaveBeenCalledWith({ provider: "deepseek", method: "api_key", mode: "responsible_user" });
+});
+
+it("keeps a reopened agent's saved DeepSeek binding instead of the harness default", async () => {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local"
+      value={{ provider: "deepseek", method: "api_key", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Connect another account");
+  const select = document.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+  expect(select).not.toBeNull();
+  expect(select.value).toBe("deepseek");
+  expect(credentialProps).toMatchObject({ provider: "deepseek", initialMethod: "api_key" });
+});
+
+it("uses the new harness provider when the saved binding no longer fits", async () => {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="gemini_local"
+      value={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Connect another account");
+  expect(document.querySelector('select[aria-label="Provider"]')).toBeNull();
+  expect(credentialProps).toMatchObject({ provider: "google", initialMethod: "api_key" });
+});

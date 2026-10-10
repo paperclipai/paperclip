@@ -51,5 +51,5 @@ export interface AiConnectionUsage {
 export function supportsAiConnectionUsage(provider: AiProvider, method: AiAuthMethod): boolean {
   return method === "subscription"
     ? provider === "openai" || provider === "anthropic" || provider === "xai"
-    : provider === "openrouter";
+    : provider === "openrouter" || provider === "deepseek";
 }

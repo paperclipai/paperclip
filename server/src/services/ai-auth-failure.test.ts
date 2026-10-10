@@ -15,6 +15,11 @@ describe("AI authentication failure recovery", () => {
     ["paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "anthropic"],
     ["paperclip_runner", { provider: "acpx", acpxAgent: "grok" }, "xai"],
     ["opencode_local", { model: "openrouter/model" }, "openrouter"],
+    ["opencode_local", { model: "paperclip/deepseek-flash" }, "deepseek"],
+    ["opencode_local", { model: "openrouter/deepseek/deepseek-v4-flash-0731" }, "openrouter"],
+    ["claude_local", { model: "deepseek-flash" }, "deepseek"],
+    ["codex_local", { model: "deepseek-flash" }, "deepseek"],
+    ["claude_local", { model: "claude-sonnet-4-5" }, "anthropic"],
   ] as const)("maps %s %j to %s", (adapter, config, provider) => {
     expect(aiBindingForAuthRecovery(adapter, config)).toMatchObject({ provider, mode: "responsible_user" });
   });

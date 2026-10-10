@@ -266,6 +266,7 @@ export const testAdapterEnvironmentSchema = z.object({
     OPENROUTER_API_KEY: z.string().max(16384),
     GEMINI_API_KEY: z.string().max(16384),
     XAI_API_KEY: z.string().max(16384),
+    DEEPSEEK_API_KEY: z.string().max(16384),
     GROQ_API_KEY: z.string().max(16384),
     OPENCODE_API_KEY: z.string().max(16384),
     CURSOR_API_KEY: z.string().max(16384),

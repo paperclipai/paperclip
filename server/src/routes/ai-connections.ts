@@ -135,7 +135,6 @@ export async function canInstallSharedAiConnectionForNewAgent(
     connection.creator === userId || await accessService(db).hasPermission(companyId, "user", userId, "tools:manage_connections");
 }
 
-
 export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] = {}) {
   function assertLocalLoginAvailable() {
     if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
@@ -246,6 +245,19 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     },
   );
   router.get(
+    "/companies/:companyId/ai-connections/:connectionId/models",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const connectionId = z.string().uuid().safeParse(req.params.connectionId);
+      const grantId = z.string().uuid().optional().safeParse(req.query.grantId);
+      if (!connectionId.success || !grantId.success) throw unprocessable("Invalid connection or grant ID");
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await service.listModels(companyId, getActorInfo(req).actorId, connectionId.data, grantId.data));
+    },
+  );
+  router.get(
     "/companies/:companyId/ai-connections/:connectionId/active-runs",
     async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -305,7 +317,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       const attemptStartedAt = new Date();
       // Custom destinations are exercised in the selected execution environment,
       // never fetched by the control plane (including localhost/private URLs).
-      if (!input.routing || input.routing.kind === "openrouter") await validateAiApiKey(input.provider, input.apiKey!);
+      if (!input.routing || input.routing.kind === "openrouter" || input.routing.kind === "deepseek") await validateAiApiKey(input.provider, input.apiKey!);
       const result = await service.save(
         companyId,
         userId,

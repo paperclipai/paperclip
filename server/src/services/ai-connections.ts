@@ -1,6 +1,8 @@
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
+import { listDeepSeekModels } from "./deepseek-models.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -243,6 +245,20 @@ export function aiConnectionService(db: Db) {
     }
     const value = await credential(row);
     return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
+  }
+  /** Live model catalog for a saved connection whose provider requires its key. */
+  async function listModels(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AdapterModel[]> {
+    if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
+    const candidates = (await rows(companyId)).filter((row) => row.connection.id === connectionId && (!grantId || row.grant.id === grantId));
+    const audience = await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId));
+    const visible = candidates.filter(({ grant }) => canUseCredential(grant, userId, audience.filter((member) => member.grantId === grant.id)));
+    if (!visible.length) throw notFound("AI connection not found");
+    if (visible.length > 1) throw unprocessable("Choose a credential grant to list models");
+    const row = visible[0]!;
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success || metadata.data.provider !== "deepseek") throw notFound("AI connection not found");
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok") return [];
+    return await listDeepSeekModels(await credential(row));
   }
   async function select(input: {
     companyId: string;
@@ -1128,5 +1144,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), listModels, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

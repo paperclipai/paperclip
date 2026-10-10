@@ -954,6 +954,7 @@ function Setup({
                                             ? "Anthropic"
                                             : ({
                                                 google: "Google",
+                                                deepseek: "DeepSeek",
                                                 xai: "xAI",
                                                 groq: "Groq",
                                                 opencode: "OpenCode",

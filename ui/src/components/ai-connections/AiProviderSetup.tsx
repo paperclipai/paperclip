@@ -37,6 +37,7 @@ const providers = [
     description: "Claude subscription or API key",
   },
   { id: "google", name: "Google", description: "Gemini API key" },
+  { id: "deepseek", name: "DeepSeek", description: "DeepSeek API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
     id: "openrouter",

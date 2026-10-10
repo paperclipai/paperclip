@@ -5218,6 +5218,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "youcom",
         "enterpret",
         "openrouter",
+        "deepseek",
         "bedrock",
         "responses-api",
         "messages-api",
@@ -5238,7 +5239,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "windsor-ai",
       ]),
     );
-    for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+    for (const slug of ["openrouter", "deepseek", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
     expect(

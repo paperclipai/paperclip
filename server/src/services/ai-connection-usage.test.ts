@@ -214,6 +214,45 @@ describe("connection usage probes", () => {
     expect(unlimited).toMatchObject({ status: "ok", overage: null, limits: [{ used: 20, limit: null, usedPercent: null, limitReached: null }] });
   });
 
+  it("reads a DeepSeek prepaid balance without inventing limit windows", async () => {
+    const request = fixture({ is_available: true, balance_infos: [
+      { currency: "USD", total_balance: "7.31", granted_balance: "0.00", topped_up_balance: "7.31" },
+    ] });
+    const result = await probeAiConnectionUsage({ provider: "deepseek", method: "api_key" }, "ds-selected-secret", { request });
+    expect(result).toMatchObject({ status: "ok", source: "deepseek_balance", limits: [], planType: null });
+    expect(result.overage).toMatchObject({ available: true, balance: 7.31, remaining: 7.31, unit: "USD" });
+    expect(request).toHaveBeenCalledWith("https://api.deepseek.com/user/balance", expect.objectContaining({
+      redirect: "error", signal: expect.any(AbortSignal), headers: { Authorization: "Bearer ds-selected-secret" },
+    }));
+    expect(JSON.stringify(result)).not.toContain("ds-selected-secret");
+  });
+
+  it("reports a spent DeepSeek balance and a missing entry without assuming zero", async () => {
+    const exhausted = await probeAiConnectionUsage({ provider: "deepseek", method: "api_key" }, "token", {
+      request: fixture({ is_available: false, balance_infos: [{ currency: "CNY", total_balance: "0.00" }] }),
+    });
+    expect(exhausted.overage).toMatchObject({ available: false, balance: 0, unit: "CNY" });
+    const absent = await probeAiConnectionUsage({ provider: "deepseek", method: "api_key" }, "token", {
+      request: fixture({ is_available: true }),
+    });
+    expect(absent).toMatchObject({ status: "ok" });
+    expect(absent.overage).toMatchObject({ available: true, balance: null, remaining: null, unit: null });
+  });
+
+  it("fails closed on a DeepSeek balance with no usable observation", async () => {
+    expect(await probeAiConnectionUsage({ provider: "deepseek", method: "api_key" }, "token", {
+      request: fixture({ balance_infos: [] }),
+    })).toMatchObject({ status: "error", errorCode: "invalid_response" });
+  });
+
+  it("maps a DeepSeek authentication failure to re-sign-in, not exhaustion", async () => {
+    const result = await probeAiConnectionUsage({ provider: "deepseek", method: "api_key" }, "token", {
+      request: fixture({ error: "echoed-secret" }, 401),
+    });
+    expect(result).toMatchObject({ status: "unavailable", errorCode: "authentication_required", limits: [], overage: null });
+    expect(JSON.stringify(result)).not.toContain("echoed-secret");
+  });
+
   it.each(["openai", "anthropic", "xai", "google"] as const)("makes unsupported %s API probes explicit without a request", async provider => {
     const request = fixture({});
     expect(await probeAiConnectionUsage({ provider, method: "api_key" }, "key", { request })).toMatchObject({ status: "unsupported", limits: [], overage: null });

@@ -1927,13 +1927,14 @@ const aiCatalogEntries = [
   { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
   { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
   { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
+  { slug: "deepseek", name: "DeepSeek", provider: "deepseek", envKey: "DEEPSEEK_API_KEY", url: "https://api.deepseek.com/*", description: "Use DeepSeek models with an API key.", consoleLinks: { register: "https://platform.deepseek.com/sign_up", keys: "https://platform.deepseek.com/api_keys", docs: "https://api-docs.deepseek.com" } },
   { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
   { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },
   { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
   { slug: "chat-completions-api", name: "Chat Completions API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to a Chat Completions-compatible provider or gateway." },
   { slug: "local", name: "Local endpoint", provider: "openai", envKey: "OPENAI_API_KEY", description: "Use a local model server in the agent’s execution environment." },
 ];
-for (const { slug, name, provider, subscription, envKey, url, description } of aiCatalogEntries) {
+for (const { slug, name, provider, subscription, envKey, url, description, consoleLinks } of aiCatalogEntries) {
   let app = apps.find(a => a.slug === slug);
   if (!app) {
     app = { schemaVersion: 1, slug, name, description: description ?? `Connect ${name} accounts for your agents.`, categories: ["ai"], branding: brandingFor(slug), urlPatterns: url ? [url] : [], methods: [] };
@@ -1946,6 +1947,7 @@ for (const { slug, name, provider, subscription, envKey, url, description } of a
     ai: { provider, method: authMethod }, grantKinds: ["user", "organization"], ownershipModes: ["customer"],
     whenToUse: description ?? "Authenticate an agent with this account.",
     guidanceMd: "Use your personal account or an explicitly shared company account.", riskTier: "S3",
+    ...(consoleLinks ? { consoleLinks } : {}),
     ...(authMethod === "api_key" ? { credentialFields: [field("apiKey", "API key", "Enter API key")], keyPlacement: { location: "env", name: envKey } } : {}),
   }));
   // Legacy REST entries have no tool execution adapter. Only offer the supported

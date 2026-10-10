@@ -810,6 +810,34 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await expect(access(runtime.home!)).rejects.toThrow();
   });
 
+  it("publishes the synthesized DeepSeek route so agent setup verifies the projected credential", async () => {
+    const owner = "deepseek-native-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    // Reapply the current provider constraint so this test does not depend on
+    // the order of the migration-replay tests that share this database.
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0332_lively_fixer.sql", import.meta.url), "utf8");
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) await db.execute(sql.raw(statement));
+    }
+    try {
+      const saved = await service.save(companyId, owner, { provider: "deepseek", method: "api_key", ownership: "personal", name: "DeepSeek", apiKey: "fixture", agentIds: [], allAgents: true }, "fixture-deepseek-credential");
+      const selected = { provider: "deepseek", method: "api_key", mode: "delegated", ...saved } as const;
+      const protocols = { opencode_local: "chat", codex_local: "responses", claude_local: "messages", hermes_local: "chat" } as const;
+      for (const [adapterType, protocol] of Object.entries(protocols)) {
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model: "deepseek-flash" } });
+        try {
+          expect(runtime.config.managedAiRouting).toMatchObject({ kind: "deepseek", protocol, auth: "bearer" });
+        } finally { await runtime.cleanup(); }
+      }
+    } finally {
+      // Later migration-replay tests reuse this database. Remove the DeepSeek
+      // defaults so a replayed provider CHECK constraint cannot fail validation
+      // against rows it does not allow.
+      await db.delete(aiConnectionDefaults).where(and(eq(aiConnectionDefaults.companyId, companyId), eq(aiConnectionDefaults.provider, "deepseek")));
+      await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.provider, "deepseek")));
+    }
+  });
+
   it("preserves Google account defaults when the provider constraint migration is reapplied", async () => {
     const saved = await service.save(companyId, "bob", {
       provider: "google", method: "api_key", ownership: "personal", name: "Google migration",

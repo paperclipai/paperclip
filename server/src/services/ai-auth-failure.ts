@@ -63,8 +63,21 @@ export function aiBindingForAuthRecovery(
 ): AiConnectionBinding | undefined {
   if (failure?.errorCode === "configuration_incomplete" && !isAiConnectionConfigurationFailure(failure)) return undefined;
   const missingProvider = failure ? missingPersonalAiCredentialProvider(failure) : undefined;
-  for (const provider of AI_PROVIDERS) {
+  const model = typeof config.model === "string" ? config.model : "";
+  // DeepSeek reuses the opencode/codex/claude/hermes harnesses, so a shared
+  // harness alone never identifies it. Only the model id is a signal; never
+  // guess DeepSeek for an unrelated model or for an aggregator route such as
+  // openrouter/deepseek/... that is repaired through its own provider.
+  const deepseekModel = model.includes("deepseek") && !model.startsWith("openrouter/");
+  // DeepSeek shares the opencode/codex/claude/hermes harnesses, so only the
+  // model id identifies it. When the model names DeepSeek, try it before the
+  // harness default; otherwise keep the default order and never guess it.
+  const providers: readonly AiProvider[] = deepseekModel
+    ? ["deepseek", ...AI_PROVIDERS.filter((provider) => provider !== "deepseek")]
+    : AI_PROVIDERS;
+  for (const provider of providers) {
     if (missingProvider && missingProvider !== provider) continue;
+    if (provider === "deepseek" && !deepseekModel) continue;
     const binding = { provider, method: AI_CONNECTION_CAPABILITIES[provider].methods.subscription ? "subscription" : "api_key", mode: "responsible_user" } as const;
     if (isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent)) return binding;
   }

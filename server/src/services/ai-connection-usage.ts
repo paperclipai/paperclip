@@ -315,7 +315,30 @@ async function openrouter(credential: string, request: typeof fetch): Promise<Ob
   return { source: "openrouter_key", planType: null, limits, overage: null };
 }
 
-const probes = { openai: codex, anthropic: claude, xai: grok, openrouter };
+async function deepseek(credential: string, request: typeof fetch): Promise<Observation> {
+  const body = await readUsage("https://api.deepseek.com/user/balance", {
+    Authorization: `Bearer ${requireToken(credential)}`,
+  }, request);
+  // DeepSeek returns one prepaid balance per currency (CNY/USD). A single
+  // observation cannot carry several, so report the first entry; unknown values
+  // stay null rather than becoming zero.
+  const infos = Array.isArray(body.balance_infos) ? body.balance_infos.map(object) : [];
+  const info = infos[0] ?? {};
+  const total = balance(info.total_balance);
+  return {
+    source: "deepseek_balance",
+    planType: null,
+    limits: [],
+    overage: overage({
+      available: bool(body.is_available),
+      balance: total,
+      remaining: total,
+      unit: string(info.currency),
+    }),
+  };
+}
+
+const probes = { openai: codex, anthropic: claude, xai: grok, openrouter, deepseek };
 const messages: Record<NonNullable<AiConnectionUsage["errorCode"]>, string> = {
   unsupported: "This provider does not expose usage limits through this sign-in method.",
   connection_unavailable: "Reconnect or enable this AI connection before checking usage.",

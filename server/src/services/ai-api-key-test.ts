@@ -13,6 +13,7 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    deepseek: "https://api.deepseek.com/models",
   };
   let response: Response;
   try {

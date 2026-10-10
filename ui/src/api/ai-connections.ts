@@ -2,6 +2,7 @@ import type { AiConnectionList, AiConnectionUsage, CreateAiConnection, AiConnect
 import { api } from "./client";
 export const aiConnectionsApi = {
   probeUsage: (companyId: string, connectionId: string, grantId?: string) => api.get<AiConnectionUsage>(`/companies/${companyId}/ai-connections/${connectionId}/usage${grantId ? `?grantId=${encodeURIComponent(grantId)}` : ""}`),
+  listModels: (companyId: string, connectionId: string, grantId?: string) => api.get<Array<{ id: string; label: string }>>(`/companies/${companyId}/ai-connections/${connectionId}/models${grantId ? `?grantId=${encodeURIComponent(grantId)}` : ""}`),
   startLocalLogin: (companyId: string, input: AiConnectionLoginIntent & { restart?: boolean }) => api.post<LocalAiLoginAttempt>(`/companies/${companyId}/ai-connections/local/attempts`, input),
   checkLocalLogin: (companyId: string, input: AiConnectionLoginIntent & { localSessionId?: string }) => api.post<LocalAiLoginStatus>(`/companies/${companyId}/ai-connections/local/check`, input),
   submitLocalLoginCode: (companyId: string, sessionId: string, browserCode: string) => api.post(`/companies/${companyId}/ai-connections/local/attempts/${sessionId}/code`, { browserCode }),

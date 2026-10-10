@@ -33,7 +33,7 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
-    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "google", "openrouter"]) {
+    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "google", "deepseek", "openrouter"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(true);
     }
     expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);

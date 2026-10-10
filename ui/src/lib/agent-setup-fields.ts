@@ -17,6 +17,7 @@ export const HERMES_PROVIDER_KEYS: Record<string, string> = {
   openrouter: "OPENROUTER_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
   zai: "ZAI_API_KEY",
   "kimi-coding": "KIMI_API_KEY",
   minimax: "MINIMAX_API_KEY",

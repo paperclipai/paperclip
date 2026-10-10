@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
-  aiConnectionMetadataSchema, aiRoutingHarness,
+  aiConnectionMetadataSchema, aiProviderRoutingSchema, aiRoutingHarness, protocolForDeepSeekHarness,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
@@ -55,6 +55,8 @@ export const AI_AUTH_ENV_KEYS = [
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_BASE_URL",
 ] as const;
 export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
   const result = {
@@ -202,7 +204,7 @@ export function managedAiSessionFingerprintConfig(
   }
   const managed = config.managedAiConnection as Record<string, unknown> | undefined;
   if (managed?.sessionIdentity) {
-    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
+    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "DEEPSEEK_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
       if (env[key]) env[key] = "<managed-ai-credential>";
     }
   }
@@ -272,6 +274,17 @@ export async function prepareManagedAiRuntime(
       );
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
     const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    // DeepSeek is a first-class native provider (like OpenAI/Anthropic), but its
+    // OpenAI- vs Anthropic-shaped endpoints require a per-harness projection.
+    // Synthesize the internal route here; it is never user-selected or persisted.
+    const projectionRouting = routing ?? (selection.attribution.provider === "deepseek"
+      ? aiProviderRoutingSchema.parse({
+          kind: "deepseek",
+          protocol: protocolForDeepSeekHarness(harness),
+          auth: "bearer",
+          models: [],
+        })
+      : undefined);
     const noAuth = routing?.auth === "none";
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {
@@ -323,8 +336,8 @@ export async function prepareManagedAiRuntime(
         'cli_auth_credentials_store = "file"\n',
         { mode: 0o600 },
       );
-    if (!routing && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
-    else if (!routing) env[capability.envKey] = value;
+    if (!projectionRouting && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
+    else if (!projectionRouting) env[capability.envKey] = value;
     if (
       !routing && input.binding.provider === "openai" &&
       selection.attribution.method === "api_key"
@@ -350,7 +363,13 @@ export async function prepareManagedAiRuntime(
         security: { auth: { selectedType: "gemini-api-key" } },
       }), { mode: 0o600 });
     }
-    const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
+    const projected = projectionRouting ? managedProviderRouting(
+      projectionRouting,
+      harness,
+      value,
+      typeof input.config.model === "string" ? input.config.model : "",
+      input.config.modelReasoningEffort ?? input.config.reasoningEffort ?? input.config.effort ?? input.config.variant,
+    ) : undefined;
     if (projected) {
       Object.assign(env, projected.env);
       if (projected.hermesConfig) await writeFile(path.join(providerHome, "config.yaml"), projected.hermesConfig, { mode: 0o600 });
@@ -377,7 +396,7 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         ...projected?.config,
-        ...(routing ? { managedAiRouting: routing } : {}),
+        ...(projectionRouting ? { managedAiRouting: projectionRouting } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },
       },

@@ -42,7 +42,7 @@ export const aiConnectionDefaults = pgTable(
     }),
     check(
       "ai_connection_defaults_provider_check",
-      sql`${t.provider} in ('anthropic','openai','openrouter','xai','google')`,
+      sql`${t.provider} in ('anthropic','openai','openrouter','xai','google','deepseek')`,
     ),
     check(
       "ai_connection_defaults_method_check",
