@@ -262,6 +262,28 @@ export interface HostServices {
     decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
+  /**
+   * Provides `attention.list`. The host must act for
+   * `context.invocationScope.actorUserId` and reject a call without it.
+   */
+  attention: {
+    list(params: WorkerToHostMethods["attention.list"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["attention.list"][1]>;
+  };
+
+  /**
+   * Provides `decisions.queues.*`, `decisions.triage.*`, `decisions.retention.*`.
+   * Same user binding as `attention`.
+   */
+  decisions: {
+    listQueues(params: WorkerToHostMethods["decisions.queues.list"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.queues.list"][1]>;
+    listQueueItems(params: WorkerToHostMethods["decisions.queues.listItems"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.queues.listItems"][1]>;
+    getTriage(params: WorkerToHostMethods["decisions.triage.get"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.triage.get"][1]>;
+    updateTriage(params: WorkerToHostMethods["decisions.triage.update"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.triage.update"][1]>;
+    setRetentionKeep(params: WorkerToHostMethods["decisions.retention.setKeep"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.setKeep"][1]>;
+    archive(params: WorkerToHostMethods["decisions.retention.archive"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.archive"][1]>;
+    revive(params: WorkerToHostMethods["decisions.retention.revive"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["decisions.retention.revive"][1]>;
+  };
+
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
   issueDocuments: {
     list(params: WorkerToHostMethods["issues.documents.list"][0]): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
@@ -481,6 +503,16 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "approvals.list": "approvals.read",
   "approvals.get": "approvals.read",
   "approvals.decide": "approvals.respond",
+
+  // Attention feed and decision triage
+  "attention.list": "attention.read",
+  "decisions.queues.list": "decision.queues.read",
+  "decisions.queues.listItems": "decision.queues.read",
+  "decisions.triage.get": "decision.queues.read",
+  "decisions.triage.update": "decision.triage.manage",
+  "decisions.retention.setKeep": "decision.triage.manage",
+  "decisions.retention.archive": "decision.triage.manage",
+  "decisions.retention.revive": "decision.triage.manage",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -959,6 +991,32 @@ export function createHostClientHandlers(
     }),
     "approvals.decide": gated("approvals.decide", async (params) => {
       return services.approvals.decide(params);
+    }),
+
+    // Attention feed and decision triage
+    "attention.list": gated("attention.list", async (params, context) => {
+      return services.attention.list(params, context);
+    }),
+    "decisions.queues.list": gated("decisions.queues.list", async (params, context) => {
+      return services.decisions.listQueues(params, context);
+    }),
+    "decisions.queues.listItems": gated("decisions.queues.listItems", async (params, context) => {
+      return services.decisions.listQueueItems(params, context);
+    }),
+    "decisions.triage.get": gated("decisions.triage.get", async (params, context) => {
+      return services.decisions.getTriage(params, context);
+    }),
+    "decisions.triage.update": gated("decisions.triage.update", async (params, context) => {
+      return services.decisions.updateTriage(params, context);
+    }),
+    "decisions.retention.setKeep": gated("decisions.retention.setKeep", async (params, context) => {
+      return services.decisions.setRetentionKeep(params, context);
+    }),
+    "decisions.retention.archive": gated("decisions.retention.archive", async (params, context) => {
+      return services.decisions.archive(params, context);
+    }),
+    "decisions.retention.revive": gated("decisions.retention.revive", async (params, context) => {
+      return services.decisions.revive(params, context);
     }),
 
     // Issue Documents

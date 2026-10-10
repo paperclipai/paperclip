@@ -26,7 +26,7 @@ import type {
   DecisionTriage,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type LogActivityInput } from "./activity-log.js";
 import {
   authorizationService,
   type AuthorizationActor,
@@ -41,7 +41,53 @@ export type DecisionMutationActor = {
   runId: string | null;
   agentApiKeyId: string | null;
   responsibleUserId: string | null;
+  /**
+   * Set when a plugin acts for a board user through the plugin SDK. Rows keep
+   * the user attribution; the activity log records the plugin as the actor
+   * and the user as the initiating actor, like other plugin-relayed actions.
+   */
+  viaPlugin?: { pluginId: string; pluginKey: string } | null;
 };
+
+/**
+ * Activity-log actor fields for a decision mutation. A plugin-relayed
+ * mutation is logged with `actorType: "plugin"`.
+ */
+export function decisionActivityActor(
+  actor: DecisionMutationActor,
+  details: Record<string, unknown> | null | undefined,
+): Pick<
+  LogActivityInput,
+  "actorType" | "actorId" | "agentId" | "runId" | "agentApiKeyId" | "responsibleUserIdOverride" | "details"
+> {
+  if (actor.viaPlugin) {
+    return {
+      actorType: "plugin",
+      actorId: actor.viaPlugin.pluginId,
+      agentId: null,
+      runId: null,
+      agentApiKeyId: null,
+      responsibleUserIdOverride: actor.responsibleUserId,
+      details: {
+        ...(details ?? {}),
+        sourcePluginId: actor.viaPlugin.pluginId,
+        sourcePluginKey: actor.viaPlugin.pluginKey,
+        initiatingActorType: actor.actorType,
+        initiatingActorId: actor.actorId,
+        initiatingUserId: actor.userId,
+      },
+    };
+  }
+  return {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
+    responsibleUserIdOverride: actor.responsibleUserId,
+    details: details ?? null,
+  };
+}
 
 type SeedDefinition = {
   key: string;
@@ -339,16 +385,10 @@ async function recordActivity(
 ) {
   await logActivity(db, {
     companyId: input.companyId,
-    actorType: actor.actorType,
-    actorId: actor.actorId,
-    agentId: actor.agentId,
-    runId: actor.runId,
-    agentApiKeyId: actor.agentApiKeyId,
-    responsibleUserIdOverride: actor.responsibleUserId,
+    ...decisionActivityActor(actor, input.details),
     action: input.action,
     entityType: input.entityType,
     entityId: input.entityId,
-    details: input.details ?? null,
   });
 }
 

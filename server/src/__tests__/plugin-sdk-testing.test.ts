@@ -294,4 +294,74 @@ describe("plugin SDK test harness", () => {
       body: "relayed reply",
     });
   });
+
+  it("gates decision triage by capability and by the paired user's role", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-decision-triage",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Decision triage",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["attention.read", "decision.queues.read", "decision.triage.manage"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    const now = new Date("2026-06-03T11:00:00.000Z");
+    const member = (id: string, principalId: string, membershipRole: string) => ({
+      id,
+      companyId: "company-1",
+      principalType: "user" as const,
+      principalId,
+      status: "active" as const,
+      membershipRole,
+      grants: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.seed({
+      accessMembers: [member("m-viewer", "viewer-1", "viewer"), member("m-owner", "owner-1", "owner")] as any,
+    });
+    const source = { companyId: "company-1", sourceKind: "approval" as const, sourceId: "approval-1" };
+    // The harness binds ctx.decisions to the user of the running bridge call,
+    // like the host does. Handlers stand in for the plugin's own UI calls.
+    harness.ctx.data.register("triage", async () => harness.ctx.decisions.triage.get(source));
+    harness.ctx.data.register("feed", async () => harness.ctx.attention.list({ companyId: "company-1" }));
+    harness.ctx.data.register("all-feed", async () => harness.ctx.attention.list({ companyId: "company-1", all: true }));
+    harness.ctx.actions.register("triage", async (params) =>
+      harness.ctx.decisions.triage.update({ ...source, decideBy: params.decideBy as string }));
+    const asUser = (userId: string) => ({ companyId: "company-1", actor: { type: "user" as const, userId } });
+
+    // Outside a user's bridge call there is no user to act for.
+    await expect(harness.ctx.decisions.triage.get(source)).rejects.toThrow("this invocation has none");
+    await expect(harness.performAction("triage", { decideBy: "today" }, { companyId: "company-1" }))
+      .rejects.toThrow("this invocation has none");
+
+    await expect(harness.getData("triage", {}, asUser("viewer-1"))).resolves.toBeNull();
+    await expect(harness.performAction("triage", { decideBy: "today" }, asUser("viewer-1")))
+      .rejects.toThrow("viewer (read-only) access");
+    await expect(harness.performAction("triage", { decideBy: "today" }, asUser("stranger")))
+      .rejects.toThrow("not an active human member");
+
+    const triage = await harness.performAction<Record<string, unknown>>(
+      "triage",
+      { decideBy: "this_week" },
+      asUser("owner-1"),
+    );
+    expect(triage).toMatchObject({ decideBy: "this_week", setByType: "user", setByUserId: "owner-1", version: 1 });
+    // Timestamps are ISO strings, as they are over the worker RPC.
+    expect(typeof triage.createdAt).toBe("string");
+    await expect(harness.getData("triage", {}, asUser("viewer-1"))).resolves.toMatchObject({ decideBy: "this_week" });
+
+    await expect(harness.getData("feed", {}, asUser("viewer-1"))).resolves.toMatchObject({ items: [] });
+    await expect(harness.getData("all-feed", {}, asUser("viewer-1"))).rejects.toThrow("all requires a queue filter");
+
+    const readOnly = createTestHarness({
+      manifest: { ...manifest, id: "paperclip.test-decision-read-only", capabilities: ["decision.queues.read"] },
+    });
+    readOnly.seed({ accessMembers: [member("m-owner", "owner-1", "owner")] as any });
+    readOnly.ctx.actions.register("triage", async () => readOnly.ctx.decisions.triage.update({ ...source, decideBy: "today" }));
+    await expect(readOnly.performAction("triage", {}, asUser("owner-1"))).rejects.toThrow("decision.triage.manage");
+  });
 });

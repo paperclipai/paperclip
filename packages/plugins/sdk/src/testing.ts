@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
@@ -21,6 +22,8 @@ import type {
   Agent,
   Goal,
   Approval,
+  AttentionItem,
+  AttentionSourceKind,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -41,6 +44,10 @@ import type {
   PluginLocalFolderEntry,
   PluginLocalFolderStatus,
   PluginAccessMember,
+  PluginDecisionRetentionState,
+  PluginDecisionQueue,
+  PluginDecisionQueueItem,
+  PluginDecisionTriage,
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
@@ -116,6 +123,13 @@ export interface TestHarness {
     issueInteractions?: IssueThreadInteraction[];
     issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
     approvals?: Approval[];
+    /** Items returned by `ctx.attention.list` (filtered by company, queue, dismissal, and archive state). */
+    attentionItems?: AttentionItem[];
+    decisionQueues?: PluginDecisionQueue[];
+    decisionQueueItems?: PluginDecisionQueueItem[];
+    decisionTriage?: PluginDecisionTriage[];
+    /** Retention rows. `ctx.decisions.retention.*` throws for a source with no row, like the host. */
+    decisionRetention?: PluginDecisionRetentionState[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -128,8 +142,16 @@ export interface TestHarness {
   emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
   /** Execute a previously-registered scheduled job handler. */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
-  /** Invoke a `ctx.data.register(...)` handler by key. */
-  getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
+  /**
+   * Invoke a `ctx.data.register(...)` handler by key. Pass `options.actor` with
+   * `type: "user"` and `options.companyId` to simulate a signed-in board user's
+   * UI bridge call, which `ctx.attention` and `ctx.decisions` require.
+   */
+  getData<T = unknown>(
+    key: string,
+    params?: Record<string, unknown>,
+    options?: TestHarnessPerformActionOptions,
+  ): Promise<T>;
   /** Invoke a `ctx.actions.register(...)` handler by key. */
   performAction<T = unknown>(
     key: string,
@@ -509,6 +531,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueAttachments = new Map<string, IssueAttachment[]>();
   const attachmentContentById = new Map<string, string>();
   const approvals = new Map<string, Approval>();
+  const attentionItems: AttentionItem[] = [];
+  const decisionQueues = new Map<string, PluginDecisionQueue>();
+  const decisionQueueItems: PluginDecisionQueueItem[] = [];
+  const decisionSourceKey = (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+    `${companyId}:${sourceKind}:${sourceId}`;
+  const decisionTriage = new Map<string, PluginDecisionTriage>();
+  const decisionRetention = new Map<string, PluginDecisionRetentionState>();
+  const requireDecisionRetention = (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) => {
+    const row = decisionRetention.get(decisionSourceKey(companyId, sourceKind, sourceId));
+    if (!row) throw new Error("Attention source not found");
+    return row;
+  };
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -547,15 +581,43 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   }
 
   /**
-   * Mirror the host's `requireActiveHumanMember` write bar so the harness
-   * rejects the same forged/over-privileged attributions production does: the
-   * actor must be an active `user` member of the company whose `membershipRole`
-   * is not the read-only `viewer` role (the web app 403s viewers on these same
-   * board write-routes). Keeps the harness a faithful mirror so a plugin test
-   * cannot pass an attribution production would reject. Seed members via
-   * `createTestPluginHost({ accessMembers: [...] })`.
+   * The simulated host invocation scope: the company and signed-in board user of
+   * the `getData` / `performAction` call that is running. Mirrors the host's
+   * `PluginInvocationScope`, which the plugin cannot set.
    */
-  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+  const invocationScopeStorage = new AsyncLocalStorage<{ companyId: string | null; actorUserId: string | null }>();
+
+  /**
+   * Mirror the host's user binding for `ctx.attention` and `ctx.decisions`: the
+   * call acts for the board user who started the current invocation, in the
+   * same company, or it fails.
+   */
+  function requireInvokingUser(companyId: string): string {
+    const scope = invocationScopeStorage.getStore();
+    const actorUserId = scope?.companyId === companyId ? scope.actorUserId : null;
+    if (!actorUserId) {
+      throw new Error(
+        "Attention and decision calls act for the signed-in board user who started the current invocation; this invocation has none",
+      );
+    }
+    return actorUserId;
+  }
+
+  function runInInvocationScope<T>(context: PluginPerformActionContext, fn: () => Promise<T>): Promise<T> {
+    return invocationScopeStorage.run(
+      {
+        companyId: context.companyId,
+        actorUserId: context.actor.type === "user" ? context.actor.userId : null,
+      },
+      fn,
+    );
+  }
+
+  /**
+   * Mirror the host's `requireActiveHumanMember` read bar: the actor must be an
+   * active `user` member of the company. Viewer members pass.
+   */
+  function assertActiveHumanMember(companyId: string, actorUserId: string) {
     const member = [...accessMembers.values()].find(
       (entry) =>
         entry.companyId === companyId
@@ -566,6 +628,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     if (!member) {
       throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
     }
+    return member;
+  }
+
+  /**
+   * Mirror the host's `requireActiveHumanMember` write bar so the harness
+   * rejects the same forged/over-privileged attributions production does: the
+   * actor must be an active `user` member of the company whose `membershipRole`
+   * is not the read-only `viewer` role (the web app 403s viewers on these same
+   * board write-routes). Keeps the harness a faithful mirror so a plugin test
+   * cannot pass an attribution production would reject. Seed members via
+   * `createTestPluginHost({ accessMembers: [...] })`.
+   */
+  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+    const member = assertActiveHumanMember(companyId, actorUserId);
     if (member.membershipRole === "viewer") {
       throw new Error(`actorUserId "${actorUserId}" has viewer (read-only) access and cannot take this write action`);
     }
@@ -2080,6 +2156,146 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return { approval: decided, applied: true };
       },
     },
+    attention: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "attention.read");
+        assertActiveHumanMember(input.companyId, requireInvokingUser(input.companyId));
+        if (input.all && !input.queue) {
+          throw new Error("all requires a queue filter");
+        }
+        const items = attentionItems.filter((item) =>
+          item.companyId === input.companyId
+          && (input.includeDismissed || !item.dismissal)
+          && (input.archived ? Boolean(item.archivedAt) : !item.archivedAt)
+          && (!input.queue || item.queues.some((queue) => queue.key === input.queue)),
+        );
+        const limited = !input.all && typeof input.limit === "number" ? items.slice(0, input.limit) : items;
+        const countsBySourceKind = {} as Record<AttentionSourceKind, number>;
+        for (const item of items) {
+          countsBySourceKind[item.sourceKind] = (countsBySourceKind[item.sourceKind] ?? 0) + 1;
+        }
+        return {
+          companyId: input.companyId,
+          generatedAt: new Date().toISOString(),
+          totalCount: items.length,
+          deskBadgeCount: 0,
+          nextCursor: null,
+          countsBySourceKind,
+          items: limited,
+        };
+      },
+    },
+    decisions: {
+      queues: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, requireInvokingUser(input.companyId));
+          return [...decisionQueues.values()]
+            .filter((queue) => queue.companyId === input.companyId)
+            .map((queue) => ({
+              ...queue,
+              itemCount: decisionQueueItems.filter((item) => item.queueId === queue.id).length,
+            }));
+        },
+        async listItems(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, requireInvokingUser(input.companyId));
+          const queue = [...decisionQueues.values()].find(
+            (entry) => entry.companyId === input.companyId && entry.key === input.key,
+          );
+          if (!queue) throw new Error("Decision queue not found");
+          return decisionQueueItems.filter((item) => item.queueId === queue.id);
+        },
+      },
+      triage: {
+        async get(input) {
+          requireCapability(manifest, capabilitySet, "decision.queues.read");
+          assertActiveHumanMember(input.companyId, requireInvokingUser(input.companyId));
+          return decisionTriage.get(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId)) ?? null;
+        },
+        async update(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          const actorUserId = requireInvokingUser(input.companyId);
+          assertActiveHumanMemberCanWrite(input.companyId, actorUserId);
+          const key = decisionSourceKey(input.companyId, input.sourceKind, input.sourceId);
+          const current = decisionTriage.get(key);
+          const now = new Date().toISOString();
+          const next: PluginDecisionTriage = {
+            id: current?.id ?? randomUUID(),
+            companyId: input.companyId,
+            sourceKind: input.sourceKind,
+            sourceId: input.sourceId,
+            decideBy: input.decideBy === undefined ? current?.decideBy ?? null : input.decideBy,
+            snoozedUntil: input.snoozedUntil === undefined
+              ? current?.snoozedUntil ?? null
+              : input.snoozedUntil === null ? null : new Date(input.snoozedUntil).toISOString(),
+            setByType: "user",
+            setByAgentId: null,
+            setByUserId: actorUserId,
+            setByRunId: null,
+            responsibleUserId: actorUserId,
+            version: (current?.version ?? 0) + 1,
+            createdAt: current?.createdAt ?? now,
+            updatedAt: now,
+          };
+          decisionTriage.set(key, next);
+          return next;
+        },
+      },
+      retention: {
+        async setKeep(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          const actorUserId = requireInvokingUser(input.companyId);
+          assertActiveHumanMemberCanWrite(input.companyId, actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          const next = { ...current, keep: input.keep, version: current.version + 1, updatedAt: new Date().toISOString() };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+        async archive(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          const actorUserId = requireInvokingUser(input.companyId);
+          assertActiveHumanMemberCanWrite(input.companyId, actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          if (current.archivedAt) return current;
+          const now = new Date().toISOString();
+          const next: PluginDecisionRetentionState = {
+            ...current,
+            archivedAt: now,
+            archivedReason: "manual",
+            archivedByType: "user",
+            archivedByAgentId: null,
+            archivedByUserId: actorUserId,
+            archivedByRunId: null,
+            archiveVersion: current.archiveVersion + 1,
+            version: current.version + 1,
+            updatedAt: now,
+          };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+        async revive(input) {
+          requireCapability(manifest, capabilitySet, "decision.triage.manage");
+          const actorUserId = requireInvokingUser(input.companyId);
+          assertActiveHumanMemberCanWrite(input.companyId, actorUserId);
+          const current = requireDecisionRetention(input.companyId, input.sourceKind, input.sourceId);
+          if (!current.archivedAt) return current;
+          const next: PluginDecisionRetentionState = {
+            ...current,
+            archivedAt: null,
+            archivedReason: null,
+            archivedByType: null,
+            archivedByAgentId: null,
+            archivedByUserId: null,
+            archivedByRunId: null,
+            version: current.version + 1,
+            updatedAt: new Date().toISOString(),
+          };
+          decisionRetention.set(decisionSourceKey(input.companyId, input.sourceKind, input.sourceId), next);
+          return next;
+        },
+      },
+    },
     agents: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
@@ -2600,6 +2816,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         attachmentContentById.set(attachment.id, contentBase64 ?? "");
       }
       for (const row of input.approvals ?? []) approvals.set(row.id, row);
+      attentionItems.push(...(input.attentionItems ?? []));
+      for (const row of input.decisionQueues ?? []) decisionQueues.set(row.id, row);
+      decisionQueueItems.push(...(input.decisionQueueItems ?? []));
+      for (const row of input.decisionTriage ?? []) {
+        decisionTriage.set(decisionSourceKey(row.companyId, row.sourceKind, row.sourceId), row);
+      }
+      for (const row of input.decisionRetention ?? []) {
+        decisionRetention.set(decisionSourceKey(row.companyId, row.sourceKind, row.sourceId), row);
+      }
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
       for (const row of input.projectWorkspaces ?? []) {
@@ -2651,10 +2876,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
       });
     },
-    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
+    async getData<T = unknown>(
+      key: string,
+      params: Record<string, unknown> = {},
+      options?: TestHarnessPerformActionOptions,
+    ) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      const context = actionContextFor(params, options);
+      return await runInInvocationScope(context, async () => await handler(params) as T);
     },
     async performAction<T = unknown>(
       key: string,
@@ -2664,7 +2894,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
       const context = actionContextFor(params, options);
-      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
+      return await runInInvocationScope(
+        context,
+        async () => await handler(paramsWithHostCompanyScope(params, context, options), context) as T,
+      );
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);

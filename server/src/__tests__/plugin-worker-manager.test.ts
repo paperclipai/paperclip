@@ -309,6 +309,63 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("binds the signed-in board user of a bridge call into the invocation scope", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+    const userActor = (companyId: string | null) => ({
+      type: "user" as const,
+      userId: "user-1",
+      agentId: null,
+      runId: null,
+      companyId,
+    });
+
+    try {
+      await handle.start();
+
+      await handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "echo", requestedCompanyId: "company-a" },
+        actorContext: userActor("company-a"),
+        renderEnvironment: null,
+      });
+      await handle.call("performAction", {
+        key: "probe",
+        params: { mode: "echo", requestedCompanyId: "company-a" },
+        actorContext: userActor("company-a"),
+        renderEnvironment: null,
+      });
+      // An agent caller carries no board user.
+      await handle.call("performAction", {
+        key: "probe",
+        params: { mode: "echo", requestedCompanyId: "company-a" },
+        actorContext: { type: "agent", userId: "user-1", agentId: "agent-1", runId: null, companyId: "company-a" },
+        renderEnvironment: null,
+      });
+
+      expect(companiesGet.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+        { invocationScope: { companyId: "company-a", actorUserId: "user-1" } },
+        { invocationScope: { companyId: "company-a", actorUserId: "user-1" } },
+        { invocationScope: { companyId: "company-a" } },
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }));
     const handle = createPluginWorkerHandle("test.plugin", {
