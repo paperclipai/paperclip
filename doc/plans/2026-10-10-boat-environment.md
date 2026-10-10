@@ -311,3 +311,19 @@ That first turn's Vite launch used `nohup` without detaching from the provider
 shell's process group; its listener disappeared before the warm deadline.
 This attempt does not count as a successful warm preview. The earlier proven
 two-turn development result remains separate from final-source qualification.
+
+The corrected detached-session launch passed on the same controller: Vite PID
+120855 stayed inside the runner's owned systemd slice across subsequent turns.
+After allowing the exact Boat preview hostname, the browser displayed the app.
+A heading-only agent edit hot-reloaded it while preserving the unsaved draft
+and page-session value `1791653071067`; the browser was not navigated or refreshed
+between the [baseline](assets/2026-10-10-boat/native-vite-final-before.jpg) and
+[updated page](assets/2026-10-10-boat/native-vite-final-after.jpg).
+
+Native Claude's fresh cold and warm runs also passed on this controller. The
+runner PID 98229 stayed the same across the warm follow-up. Its natural timeout
+then left both runner and provider checkpoints suspended, with no descendants
+or pending work. A separate task reused the verified provider pack in 6.639
+seconds without compression or upload, but later failed to bind its listener
+because the allocated port overlapped the guest's outbound ephemeral range.
+Cache reuse is proven; that task is not counted as a successful execution.
