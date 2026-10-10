@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, externalAgentHolds, heartbeatRuns, issueAccessGrants, issues, museAgentBindings as bindings, museCredentials, museInputDeliveries, museMailboxItems as mailbox, museRunnerAssignments as assignments, museRunnerOperations as operations, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, applyPendingMigrations, externalAgentHolds, heartbeatRuns, issueAccessGrants, issues, museAgentBindings as bindings, museCredentials, museInputDeliveries, museMailboxItems as mailbox, museRunnerAssignments as assignments, museRunnerOperations as operations, nativeRunFinalizations } from "@paperclipai/db";
 import { startAgentLifecycle } from "../services/agent-lifecycle.js";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -17,9 +17,14 @@ import { digestPaperclipSemanticContent, externalOperationDigest, type ExternalP
 /** Real database/transport authority tests; synthetic provider receipts do not
  * count as live Muse/native qualification evidence. */
 describe("personal Muse control plane",()=>{
-  let temporary:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,db:ReturnType<typeof createDb>;
-  beforeAll(async()=>{temporary=await startEmbeddedPostgresTestDatabase("muse-control-");db=createDb(temporary.connectionString);await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});},30000);
-  afterAll(async()=>{vi.unstubAllEnvs();await museReceiver(db).stop();await temporary?.cleanup();});
+  let temporary:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>|undefined,db:ReturnType<typeof createDb>,externalDatabaseUrl:string|undefined;
+  beforeAll(async()=>{
+    externalDatabaseUrl=process.env.PAPERCLIP_MUSE_CONTROL_TEST_DATABASE_URL?.trim();
+    if(externalDatabaseUrl){await applyPendingMigrations(externalDatabaseUrl);db=createDb(externalDatabaseUrl);}
+    else {temporary=await startEmbeddedPostgresTestDatabase("muse-control-");db=createDb(temporary.connectionString);}
+    await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});
+  },30000);
+  afterAll(async()=>{vi.unstubAllEnvs();await museReceiver(db).stop();if(externalDatabaseUrl)await closeRegisteredClients(externalDatabaseUrl);await temporary?.cleanup();});
   async function fixture(ready=true) {
     const operatorId=randomUUID();await db.insert(authUsers).values({id:operatorId,name:"Muse authorizer",email:operatorId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
     const [company]=await db.insert(companies).values({name:"Muse control",issuePrefix:"MU"+randomBytes(3).toString("hex")}).returning();
@@ -121,6 +126,28 @@ describe("personal Muse control plane",()=>{
       const [hold]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));expect(hold.workerUnknown).toBe(false);expect(hold.nativeEffectsUnknown).toBe(true);expect(hold.releasedAt).toBeNull();
       await expect(f.identity.authenticate(f.credentials.accessToken)).rejects.toThrow();
     }finally{await instanceSettingsService(db).updateExperimental({enableMuse:true});await f.detach();}
+  });
+  it("reports the exact old stop revision after repair and cancels only the fenced native run",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const cancelRun=vi.fn().mockResolvedValue(null);
+      museRunnerBroker(db,{heartbeat:{wakeup:vi.fn().mockResolvedValue(null),cancelRun}});
+      const before=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      const pairing=await f.broker.createPairing({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,replaceBindingId:f.binding.id,expectedRevision:before.revision});
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      expect(state.id).toBe(pairing.bindingId);expect(state.stop.boundary?.bindingId).toBe(f.binding.id);
+      expect(state.stop.bindingRevision).toBe(before.revision+1);expect(state.revision).not.toBe(state.stop.bindingRevision);
+      expect(cancelRun).toHaveBeenCalledWith(f.runId,"Muse connection replaced");
+      const boundary=state.stop.boundary!;
+      await expect(f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary,expectedRevision:state.revision,workerStopped:true})).rejects.toThrow("Stop boundary changed");
+      await db.update(bindings).set({revision:state.revision+10}).where(eq(bindings.id,state.id));
+      const refreshed=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      expect(refreshed.stop.bindingRevision).toBe(state.stop.bindingRevision);expect(refreshed.stop.boundary).toEqual(boundary);
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary,expectedRevision:refreshed.stop.bindingRevision!,workerStopped:true});
+      const [hold]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(hold.workerUnknown).toBe(false);expect(hold.operatorAttestedAt).toBeInstanceOf(Date);
+      await expect(f.identity.authenticate(f.credentials.accessToken)).rejects.toThrow();
+    }finally{await f.detach();}
   });
   it("preserves a persisted qualification deadline on retry and enforces it without a watcher",async()=>{
     const f=await fixture(),state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!,qualificationId=randomUUID(),input={companyId:f.company.id,agentId:f.agent.id,bindingId:f.binding.id,generation:1,expectedRevision:state.revision,operatorId:f.operatorId,qualificationId,expiresAt:new Date(Date.now()+86400000)};
