@@ -1844,6 +1844,8 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /** Only return issues whose canonical last-activity timestamp (max of updatedAt, latest comment, latest non-inbox activity log) is at or before now - staleHours hours. */
+  staleHours?: number;
 }
 
 type IssueRow = typeof issues.$inferSelect & { externalConversationState?: "active" | "waiting" | null };
@@ -2970,6 +2972,12 @@ function issueCanonicalLastActivityAtExpr(companyId: string) {
       COALESCE(${latestLogAt}, to_timestamp(0))
     )
   `;
+}
+
+function staleHoursCondition(companyId: string, staleHours: number) {
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  const staleBefore = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+  return sql<boolean>`${canonicalLastActivityAt} <= ${staleBefore.toISOString()}::timestamptz`;
 }
 
 function unreadForUserCondition(companyId: string, userId: string) {
@@ -8187,6 +8195,13 @@ export function issueService(db: Db) {
         if (Number.isFinite(since.getTime())) {
           conditions.push(gt(issues.updatedAt, since));
         }
+      }
+      if (
+        filters?.staleHours !== undefined &&
+        Number.isFinite(filters.staleHours) &&
+        filters.staleHours > 0
+      ) {
+        conditions.push(staleHoursCondition(companyId, filters.staleHours));
       }
       if (
         filters?.excludeRoutineExecutions &&

@@ -8324,6 +8324,7 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const rawStaleHours = req.query.staleHours as string | undefined;
 
     if (
       assigneeUserFilterRaw === "me" &&
@@ -8446,6 +8447,21 @@ export function issueRoutes(
       });
       return;
     }
+    let staleHours: number | undefined;
+    if (rawStaleHours !== undefined) {
+      const parsedStaleHours = Number(rawStaleHours);
+      const staleCutoffMs = Date.now() - parsedStaleHours * 60 * 60 * 1000;
+      if (
+        !Number.isFinite(parsedStaleHours) ||
+        parsedStaleHours <= 0 ||
+        !Number.isFinite(staleCutoffMs) ||
+        !Number.isFinite(new Date(staleCutoffMs).getTime())
+      ) {
+        res.status(400).json({ error: "staleHours must be a positive number when provided" });
+        return;
+      }
+      staleHours = parsedStaleHours;
+    }
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -8494,6 +8510,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      staleHours,
     };
     // readCondition is a Drizzle SQL object with cyclic internal references;
     // actor identity already scopes the coordinator key, so only serializable
