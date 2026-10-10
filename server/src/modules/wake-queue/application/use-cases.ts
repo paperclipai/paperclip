@@ -1,3 +1,4 @@
+import { isResponsibleUserDenialCode } from "@paperclipai/shared";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -595,6 +596,7 @@ async function runReleaseRecoveryTail(
       isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
       isConfigurationIncompleteFailedRun:
         isConfigurationIncompleteFailedRun(run),
+      isResponsibleUserDenialRun: isResponsibleUserDenialCode(run.errorCode),
       automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(
         run,
         expectedRetryReason,

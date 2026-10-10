@@ -40,6 +40,7 @@ import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-att
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  RESPONSIBLE_USER_DENIAL_CODES,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
@@ -122,6 +123,7 @@ import {
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
+import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -136,6 +138,7 @@ import {
   sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
+  buildResponsibleUserDenialRecoveryNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   type StrandedRecoveryNoticeSeed,
 } from "./stranded-notice.js";
@@ -495,6 +498,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  ...RESPONSIBLE_USER_DENIAL_CODES,
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
@@ -4870,10 +4874,10 @@ export function recoveryService(
             agentId,
             acceptedInteractionResolvedAt,
           );
-          if (
-            classifyContinuationFailure(latestPostResolutionRun).kind ===
-            "deliberate_wait_without_target"
-          ) {
+          const postResolutionClassification = classifyContinuationFailure(
+            latestPostResolutionRun,
+          );
+          if (postResolutionClassification.kind === "deliberate_wait_without_target") {
             const resolved = await resolveContinuationWaitingOnReview(issue);
             if (resolved) {
               result.waitingOnReviewResolved += 1;
@@ -4899,6 +4903,38 @@ export function recoveryService(
             }
             continue;
           }
+          // An accepted interaction is not a licence to retry a failure the
+          // continuation classifier already called non-retryable: requeueing
+          // here would restart exactly the loop that classification prevents on
+          // the plain continuation path.
+          if (postResolutionClassification.kind === "non_retryable") {
+            const denialCode = normalizeResponsibleUserDenialCode(
+              postResolutionClassification.errorCode,
+            );
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: issue.status as StrandedPreviousStatus,
+              latestRun: latestPostResolutionRun,
+              notice: denialCode
+                ? buildResponsibleUserDenialRecoveryNoticeSeed(denialCode)
+                : {
+                    body:
+                      "Paperclip detected a non-retryable failure on the run that followed accepted interaction " +
+                      `\`${acceptedContinuationInteraction.id}\` (\`${postResolutionClassification.errorCode}\`). ` +
+                      "Skipping automatic retries and moving the issue to `blocked` so it is visible for intervention.",
+                    title: "Continuation failed",
+                    tone: "danger",
+                  },
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           const { consecutive } = legacyReviewParkAttempts;
           if (
             consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS &&
