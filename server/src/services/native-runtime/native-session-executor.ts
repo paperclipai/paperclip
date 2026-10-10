@@ -4389,11 +4389,40 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
         // environmentLeaseId. Computer placement records the actual lease. Only
         // this exact prior workspace coordinate may resolve through that record.
         // Explicit physical lease identities still preserve their warm lineage.
-        const workspaceCoordinate = input.identity.environmentLeaseId ===
-          priorExecution.binding.executionWorkspaceId;
-        const physicalLeaseId = workspaceCoordinate
-          ? priorWorkspace.leaseId
-          : input.identity.environmentLeaseId;
+        let workspaceRunId: string | null = input.identity.environmentLeaseId ===
+          priorExecution.binding.executionWorkspaceId ? input.identity.runId : null;
+        let physicalLeaseId = workspaceRunId ? priorWorkspace.leaseId : input.identity.environmentLeaseId;
+        if (!workspaceRunId) {
+          // Warm attachment advances runId while retaining the process's original
+          // workspace coordinate. Resolve that recorded origin, never an arbitrary
+          // run ID, before checking the physical lease and latest retirement.
+          const origins = await input.db.select({
+            status: heartbeatRuns.status,
+            runnerProfileJson: heartbeatRuns.runnerProfileJson,
+          }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+            eq(sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->>'executionWorkspaceId'`,
+              input.identity.environmentLeaseId),
+          )).limit(2);
+          if (origins.length > 1) return "scope_mismatch";
+          if (origins.length === 1) {
+            const origin = origins[0]!;
+            const originProfile = record(origin.runnerProfileJson);
+            const originExecution = parseNativeExecutionInput(originProfile.nativeExecutionInput);
+            const originWorkspace = readNativeComputerWorkspaceReference(originProfile.nativeComputerWorkspace);
+            if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(origin.status) ||
+                originExecution.binding.executionWorkspaceId !== input.identity.environmentLeaseId ||
+                nativeSessionScopeKey(originExecution) !== nativeSessionScopeKey(priorExecution) ||
+                !originWorkspace || originWorkspace.remoteCwd !== priorWorkspace.remoteCwd ||
+                record(originProfile.nativeComputerWorkspace).placementId !== record(descriptor).placementId ||
+                originWorkspace.computerOwner.computerId !== priorWorkspace.computerOwner.computerId ||
+                originWorkspace.computerOwner.ownerId !== priorWorkspace.computerOwner.ownerId ||
+                originWorkspace.computerOwner.generation > priorWorkspace.computerOwner.generation) return "scope_mismatch";
+            workspaceRunId = originExecution.binding.runId;
+            physicalLeaseId = originWorkspace.leaseId;
+          }
+        }
         const [physicalLease] = await input.db.select({
           providerLeaseId: environmentLeases.providerLeaseId,
           heartbeatRunId: environmentLeases.heartbeatRunId,
@@ -4405,7 +4434,7 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
         )).limit(1);
         const leaseMetadata = record(physicalLease?.metadata);
         const leaseOwner = record(leaseMetadata.computerOwner);
-        if ((workspaceCoordinate && physicalLease?.heartbeatRunId !== input.identity.runId) ||
+        if ((workspaceRunId && physicalLease?.heartbeatRunId !== workspaceRunId) ||
             physicalLease?.providerLeaseId !== priorWorkspace.computerOwner.ownerId ||
             leaseMetadata.agentId !== input.execution.binding.agentId ||
             leaseOwner.computerId !== priorWorkspace.computerOwner.computerId ||
