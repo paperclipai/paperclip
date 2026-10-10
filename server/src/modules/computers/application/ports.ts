@@ -31,7 +31,7 @@ export interface ComputerBackend {
   ready(record: ComputerRecord): Promise<void>;
   claim(record: ComputerRecord): Promise<void>;
   advance(record: ComputerRecord, owner: Owner): Promise<void>;
-  runner(record: ComputerRecord): Promise<CommandManagedRuntimeRunner>;
+  runner(record: ComputerRecord, options?: { control?: boolean }): Promise<CommandManagedRuntimeRunner>;
   launch(
     record: ComputerRecord,
     owner: Owner,
