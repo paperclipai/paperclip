@@ -12,6 +12,7 @@ beforeEach(async () => {
     vi.stubEnv(key, undefined);
   }
   vi.stubEnv("HOME", path.join(root, "host-home"));
+  vi.spyOn(os, "homedir").mockReturnValue(path.join(root, "host-home"));
 });
 
 afterEach(async () => {
