@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { protectSpawnedAgentRun } from "@paperclipai/adapter-utils/oom-score-adj";
 import type { Db } from "@paperclipai/db";
 import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 
@@ -411,6 +412,12 @@ export async function executeNativeCodexRunner(input: {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Keep the kernel shedding this worker instead of the control plane. Same
+  // rationale and re-application guarantee as the local adapter spawn path; see
+  // packages/adapter-utils/src/oom-score-adj.ts. Never throws.
+  if (typeof child.pid === "number" && child.pid > 0) {
+    protectSpawnedAgentRun(child.pid);
+  }
   const exit = waitForExit(child);
   child.stdout?.on("data", (chunk: Buffer) => {
     void input.onLog("stdout", chunk.toString("utf8"));
