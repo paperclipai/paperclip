@@ -16,6 +16,7 @@ import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
+import { ClaudeLocalConfigFields } from "../adapters/claude-local/config-fields";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
@@ -112,6 +113,11 @@ vi.mock("../adapters", () => ({
     // adapter's fields.
     ConfigFields: (props: AdapterConfigFieldsProps) => {
       if (type === "paperclip_runner" || (type === "codex_local" && props.allowExecutionEngineSelection)) return <CodexLocalConfigFields {...props} />;
+      if (type === "claude_local" && props.allowExecutionEngineSelection) return (
+        <div data-testid="adapter-config-fields" data-managed-sandbox-only={String(props.managedSandboxOnly === true)} data-allow-execution-engine="true">
+          <ClaudeLocalConfigFields {...props} />
+        </div>
+      );
       const { adapterType, hideInstructionsFile, managedSandboxOnly, allowExecutionEngineSelection } = props;
       return adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
@@ -3878,12 +3884,15 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
   });
 
-  it.each(["acp", undefined])("requires explicit CLI repair before saving an unsupported Boat Codex engine (%s)", async engine => {
+  it.each([
+    ["codex_local", "Codex", "acp"], ["codex_local", "Codex", undefined],
+    ["claude_local", "Claude", "acp"], ["claude_local", "Claude", undefined],
+  ])("requires explicit CLI repair before saving an unsupported Boat %s engine (%s, %s)", async (adapterType, label, engine) => {
     setManagedSandboxOnly(true);
     const saveActions = vi.fn();
     const result = await renderForm(
       [makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } })],
-      { adapterType: "codex_local", defaultEnvironmentId: "boat-1", adapterConfig: { engine } },
+      { adapterType: adapterType as Agent["adapterType"], defaultEnvironmentId: "boat-1", adapterConfig: { engine } },
       { onSaveActionChange: saveActions, showAdapterTestEnvironmentButton: true },
     );
     roots.push(result.root);
@@ -3893,12 +3902,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
       }
     });
     await flushReact();
-    expect(result.container.textContent).toContain("Choose Codex CLI before saving or testing");
+    expect(result.container.textContent).toContain(`Choose ${label} CLI before saving or testing`);
     expect(saveActions.mock.lastCall?.[0]).toBeNull();
     expect(findButton(result.container, "Test")?.disabled).toBe(true);
     expect(result.onSave).not.toHaveBeenCalled();
     const engineSelect = Array.from(result.container.querySelectorAll("select")).find(select =>
-      Array.from(select.options).some(option => option.textContent === "Codex CLI"),
+      Array.from(select.options).some(option => option.textContent === `${label} CLI`),
     )!;
     expect(engineSelect.value).toBe(engine ?? "auto");
     expect(engineSelect.selectedOptions[0].disabled).toBe(true);
@@ -3907,7 +3916,8 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
       engineSelect.value = "cli";
       engineSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(result.container.textContent).not.toContain("Choose Codex CLI before saving or testing");
+    expect(result.container.textContent).not.toContain(`Choose ${label} CLI before saving or testing`);
+    expect(findButton(result.container, "Test")?.disabled).toBe(false);
     expect(saveActions.mock.lastCall?.[0]).toEqual(expect.any(Function));
     await act(async () => saveActions.mock.lastCall![0]());
     expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ engine: "cli" }) }));

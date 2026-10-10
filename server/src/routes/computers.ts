@@ -34,7 +34,9 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
     }
     const [lease] = await db.select().from(environmentLeases)
       .where(and(eq(environmentLeases.companyId, issue.companyId), eq(environmentLeases.issueId, issue.id), eq(environmentLeases.provider, "boat")))
-      .orderBy(desc(environmentLeases.updatedAt)).limit(1);
+      // Every computer admission inserts a lease. Finalization can update an older
+      // lease later, but must not make it the task's current authority again.
+      .orderBy(desc(environmentLeases.createdAt), desc(environmentLeases.id)).limit(1);
     const [agent] = issue.assigneeAgentId ? await db.select().from(agents)
       .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, issue.assigneeAgentId))).limit(1) : [];
     const environmentId = lease?.environmentId ?? agent?.defaultEnvironmentId ?? (await settings.get()).defaultEnvironmentId;

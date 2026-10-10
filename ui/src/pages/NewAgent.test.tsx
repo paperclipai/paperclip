@@ -311,9 +311,8 @@ describe("New agent setup", () => {
     expect(api.hire).not.toHaveBeenCalled();
   });
   it.each([
-    ["codex_local", "OpenAI", undefined], ["claude_local", "Claude", undefined],
-    ["claude_local", "Claude", "acp"],
-  ])("shows Boat's CLI default before connecting and preserves an explicit engine for %s (%s, %s)", async (adapter, provider, choice) => {
+    ["codex_local", "OpenAI"], ["claude_local", "Claude"],
+  ])("only offers Boat CLI before connecting and saves it for %s (%s)", async (adapter, provider) => {
     envApi.list.mockResolvedValue([
       { id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } },
     ]);
@@ -323,23 +322,19 @@ describe("New agent setup", () => {
     const engine = container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')!;
     expect(engine).not.toBeNull();
     expect(engine.value).toBe("cli");
-    expect(Array.from(engine.options).some(option => option.value === "acp")).toBe(adapter === "claude_local");
+    expect(Array.from(engine.options).map(option => option.value)).toEqual(["cli"]);
     expect(engine.selectedOptions[0].textContent).toBe(adapter === "codex_local" ? "Codex CLI" : "Claude CLI");
     expect(api.testEnvironment).not.toHaveBeenCalled();
-    if (choice) await act(async () => {
-      engine.value = choice;
-      engine.dispatchEvent(new Event("change", { bubbles: true }));
-    });
     await click(provider + "API key");
     await fill("API key", "boat-test-key");
     await click("Connect");
     expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
-      environmentId: "boat-1", adapterConfig: { engine: choice ?? "cli" },
+      environmentId: "boat-1", adapterConfig: { engine: "cli" },
     });
-    expect(container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')?.value).toBe(choice ?? "cli");
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')?.value).toBe("cli");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1]).toMatchObject({
-      defaultEnvironmentId: "boat-1", adapterConfig: { engine: choice ?? "cli" },
+      defaultEnvironmentId: "boat-1", adapterConfig: { engine: "cli" },
       runtimeConfig: { heartbeat: { enabled: false } },
     });
   });

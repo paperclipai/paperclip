@@ -146,7 +146,7 @@ function Setup({
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
-  const [boatEngines, setBoatEngines] = useState<Partial<Record<string, "cli" | "acp">>>({});
+  const [boatEngines, setBoatEngines] = useState<Partial<Record<string, "cli">>>({});
   const boatEngine = boatEngines[adapterType];
   const [provider, setProvider] = useState("openrouter");
   const [apiKey, setApiKey] = useState("");
@@ -352,13 +352,12 @@ function Setup({
         className={controlClass}
         value={boatEngine ?? "cli"}
         disabled={busy}
-        onChange={(event) => {
-          setBoatEngines(current => ({ ...current, [adapterType]: adapterType !== "codex_local" && event.target.value === "acp" ? "acp" : "cli" }));
+        onChange={() => {
+          setBoatEngines(current => ({ ...current, [adapterType]: "cli" }));
           resetTest();
         }}
       >
         <option value="cli">{adapterType === "codex_local" ? "Codex CLI" : "Claude CLI"}</option>
-        {adapterType !== "codex_local" && <option value="acp">ACP</option>}
       </select>
     </Field>
   ) : null;
