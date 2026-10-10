@@ -1003,4 +1003,101 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       svc.count(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
   });
+
+  it("omits blockerAttention for a row the blocked-tree walk does not cover", async () => {
+    const { companyId, agentId } = await createCompany("BOM");
+    const sourceId = await insertIssue({
+      companyId,
+      identifier: "BOM-1",
+      title: "Sits in todo with a live blocker",
+      status: "todo",
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "BOM-2",
+      title: "Open blocker",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: sourceId });
+
+    const rows = await svc.list(companyId);
+    const source = rows.find((row) => row.id === sourceId);
+
+    expect(source).toBeDefined();
+    // Why the key check rather than only the value: the defect is that an
+    // out-of-scope row gets *answered*, so asserting `toBeUndefined()` alone would
+    // also pass on a fix that returned some other empty shape.
+    expect(Object.hasOwn(source ?? {}, "blockerAttention")).toBe(false);
+    expect(source?.blockerAttention).toBeUndefined();
+
+    // Why the second read: it proves the omission is a scope statement and not a
+    // lost blocker. `/diagnostics/blockers` answers on every status, which is the
+    // other half of #14168's reproduction.
+    const diagnostic = await svc.getBlockerDiagnostics(sourceId);
+    expect(diagnostic.blockers.map((blocker) => blocker.id)).toEqual([blockerId]);
+    expect(diagnostic.readiness.unresolvedBlockerCount).toBe(1);
+  });
+
+  it("keeps answering for a blocked row that has nothing left unresolved", async () => {
+    const { companyId } = await createCompany("BON");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "BON-1",
+      title: "Parked with every blocker closed",
+      status: "blocked",
+    });
+    const doneBlockerId = await insertIssue({
+      companyId,
+      identifier: "BON-2",
+      title: "Already done",
+      status: "done",
+    });
+    await block({ companyId, blockerIssueId: doneBlockerId, blockedIssueId: parentId });
+
+    const rows = await svc.list(companyId);
+    const parent = rows.find((row) => row.id === parentId);
+
+    // Why this case is the guard on the fix: a row whose walk found nothing left
+    // to resolve is the closest thing in this field to an honest zero, and it is
+    // the row a deletion of the pre-fill could accidentally silence along with the
+    // rest. It must keep its computed answer — which also documents that
+    // `state: "none"` is not that answer.
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      directBlockerIssueId: null,
+    });
+  });
+
+  it("does not answer for another company's row, even through the public map", async () => {
+    const home = await createCompany("BOH");
+    const foreign = await createCompany("BOF");
+    const foreignId = await insertIssue({
+      companyId: foreign.companyId,
+      identifier: "BOF-1",
+      title: "Foreign todo row",
+      status: "todo",
+    });
+
+    // Why the public method: `listBlockerAttention` takes the rows from the
+    // caller, so a foreign row can be handed to a call scoped to another company.
+    // The roots filter already refuses it (`row.companyId === companyId`); only
+    // the pre-fill keyed it into the result.
+    const map = await svc.listBlockerAttention(home.companyId, [
+      {
+        id: foreignId,
+        companyId: foreign.companyId,
+        parentId: null,
+        identifier: "BOF-1",
+        title: "Foreign todo row",
+        status: "todo",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+    ]);
+
+    expect(map.has(foreignId)).toBe(false);
+  });
 });

@@ -3791,11 +3791,21 @@ async function listIssueBlockerAttentionMap(
     (row) => row.companyId === companyId && row.status === "blocked",
   );
   const attentionMap = new Map<string, IssueBlockerAttention>();
-  for (const row of issueRows) {
-    if (row.status !== "blocked") {
-      attentionMap.set(row.id, createIssueBlockerAttention());
-    }
-  }
+  // Why nothing is pre-filled here any more: an entry in this map is the
+  // serializer's whole test for "answer this row" (it guards on
+  // `blockerAttentionByIssueId.has(row.id)`), so keying in a default-constructed
+  // attention made every row the walk does not cover report
+  // `{state:"none", unresolvedBlockerCount:0}` — indistinguishable from "checked,
+  // nothing unresolved" (#14168). An `in_progress` issue with a live blocker is
+  // the ordinary, correctly-wired shape, and it read as clear. Absence is
+  // already expressible: `blockerAttention` is optional on the shared issue
+  // types, and the one UI reader that branches on `"none"`
+  // (StatusIcon.blockedAttentionLabel) treats absent identically and only for
+  // `status === "blocked"`, which is the covered set.
+  // Why the roots filter is the only gate now: it already carries
+  // `row.companyId === companyId`, which the pre-fill did not — so a foreign row
+  // handed to the public `listBlockerAttention` was keyed into the answer for a
+  // company the call never considered.
   if (roots.length === 0) return attentionMap;
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
