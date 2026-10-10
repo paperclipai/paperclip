@@ -20,6 +20,10 @@ const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
+  // The assignment paths consult this; a watchdog actor is an agent, so the
+  // decomposition and update routes reach it. No chain in this suite is a
+  // delegation cycle, so it answers null.
+  findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),

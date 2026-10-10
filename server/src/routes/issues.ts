@@ -7618,6 +7618,13 @@ export function issueRoutes(
    * and no one tells the human. Humans are unaffected, and closed ancestors
    * do not count — re-engaging the creator of finished work is normal.
    * Self-assigned decomposition is not delegation back to another agent.
+   *
+   * This must run on every path that can attach an agent assignee to a
+   * parented issue, not only on create. The refused shape is a state, so a
+   * guard on one route is an inconvenience rather than a rule: creating the
+   * child unassigned and then assigning it by PATCH reaches the same place in
+   * one extra call. Call it from each such path and keep the escape routes in
+   * the message ones that actually deliver the work.
    */
   async function assertNoAgentDelegationCycle(input: {
     actorType: string;
@@ -7635,7 +7642,10 @@ export function issueRoutes(
     if (!ancestor) return;
     throw conflict(
       `Delegation cycle: ${ancestor.identifier ?? "an ancestor issue"} in this chain was created by the agent this child would be assigned to. ` +
-        "Complete the remaining work in your own issue, leave the child unassigned, or escalate to a board operator — do not delegate the work back to the agent that delegated it to you.",
+        "Do not delegate the work back to the agent that delegated it to you. " +
+        "To ask that agent for something they genuinely own, file the issue without a parent and assign it to them: that wakes them without growing this chain, so reference this issue in the description instead of linking it. " +
+        "Otherwise complete the remaining work in your own issue, or escalate to a board operator. " +
+        "Leaving the child unassigned keeps the parent link but wakes nobody, so use it only for a record you do not need acted on.",
       {
         code: "delegation_cycle",
         ancestorIssueId: ancestor.id,
@@ -12930,6 +12940,15 @@ export function issueRoutes(
             ? { assigneeAgentId: normalizedAssigneeAgentId }
             : {}),
         };
+        // Decomposing an accepted plan creates parented children with
+        // assignees, so it can hand a slice of the work back to the agent that
+        // delegated it exactly as the child-create route can.
+        await assertNoAgentDelegationCycle({
+          actorType: req.actor.type,
+          actorAgentId: req.actor.agentId,
+          parentIssueId: sourceIssue.id,
+          assigneeAgentId: normalizedAssigneeAgentId ?? null,
+        });
         requestedChildren.push(childBody);
         assertNoAgentHostWorkspaceCommandMutation(
           req,
@@ -14228,6 +14247,30 @@ export function issueRoutes(
         }
       }
 
+      // Assigning or re-parenting an existing issue reaches the same shape the
+      // create routes refuse, so it answers to the same guard: a child created
+      // unassigned and then assigned, or an assigned issue moved under a new
+      // chain, both end beneath an open ancestor its assignee created.
+      // Workflow-controlled assignment is exempt because there the server is
+      // routing its own review stages back to a participant rather than an
+      // agent delegating work. Returning an issue to a human creator clears
+      // the guard on its own: that path leaves no agent assignee.
+      const nextParentId =
+        updateFields.parentId === undefined
+          ? existing.parentId
+          : (updateFields.parentId as string | null);
+      if (
+        (assigneeWillChange && !transition.workflowControlledAssignment) ||
+        nextParentId !== existing.parentId
+      ) {
+        await assertNoAgentDelegationCycle({
+          actorType: req.actor.type,
+          actorAgentId: req.actor.agentId,
+          parentIssueId: nextParentId,
+          assigneeAgentId: nextAssigneeAgentId,
+        });
+      }
+
       // Only this request may finish a mutation that intentionally stops its
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
@@ -14306,10 +14349,6 @@ export function issueRoutes(
         }
       }
 
-      const nextParentId =
-        updateFields.parentId === undefined
-          ? existing.parentId
-          : (updateFields.parentId as string | null);
       const shouldRelayStop =
         Boolean(nextParentId) &&
         existing.status !== updateFields.status &&

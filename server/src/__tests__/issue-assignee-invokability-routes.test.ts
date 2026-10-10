@@ -281,6 +281,10 @@ describe("agent delegation cycle guard", () => {
     mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(null);
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
+    // Reset the mutation too: the refusal cases assert it was never reached,
+    // and calls from earlier tests in this file would satisfy that assertion
+    // against a guard that never fired.
+    mockIssueService.update.mockReset();
   });
 
   it("refuses an agent child assigned to the creator of an open ancestor", async () => {
@@ -347,5 +351,137 @@ describe("agent delegation cycle guard", () => {
 
     expect(res.status).toBe(201);
     expect(mockIssueService.findOpenAncestorCreatedByAgent).not.toHaveBeenCalled();
+  });
+
+  // The refused shape is a state, not a verb, so the guard has to hold on the
+  // routes that reach that state after the issue already exists. Creating the
+  // child unassigned and then assigning it by PATCH was the open route.
+  const PARENT_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const OTHER_PARENT_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+  function openAncestorCreatedBy(agentId: string) {
+    return {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      identifier: "PAP-100",
+      parentId: null,
+      createdByAgentId: agentId,
+      status: "in_progress",
+    };
+  }
+
+  it("refuses assigning an existing child to the creator of an open ancestor", async () => {
+    const child = makeIssue({ parentId: PARENT_ID, assigneeAgentId: null });
+    mockIssueService.getById.mockResolvedValue(child);
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(
+      openAncestorCreatedBy(IDLE_AGENT_ID),
+    );
+
+    const res = await request(createApp(agentActor()))
+      .patch(`/api/issues/${child.id}`)
+      .send({ assigneeAgentId: IDLE_AGENT_ID });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "delegation_cycle" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(
+      PARENT_ID,
+      IDLE_AGENT_ID,
+    );
+  });
+
+  it("allows the same assignment when no open ancestor was created by the assignee", async () => {
+    const child = makeIssue({ parentId: PARENT_ID, assigneeAgentId: null });
+    mockIssueService.getById.mockResolvedValue(child);
+    mockIssueService.update.mockResolvedValue(
+      makeIssue({ parentId: PARENT_ID, assigneeAgentId: IDLE_AGENT_ID }),
+    );
+
+    const res = await request(createApp(agentActor()))
+      .patch(`/api/issues/${child.id}`)
+      .send({ assigneeAgentId: IDLE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("refuses re-parenting an assigned issue under the assignee's own open chain", async () => {
+    const child = makeIssue({ parentId: OTHER_PARENT_ID, assigneeAgentId: IDLE_AGENT_ID });
+    mockIssueService.getById.mockResolvedValue(child);
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(
+      openAncestorCreatedBy(IDLE_AGENT_ID),
+    );
+
+    const res = await request(createApp(agentActor()))
+      .patch(`/api/issues/${child.id}`)
+      .send({ parentId: PARENT_ID });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // The guard must read the parent this request is moving to, not the old one.
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(
+      PARENT_ID,
+      IDLE_AGENT_ID,
+    );
+  });
+
+  it("still lets an agent hand its own issue back to the human creator", async () => {
+    const mine = makeIssue({ parentId: PARENT_ID, assigneeAgentId: AGENT_ACTOR_ID });
+    mockIssueService.getById.mockResolvedValue(mine);
+    mockIssueService.update.mockResolvedValue(
+      makeIssue({ parentId: PARENT_ID, assigneeAgentId: null, assigneeUserId: "local-board" }),
+    );
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(
+      openAncestorCreatedBy(AGENT_ACTOR_ID),
+    );
+
+    const res = await request(createApp(agentActor()))
+      .patch(`/api/issues/${mine.id}`)
+      .send({ assigneeAgentId: null, assigneeUserId: "local-board" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("does not consult the guard when a board actor reassigns", async () => {
+    const child = makeIssue({ parentId: PARENT_ID, assigneeAgentId: null });
+    mockIssueService.getById.mockResolvedValue(child);
+    mockIssueService.update.mockResolvedValue(
+      makeIssue({ parentId: PARENT_ID, assigneeAgentId: IDLE_AGENT_ID }),
+    );
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${child.id}`)
+      .send({ assigneeAgentId: IDLE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).not.toHaveBeenCalled();
+  });
+
+  it("refuses an accepted-plan decomposition child assigned to the delegator", async () => {
+    const source = makeIssue();
+    mockIssueService.getById.mockResolvedValue(source);
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(
+      openAncestorCreatedBy(IDLE_AGENT_ID),
+    );
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/issues/${source.id}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: "99999999-9999-4999-8999-999999999999",
+        children: [
+          {
+            title: "Slice handed back",
+            description: "Bounce",
+            assigneeAgentId: IDLE_AGENT_ID,
+          },
+        ],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "delegation_cycle" });
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(
+      source.id,
+      IDLE_AGENT_ID,
+    );
   });
 });
