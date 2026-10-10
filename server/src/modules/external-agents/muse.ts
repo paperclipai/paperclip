@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { agents, companies, heartbeatRuns, issues, issueComments, issueDocuments, documents, nativeRunFinalizations, agentWakeupRequests,
@@ -50,9 +50,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
   async function visible(s:AgentConnectionSubject,database:Db|ExternalAdmissionTransaction=db):Promise<SQL> {
     return issueReadSqlCondition(database,agentActor(s));
   }
-  async function assertIssue(s:AgentConnectionSubject,issueId:string,runResponsibleUserId?:string|null) {
-    const conditions=[eq(issues.companyId,s.companyId),eq(issues.id,issueId),await issueReadSqlCondition(db,agentActor(s,undefined,runResponsibleUserId)),isNull(issues.hiddenAt),isNull(issues.harnessKind)];
-    const [issue]=await db.select().from(issues).where(and(...conditions));
+  async function assertIssue(s:AgentConnectionSubject,issueId:string,runResponsibleUserId?:string|null,database:Db|ExternalAdmissionTransaction=db) {
+    const conditions=[eq(issues.companyId,s.companyId),eq(issues.id,issueId),await issueReadSqlCondition(database,agentActor(s,undefined,runResponsibleUserId)),isNull(issues.hiddenAt),isNull(issues.harnessKind)];
+    const [issue]=await database.select().from(issues).where(and(...conditions));
     if(!issue) throw notFound("Task is unavailable to the current Muse agent and authorizer.");
     return issue;
   }
@@ -96,13 +96,14 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       const ticket=randomBytes(32).toString("base64url"),bindingId=randomUUID();
       // Validate the public assets before changing any existing invitation.
       const setupInstruction=await buildMuseSetupInstruction(publicOrigin,ticket,bindingId);
-      const b=await db.transaction(tx=>withExternalAdmissionGuard(tx,input.companyId,input.agentId,async()=>{
+      const {binding:b,replacedRuns}=await db.transaction(tx=>withExternalAdmissionGuard(tx,input.companyId,input.agentId,async()=>{
         const [agent]=await tx.select().from(agents).where(and(eq(agents.id,input.agentId),eq(agents.companyId,input.companyId))).for("update");
         if(!agent||agent.adapterType!=="paperclip_runner"||agent.adapterConfig.provider!=="muse"||!canConfigureAgentConnection(agent))throw conflict("Choose an approved Muse Runner agent.");
         const [old]=await tx.select().from(bindings).where(and(eq(bindings.companyId,input.companyId),eq(bindings.agentId,input.agentId),isNull(bindings.revokedAt))).for("update");
+        let replacedRuns:string[]=[];
         if(old) {
           if(old.id!==input.replaceBindingId||old.revision!==input.expectedRevision||old.operatorId!==input.operatorId)throw conflict("Invitation changed. Refresh before replacing its ticket.");
-          await fence(tx,old,"reconnect");
+          replacedRuns=await fence(tx,old,"reconnect");
           await tx.update(bindings).set({status:"revoked",revokedAt:new Date(),cleanupExpiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS),ticketHash:null,revision:old.revision+1,updatedAt:new Date()}).where(eq(bindings.id,old.id));
           await tx.update(credentials).set({revokedAt:new Date()}).where(and(eq(credentials.bindingId,old.id),inArray(credentials.kind,["access","refresh","signal"])));
           await tx.update(credentials).set({expiresAt:new Date(Date.now()+MUSE_CLEANUP_TTL_MS)}).where(and(eq(credentials.bindingId,old.id),inArray(credentials.kind,["cleanup","detector_cleanup"]),isNull(credentials.revokedAt)));
@@ -111,8 +112,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         const [created]=await tx.insert(bindings).values({id:bindingId,companyId:input.companyId,agentId:input.agentId,operatorId:input.operatorId,generation:(latest?.generation??0)+1,ticketHash:museCredentialHash(ticket),ticketExpiresAt:new Date(Date.now()+MUSE_TICKET_TTL_MS)}).returning();
         await logActivity(tx as unknown as Db,{companyId:input.companyId,actorType:"user",actorId:input.operatorId,action:"muse.pairing_created",entityType:"agent",entityId:input.agentId,details:{bindingId:created!.id,generation:created!.generation}});
         await updateAgentConfigurationInTransaction(tx as unknown as Db,agent.id,{adapterConfig:{...agent.adapterConfig,museBindingId:created!.id}},{recordRevision:{createdByUserId:input.operatorId,source:"muse-pairing"}});
-        return created!;
+        return {binding:created!,replacedRuns};
       }));
+      await Promise.all(replacedRuns.map(async runId=>{await nativeBroker.revokeRun(runId);await(await heartbeat()).cancelRun(runId,"Muse connection replaced");}));
       return {bindingId:b.id,generation:b.generation,revision:b.revision,ticket,expiresAt:b.ticketExpiresAt!.toISOString(),assetVersion:1,setupInstruction};
     },
     async bindingForAgent(companyId:string,agentId:string):Promise<MuseBinding|null> {
@@ -122,12 +124,13 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
       const unknown=await db.select({id:operations.id}).from(operations).innerJoin(assignments,eq(assignments.id,operations.assignmentId)).where(and(eq(assignments.companyId,companyId),eq(assignments.agentId,agentId),inArray(operations.status,["unknown","dispatched","pending"])));
       const pending=await db.select({id:inputs.id}).from(inputs).innerJoin(assignments,eq(assignments.id,inputs.assignmentId)).where(and(eq(assignments.companyId,companyId),eq(assignments.agentId,agentId),isNull(inputs.consumedAt)));
       const [stop]=await db.select().from(holds).where(and(eq(holds.companyId,companyId),eq(holds.agentId,agentId),eq(holds.provider,"muse"),isNull(holds.releasedAt))).orderBy(desc(holds.createdAt)).limit(1);
+      const [stopBinding]=stop?.stopBoundary ? await db.select({revision:bindings.revision}).from(bindings).where(and(eq(bindings.id,stop.stopBoundary.bindingId),eq(bindings.generation,stop.stopBoundary.generation),eq(bindings.companyId,companyId),eq(bindings.agentId,agentId))) : [];
       return {id:b.id,generation:b.generation,revision:b.revision,status:b.status,paired:!!b.pairedAt,receiverDetected:!!b.receiverContactAt,backgroundReplyVerified:!!b.verifiedReplyAt,
         pairingExpiresAt:iso(b.ticketExpiresAt),challengeExpiresAt:iso(b.challengeExpiresAt),lastReceiverContactAt:iso(b.receiverContactAt),lastWorkerActivityAt:iso(b.workerActivityAt),lastVerifiedReplyAt:iso(b.verifiedReplyAt),contactPersistenceLagMs:30000,clientVersion:b.clientVersion,
         qualification:b.qualificationId&&b.qualificationExpiresAt?{id:b.qualificationId,expiresAt:b.qualificationExpiresAt.toISOString()}:null,
         liveAssignments:live.length,uncertainOperations:unknown.length,pendingInputs:pending.length,
         cleanup:{detectorRemovalRequested:!!b.detectorRemovalRequestedAt,pending:!!b.cleanupExpiresAt&&b.cleanupExpiresAt>new Date()&&(!b.detectorRemovedAt||!!stop),detectorRemoved:!!b.detectorRemovedAt,workerQuiescenceReported:!!stop?.workerReportedAt,expiresAt:iso(b.cleanupExpiresAt)},
-        stop:{status:!stop?.stopBoundary?"none":stop.operatorAttestedAt?"operator_attested":stop.workerReportedAt?"worker_reported":"cannot_confirm",nativeEffectsUnknown:!!stop?.nativeEffectsUnknown,boundary:stop?.stopBoundary??null}};
+        stop:{status:!stop?.stopBoundary?"none":stop.operatorAttestedAt?"operator_attested":stop.workerReportedAt?"worker_reported":"cannot_confirm",nativeEffectsUnknown:!!stop?.nativeEffectsUnknown,boundary:stop?.stopBoundary??null,bindingRevision:stopBinding?.revision??null}};
     },
     async snapshot(companyId:string,agentId:string,bindingId:string):Promise<MuseBindingSnapshot> {
       if(!await identity.enabled())throw forbidden("Muse is disabled for new work.");
@@ -297,9 +300,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     async assertRunAuthority(execution:Execution) {const ref=execution.provider.binding;const [b]=await db.select().from(bindings).where(and(eq(bindings.id,ref.bindingId),eq(bindings.generation,ref.bindingGeneration),eq(bindings.companyId,ref.companyId),eq(bindings.agentId,ref.agentId),isNull(bindings.revokedAt)));if(!b||!await identity.enabled())throw forbidden("Muse binding unavailable.");await assertMuseCurrentAuthority(db,b);const [a]=await db.select().from(assignments).where(and(eq(assignments.runId,execution.binding.runId),eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation)));if(!a||a.status==="fenced")throw forbidden("Muse assignment unavailable.");},
     port:(execution:Execution):ExternalProviderPort & Required<Pick<ExternalProviderPort,"inputAvailable">>=>nativeBroker.port(execution),
   };
-  async function idleMutation(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"task.create"|"task.comment"}>) {
+  async function idleMutation(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"task.create"|"task.comment"}>,assignToSelf=false) {
     await subjectBinding(s);
-    const digest=externalOperationDigest("tool",{command:c});
+    const digest=externalOperationDigest("tool",assignToSelf?{command:c,assigneeAgentId:s.agentId}:{command:c});
     return db.transaction(async tx=>{
       // Task lock precedes admission and binding. Parent creation locks its
       // existing parent first; new issue rows cannot be owned by another tx.
@@ -312,15 +315,29 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         const [old]=await tx.select().from(idleReceipts).where(and(eq(idleReceipts.bindingId,b.id),eq(idleReceipts.bindingGeneration,b.generation),eq(idleReceipts.requestId,c.requestId)));
         if(old){if(old.digest!==digest)throw conflict("Request ID reused with changed input.");if(typeof old.outcome.issueId==="string")await assertIssue(s,old.outcome.issueId);return old.outcome;}
         const authorization=authorizationService(tx as unknown as Db);
-        const resource={type:"issue" as const,companyId:s.companyId,issueId:c.command==="task.comment"?c.issueId:undefined,parentIssueId:c.command==="task.create"?c.parentId:undefined,projectId:c.command==="task.create"?c.projectId:undefined};
-        for(const actor of [agentActor(s),authorizerActor(s)]) {const decision=await authorization.decide({actor,action:c.command==="task.comment"?"issue:comment":"issue:mutate",resource});if(!decision.allowed)throw forbidden(decision.explanation);}
+        const actors=[agentActor(s),authorizerActor(s)];
+        const assertWrite=async(issue:typeof issues.$inferSelect,action:"issue:comment"|"issue:mutate")=>{
+          const resource={type:"issue" as const,companyId:s.companyId,issueId:issue.id,projectId:issue.projectId,parentIssueId:issue.parentId,
+            status:issue.status,assigneeAgentId:issue.assigneeAgentId,assigneeUserId:issue.assigneeUserId,originKind:issue.originKind,originId:issue.originId};
+          for(const actor of actors){const decision=await authorization.decide({actor,action,resource});if(!decision.allowed)throw forbidden(decision.explanation);}
+        };
         let outcome:Record<string,unknown>;
         if(c.command==="task.comment") {
-          await assertIssue(s,c.issueId);
+          const issue=await assertIssue(s,c.issueId,undefined,tx);
+          await assertWrite(issue,"issue:comment");
           const comment=await issueService(db).addComment(c.issueId,c.body,{agentId:s.agentId,onBehalfOfUserId:s.authorizingUserId},{},tx);
           outcome={status:"commented",issueId:c.issueId,commentId:comment.id};
         } else {
-          const issue=await issueService(tx as unknown as Db).create(s.companyId,{title:c.title,description:c.description,parentId:c.parentId,projectId:c.projectId,status:"todo",createdByAgentId:s.agentId,responsibleUserId:s.authorizingUserId,actorResponsibleUserId:s.authorizingUserId},tx);
+          const parent=c.parentId?await assertIssue(s,c.parentId,undefined,tx):null;
+          if(parent)await assertWrite(parent,"issue:mutate");
+          const projectId=c.projectId??parent?.projectId??null;
+          const scope={projectId,parentIssueId:c.parentId??null,assigneeAgentId:assignToSelf?s.agentId:null,assigneeUserId:null};
+          for(const actor of actors){
+            if(projectId){const projectAccess=await authorization.decide({actor,action:"project:read",resource:{type:"project",companyId:s.companyId,projectId}});if(!projectAccess.allowed)throw forbidden(projectAccess.explanation);}
+            const decision=await authorization.decide({actor,action:"tasks:assign",resource:{type:"issue",companyId:s.companyId,...scope},scope});
+            if(!decision.allowed)throw forbidden(decision.explanation);
+          }
+          const issue=await issueService(tx as unknown as Db).create(s.companyId,{title:c.title,description:c.description,parentId:c.parentId,projectId,status:"todo",assigneeAgentId:scope.assigneeAgentId,createdByAgentId:s.agentId,responsibleUserId:s.authorizingUserId,actorResponsibleUserId:s.authorizingUserId},tx);
           outcome={status:"created",issueId:issue.id,identifier:issue.identifier};
         }
         await tx.insert(idleReceipts).values({companyId:s.companyId,bindingId:b.id,bindingGeneration:b.generation,requestId:c.requestId,digest,outcome});
@@ -332,23 +349,45 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
   async function requestWork(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"work.request"|"turn.request"}>) {
     const b=await subjectBinding(s);
     const requestKey=`muse-work:${b.id}:${b.generation}:${c.requestId}`;
+    const requestDigest=externalOperationDigest("tool",{command:c});
     let issueId:string;
     if(c.command==="turn.request") {
-      const result=await idleMutation(s,{version:1,command:"task.create",requestId:c.requestId,title:c.prompt.slice(0,500),description:c.prompt});
+      // Reserve and assign ordinary intake in the same task transaction, with
+      // both principals checked against the exact self-assignment scope.
+      const result=await idleMutation(s,{version:1,command:"task.create",requestId:c.requestId,title:c.prompt.slice(0,500),description:c.prompt},true);
       issueId=String(result.issueId);
-      // Visible intake remains ordinary work; assigning it requires the current
-      // agent's task-assignment authority, not a receiver capability.
-      const issue=await assertIssue(s,issueId);
-      const decision=await authorizationService(db).decide({actor:agentActor(s),action:"tasks:assign",resource:{type:"issue",companyId:s.companyId,issueId}});
-      if(!decision.allowed)throw forbidden(decision.explanation);
-      if(!issue.assigneeAgentId)await issueService(db).update(issueId,{assigneeAgentId:s.agentId},{actorAgentId:s.agentId,actorResponsibleUserId:s.authorizingUserId});
     } else issueId=c.issueId;
+    const receipt=async()=>(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId,s.companyId),eq(agentWakeupRequests.agentId,s.agentId),eq(agentWakeupRequests.idempotencyKey,requestKey))).limit(1))[0];
+    const replay=async(row:typeof agentWakeupRequests.$inferSelect)=>{
+      if(row.source!=="assignment"||row.requestedByActorType!=="agent"||row.requestedByActorId!==s.agentId||row.payload?.issueId!==issueId||row.payload?.museRequestId!==c.requestId||row.payload?.museBindingId!==b.id||row.payload?.museBindingGeneration!==b.generation||row.payload?.museRequestDigest!==requestDigest)throw conflict("Request ID reused with changed input.");
+      await assertIssue(s,issueId);
+      const [run]=row.runId?await db.select({status:heartbeatRuns.status}).from(heartbeatRuns).where(and(eq(heartbeatRuns.id,row.runId),eq(heartbeatRuns.companyId,s.companyId),eq(heartbeatRuns.agentId,s.agentId))):[];
+      if(run&&["failed","cancelled","timed_out"].includes(run.status))return {status:"admission_failed",issueId,runId:row.runId,admissionStatus:run.status};
+      return {status:"requested",issueId,runId:row.runId};
+    };
+    // A retry reads its original receipt even after task completion. It never
+    // creates fresh admission authority or a replacement run.
+    const prior=await receipt();if(prior)return replay(prior);
     const issue=await assertIssue(s,issueId);
     if(issue.assigneeAgentId!==s.agentId||!["todo","in_progress"].includes(issue.status))throw conflict("Request work only for an eligible task assigned to this Muse agent.");
-    const [prior]=await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId,s.companyId),eq(agentWakeupRequests.agentId,s.agentId),eq(agentWakeupRequests.idempotencyKey,requestKey)));
-    if(prior){if(prior.payload?.issueId!==issueId)throw conflict("Request ID reused for another task.");return {status:"requested",runId:prior.runId};}
-    const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId},contextSnapshot:{issueId},idempotencyKey:requestKey,requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false});
-    return {status:"requested",issueId,runId:run?.id??null};
+    const hex=createHash("sha256").update(requestKey).digest("hex");
+    const receiptId=`${hex.slice(0,8)}-${hex.slice(8,12)}-8${hex.slice(13,16)}-${((parseInt(hex[16]!,16)&3)|8).toString(16)}${hex.slice(17,20)}-${hex.slice(20,32)}`;
+    try {
+      // The existing wake receipt PK reserves identity in the same transaction
+      // as its queued run, including requests competing under different issues.
+      const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId,museBindingId:b.id,museBindingGeneration:b.generation,museRequestDigest:requestDigest},contextSnapshot:{issueId},idempotencyKey:requestKey,requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false,
+        durableMuseRequest:{id:receiptId,companyId:s.companyId,agentId:s.agentId,issueId,requestId:c.requestId,idempotencyKey:requestKey,requestedAt:new Date(),bindingId:b.id,bindingGeneration:b.generation,requestDigest}});
+      const reserved=await receipt();return reserved?replay(reserved):{status:"requested",issueId,runId:run?.id??null};
+    } catch(error) {
+      // Replay only this reservation's unique-key race, never an unrelated DB
+      // failure or an uncertain native effect.
+      let cause:unknown=error;
+      for(let depth=0;depth<5&&cause&&typeof cause==="object";depth++){
+        if((cause as {code?:string}).code==="23505"){const reserved=await receipt();if(reserved?.id===receiptId)return replay(reserved);break;}
+        cause=(cause as {cause?:unknown}).cause;
+      }
+      throw error;
+    }
   }
   return broker;
 }

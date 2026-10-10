@@ -828,6 +828,12 @@ export interface WakeupOptions {
     idempotencyKey: string;
     requestedAt: Date;
   };
+  /** Server-owned Muse admission receipt; never accepted from API payloads. */
+  durableMuseRequest?: NonNullable<WakeupOptions["durableDotRequest"]> & {
+    bindingId: string;
+    bindingGeneration: number;
+    requestDigest: string;
+  };
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
   reason?: string | null;

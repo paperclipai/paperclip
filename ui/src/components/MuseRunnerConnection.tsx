@@ -29,7 +29,8 @@ export function MuseConnectionDetails({ connection, pairing, busy, error, onTest
   const [attestation, setAttestation] = useState<MuseAttestStopInput | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const boundaryIdentity = JSON.stringify(b?.stop.boundary);
-  useEffect(() => { setAttestation(null); setConfirmed(false); }, [boundaryIdentity, b?.revision]);
+  const stopBindingRevision = b?.stop.bindingRevision;
+  useEffect(() => { setAttestation(null); setConfirmed(false); }, [boundaryIdentity, stopBindingRevision]);
   const live = !!b && b.status !== "revoked";
   const testing = !!b?.challengeExpiresAt && Date.parse(b.challengeExpiresAt) > Date.now() && !b.backgroundReplyVerified;
   const configure = connection.enabled && connection.canConfigureConnection && !!connection.publicOrigin;
@@ -65,8 +66,10 @@ export function MuseConnectionDetails({ connection, pairing, busy, error, onTest
           : b.stop.status === "worker_reported" ? "Muse reported that this assignment’s worker is quiescent. Independent private effects remain unconfirmed."
           : "Paperclip fenced this assignment’s authority. Its external stop cannot be confirmed."}</p>
         {b.stop.nativeEffectsUnknown && <p role="status" className="text-muted-foreground">Native effect outcomes remain unknown and block replacement work. Worker attestation does not resolve or replay those effects.</p>}
-        {b.stop.boundary && b.stop.status !== "operator_attested" && !attestation && <Button type="button" variant="outline" disabled={busy} onClick={() => {
-          setAttestation({ boundary: { ...b.stop.boundary! }, expectedRevision: b.revision, workerStopped: true }); setConfirmed(false);
+        {b.stop.boundary && stopBindingRevision == null && b.stop.status !== "operator_attested" && <p role="status" className="text-muted-foreground">Stop binding revision is unavailable. Refresh to inspect this assignment before attesting.</p>}
+        {b.stop.boundary && b.stop.status !== "operator_attested" && !attestation && <Button type="button" variant="outline" disabled={busy || stopBindingRevision == null} onClick={() => {
+          if (!b.stop.boundary || stopBindingRevision == null) return;
+          setAttestation({ boundary: { ...b.stop.boundary }, expectedRevision: stopBindingRevision, workerStopped: true }); setConfirmed(false);
         }}>Attest this worker stopped</Button>}
       </div>}
     </>}

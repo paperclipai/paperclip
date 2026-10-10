@@ -61,10 +61,27 @@ test("cadence merges replica timestamps and exposes missing persisted contacts",
       { contacts: 2, timestamps: [iso(start + 5000), iso(start + 15000)], incomplete: false },
     ] };
   assert.deepEqual(qualificationCadence(input), { from: iso(start), to: iso(start + 20000), observedIntervals: 4,
-    withinSevenSeconds: 4, missingIntervals: 0, maxUnobservedGapMs: 0, complete: true });
+    withinSevenSeconds: 4, missingIntervals: 0, maxUnobservedGapMs: 5000, complete: true });
   input.contacts[1].contacts = 3;
   assert.equal(qualificationCadence(input).complete, false);
   assert.equal(qualificationCadence(input).missingIntervals, 1);
   input.contacts[1].contacts = 2; input.cadenceEvidenceComplete = false;
   assert.equal(qualificationCadence(input).complete, false);
+});
+
+
+test("a receiver outage fails qualification despite otherwise regular five-second polling", () => {
+  const e = evidence();
+  const outageStart = start + 12 * HOUR;
+  const timestamps = Array.from({ length: 24 * HOUR / 5000 + 1 }, (_, index) => start + index * 5000)
+    .filter(at => at <= outageStart || at >= outageStart + 10 * 60_000).map(iso);
+  e.cadence = qualificationCadence({ startedAt: iso(start), expiresAt: iso(expiry), cadenceEvidenceComplete: true,
+    contacts: [{ contacts: timestamps.length, timestamps, incomplete: false }] });
+  assert.equal(e.cadence.maxUnobservedGapMs, 10 * 60_000);
+  assert.ok(e.cadence.withinSevenSeconds / e.cadence.observedIntervals > 0.99);
+  assert.ok(e.cadence.observedIntervals >= Math.floor(24 * HOUR / 7000));
+  const report = qualificationReport(e, expiry + 2000);
+  assert.equal(report.qualificationPassed, false);
+  assert.equal(report.releaseQualified, false);
+  assert.ok(report.reasons.includes("incomplete_receiver_cadence_evidence"));
 });

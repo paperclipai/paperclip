@@ -214,7 +214,8 @@ try {
   const documentBody = `# Synthetic Muse report\n\nMarker: ${marker}\n\n17 + 25 = 42.\n`;
   await command({ command: "tool", assignmentId: first.assignmentId, name: "write_document", arguments: {
     key: "report", title: "Synthetic Muse report", body: documentBody, baseRevisionId: null, idempotencyKey: randomUUID() } });
-  const document = object(await board(`/api/issues/${issueId}/documents/report`)); assert.equal(document.body, documentBody);
+  const document = object(await board(`/api/issues/${issueId}/documents/report`)); assert.equal(document.body, documentBody.trim());
+  step("native-document-written", { runId: runIds[0], canonicalBody: true });
   const nativeRequestId = `smoke-question-${randomUUID()}`;
   await command({ command: "request_user_input", assignmentId: first.assignmentId, nativeRequestId,
     questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "environment", prompt: "Which synthetic environment?", required: true,
@@ -224,16 +225,26 @@ try {
   assert.equal(interaction.sourceRunId, runIds[0]);
   const pendingEvent = await until("durable runtime_request.created v2", async () =>
     rows(await board(`/api/heartbeat-runs/${runIds[0]}/events?limit=1000`)).find(row => {
+      if (row.eventType !== "runtime_request.created") return false;
       const event = object(object(row.payload).prpEvent ?? {});
       return event.eventType === "runtime_request.created" && object(object(event.payload).request).requestId === nativeRequestId;
     }) ?? {}, value => typeof value.id === "number");
   const nativeRequest = object(object(object(object(pendingEvent.payload).prpEvent).payload).request);
   assert.equal(nativeRequest.schema, "paperclip.runtime_request.v2"); assert.equal(nativeRequest.status, "pending");
+  step("native-question-pending", { runId: runIds[0], interactionId: interaction.id, nativeRequestId });
   const answered = object(await board(`/api/issues/${issueId}/interactions/${interaction.id}/respond`, "POST", {
     answers: [{ questionId: "environment", optionIds: ["test"] }] })); assert.equal(answered.status, "answered");
   const input = await until("durable answer input", () => query({ query: "input.pending", assignmentId: first.assignmentId, nativeRequestId }), value => typeof value.inputDigest === "string");
   assert.equal(input.requestId, nativeRequestId); assert.equal(input.turnId, object(first.binding).turnId);
   assert.equal(input.inputDigest, digestPaperclipSemanticContent({ requestId: nativeRequestId, turnId: input.turnId, response: input.response }));
+  const resolvedEvent = await until("durable native answer resolution", async () =>
+    rows(await board(`/api/heartbeat-runs/${runIds[0]}/events?limit=1000`)).find(row => {
+      if (row.eventType !== "runtime_request.resolved") return false;
+      const event = object(object(row.payload).prpEvent ?? {});
+      return event.eventType === "runtime_request.resolved" && object(event.payload).requestId === nativeRequestId;
+    }) ?? {}, value => typeof value.id === "number");
+  const resolvedPayload = object(object(object(resolvedEvent.payload).prpEvent).payload);
+  assert.equal(resolvedPayload.turnId, input.turnId); assert.equal(resolvedPayload.action, "submit");
   const continuationReceiptId = randomUUID(), continuationFile = join(evidenceDirectory, `continuation-${continuationReceiptId}.json`);
   await writeFile(continuationFile, JSON.stringify({ synthetic: true, continuationReceiptId, requestId: nativeRequestId,
     turnId: input.turnId, inputDigest: input.inputDigest, response: input.response }), { mode: 0o600, flag: "wx" });
@@ -242,7 +253,7 @@ try {
     continuationReceiptId, continuationPersisted: true });
   const consumed = await query({ query: "input.pending", assignmentId: first.assignmentId, nativeRequestId }); assert.equal(consumed.consumed, true);
   evidence.question = { interactionId: interaction.id, nativeRequestId, questionCommandId: `question_${interaction.id}`,
-    pendingNative: true, nativeEventId: pendingEvent.id, nativeRequestSchema: nativeRequest.schema, answeredStatus: answered.status, inputDigest: input.inputDigest, continuationReceiptId, continuationPersisted: true, consumed: true };
+    pendingNative: true, nativeEventId: pendingEvent.id, resolvedNativeEventId: resolvedEvent.id, resolvedNativeRequestId: resolvedPayload.requestId, nativeRequestSchema: nativeRequest.schema, answeredStatus: answered.status, inputDigest: input.inputDigest, continuationReceiptId, continuationPersisted: true, consumed: true };
   step("native-question-consumed");
   await finish(first, "Saved the synthetic report and consumed the selected test environment.");
   const reopen = object(await board(`/api/issues/${issueId}/comments`, "POST", { body: `${marker}: revise the report after completed work.`, reopen: true, clientRequestId: randomUUID() }));
@@ -257,7 +268,7 @@ try {
   const revised = `${documentBody}\nFollow-up acknowledged.\n`;
   await command({ command: "tool", assignmentId: second.assignmentId, name: "write_document", arguments: {
     key: "report", title: "Synthetic Muse report", body: revised, baseRevisionId: latest.latestRevisionId, idempotencyKey: randomUUID() } });
-  assert.equal(object(await board(`/api/issues/${issueId}/documents/report`)).body, revised);
+  assert.equal(object(await board(`/api/issues/${issueId}/documents/report`)).body, revised.trim());
   evidence.followUp = { reopenCommentId: reopen.id, activeCommentId: followUp.id, mailboxReference: true, successfulHistoryReceipt: true, reportRevised: true };
   await finish(second, "Applied the synthetic follow-up to the report.");
   await delay(1500);
@@ -293,6 +304,13 @@ try {
     } else cleanup.noAuthorityCreated = true;
     if (credentials) await http("/api/muse/v1/detector-cleanup", "POST", { version: 1, requestId: randomUUID(), bindingId: credentials.bindingId, generation: credentials.generation, detectorRemoved: true }, string(credentials.detectorCleanupToken));
     cleanup.normalAuthorityRevoked = true; cleanup.syntheticDetectorStopped = true;
+    if (createdBindingId) {
+      const after = object(object(await board(bindingPath)).binding);
+      assert.equal(after.id, createdBindingId);
+      const stop = object(after.stop);
+      cleanup.stopStatus = stop.status; cleanup.nativeEffectsUnknown = stop.nativeEffectsUnknown;
+      if (stop.status !== "none" || after.uncertainOperations !== 0) cleanup.requiresOperatorReview = true;
+    }
   } catch { cleanup.completed = false; cleanup.requiresOperatorReview = true; }
   evidence.cleanup = cleanup; evidence.completedAt = new Date().toISOString();
   await writeFile(join(evidenceDirectory, "evidence.json"), JSON.stringify(evidence, null, 2), { mode: 0o600 });

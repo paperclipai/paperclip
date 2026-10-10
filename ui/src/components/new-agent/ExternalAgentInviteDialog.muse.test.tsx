@@ -142,3 +142,14 @@ it("explains a missing public HTTPS URL and refreshes without preparing a ticket
   expect(museApi.pair).toHaveBeenCalledTimes(1);
   expect(museApi.create).not.toHaveBeenCalled();
 });
+
+it("reconnects the resumed Muse agent without replacing its revoked binding", async () => {
+  const revoked = { ...museBinding, status: "revoked", revision: 8 };
+  museApi.resume.mockResolvedValue({ agent, approvalId: null, binding: revoked });
+  museApi.connection.mockResolvedValue({ ...museConnection, binding: revoked });
+  await render(); await click("Muse — Personal agentYour personal Muse at muse.ai");
+  expect(museApi.pair).not.toHaveBeenCalled();
+  await click("Reconnect Muse");
+  expect(museApi.pair).toHaveBeenCalledWith("company", agent.id, {});
+  expect(museApi.create).not.toHaveBeenCalled();
+});

@@ -2223,7 +2223,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       opts = { ...opts, allowRunCoalescing: false };
     }
     const dotRequest = opts.durableDotRequest;
-    if (dotRequest && (durableRequest || dotRequest.agentId !== agentId ||
+    const museRequest = opts.durableMuseRequest;
+    if (dotRequest && (durableRequest || museRequest || dotRequest.agentId !== agentId ||
         dotRequest.companyId !== agent.companyId || dotRequest.issueId !== issueId ||
         dotRequest.requestId !== payload?.dotRequestId || source !== "assignment" ||
         opts.requestedByActorType !== "agent" || opts.requestedByActorId !== agentId ||
@@ -2231,7 +2232,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         opts.idempotencyKey !== dotRequest.idempotencyKey)) {
       throw conflict("Dot work request does not match its admission authority.");
     }
-    const receiptRequest = durableRequest ?? dotRequest;
+    if (museRequest && (durableRequest || dotRequest || museRequest.agentId !== agentId ||
+        museRequest.companyId !== agent.companyId || museRequest.issueId !== issueId ||
+        museRequest.requestId !== payload?.museRequestId || source !== "assignment" ||
+        opts.requestedByActorType !== "agent" || opts.requestedByActorId !== agentId ||
+        agent.adapterType !== "paperclip_runner" || parseObject(agent.adapterConfig).provider !== "muse" ||
+        parseObject(agent.adapterConfig).museBindingId !== museRequest.bindingId ||
+        !Number.isSafeInteger(museRequest.bindingGeneration) || museRequest.bindingGeneration < 1 ||
+        payload?.museBindingId !== museRequest.bindingId || payload?.museBindingGeneration !== museRequest.bindingGeneration ||
+        payload?.museRequestDigest !== museRequest.requestDigest || !/^sha256:[a-f0-9]{64}$/.test(museRequest.requestDigest) ||
+        opts.idempotencyKey !== museRequest.idempotencyKey)) {
+      throw conflict("Muse work request does not match its admission authority.");
+    }
+    const receiptRequest = durableRequest ?? dotRequest ?? museRequest;
     const durableReceiptFields = receiptRequest
       ? { id: receiptRequest.id, requestedAt: receiptRequest.requestedAt }
       : {};
@@ -2250,6 +2263,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           receipt.idempotencyKey !== dotRequest.idempotencyKey || receipt.payload?.issueId !== dotRequest.issueId ||
           receipt.payload?.dotRequestId !== dotRequest.requestId)) {
         throw conflict("requestId was reused for another task.");
+      }
+      if (receipt && museRequest && (receipt.companyId !== museRequest.companyId ||
+          receipt.agentId !== museRequest.agentId || receipt.source !== "assignment" ||
+          receipt.requestedByActorType !== "agent" || receipt.requestedByActorId !== museRequest.agentId ||
+          receipt.idempotencyKey !== museRequest.idempotencyKey || receipt.payload?.issueId !== museRequest.issueId ||
+          receipt.payload?.museRequestId !== museRequest.requestId || receipt.payload?.museBindingId !== museRequest.bindingId ||
+          receipt.payload?.museBindingGeneration !== museRequest.bindingGeneration || receipt.payload?.museRequestDigest !== museRequest.requestDigest)) {
+        throw conflict("Request ID reused with changed input.");
       }
       return receipt;
     };
