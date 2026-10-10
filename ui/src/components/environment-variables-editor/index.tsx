@@ -129,6 +129,8 @@ export interface EnvironmentVariablesEditorProps {
   recentlyUsedSecrets?: readonly CompanySecret[];
   /** Read-only rendering. */
   disabled?: boolean;
+  /** Hide secret sources and keep this editor limited to inline plain values. */
+  plainOnly?: boolean;
   /** Prefixes flagged as reserved/auto-provided. Default `["PAPERCLIP_"]`. */
   reservedPrefixes?: readonly string[];
   /** Context-specific hint line. `null` hides the default copy; omit for default. */
@@ -155,6 +157,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   onCreateSecret,
   recentlyUsedSecrets,
   disabled,
+  plainOnly = false,
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
   footerHint,
   onDirtyChange,
@@ -423,11 +426,12 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   );
 
   const quickBind = useMemo(() => {
+    if (plainOnly) return [];
     const boundIds = new Set(rows.filter((row) => row.source === "secret" && row.secretId).map((row) => row.secretId));
     return (recentlyUsedSecrets ?? [])
       .filter((secret) => secret.status === "active" && !boundIds.has(secret.id))
       .slice(0, 8);
-  }, [recentlyUsedSecrets, rows]);
+  }, [plainOnly, recentlyUsedSecrets, rows]);
 
   const hasRows = rows.length > 0;
   const hint = footerHint === undefined ? DEFAULT_HINT : footerHint;
@@ -467,6 +471,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
+                plainOnly={plainOnly}
                 nameIssue={issue}
                 showNameIssue={touched}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}
@@ -559,7 +564,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
       ) : null}
 
       {hint ? <p className="text-(length:--text-micro) text-muted-foreground/70">{hint}</p> : null}
-      {rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
+      {!plainOnly && rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
         <p className="inline-flex items-start gap-1 text-(length:--text-micro) text-muted-foreground/70">
           <UserRound className="mt-0.5 size-3 shrink-0" />
           <span>
