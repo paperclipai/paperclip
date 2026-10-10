@@ -15,6 +15,7 @@
  * and transport logic.
  */
 
+import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
   Environment,
@@ -203,6 +204,7 @@ export function environmentRunOrchestrator(
    * Wraps the runtime driver's acquire call with standardized error handling.
    */
   async function acquireLease(input: {
+    executionConfigurationKey?: string;
     companyId: string;
     environment: Environment;
     issueId: string | null;
@@ -267,6 +269,7 @@ export function environmentRunOrchestrator(
     localEnvironmentId: string;
     adapterType: string;
     adapterConfig?: Record<string, unknown>;
+    executionConfigurationKey?: string;
     admittedLifecycleMode?: "warm" | "per_turn";
     issueId: string | null;
     heartbeatRunId: string;
@@ -289,6 +292,9 @@ export function environmentRunOrchestrator(
 
     // Step 2: Acquire lease
     const acquisitionInput = {
+      executionConfigurationKey: environment.driver === "computer" ? createHash("sha256").update(JSON.stringify([
+        input.adapterConfig, input.executionConfigurationKey, environment.config, environment.envVars,
+      ])).digest("hex") : undefined,
       companyId: input.companyId,
       environment,
       issueId: input.issueId,

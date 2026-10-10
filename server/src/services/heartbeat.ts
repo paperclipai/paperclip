@@ -4443,7 +4443,7 @@ export function heartbeatService(
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const projectRepositoryPaths: string[] = [];
-      if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+      if (selectedEnvironmentForConfig?.driver !== "computer" && executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
         const repositoryRows = await db.select().from(projectWorkspaces).where(and(
           eq(projectWorkspaces.companyId, agent.companyId),
           eq(projectWorkspaces.projectId, executionWorkspace.projectId),
@@ -4492,6 +4492,9 @@ export function heartbeatService(
           localEnvironmentId: localEnvironment.id,
           adapterType: agent.adapterType,
           adapterConfig: parseObject(agent.adapterConfig),
+          executionConfigurationKey: createHash("sha256").update(JSON.stringify([
+            config, agent.runtimeConfig, agent.permissions, managedAiRuntime?.sessionIdentity,
+          ])).digest("hex"),
           admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
           issueId: issueId ?? null,
           heartbeatRunId: run.id,

@@ -433,6 +433,8 @@ function stripSecretRefValuesFromPluginLeaseMetadata(input: {
 }
 
 export interface EnvironmentDriverAcquireInput {
+  /** Stable selected execution configuration; command-backed warm owners fence changes. */
+  executionConfigurationKey?: string;
   companyId: string;
   environment: Environment;
   issueId: string | null;
@@ -3979,6 +3981,7 @@ export function environmentRuntimeService(
     },
 
     async acquireRunLease(input: {
+      executionConfigurationKey?: string;
       companyId: string;
       environment: Environment;
       issueId: string | null;
@@ -4017,6 +4020,7 @@ export function environmentRuntimeService(
       });
       const driver = requireDriver(input.environment);
       const lease = await driver.acquireRunLease({
+        executionConfigurationKey: input.executionConfigurationKey,
         companyId: input.companyId,
         environment: input.environment,
         issueId: input.issueId,

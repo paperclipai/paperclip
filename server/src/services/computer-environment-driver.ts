@@ -49,7 +49,7 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
       const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(input.environment.config.runnerIdleTimeoutMs);
       const binding = input.heartbeatRunId ? await computers.admit({ companyId: input.companyId, environmentId: input.environment.id,
         agentId: input.agentId, runId: input.heartbeatRunId, idleTimeoutMs,
-        sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType])).digest("hex") })
+        sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType, input.executionConfigurationKey])).digest("hex") })
         : await computers.admitProbe({ companyId: input.companyId, environmentId: input.environment.id,
           agentId: input.agentId, probeId: randomUUID(), idleTimeoutMs });
       try {

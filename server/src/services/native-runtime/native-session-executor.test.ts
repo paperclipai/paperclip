@@ -7433,6 +7433,36 @@ describe("native warm session supervision", () => {
     await closeWarmNativeSessionsForRun({ runId: owners[1]!.runId, reason: "fixture cleanup" });
   });
 
+  it("replaces a computer warm runner after model configuration admits a fresh owner", async () => {
+    const name = "computer-model-change";
+    const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    const firstClose = vi.fn(async () => undefined), secondClose = vi.fn(async () => undefined);
+    const firstRetire = vi.fn(async () => true), secondRetire = vi.fn(async () => true);
+    const target = { kind: "remote", transport: "computer", environmentId: name, remoteCwd: `/home/user/${name}`,
+      resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: "prior-owner", generation: 1 },
+      retainWarm: vi.fn(async () => undefined), retire: firstRetire };
+    const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: name,
+      normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1", nativeEventCount: 1,
+      highestContiguousSourceSeq: 1, usage: null };
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close: firstClose }); return result;
+    }).mockImplementationOnce(async options => {
+      expect(options.existingSession).toBeUndefined();
+      expect(secondRetire).not.toHaveBeenCalled();
+      await options.onSession?.({ close: secondClose }); return result;
+    });
+    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+    const next = { ...current, binding: { ...current.binding, runId: `${name}-two` }, provider: { ...current.provider, model: "changed-model" } } as NativeExecutionInputV1;
+    await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+      runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, ownerId: "fresh-owner" }, retire: secondRetire } as never });
+    expect(firstRetire).toHaveBeenCalledOnce();
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(secondRetire).not.toHaveBeenCalled();
+    await closeWarmNativeSessionsForRun({ runId: next.binding.runId, reason: "fixture cleanup" });
+    expect(secondRetire).toHaveBeenCalledOnce();
+  });
+
   it("keeps a computer transport alive when its old idle timer loses to warm admission", async () => {
     const name = "computer-idle-admission-race";
     const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
