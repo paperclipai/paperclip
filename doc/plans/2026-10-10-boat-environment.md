@@ -225,15 +225,31 @@ Local qualification has demonstrated real native Codex, legacy Codex, and legacy
 Claude execution; separate durable personal directories; native desktop capture
 and app launch; browser desktop rendering and human mouse input; and bounded
 viewer expiry. Native Codex's Vite source and proof file survived a Boat stop and
-resume. Private preview routing reached Vite, whose allowed-host configuration
-still needs qualification against the resumed host.
+resume. A private Vite preview opened from the Computer panel passed the real
+two-turn hot-reload test: its heading changed while its page-session value and
+unsaved input remained unchanged.
 
-Warm continuity is not yet verified. A real runner's process monitor reported
-disconnection while the provider was still producing output; the runner then
-suspended at the reconnect deadline and its Vite listener disappeared. The
-launch journal identified systemd expansion of shell variables in the supplied
-command. Correct literal argument handling and bounded monitoring of unknown
-transport outcomes are being verified before repeating the two-turn HMR test.
+Native Codex warm continuity is verified locally on controller source
+`4596df2b89`: runner PID 31430, provider PID 31503, and Vite listener PID 32291
+persisted across the two successful turns. The owner generation advanced while
+the process launch generation stayed unchanged. Earlier failures exposed
+systemd shell-variable expansion, overly short identity reads, and Boat's
+invalidation of unlinked open stdin files; these have targeted fixes and tests.
+
+Screenshots: [experimental toggle](assets/2026-10-10-boat/experimental-toggle.jpg),
+[before the second turn](assets/2026-10-10-boat/native-vite-before.jpg), and
+[after hot reload](assets/2026-10-10-boat/native-vite-after.jpg).
+
+The configured idle timeout retired that exact runner and its Vite listener
+while another agent's active admission kept the shared machine available.
+A subsequent ordinary turn exposed an overly restrictive prior-owner recovery
+check; exact retirement evidence is being integrated before repeating that path.
+
+Native computer screenshot and app launch work, but keyboard navigation still
+needs a passing visible result. Qualification found IBus listening on a
+persistent-home socket whose filesystem node refused connections. Rebinding
+the official daemon to a private runtime socket restored its health; actual
+computer input and durable resume handling are being verified.
 
 Native Claude's first provider-pack upload exceeded the existing 15-minute
 bootstrap budget. The qualified pack includes all supported providers. Real
@@ -241,7 +257,7 @@ compressed-byte uploads with remote file writes and hash verification support
 eight concurrent chunks; uploads now share a controller-wide limit of eight.
 The full native Claude run still needs to pass with that change.
 
-Required remaining evidence includes both native warm-turn paths, integrated
-Vite HMR without a page reload, exact last-owner process retirement, and the
+Required remaining evidence includes native Claude completion and warm turns,
+native desktop keyboard control, exact last-owner process retirement, and the
 same matrix on the final source revision at the designated staging instance.
 Provider-only smoke checks do not substitute for these product journeys.
