@@ -313,6 +313,25 @@ describe("server adapter registry", () => {
     });
   });
 
+  it("probes native Codex through CLI on a persistent computer without changing agent config", async () => {
+    const config = { provider: "codex", model: "gpt-5.4", env: { OPENAI_API_KEY: "test-key" } };
+    const execute = vi.fn(async (input: { command: string; args?: string[] }) => ({
+      exitCode: 0, timedOut: false, stderr: "", signal: null, pid: null, startedAt: new Date().toISOString(),
+      stdout: input.args?.includes("--json") ? JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } })
+        : input.args?.includes("--version") ? "codex-cli 0.135.0" : "",
+    }));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner", config,
+      executionTarget: { kind: "remote", transport: "computer", remoteCwd: "/workspace", resourceAuthority: { computerId: "computer" },
+        workspaceRealization: { mode: "in_place", authoritativeRoot: "/workspace", pathAliases: [], outboundRestorePaths: [] },
+        runner: { execute },
+      } as never,
+    });
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_passed", level: "info" }));
+    expect(result.checks.some(check => check.code === "adapter_engine_unavailable")).toBe(false);
+    expect(config).not.toHaveProperty("engine");
+  });
+
   it("verifies the Claude harness on a computer after checking its platform", async () => {
     const calls: string[] = [];
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({

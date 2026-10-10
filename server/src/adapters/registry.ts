@@ -491,7 +491,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     }
     const result = profile.provider === "opencode"
       ? await openCodeTestEnvironment(context)
-      : await codexTestEnvironment(context);
+      : await codexTestEnvironment(context.executionTarget?.kind === "remote" && context.executionTarget.transport === "computer"
+          ? { ...context, config: { ...context.config, engine: "cli" } }
+          : context);
     return { ...result, adapterType: "paperclip_runner" };
   },
   listSkills: listCodexSkills,
