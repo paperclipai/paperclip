@@ -29,6 +29,8 @@ import { adaptersApi } from "@/api/adapters";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
+import { describeError } from "@/api/errors";
+import { QueryErrorState } from "../QueryView";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -166,7 +168,6 @@ function Setup({
     queryKey: queryKeys.agents.detail(createdAgentId ?? "new"),
     queryFn: () => agentsApi.get(createdAgentId!, companyId),
     enabled: Boolean(createdAgentId),
-    retry: false,
   });
   const created =
     createdInSession ??
@@ -229,7 +230,6 @@ function Setup({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
     queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
     enabled: Boolean(brandType) && showModel && !connectionModels,
-    retry: false,
   });
   const companySecrets = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
@@ -240,7 +240,6 @@ function Setup({
     queryKey: queryKeys.secrets.myUserSecrets(companyId),
     queryFn: () => secretsApi.listMyUserSecrets(companyId),
     enabled: hasCredentialField && adapterType !== "cursor_cloud",
-    retry: false,
   });
   const forced = resolveForcedKubernetesEnvironment(
     general.data?.executionMode,
@@ -267,9 +266,7 @@ function Setup({
         });
   } catch (cause) {
     environmentError =
-      cause instanceof Error
-        ? cause.message
-        : "Could not resolve the environment.";
+      describeError(cause).body;
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
   const sandboxProvider =
@@ -467,7 +464,7 @@ function Setup({
     } catch (cause) {
       if (run === generation.current) {
         setError(
-          cause instanceof Error ? cause.message : "Could not test the agent.",
+          describeError(cause).body,
         );
         setTestState("fail");
       }
@@ -555,7 +552,7 @@ function Setup({
       ]);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not create the agent.",
+        describeError(cause).body,
       );
     } finally {
       if (!hired) {
@@ -641,6 +638,11 @@ function Setup({
     general.error ??
     agents.error ??
     caps.error;
+  const setupRetry = () => {
+    for (const query of [adapters, envs, settings, experimental, general, agents, caps]) {
+      if (typeof query.refetch === "function" && query.isError) void query.refetch();
+    }
+  };
   return (
     <MotionConfig reducedMotion="user">
       <div className="mx-auto flex max-w-5xl flex-col gap-8 py-6">
@@ -670,9 +672,12 @@ function Setup({
           </p>
         )}
         {setupError && (
-          <p role="alert" className="text-sm text-destructive">
-            {setupError.message}
-          </p>
+          <QueryErrorState
+            size="inline"
+            error={setupError}
+            action="load agent setup data"
+            onRetry={setupRetry}
+          />
         )}
         {adapters.data && !available && (
           <p role="alert" className="text-sm text-destructive">

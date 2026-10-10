@@ -22,7 +22,6 @@ export function useProjectCreatedItems(
       queryKey: queryKeys.projects.detail(receipt.projectId),
       queryFn: () => projectsApi.get(receipt.projectId, companyId!),
       enabled: Boolean(companyId),
-      retry: false,
     })),
     combine: availableProjects,
   });

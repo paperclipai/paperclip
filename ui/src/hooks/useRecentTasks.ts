@@ -69,7 +69,6 @@ export function useRecentTasks({
     queries: queryEntries.map((entry) => ({
       queryKey: queryKeys.issues.detail(entry.id),
       queryFn: () => issuesApi.get(entry.id),
-      retry: false,
       staleTime: 30_000,
     })),
   });

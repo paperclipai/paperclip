@@ -5,6 +5,8 @@ import { emailApi } from "@/api/email";
 import { useEmailThread } from "@/hooks/useEmailThread";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "./QueryView";
 import type { EmailPublicationSummary } from "@paperclipai/shared";
 
 // Email actions belong to the agent's task conversation. Only surface mail
@@ -21,41 +23,53 @@ export function EmailTaskActivity({
   const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const thread = useEmailThread(companyId, issueId);
   if (!queryEnabled) return null;
-  const data = thread.data;
-  const messages = data?.messages.filter((m) => !m.commentId) ?? [];
-  const publications = data?.publications.filter(
-    (p) => !p.providerMessageId || p.outcome === "uncertain",
-  ) ?? [];
-  if (!thread.error && !messages.length && !publications.length) return null;
-  return (
-    <div className="space-y-3">
-      {thread.error && (
-        <p role="alert" className="text-sm text-destructive">
-          {thread.error.message}
-        </p>
-      )}
-      {messages.map((m) => (
-        <EmailMessageCard
-          key={m.id}
-          issueId={issueId}
-          message={m}
-          publication={data?.publications.find(
-            (p) => p.providerMessageId === m.providerMessageId,
-          )}
-        />
-      ))}
-      {publications.map((p) => (
-        <EmailDelivery
-          key={p.id}
-          companyId={companyId}
-          publication={p}
-          onResolved={() => {
-            void cache.invalidateQueries({ queryKey: threadKey });
-          }}
-        />
-      ))}
-    </div>
-  );
+  const threadView = useQueryView(thread);
+  if (threadView.kind === "stale" || threadView.kind === "ready") {
+    const data = threadView.data;
+    const messages = data?.messages.filter((m) => !m.commentId) ?? [];
+    const publications = data?.publications.filter(
+      (p) => !p.providerMessageId || p.outcome === "uncertain",
+    ) ?? [];
+    if (!messages.length && !publications.length) return null;
+    return (
+      <div className="space-y-3">
+        {messages.map((m) => (
+          <EmailMessageCard
+            key={m.id}
+            issueId={issueId}
+            message={m}
+            publication={data?.publications.find(
+              (p) => p.providerMessageId === m.providerMessageId,
+            )}
+          />
+        ))}
+        {publications.map((p) => (
+          <EmailDelivery
+            key={p.id}
+            companyId={companyId}
+            publication={p}
+            onResolved={() => {
+              void cache.invalidateQueries({ queryKey: threadKey });
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
+  // A quiet section while the initial read is still settling;a no-data read
+  // failure gets readable copy with Retry instead of a raw error line.
+  if (threadView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="inline"
+        error={threadView.error}
+        action="load email activity"
+        onRetry={threadView.retry}
+        retrying={threadView.isFetching}
+      />
+    );
+  }
+  return null;
 }
 
 function EmailDelivery({
@@ -125,9 +139,9 @@ function EmailDelivery({
                 Confirm not sent
               </Button>
             </div>
-            {resolve.error && (
+            {resolve.isError && ( // query-error-ok: mutation result
               <p role="alert" className="text-destructive">
-                {resolve.error.message}
+                {describeError(resolve.error).body}
               </p>
             )}
           </div>

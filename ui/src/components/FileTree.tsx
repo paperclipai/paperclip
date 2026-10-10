@@ -1,6 +1,7 @@
 import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
+import { describeError } from "../api/errors";
 import {
   ChevronDown,
   ChevronRight,
@@ -385,7 +386,7 @@ export function FileTree({
             >
               error
             </Badge>
-            <span className="min-w-0 text-destructive">{error.message}</span>
+            <span className="min-w-0 text-destructive">{describeError(error).body}</span>
           </div>
           {error.retry && (
             <Button type="button" size="xs" variant="outline" onClick={error.retry}>

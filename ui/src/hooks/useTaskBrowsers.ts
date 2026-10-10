@@ -2,13 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
+import { retryTransientOnly } from "@/lib/query-client";
 export function useTaskBrowsers(issueId?: string) {
   return useQuery({
     queryKey: ["task-browsers", issueId],
     queryFn: () => browserUseApi.list(issueId!),
     enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
     refetchInterval: 3000,
-    retry: false,
+    // The 3s poll cadence already retries reads; stacking the shared backoff
+    // inside a tick only adds duplicate requests. The next tick refetches anyway.
+
+    retry: retryTransientOnly(0),
   });
 }
 

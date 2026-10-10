@@ -244,7 +244,6 @@ export function Layout() {
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as
         { devServer?: { enabled?: boolean } } | undefined;

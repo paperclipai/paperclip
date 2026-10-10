@@ -38,14 +38,12 @@ export function TaskWorkspaceFilePanel({
   const resourceQuery = useQuery({
     queryKey: queryKeys.issues.fileResource(issueId, state),
     queryFn: () => fileResourcesApi.resolve(issueId, state),
-    retry: false,
   });
   const resource = resourceQuery.data;
   const contentQuery = useQuery({
     queryKey: queryKeys.issues.fileResourceContent(issueId, state),
     queryFn: () => fileResourcesApi.content(issueId, state),
     enabled: resource?.capabilities.preview === true,
-    retry: false,
   });
   const downloadUrl = resource?.capabilities.download
     ? fileResourcesApi.downloadUrl(issueId, state)

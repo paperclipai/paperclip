@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
 import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
+import { describeError } from "../../api/errors";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { queryKeys } from "../../lib/queryKeys";
@@ -417,7 +418,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           <SaveStatusChip
             pending={syncSkills.isPending}
             unsaved={hasUnsavedChanges}
-            error={syncSkills.isError && hasUnsavedChanges}
+            error={syncSkills.isError && hasUnsavedChanges} // query-error-ok: syncSkills is a save mutation result, not a query read
           />
           <div className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
             <div className="relative w-full sm:w-auto">
@@ -439,9 +440,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           </div>
         </div>
 
-        {syncSkills.isError ? (
+        {syncSkills.isError ? ( // query-error-ok: syncSkills is a save mutation result; copy rendered from the mutation error below
           <p className="text-xs text-destructive">
-            {syncSkills.error instanceof Error ? syncSkills.error.message : "Failed to update skills"}
+            {describeError(syncSkills.error).body}
           </p>
         ) : null}
       </div>

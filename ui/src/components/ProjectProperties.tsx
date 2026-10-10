@@ -237,7 +237,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const { data: availableSecrets = [] } = useQuery({
@@ -251,7 +250,6 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
-    retry: false,
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
@@ -718,13 +716,16 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
-          {createWorkspace.isError && (
+          {createWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to save workspace.</p>
           )}
-          {removeWorkspace.isError && (
+          {removeWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to delete workspace.</p>
           )}
-          {updateWorkspace.isError && (
+          {updateWorkspace.isError && ( // query-error-ok: mutation result
+
             <p className="text-xs text-destructive">Failed to update workspace.</p>
           )}
         </div>}

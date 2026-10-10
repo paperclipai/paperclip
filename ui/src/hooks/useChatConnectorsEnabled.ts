@@ -16,7 +16,7 @@ export function useChatConnectorsEnabled(): {
   githubEnabled: boolean;
 } {
   const contextClient = useContext(QueryClientContext);
-  const { data, isFetched, isError } = useQuery(
+  const { data, isFetched } = useQuery(
     {
       queryKey: queryKeys.instance.experimentalSettings,
       queryFn: () => instanceSettingsApi.getExperimental(),
@@ -26,9 +26,11 @@ export function useChatConnectorsEnabled(): {
   );
   if (!contextClient)
     return { enabled: false, githubEnabled: false, loaded: true };
+  // Derive the gates from data, not `isError`: cached settings stay visible while a
+  // refetch is failing; only a no-data failure reports `loaded` without the flag.
   return {
-    enabled: !isError && data?.enableChatConnectors === true,
-    githubEnabled: !isError && data?.enableGitHubReviewBots === true,
+    enabled: data?.enableChatConnectors === true,
+    githubEnabled: data?.enableGitHubReviewBots === true,
     loaded: isFetched,
   };
 }

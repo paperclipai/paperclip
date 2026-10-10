@@ -20,6 +20,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "../ui/dialog";
+import { QueryErrorState, useQueryView } from "../QueryView";
 
 export type AgentBasics = {
   name: string;
@@ -53,21 +54,21 @@ export function AgentBasicsDialog({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: instanceSettingsApi.getExperimental,
     enabled: open,
-    retry: false,
   });
   const [name, setName] = useState("");
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
   const [step, setStep] = useState<"name" | "adapter">("name");
-  const {
-    data: adapters,
-    isPending,
-    error,
-  } = useQuery({
+  const adaptersQuery = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: adaptersApi.list,
     enabled: open,
   });
+  // Read the adapter list through the shared view: cached choices stay usable
+  // during a transient refetch failure,and a no-data failure shows readable copy.
+
+  const adaptersView = useQueryView(adaptersQuery);
+  const adapters = adaptersView.data;
   const choices = (adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
@@ -165,16 +166,20 @@ export function AgentBasicsDialog({
             ) : (
               <fieldset className="space-y-4">
                 <legend className="sr-only">Adapter</legend>
-                {isPending && (
+                {adaptersView.kind === "loading" || adaptersView.kind === "reconnecting" ? (
                   <p role="status" className="text-sm text-muted-foreground">
                     Loading adapters…
                   </p>
-                )}
-                {error && (
-                  <p role="alert" className="text-sm text-destructive">
-                    {error.message}
-                  </p>
-                )}
+                ) : null}
+                {adaptersView.kind === "error" ? (
+                  <QueryErrorState
+                    size="inline"
+                    error={adaptersView.error}
+                    action="load the adapter list"
+                    onRetry={adaptersView.retry}
+                    retrying={adaptersView.isFetching}
+                  />
+                ) : null}
                 <div className={cn("grid grid-cols-2 gap-3", choices.length !== 4 && "sm:grid-cols-3")}>
                   {choices.map((adapter) => {
                     const display = getAdapterDisplay(adapter.type);

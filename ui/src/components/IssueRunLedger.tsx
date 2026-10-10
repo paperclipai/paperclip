@@ -448,7 +448,6 @@ export function IssueRunLedger({
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -484,7 +483,6 @@ export function IssueRunLedger({
     queryKey: queryKeys.providerTraceMetadata(companyId, traceRunIds),
     queryFn: () => heartbeatsApi.providerTraceMetadata(companyId, traceRunIds),
     enabled: canInspectProviderTrace && traceRunIds.length > 0,
-    retry: false,
   });
   const providerTraceMetadata = useMemo(
     () => new Map((providerTraceRows ?? []).map((trace) => [trace.runId, trace])),

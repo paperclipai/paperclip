@@ -79,7 +79,6 @@ export function SidebarRecentTasks({
   const { data: session, isPending } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
 
   if (!companyId || isPending) return null;

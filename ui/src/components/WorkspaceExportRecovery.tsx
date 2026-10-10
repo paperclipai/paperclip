@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
+import { describeError } from "../api/errors";
 import { Button } from "./ui/button";
 import { Label } from "./ui/label";
 import { Textarea } from "./ui/textarea";
@@ -37,7 +38,7 @@ export function WorkspaceExportRecovery({ issueId, action, canManage, onQueued }
           </Button>
         </div>
       </> : <p className="text-muted-foreground">A board member with runtime access can retry this export after repair.</p>}
-      {retry.isError && <p role="alert" className="text-destructive">{retry.error instanceof Error ? retry.error.message : "Could not queue export. Refresh the task and inspect its run."}</p>}
+      {retry.isError && <p role="alert" className="text-destructive">{describeError(retry.error).body}</p>} // query-error-ok: mutation result
     </>}
   </section>;
 }

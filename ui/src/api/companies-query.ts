@@ -36,7 +36,6 @@ export function companyListQueryOptions(userId: string | null) {
         throw err;
       }
     },
-    retry: false,
   } as const;
 }
 
@@ -48,14 +47,12 @@ export function companyDirectoryQueryOptions(userId: string | null) {
       companiesApi.detachInflightDirectory();
       return companiesApi.directory();
     },
-    retry: false,
   } as const;
 }
 
 const sessionQueryOptions = {
   queryKey: queryKeys.auth.session,
   queryFn: () => authApi.getSession(),
-  retry: false,
 } as const;
 
 /**

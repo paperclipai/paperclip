@@ -20,6 +20,9 @@ import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
+import { describeError } from "@/api/errors";
+import { retryTransientOnly } from "@/lib/query-client";
+import { useQueryView } from "@/components/QueryView";
 import {
   boardSendDraftKey,
   clearBoardSendDraft,
@@ -279,8 +282,12 @@ function ConnectedTaskComposer({
     staleTime: 0,
     refetchInterval: 2_000,
     refetchIntervalInBackground: false,
-    retry: false,
+    retry: retryTransientOnly(0),
   });
+  // Read publication status through the shared view: the receipt render uses
+  // the cached batch during transient refetch failures,and a no-data failure
+  // drops into readable copy.
+  const publicationStatusView = useQueryView(publicationStatus);
   useEffect(() => {
     const batch = publicationStatus.data;
     if (
@@ -368,9 +375,7 @@ function ConnectedTaskComposer({
       pushToast({
         title: "Couldn't confirm channel delivery",
         body:
-          error instanceof Error
-            ? `${error.message} Your draft is kept; retrying here reuses the same request identity.`
-            : "Your draft is kept; retrying here reuses the same request identity.",
+          `${describeError(error).body} Your draft is kept; retrying here reuses the same request identity.`,
         tone: "error",
       });
     },
@@ -404,7 +409,7 @@ function ConnectedTaskComposer({
     } catch (error) {
       if (mounted.current) {
         setUploadError(
-          `${error instanceof Error ? error.message : "Upload could not be confirmed."} No channel message was sent. Check task files before retrying the upload.`,
+          `${describeError(error).body} No channel message was sent. Check task files before retrying the upload.`,
         );
       }
     } finally {
@@ -460,7 +465,7 @@ function ConnectedTaskComposer({
   const currentPublication = publicationStatus.data?.publication ?? publication;
   const batch = publicationStatus.data;
   const dismissible =
-    !publicationStatus.isError &&
+    Boolean(publicationStatus.data) &&
     !publicationStatus.isFetching &&
     canDismissBoardSendBatch(batch);
   const mixedTerminal =
@@ -774,7 +779,7 @@ function ConnectedTaskComposer({
                     ))}
                 </ul>
               )}
-              {publicationStatus.isError && (
+              {publicationStatusView.kind === "error" && (
                 <p role="alert" className="text-muted-foreground">
                   Delivery status could not be refreshed. Your draft is kept;
                   Paperclip will check again without sending another update.

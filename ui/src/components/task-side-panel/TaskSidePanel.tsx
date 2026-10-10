@@ -1,5 +1,6 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
+import { useQueryView } from "@/components/QueryView";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
@@ -479,9 +480,10 @@ export function TaskSidePanel({
     }),
     queryFn: () => fileResourcesApi.list(issue.id, { workspace: "auto", mode: "recent", limit: 5, offset: 0 }),
     enabled: fileTabsEnabled && (launcherOpen || !activeTab),
-    retry: false,
     staleTime: 15_000,
   });
+
+  const recentFilesView = useQueryView(recentFilesQuery);
 
   function markInteracted() {
     userInteractedRef.current = true;
@@ -627,11 +629,11 @@ export function TaskSidePanel({
         label: "Recent workspace files",
         items: recentItems,
         loading: recentFilesQuery.isLoading,
-        error: recentFilesQuery.isError ? "Recent files are temporarily unavailable." : null,
+        error: recentFilesView.kind === "error" ? "Recent files are temporarily unavailable." : null,
       });
     }
     return sections;
-  }, [browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();

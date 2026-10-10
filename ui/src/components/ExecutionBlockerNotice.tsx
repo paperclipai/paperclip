@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionBlocker } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
+import { describeError } from "../api/errors";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "./ui/button";
 import { Link } from "../lib/router";
+import { QueryErrorState, useQueryView } from "./QueryView";
 
 export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried }: {
   companyId: string;
@@ -13,11 +15,15 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
   onRetried: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { data: runs, error: runsError } = useQuery({
+  const runsQuery = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
   });
-  const failedRun = runs?.find(run => run.runId === blocker.runId &&
+  // Read the run list through the shared view: cached runs stay usable while a
+  // transient refetch fails,and a no-data failure shows readable copy with Retry.
+
+  const runsView = useQueryView(runsQuery);
+  const failedRun = runsView.data?.find(run => run.runId === blocker.runId &&
     ["failed", "timed_out"].includes(run.status));
   const modelRejected = failedRun?.errorCode === "native_provider_model_rejected";
   const requiresInspection = blocker.cause === "native_continuation_requires_reconciliation" ||
@@ -53,10 +59,19 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
           {retry.isPending ? "Starting…" : blocker.canContinue ? "Continue" : "Retry"}
         </Button>
       )}
-      {retry.isError && (
-        <p role="alert" className="w-full text-destructive">{retry.error.message}</p>
+      {retry.isError && ( // query-error-ok: mutation result
+        <p role="alert" className="w-full text-destructive">{describeError(retry.error).body}</p>
       )}
-      {runsError && <p role="alert" className="w-full text-destructive">{runsError.message}</p>}
+      {runsView.kind === "error" && (
+        <QueryErrorState
+          size="inline"
+          className="w-full"
+          error={runsView.error}
+          action="load run history"
+          onRetry={runsView.retry}
+          retrying={runsView.isFetching}
+        />
+      )}
     </div>
   );
 }

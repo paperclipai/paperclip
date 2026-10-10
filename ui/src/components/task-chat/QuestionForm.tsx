@@ -445,6 +445,7 @@ function QuestionFormForRequest({
   }
 
   const currentError = validationErrors[question.id];
+  const errorMessage = error?.message ?? null;
   const isLastPage = page === questionSet.questions.length - 1;
   const busy = disabled || working != null || inputUploading;
   // Cancel resolves the request when the host owns that; otherwise it just
@@ -674,9 +675,9 @@ function QuestionFormForRequest({
         <p className="mt-2 text-xs text-destructive">{currentError}</p>
       ) : null}
       <div aria-live="assertive">
-        {error ? (
+        {errorMessage ? (
           <div className="mt-2 rounded-sm border border-destructive/60 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
-            {error.message}
+            {errorMessage}
           </div>
         ) : null}
       </div>

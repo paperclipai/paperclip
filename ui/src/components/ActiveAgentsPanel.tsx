@@ -107,7 +107,6 @@ export function ActiveAgentsPanel({
       queryKey: queryKeys.issues.detail(issueId),
       queryFn: () => issuesApi.get(issueId),
       staleTime: 30_000,
-      retry: false,
     })),
   });
 

@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
+import { describeError } from "../api/errors";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { queryKeys } from "../lib/queryKeys";
 
 export function CliAuthPage() {
@@ -21,14 +23,13 @@ export function CliAuthPage() {
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const challengeQuery = useQuery({
     queryKey: ["cli-auth-challenge", challengeId, token],
     queryFn: () => accessApi.getCliAuthChallenge(challengeId, token),
     enabled: challengeId.length > 0 && token.length > 0,
-    retry: false,
   });
+  const challengeView = useQueryView(challengeQuery);
 
   const approveMutation = useMutation({
     mutationFn: () => accessApi.approveCliAuthChallenge(challengeId, token),
@@ -53,14 +54,17 @@ export function CliAuthPage() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading CLI auth challenge...</div>;
   }
 
-  if (challengeQuery.error) {
+  if (challengeView.kind === "error") {
     return (
       <div className="mx-auto max-w-xl py-10">
         <Card className="block p-6">
-          <h1 className="text-lg font-semibold">CLI auth challenge unavailable</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {challengeQuery.error instanceof Error ? challengeQuery.error.message : "Challenge is invalid or expired."}
-          </p>
+          <QueryErrorState
+            size="panel"
+            error={challengeView.error}
+            action="load the CLI auth challenge"
+            onRetry={challengeView.retry}
+            retrying={challengeView.isFetching}
+          />
         </Card>
       </div>
     );
@@ -149,12 +153,8 @@ export function CliAuthPage() {
           )}
         </div>
 
-        {(approveMutation.error || cancelMutation.error) && (
-          <p className="mt-4 text-sm text-destructive">
-            {(approveMutation.error ?? cancelMutation.error) instanceof Error
-              ? ((approveMutation.error ?? cancelMutation.error) as Error).message
-              : "Failed to update CLI auth challenge"}
-          </p>
+        {(approveMutation.isError || cancelMutation.isError) && ( // query-error-ok: mutation result
+          <p className="mt-4 text-sm text-destructive">{describeError((approveMutation.error ?? cancelMutation.error)as unknown).body}</p>
         )}
 
         {!challenge.canApprove && (

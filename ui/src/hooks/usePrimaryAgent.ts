@@ -16,6 +16,6 @@ export function usePrimaryAgent(companyId: string | null | undefined) {
     userId,
     loading: !!companyId && (session.isPending || query.isPending && !session.error),
     error: session.error ?? query.error,
-    retry: () => session.isError ? session.refetch() : query.refetch(),
+    retry: () => (session.isError ? session.refetch() : query.refetch()), // query-error-ok: retry dispatch targets the failed read
   };
 }

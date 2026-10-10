@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { dotInvitationsApi, type DotInvitation, type DotPairing } from "@/api/dotInvitations";
+import { describeError } from "@/api/errors";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -34,7 +35,6 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   const state = useQuery({ queryKey: key,
     queryFn: ({ signal }) => dotInvitationsApi.connection(companyId, invitation!.agent.id, signal),
     enabled: preset === "dot" && !!invitation,
-    retry: false,
     staleTime: 0,
     refetchInterval: query => query.state.error ? false : query.state.data?.agentLifecycleState === "ready" && query.state.data.canConfigureConnection
       && query.state.data.binding?.status === "ready" && query.state.data.binding.subscriptionVerified ? false : 2500,
@@ -103,7 +103,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
       : binding?.hasPendingChallenge ? "testing" : binding?.subscriptionVerified ? "subscribed" : binding?.connected ? "connected" : "waiting",
     problem: state.error ? "offline"
       : checksReady && !agentReady && !finishingSetup ? "agent_unavailable"
-      : binding?.status === "pairing" && !preparePairing && !pair.isPending && !state.isFetching && !pair.isError && pairing?.bindingId !== binding.id ? "prompt_unavailable"
+      : binding?.status === "pairing" && !preparePairing && !pair.isPending && !state.isFetching && !pair.isError && pairing?.bindingId !== binding.id ? "prompt_unavailable" // query-error-ok: derived connection-state label;copy rendered by the dialog
       : binding?.challengeExpiresAt && !binding.hasPendingChallenge && binding.status !== "ready" ? "event_timeout" : undefined,
   };
   const pendingApproval = (state.data?.agentStatus ?? invitation?.agent.status) === "pending_approval";
@@ -124,7 +124,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     <AnimatedDialogContent className="sm:max-w-(--sz-560px)">
       <ExternalAgentInviteContent preset={preset} prompt={prompt} companyName={selectedCompany?.name ?? "your organization"}
         connection={connection} dotDisabledReason={dotDisabledReason} busy={busy}
-        error={error?.message ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined)}
+        error={error ? describeError(error).body : unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined}
         approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
         onSelect={kind => { setPreset(kind); if (kind === "dot" ? !invitation : !genericPrompt) generate.mutate(kind); }}
         onBack={() => setPreset(null)} onClose={preset ? onClose : onBack} onCopied={() => { if (preset === "dot") void state.refetch(); }}

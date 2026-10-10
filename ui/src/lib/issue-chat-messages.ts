@@ -753,7 +753,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
       entry.kind === "provider_activity" ||
-      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text)); // query-error-ok: chat-message entry flag, not a query read
     const isText = entry.kind === "assistant" && !!entry.text;
 
     if (isCoT) {
@@ -1009,7 +1009,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "stdout") continue;
     if (entry.kind === "system") continue;
     if (entry.kind === "result") {
-      if (entry.isError && entry.errors?.length) {
+      if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
           orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
         }

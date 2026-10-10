@@ -205,7 +205,6 @@ export function useInboxBadge(companyId: string | null | undefined) {
       }
     },
     enabled: !!companyId,
-    retry: false,
   });
 
   const dashboardQueryKey = queryKeys.dashboard(companyId!);

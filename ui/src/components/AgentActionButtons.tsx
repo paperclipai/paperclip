@@ -427,7 +427,8 @@ export function AgentActionButtons({
           <span className="hidden sm:inline">Run with provider trace</span>
         </Button>
       )}
-      {isError ? (
+      {isError ? ( // query-error-ok: mutation result
+
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}
