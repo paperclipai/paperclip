@@ -1389,7 +1389,7 @@ export class PaperclipRunnerToolAuthority {
           type: "issue", companyId: this.binding.companyId, issueId: taskId, projectId: target.projectId,
           parentIssueId: target.parentId, assigneeAgentId: action === "tasks:assign" ? assigneeAgentId : target.assigneeAgentId,
           assigneeUserId: action === "tasks:assign" ? assigneeUserId : target.assigneeUserId, status: target.status,
-        } });
+        }, scope: { issueId: taskId, projectId: target.projectId, parentIssueId: target.parentId, assigneeAgentId, assigneeUserId } });
         if (!decision.allowed) throw forbidden(decision.explanation);
       }
       if (assigneeAgentId) await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
@@ -2146,6 +2146,14 @@ export class PaperclipRunnerToolAuthority {
       || ["paused", "terminated", "pending_approval", "error"].includes(context.actor.status)
     ) {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
+    }
+    if (this.binding.museRuntime) {
+      const decision = await authorizationService(tx).decide({
+        actor: this.#privacyActor(context.run), action: "issue:mutate",
+        resource: { type: "issue", companyId: this.binding.companyId, issueId: context.issue.id,
+          status: context.issue.status, assigneeAgentId: context.issue.assigneeAgentId, assigneeUserId: context.issue.assigneeUserId },
+      });
+      if (!decision.allowed) throw forbidden(decision.explanation);
     }
     return context;
   }

@@ -2624,6 +2624,42 @@ export function authorizationService(db: Db | DbTransaction) {
     return input.action !== "agent_instructions:update" && responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
+  async function applyAuthorizingUserIntersection(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    agentDecision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    const authorizingUserId = input.actor.authorizingUserId?.trim();
+    if (input.actor.type !== "agent" || !authorizingUserId || !agentDecision.allowed) return agentDecision;
+
+    const companyId = companyIdForResource(input.resource);
+    // External authority always uses current membership, without the request's
+    // responsible-user memo or rollout exceptions for agent-owned grants.
+    const snapshot = await loadResponsibleUserSnapshot(companyId, authorizingUserId);
+    const userDecision = snapshot.userExists && snapshot.activeMembership
+      ? await decideBase({
+          ...input,
+          actor: { type: "board", userId: authorizingUserId, ignoreInstanceAdmin: true, source: "session" },
+        })
+      : deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "The authorizing user is not an active company member.",
+        });
+    if (userDecision.allowed) return agentDecision;
+
+    return deny({
+      action: input.action,
+      reason: userDecision.reason,
+      explanation: `Authorizing user is not authorized for ${input.action}: ${userDecision.explanation}`,
+      grant: userDecision.grant,
+    });
+  }
+
   async function decide(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
@@ -2631,7 +2667,8 @@ export function authorizationService(db: Db | DbTransaction) {
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
     const agentDecision = await decideBase(input);
-    const intersectedDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    const responsibleDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    const intersectedDecision = await applyAuthorizingUserIntersection(input, responsibleDecision);
     if (
       input.action === "project:read"
       && input.resource.type === "project"

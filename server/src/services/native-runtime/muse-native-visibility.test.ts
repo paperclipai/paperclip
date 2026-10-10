@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, approvals, authUsers, companies, companyMemberships, createDb, externalAgentHolds, heartbeatRuns, instanceUserRoles, issueAccessGrants, issues, projectAccessMembers, projects } from "@paperclipai/db";
+import { agents, approvals, authUsers, companies, companyMemberships, createDb, externalAgentHolds, heartbeatRuns, instanceUserRoles, issueAccessGrants, issues, issueDocuments, principalPermissionGrants, projectAccessMembers, projects } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { approvalReadSqlCondition, authorizationService, canActorReadIssuePrivacy, issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
@@ -64,6 +64,75 @@ describe("Muse native visibility intersection", () => {
     expect(JSON.stringify(result)).not.toContain(hidden.id);
     await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
     await expect(authority.execute({ tool: "search_tasks", callId: "search-again", arguments: {} })).rejects.toThrow("no longer available");
+  });
+
+  it.each(["create_task", "reassign_task"])("intersects native %s with current authorizer assignment scope before writes or wakes", async tool => {
+    vi.stubEnv("PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE", "shadow");
+    const f = await fixture(), runId = randomUUID();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Assignment scope" }).returning();
+    const [protectedAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Protected target", status: "active", role: "engineer",
+      adapterType: "process", adapterConfig: {}, permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    const [target] = await db.insert(issues).values({ companyId: f.companyId, projectId: project.id, title: "Reassignment target", status: "todo" }).returning();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, nativeIssueId: f.issue.id,
+      responsibleUserId: f.responsible, status: "running", runtimeMode: "native", invocationSource: "assignment" });
+    await db.update(issues).set({ status: "in_progress", projectId: project.id, executionRunId: runId }).where(eq(issues.id, f.issue.id));
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId, status: "active", membershipRole: "member" });
+    await db.insert(principalPermissionGrants).values([
+      { companyId: f.companyId, principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign" },
+      { companyId: f.companyId, principalType: "user", principalId: f.responsible, permissionKey: "tasks:assign" },
+    ]);
+    await db.insert(issueAccessGrants).values({ issueId: f.issue.id, subjectType: "user", subjectId: f.authorizer, source: "explicit" });
+    // Instance-wide elevation must not become permission granted to Muse.
+    await db.insert(instanceUserRoles).values({ userId: f.authorizer, role: "instance_admin" });
+    const enqueueWakeup = vi.fn(async () => null);
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issue.id, runId,
+      museRuntime: true, externalAuthorizingUserId: f.authorizer, assertBridgeAuthority: async () => {}, enqueueWakeup });
+    const call = { tool, callId: "authorizer-scope", arguments: tool === "create_task"
+      ? { idempotencyKey: "scope", title: "Protected child", assigneeActorId: protectedAgent.id }
+      : { idempotencyKey: "scope", taskId: target.id, assigneeActorId: protectedAgent.id,
+          expectedAssigneeActorId: null, expectedStatusVersion: target.statusVersion, reason: "Scoped reassignment" } };
+    const assertUnchanged = async () => {
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, f.issue.id))).toEqual([]);
+      expect(await db.select({ owner: issues.assigneeAgentId, version: issues.statusVersion }).from(issues).where(eq(issues.id, target.id)))
+        .toEqual([{ owner: null, version: target.statusVersion }]);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    };
+    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await assertUnchanged();
+    const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.authorizer,
+      permissionKey: "tasks:assign_scope", scope: { agentIds: [protectedAgent.id], projectIds: [randomUUID()] } }).returning();
+    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await assertUnchanged();
+    await db.update(principalPermissionGrants).set({ scope: { agentIds: [randomUUID()], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
+    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await assertUnchanged();
+    await db.update(principalPermissionGrants).set({ scope: { agentIds: [protectedAgent.id], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
+    await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["enforce", "shadow"])("denies native document writes for a viewer authorizer in responsible-user %s mode", async mode => {
+    vi.stubEnv("PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE", mode);
+    const f = await fixture(), runId = randomUUID();
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
+    await db.insert(issueAccessGrants).values({ issueId: f.issue.id, subjectType: "user", subjectId: f.authorizer, source: "explicit" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, nativeIssueId: f.issue.id,
+      responsibleUserId: f.responsible, status: "running", runtimeMode: "native", invocationSource: "assignment" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, f.issue.id));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issue.id, runId,
+      museRuntime: true, externalAuthorizingUserId: f.authorizer, assertBridgeAuthority: async () => {} });
+    const call = { tool: "write_document", callId: "viewer-write", arguments: { key: "report", title: "Report", body: "Must not be written", baseRevisionId: null, idempotencyKey: "viewer-write" } };
+    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for issue:mutate");
+    expect(await db.select({ id: issueDocuments.id }).from(issueDocuments).where(eq(issueDocuments.issueId, f.issue.id))).toEqual([]);
+    await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
+    await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
+    await expect(authorizationService(db).decide({ actor: f.actor, action: "tasks:assign",
+      resource: { type: "issue", companyId: f.companyId, assigneeAgentId: f.agentId }, scope: { assigneeAgentId: f.agentId } }))
+      .resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
   });
 
   it("applies external admission before a native reviewer changes the issue execution owner", async () => {
