@@ -225,7 +225,7 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
           and(eq(heartbeatRuns.agentId, agentId), gte(heartbeatRuns.startedAt, changedAt))),
       );
 
-      const runs = await db
+      const readLaneRuns = () => db
         .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
         .where(and(
@@ -242,6 +242,7 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
         ))
         .orderBy(desc(heartbeatRuns.finishedAt))
         .limit(60);
+      let runs = await readLaneRuns();
 
       const probeKey = JSON.stringify([run.companyId, responsibleUserId, laneKey]);
       const stored = probeByLane.get(probeKey) ?? null;
@@ -269,6 +270,9 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, stored.runId));
         probeFinished = !probeRun || probeRun.finishedAt !== null;
+        // The probe can fail after the lane history above was read. Its
+        // failure starts the next cooldown, so decide on fresh history.
+        if (probeFinished) runs = await readLaneRuns();
         const latest = probeByLane.get(probeKey);
         if (latest && latest !== stored) {
           // Another claim granted a new probe while this one was reading.
