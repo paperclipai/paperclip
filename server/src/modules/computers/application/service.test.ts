@@ -113,6 +113,20 @@ function fixture() {
   };
 }
 describe("computer ownership", () => {
+  it("explains an unavailable dev server without masking provider errors", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    const input = { ...f.scope, owner: binding.owner, port: 5173 };
+    vi.mocked(f.backend.remote).mockRejectedValueOnce(new ComputerError("conflict", "Computer operation: conflict"));
+    await expect(f.service.preview(input)).rejects.toMatchObject({
+      code: "conflict", message: "No dev server is running on this port for this task. Start it in the task and try again.",
+    });
+    const offline = new ComputerError("provider_error", "Provider unavailable");
+    vi.mocked(f.backend.remote).mockRejectedValueOnce(offline);
+    await expect(f.service.preview(input)).rejects.toBe(offline);
+    expect(f.backend.preview).not.toHaveBeenCalled();
+  });
   it("reuses warm process identity and port while fencing stale callbacks", async () => {
     const f = fixture();
     await f.attach();

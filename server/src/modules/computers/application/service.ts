@@ -591,12 +591,19 @@ finally:
         "forbidden",
         "Runner ports are not application previews",
       );
-    await backend.remote(record, {
-      root: base(record),
-      action: "owned-port",
-      port: input.port,
-      ownerId: owner.id,
-    });
+    try {
+      await backend.remote(record, {
+        root: base(record),
+        action: "owned-port",
+        port: input.port,
+        ownerId: owner.id,
+      });
+    } catch (error) {
+      if (error instanceof ComputerError && error.code === "conflict") {
+        throw new ComputerError("conflict", "No dev server is running on this port for this task. Start it in the task and try again.");
+      }
+      throw error;
+    }
     return backend.preview(record, input.port);
   }
   async function withFiles<T>(
