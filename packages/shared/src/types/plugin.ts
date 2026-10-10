@@ -333,6 +333,24 @@ export interface PluginLocalFolderDeclaration {
 }
 
 /**
+ * Declares a named private-network host a plugin wants to reach over
+ * `ctx.http.fetch`. The host's SSRF guard blocks outbound requests to any
+ * private/reserved IP by default; declaring a host here (plus the
+ * `http.outbound.private-network` capability) only makes the *operator*
+ * able to approve this specific host per company — it does not grant
+ * access by itself. The operator sets the actual allowed hostname at
+ * instance-config time, the same way they configure a trusted local folder.
+ */
+export interface PluginPrivateNetworkHostDeclaration {
+  /** Stable identifier for this host, unique within the plugin. */
+  hostKey: string;
+  /** Human-readable name shown in plugin settings. */
+  displayName: string;
+  /** Optional operator-facing description, e.g. what the host is used for. */
+  description?: string;
+}
+
+/**
  * Declares a normal Paperclip project that a plugin can provision and later
  * resolve by stable key within each company.
  */
@@ -722,6 +740,13 @@ export interface PaperclipPluginManifestV1 {
   skills?: PluginManagedSkillDeclaration[];
   /** Trusted local folders this plugin can configure and access by stable key. */
   localFolders?: PluginLocalFolderDeclaration[];
+  /**
+   * Private-network hosts this plugin wants to reach over `ctx.http.fetch`.
+   * Requires `http.outbound.private-network` capability; the operator must
+   * also approve each declared host per company before it bypasses the SSRF
+   * guard's default-deny on private/reserved IPs.
+   */
+  privateNetworkHosts?: PluginPrivateNetworkHostDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
   /**

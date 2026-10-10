@@ -346,6 +346,7 @@ export interface PaperclipPluginManifestV1 {
   routines?: PluginManagedRoutineDeclaration[];
   skills?: PluginManagedSkillDeclaration[];
   localFolders?: PluginLocalFolderDeclaration[];
+  privateNetworkHosts?: PluginPrivateNetworkHostDeclaration[];
   /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
   launchers?: PluginLauncherDeclaration[];
   ui?: {
@@ -401,6 +402,41 @@ Rules:
   [sandbox provider capability contract](./SANDBOX_PROVIDER_CAPABILITIES.md) for
   the supported keys, the worker-method prerequisites, and the narrowing and
   failure rules.
+- `privateNetworkHosts` → `http.outbound.private-network` (see §10.2)
+
+## 10.2 Outbound HTTP and the Private-Network Allowlist
+
+`ctx.http.fetch` (requires `http.outbound`) runs through a host-side SSRF
+guard: it resolves the target hostname and rejects the call outright if every
+resolved IP is private or reserved (RFC 1918, loopback, link-local). This is
+unconditional and on by default — most plugins calling public internet APIs
+never notice it, but it also means a plugin can never reach a LAN-only
+service (e.g. a local Home Assistant instance) without an explicit carve-out.
+
+That carve-out is opt-in and narrow, not a flag that loosens the guard
+instance-wide:
+
+1. The plugin declares candidate hosts by stable `hostKey` in
+   `privateNetworkHosts` and holds the `http.outbound.private-network`
+   capability. This only names *which* hosts the plugin might ever want —
+   it grants nothing by itself.
+2. An operator (board access) approves the actual hostname for one company
+   via `PUT /api/plugins/{pluginId}/companies/{companyId}/private-network-hosts/{hostKey}`,
+   the same company-scoped, host-admin-only shape as a
+   [trusted local folder](#10-1-manifest-shape)'s path. `DELETE` on the same
+   route revokes it.
+3. The plugin calls `ctx.http.fetch(url, init, { companyId })`. The host
+   checks the target hostname against that company's approved hosts for this
+   plugin — exact match only (case-insensitive), never a prefix, suffix, or
+   wildcard — and only bypasses the private-IP rejection when it matches.
+   Omitting `companyId`, lacking the capability, or targeting an unapproved
+   host all leave the default-deny behavior exactly as it was before this
+   mechanism existed.
+
+An approved host is a bare DNS hostname or IPv4 literal; it never carries a
+scheme, port, path, or credentials. The approval is per company, so the same
+plugin install can reach a different operator-approved LAN host for each
+company it runs in.
 
 ## 11. Agent Tools
 
@@ -858,6 +894,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `webhooks.receive`
 - `local.folders`
 - `http.outbound`
+- `http.outbound.private-network` (see §10.2)
 - `secrets.read-ref`
 - `environment.drivers.register`
 

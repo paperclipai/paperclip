@@ -132,6 +132,61 @@ describe("plugin manifest validators", () => {
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("provider key"))).toBe(true);
   });
+
+  function buildPrivateNetworkManifest(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "paperclip.home-assistant",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Home Assistant",
+      description: "Reaches a LAN-only Home Assistant instance.",
+      author: "Paperclip",
+      categories: ["connector"],
+      capabilities: ["http.outbound", "http.outbound.private-network"],
+      entrypoints: { worker: "./dist/worker.js" },
+      privateNetworkHosts: [
+        { hostKey: "ha", displayName: "Home Assistant" },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("accepts a plugin that declares a private network host with the matching capability", () => {
+    const parsed = pluginManifestV1Schema.parse(buildPrivateNetworkManifest());
+    expect(parsed.privateNetworkHosts).toEqual([{ hostKey: "ha", displayName: "Home Assistant" }]);
+  });
+
+  it("rejects a declared private network host without the http.outbound.private-network capability", () => {
+    const parsed = pluginManifestV1Schema.safeParse(
+      buildPrivateNetworkManifest({ capabilities: ["http.outbound"] }),
+    );
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("http.outbound.private-network"))).toBe(true);
+  });
+
+  it("rejects duplicate private network host keys", () => {
+    const parsed = pluginManifestV1Schema.safeParse(
+      buildPrivateNetworkManifest({
+        privateNetworkHosts: [
+          { hostKey: "ha", displayName: "Home Assistant" },
+          { hostKey: "ha", displayName: "Home Assistant (duplicate)" },
+        ],
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("Duplicate private network host keys"))).toBe(true);
+  });
+
+  it("rejects a malformed private network hostKey", () => {
+    const parsed = pluginManifestV1Schema.safeParse(
+      buildPrivateNetworkManifest({
+        privateNetworkHosts: [{ hostKey: "Not Valid", displayName: "Bad key" }],
+      }),
+    );
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe("plugin managed routine validators", () => {

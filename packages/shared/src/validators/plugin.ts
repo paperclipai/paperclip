@@ -337,6 +337,16 @@ export const pluginLocalFolderDeclarationSchema = z.object({
 
 export type PluginLocalFolderDeclarationInput = z.infer<typeof pluginLocalFolderDeclarationSchema>;
 
+export const pluginPrivateNetworkHostDeclarationSchema = z.object({
+  hostKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "hostKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+});
+
+export type PluginPrivateNetworkHostDeclarationInput = z.infer<typeof pluginPrivateNetworkHostDeclarationSchema>;
+
 export const pluginManagedSkillFileDeclarationSchema = z.object({
   path: pluginLocalFolderRelativePathSchema.refine(
     (value) => value.toLowerCase() !== "skill.md",
@@ -800,6 +810,7 @@ export const pluginManifestV1Schema = z.object({
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
+  privateNetworkHosts: z.array(pluginPrivateNetworkHostDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
@@ -912,6 +923,16 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'local.folders' is required when local folders are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.privateNetworkHosts && manifest.privateNetworkHosts.length > 0) {
+    if (!manifest.capabilities.includes("http.outbound.private-network")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'http.outbound.private-network' is required when privateNetworkHosts are declared",
         path: ["capabilities"],
       });
     }
@@ -1085,6 +1106,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate local folder keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["localFolders"],
+      });
+    }
+  }
+
+  if (manifest.privateNetworkHosts) {
+    const hostKeys = manifest.privateNetworkHosts.map((host) => host.hostKey);
+    const duplicates = hostKeys.filter((key, i) => hostKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate private network host keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["privateNetworkHosts"],
       });
     }
   }

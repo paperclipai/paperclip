@@ -63,9 +63,12 @@ import {
   preparePluginLocalFolder,
   readPluginLocalFolderText,
   requireLocalFolderDeclaration,
-  setStoredLocalFolder,
   writePluginLocalFolderTextAtomic,
 } from "./plugin-local-folders.js";
+import {
+  buildApprovedPrivateNetworkHostSet,
+  getStoredPrivateNetworkHosts,
+} from "./plugin-private-network.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
@@ -166,7 +169,11 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+/** @internal exported only for the plugin-host-services SSRF guard tests. */
+export async function validateAndResolveFetchUrl(
+  urlString: string,
+  approvedPrivateNetworkHosts?: Set<string>,
+): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -206,13 +213,17 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
-    if (safeResults.length === 0) {
+    const isApprovedPrivateNetworkHost = approvedPrivateNetworkHosts?.has(originalHostname.toLowerCase()) ?? false;
+    if (safeResults.length === 0 && !isApprovedPrivateNetworkHost) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
       );
     }
 
-    const resolved = safeResults[0]!;
+    // An operator-approved private-network host is expected to resolve to a
+    // private IP — use the private result directly instead of the (empty)
+    // safe-results filter in that case.
+    const resolved = (safeResults.length > 0 ? safeResults : results)[0]!;
     return {
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
@@ -962,6 +973,23 @@ export function buildHostServices(
       storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
     });
 
+  /**
+   * Resolve the set of private-network hostnames this plugin may reach for
+   * one company. Returns an empty set unless the plugin both declares
+   * `http.outbound.private-network` and has at least one operator-approved
+   * host stored for that company — the SSRF guard's default-deny applies to
+   * everyone else, including a plugin with the capability but no approved
+   * host yet.
+   */
+  const getApprovedPrivateNetworkHosts = async (companyId: string | undefined): Promise<Set<string>> => {
+    if (!companyId) return new Set();
+    if (!options.manifest?.capabilities?.includes("http.outbound.private-network")) return new Set();
+    await ensurePluginAvailableForCompany(companyId);
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    const storedHosts = getStoredPrivateNetworkHosts(settings?.settingsJson);
+    return buildApprovedPrivateNetworkHostSet(options.manifest.privateNetworkHosts, storedHosts);
+  };
+
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
     companyId: string,
@@ -1594,17 +1622,24 @@ export function buildHostServices(
           },
         });
 
-        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
-          path: params.path,
-          access: status.access,
-          requiredDirectories: status.requiredDirectories,
-          requiredFiles: status.requiredFiles,
-        });
-        await registry.upsertCompanySettings(pluginId, companyId, {
-          enabled: existing?.enabled ?? true,
-          settingsJson: nextSettings,
-          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
-        });
+        // Atomic patch (same primitive the private-network allowlist routes
+        // use) so a concurrent write to a different folder key, or to
+        // privateNetworkHosts, can't be lost to a stale read-modify-write of
+        // the whole settings column.
+        await registry.patchCompanySettingsEntry(
+          pluginId,
+          companyId,
+          "localFolders",
+          params.folderKey,
+          {
+            path: params.path,
+            access: status.access,
+            requiredDirectories: status.requiredDirectories,
+            requiredFiles: status.requiredFiles,
+            updatedAt: new Date().toISOString(),
+          },
+          { lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; ") },
+        );
         return status;
       },
 
@@ -1725,9 +1760,11 @@ export function buildHostServices(
 
     http: {
       async fetch(params) {
-        // SSRF protection: validate protocol whitelist + block private IPs.
+        // SSRF protection: validate protocol whitelist + block private IPs,
+        // unless this exact host is operator-approved for this plugin+company.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
+        const approvedPrivateNetworkHosts = await getApprovedPrivateNetworkHosts(params.companyId);
+        const target = await validateAndResolveFetchUrl(params.url, approvedPrivateNetworkHosts);
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);

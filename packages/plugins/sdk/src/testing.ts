@@ -939,7 +939,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     http: {
-      async fetch(url, init) {
+      async fetch(url, init, _options) {
         requireCapability(manifest, capabilitySet, "http.outbound");
         return fetch(url, init);
       },

@@ -79,8 +79,12 @@ import {
   getStoredLocalFolders,
   inspectPluginLocalFolder,
   requireLocalFolderDeclaration,
-  setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
+import {
+  getStoredPrivateNetworkHosts,
+  normalizePrivateNetworkHostValue,
+  requirePrivateNetworkHostDeclaration,
+} from "../services/plugin-private-network.js";
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
@@ -2947,17 +2951,24 @@ export function pluginRoutes(
       },
     });
 
-    const nextSettings = setStoredLocalFolder(existing?.settingsJson, folderKey, {
-      path: body.path,
-      access: status.access,
-      requiredDirectories: status.requiredDirectories,
-      requiredFiles: status.requiredFiles,
-    });
-    await registry.upsertCompanySettings(plugin.id, companyId, {
-      enabled: existing?.enabled ?? true,
-      settingsJson: nextSettings,
-      lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
-    });
+    // Atomic patch (same primitive the private-network routes below use) so a
+    // concurrent write to a different folder key, or to privateNetworkHosts,
+    // can't be lost to this route's old read-modify-write of the whole
+    // settings column.
+    await registry.patchCompanySettingsEntry(
+      plugin.id,
+      companyId,
+      "localFolders",
+      folderKey,
+      {
+        path: body.path,
+        access: status.access,
+        requiredDirectories: status.requiredDirectories,
+        requiredFiles: status.requiredFiles,
+        updatedAt: new Date().toISOString(),
+      },
+      { lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; ") },
+    );
     await logPluginMutationActivity(req, "plugin.local_folder.configured", plugin.id, {
       pluginId: plugin.id,
       pluginKey: plugin.pluginKey,
@@ -2967,6 +2978,108 @@ export function pluginRoutes(
     });
 
     res.json(status);
+  });
+
+  // ===========================================================================
+  // Company-scoped private-network outbound host allowlist
+  //
+  // Opt-in SSRF-guard carve-out: a plugin declares candidate hosts by stable
+  // `hostKey` in its manifest (requires `http.outbound.private-network`), and
+  // only an operator (board access) can approve the actual hostname for a
+  // given company here. Declaring the capability does not grant access on
+  // its own — see plugin-host-services.ts's `http.fetch` handler.
+  // ===========================================================================
+
+  router.get("/plugins/:pluginId/companies/:companyId/private-network-hosts", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedHosts = getStoredPrivateNetworkHosts(settings?.settingsJson);
+    const declarations = plugin.manifestJson.privateNetworkHosts ?? [];
+
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      declarations,
+      hosts: declarations.map((declaration) => ({
+        hostKey: declaration.hostKey,
+        host: storedHosts[declaration.hostKey]?.host ?? null,
+        updatedAt: storedHosts[declaration.hostKey]?.updatedAt ?? null,
+      })),
+    });
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/private-network-hosts/:hostKey", async (req, res) => {
+    assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
+    const { pluginId, companyId, hostKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as { host?: unknown } | undefined;
+    if (typeof body?.host !== "string" || body.host.trim().length === 0) {
+      res.status(400).json({ error: '"host" is required and must be a non-empty string' });
+      return;
+    }
+
+    requirePrivateNetworkHostDeclaration(plugin.manifestJson.privateNetworkHosts ?? [], hostKey);
+    const normalizedHost = normalizePrivateNetworkHostValue(body.host);
+
+    // Patches only this hostKey's entry via jsonb_set so a concurrent
+    // approve/revoke of a different host (or an unrelated settings write,
+    // e.g. local-folders) can't be clobbered by a stale read-modify-write.
+    await registry.patchCompanySettingsEntry(plugin.id, companyId, "privateNetworkHosts", hostKey, {
+      host: normalizedHost,
+      updatedAt: new Date().toISOString(),
+    });
+    await logPluginMutationActivity(req, "plugin.private_network_host.approved", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+      hostKey,
+      host: normalizedHost,
+    });
+
+    res.json({ hostKey, host: normalizedHost });
+  });
+
+  router.delete("/plugins/:pluginId/companies/:companyId/private-network-hosts/:hostKey", async (req, res) => {
+    assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
+    const { pluginId, companyId, hostKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    requirePrivateNetworkHostDeclaration(plugin.manifestJson.privateNetworkHosts ?? [], hostKey);
+
+    // Same atomic-patch rationale as the PUT handler above.
+    await registry.patchCompanySettingsEntry(plugin.id, companyId, "privateNetworkHosts", hostKey, null);
+    await logPluginMutationActivity(req, "plugin.private_network_host.revoked", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+      hostKey,
+    });
+
+    res.status(204).end();
   });
 
   // ===========================================================================

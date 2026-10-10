@@ -1663,7 +1663,18 @@ export interface WorkerToHostMethods {
 
   // HTTP
   "http.fetch": [
-    params: { url: string; init?: Record<string, unknown> },
+    params: {
+      url: string;
+      init?: Record<string, unknown>;
+      /**
+       * Company context used to look up this plugin's operator-approved
+       * private-network hosts. Only relevant when the plugin holds
+       * `http.outbound.private-network` and the target resolves to a
+       * private IP — omitting it just means the SSRF guard's default-deny
+       * applies, same as before this field existed.
+       */
+      companyId?: string;
+    },
     result: { status: number; statusText: string; headers: Record<string, string>; body: string },
   ];
 

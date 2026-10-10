@@ -10692,6 +10692,38 @@ for (const route of [
   });
 }
 
+const pluginPrivateNetworkHostRequestSchema = z.object({
+  host: z.string().min(1),
+});
+
+for (const route of [
+  [
+    "get",
+    "/api/plugins/{pluginId}/companies/{companyId}/private-network-hosts",
+    "List plugin private-network outbound hosts",
+  ],
+  [
+    "put",
+    "/api/plugins/{pluginId}/companies/{companyId}/private-network-hosts/{hostKey}",
+    "Approve a plugin private-network outbound host",
+  ],
+  [
+    "delete",
+    "/api/plugins/{pluginId}/companies/{companyId}/private-network-hosts/{hostKey}",
+    "Revoke a plugin private-network outbound host",
+  ],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["plugins"],
+    summary: route[2],
+    ...(route[0] === "put"
+      ? { body: pluginPrivateNetworkHostRequestSchema }
+      : {}),
+  });
+}
+
 // --- Connection intents ------------------------------------------------------
 
 registerCurrentRoute({

@@ -83,6 +83,7 @@ export type {
   Routine,
   RoutineRun,
   PluginLocalFolderDeclaration,
+  PluginPrivateNetworkHostDeclaration,
   PluginCompanySettings,
   PluginManagedResourceKind,
   PluginManagedResourceRef,
@@ -662,15 +663,25 @@ export interface PluginHttpClient {
   /**
    * Perform an outbound HTTP request.
    *
-   * The host enforces `http.outbound` capability before allowing the call.
+   * The host enforces `http.outbound` capability before allowing the call,
+   * and blocks the request if it resolves to a private/reserved IP.
+   *
+   * To reach a specific, operator-approved private-network host, declare
+   * `privateNetworkHosts` in the manifest, hold the
+   * `http.outbound.private-network` capability, and pass `companyId` so the
+   * host can look up that company's approved hosts for this plugin. Omitting
+   * `companyId` (or lacking the capability, or an unapproved host) leaves the
+   * private-IP block in place — this option never widens access on its own.
+   *
    * Plugins may also use standard Node `fetch` or other libraries directly —
    * this client exists for host-managed tracing and audit logging.
    *
    * @param url - Target URL
    * @param init - Standard `RequestInit` options
+   * @param options - `companyId` to scope the private-network host allowlist check
    * @returns The response
    */
-  fetch(url: string, init?: RequestInit): Promise<Response>;
+  fetch(url: string, init?: RequestInit, options?: { companyId?: string }): Promise<Response>;
 }
 
 /**
