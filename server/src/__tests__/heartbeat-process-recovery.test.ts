@@ -8128,6 +8128,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(Number((await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)))[0]?.totalCostCents ?? 0)).toBe(0);
   });
 
+  it("charges each provider that billed a run its own share of the run's cost", async () => {
+    const { runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    mockAdapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0, signal: null, timedOut: false, summary: "done",
+      provider: "provider-b", biller: "provider-b", model: "provider-b/model-b",
+      usage: { inputTokens: 300, outputTokens: 20, cachedInputTokens: 0 }, costUsd: 0.05,
+      usageByModel: [
+        { provider: "provider-a", biller: "provider-a", model: "provider-a/model-a", usage: { inputTokens: 300, outputTokens: 20, cachedInputTokens: 0 }, costUsd: 0.05 },
+        { provider: "provider-b", biller: "provider-b", model: "provider-b/model-b", usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 }, costUsd: 0 },
+      ],
+    }));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+    expect(costs.map(({ provider, biller, model, inputTokens, outputTokens, costCents }) => ({ provider, biller, model, inputTokens, outputTokens, costCents: Number(costCents) }))
+      .sort((a, b) => a.provider.localeCompare(b.provider))).toEqual([
+      { provider: "provider-a", biller: "provider-a", model: "provider-a/model-a", inputTokens: 300, outputTokens: 20, costCents: 5 },
+      { provider: "provider-b", biller: "provider-b", model: "provider-b/model-b", inputTokens: 0, outputTokens: 0, costCents: 0 },
+    ]);
+  });
+
   it("stops controller renewal and releases execution controls when teardown deadline cleanup throws", async () => {
     const { runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
     mockAdapterExecute.mockImplementationOnce(async () => {

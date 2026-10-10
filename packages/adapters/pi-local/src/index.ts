@@ -28,6 +28,7 @@ Core fields:
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
 - command (string, optional): defaults to "pi"
 - env (object, optional): KEY=VALUE environment variables
+- tools (string[], optional): tool names passed to --tools; defaults to read, bash, edit, write, grep, find, ls
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
@@ -37,6 +38,7 @@ Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
-- All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
+- All tools (read, bash, edit, write, grep, find, ls) are enabled by default; set \`tools\` for a Pi-compatible CLI with a different tool set.
+- When the CLI answers through an in-run model fallback, the run records the provider/model that answered, cost is recorded per provider/model that billed a turn, and a failure superseded by a successful retry or fallback does not fail the run.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
 `;

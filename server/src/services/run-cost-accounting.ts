@@ -105,9 +105,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const tokensMatch = ["inputTokens", "cachedInputTokens", "outputTokens"].every((key) =>
       parts.reduce((sum, part) => sum + (amount(object(part.usage)[key]) ?? 0), 0) === (amount(usage[key]) ?? 0));
     const costMatches = costUsd !== null && parts.reduce((sum, part) => sum + usdToUnits(amount(part.costUsd) ?? 0), 0n) === usdToUnits(costUsd);
+    // Parts may name their own provider (an in-run fallback billed by another
+    // provider); each provider/model pair is one distinct ledger row.
+    const partKey = (part: Record<string, unknown>) => `${text(part.provider) ?? receipt.provider}\u0000${text(part.model)}`;
     const validParts = parts.length > 0 && tokensMatch && costMatches
       && parts.every((part) => text(part.model) && amount(part.costUsd) !== null)
-      && new Set(parts.map((part) => part.model)).size === parts.length;
+      && new Set(parts.map(partKey)).size === parts.length;
     if (validParts) {
       let allocated = 0n;
       for (const [index, part] of parts.entries()) {
@@ -117,8 +120,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         const partUnits = billingType === "subscription_included" ? 0n : index === parts.length - 1 ? remainder : reported < remainder ? reported : remainder;
         allocated += partUnits;
         const partCents = unitsToCents(partUnits);
+        const partProvider = text(part.provider);
         await createCostEventInTransaction(tx, run.companyId, {
           ...receipt, idempotencyKey: `heartbeat:${run.id}:model:${index}`, model: text(part.model)!,
+          ...(partProvider ? { provider: partProvider, biller: text(part.biller) ?? partProvider } : {}),
           inputTokens: amount(partUsage.inputTokens) ?? 0, cachedInputTokens: amount(partUsage.cachedInputTokens) ?? 0,
           outputTokens: amount(partUsage.outputTokens) ?? 0, costCents: partCents,
         }, publications);

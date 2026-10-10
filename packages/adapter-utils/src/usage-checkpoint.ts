@@ -3,7 +3,7 @@ import type { AdapterUsageCheckpoint } from "./types.js";
 /** Project accounting protocol fields before retaining a stream snapshot.
  * Content-bearing strings are never retained in the accounting buffer. */
 const fields = new Set([
-  "type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID",
+  "type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "provider", "providerID", "stopReason",
   "usage", "usageMetadata", "modelUsage", "message", "part", "info", "stats", "tokens", "cost", "total",
   "input", "output", "cache", "read", "write", "input_tokens", "output_tokens", "cached_input_tokens",
   "cache_read_input_tokens", "cache_creation_input_tokens", "inputTokens", "outputTokens", "cacheReadInputTokens",
@@ -11,7 +11,7 @@ const fields = new Set([
   "reasoning", "cacheRead", "cacheWrite", "prompt", "candidates", "totalTokenCount", "total_tokens", "toolUsePromptTokenCount", "messages",
   "thoughtsTokenCount", "inputTokens", "totalTokens", "cached", "thoughts", "total_cost_usd", "cost_usd", "costUSD", "costUsd",
 ]);
-const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
+const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "provider", "providerID", "stopReason"]);
 function project(value: unknown, depth = 0, field = ""): unknown {
   if (depth > 8) return undefined;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;

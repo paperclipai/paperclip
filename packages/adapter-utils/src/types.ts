@@ -39,11 +39,24 @@ export interface UsageSummary {
   cacheWriteTokens?: number;
 }
 
+/**
+ * Complete per-model share of a run's usage and cost. `provider`/`biller` default
+ * to the run's own; set them when a part was billed by another provider (for
+ * example an in-run model fallback).
+ */
+export interface AdapterModelUsage {
+  model: string;
+  provider?: string | null;
+  biller?: string | null;
+  usage: UsageSummary;
+  costUsd: number;
+}
+
 /** Accounting-only snapshot. Never include prompt, response, or credentials. */
 export interface AdapterUsageCheckpoint {
   attemptId?: string;
   usage?: UsageSummary;
-  usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
+  usageByModel?: AdapterModelUsage[];
   usageBasis?: "per_run" | "session_cumulative" | null;
   provider?: string | null;
   biller?: string | null;
@@ -117,7 +130,7 @@ export interface AdapterExecutionResult {
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /** Complete per-model receipts, when supplied by the runtime. Their sums must match the run totals. */
-  usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
+  usageByModel?: AdapterModelUsage[];
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
