@@ -13,9 +13,16 @@ describe("Claude terminal cleanup outcome", () => {
     expect(isSuccessfulClaudeTerminalCleanup("claude_local", receipt)).toBe(true);
     expect(receipt.exitCode).toBe(143);
   });
+  it("recognizes Node's null-exit/SIGTERM cleanup shape without rewriting its physical result", () => {
+    const localReceipt = { ...receipt, exitCode: null, signal: "SIGTERM" };
+    expect(isSuccessfulClaudeTerminalCleanup("claude_local", localReceipt)).toBe(true);
+    expect(localReceipt.exitCode).toBeNull();
+    expect(localReceipt.signal).toBe("SIGTERM");
+  });
   it.each([
     { timedOut: true }, { errorCode: "claude_auth_required" }, { errorMessage: "Failed to authenticate" },
     { exitCode: 1 }, { exitCode: 137 }, { signal: "SIGKILL" },
+    { exitCode: null, signal: null }, { exitCode: null, signal: "SIGKILL" },
   ])("preserves actual failure evidence: %j", patch => {
     expect(isSuccessfulClaudeTerminalCleanup("claude_local", { ...receipt, ...patch })).toBe(false);
   });

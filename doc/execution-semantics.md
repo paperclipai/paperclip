@@ -397,7 +397,8 @@ Missing message references or revoked access still prevent execution.
 
 A successful Claude terminal result followed by Paperclip's controlled SIGTERM
 cleanup is not a provider failure. Finalization preserves the physical exit143
-and cleanup receipt while allowing the normal successful-run disposition path.
+or local null-exit/SIGTERM result and cleanup receipt while allowing the normal
+successful-run disposition path.
 Real errors, timeouts, forced kills and cancellation retain their failure/stop
 semantics. Terminal success is not task completion: a remaining external wait
 still requires the durable path below, or bounded disposition recovery.

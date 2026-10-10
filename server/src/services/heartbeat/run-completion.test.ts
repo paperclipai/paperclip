@@ -126,6 +126,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
 
   it.each([
     { name: "successful terminal cleanup", expected: "succeeded", patch: {} },
+    { name: "local null-exit SIGTERM cleanup", expected: "succeeded", patch: { exitCode: null, signal: "SIGTERM" } },
     { name: "real auth failure", expected: "failed", patch: { errorCode: "claude_auth_required", errorMessage: "Failed to authenticate" } },
     { name: "forced cleanup", expected: "failed", patch: { resultJson: { subtype: "success", is_error: false, unmanagedBackgroundTask: { kind: "terminal_result_cleanup", stopped: true, terminalResultSeen: true, signal: "SIGKILL", forceKilled: true } } } },
     { name: "explicit stop", expected: "cancelled", patch: {}, stop: true },
@@ -137,7 +138,8 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
       } }, ...patch });
     if (stop) f.controller.abort();
     await f.completion.completeRun(f.input);
-    expect(await read(f.run.id)).toMatchObject({ status: expected, exitCode: 143 });
+    expect(await read(f.run.id)).toMatchObject({ status: expected,
+      exitCode: Object.hasOwn(patch, "exitCode") ? (patch as { exitCode: number | null }).exitCode : 143 });
   });
 
   it.each([

@@ -10,7 +10,8 @@ export function isSuccessfulClaudeTerminalCleanup(
   const cleanup = parsed?.unmanagedBackgroundTask;
   return adapterType === "claude_local" &&
     !result.timedOut && !result.errorCode && !result.errorMessage && !processCancellationFailed &&
-    result.exitCode === 143 && (result.signal == null || result.signal === "SIGTERM") &&
+    ((result.exitCode === 143 && (result.signal == null || result.signal === "SIGTERM")) ||
+      (result.exitCode === null && result.signal === "SIGTERM")) &&
     parsed?.subtype === "success" && parsed.is_error === false &&
     !parsed.error && (!parsed.errors || (Array.isArray(parsed.errors) && parsed.errors.length === 0)) &&
     Number(parsed.api_error_status ?? parsed.error_status ?? 0) < 400 &&
