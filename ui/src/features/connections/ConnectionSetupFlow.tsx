@@ -356,6 +356,24 @@ const ZAPIER_STEP_LABELS = ["Add MCP URL"];
 // dot to two the moment you press Connect reads as a step you missed.
 const OAUTH_SIGN_IN_STEP_LABELS = ["Sign in"];
 
+// Apps whose provider console needs work before consent will succeed. Their
+// method guidance is the only place those prerequisites are written down, so
+// the connect screen shows it while the reader can still act on it.
+const SETUP_GUIDANCE_SLUGS = new Set(["railway", "slack"]);
+
+/**
+ * The scopes a person must type into their own OAuth app, or none.
+ *
+ * Only a customer-owned app needs them. A method that can register its client
+ * dynamically asks for its own scopes, so naming them there is noise. Reading
+ * the list from the method keeps the screen and the request identical.
+ */
+function customerOwnedScopes(method: ConnectionMethodDef | null | undefined): string[] {
+  if (method?.auth !== "oauth") return [];
+  if (!method.ownershipModes.every((mode) => mode === "customer")) return [];
+  return method.defaults?.scopesHint ?? [];
+}
+
 /**
  * Which identity a fresh connection should default to (PAP-17835).
  *
@@ -2185,12 +2203,20 @@ function StandardConnectionSetupFlow({
         } : undefined}
         authorizationHost={authorizationHost}
         authorizationUrl={authorizationFallbackUrl}
-        guidance={entry?.slug === "railway" && accessStepMethod ? (
+        guidance={SETUP_GUIDANCE_SLUGS.has(entry?.slug ?? "") && accessStepMethod ? (
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>{accessStepMethod.guidanceMd}</p>
-            <ul className="list-disc space-y-2 pl-5">
-              {accessStepMethod.warnings?.map((warning) => <li key={warning}>{warning}</li>)}
-            </ul>
+            {customerOwnedScopes(accessStepMethod).length > 0 ? (
+              <p>
+                Add these scopes to your {entry?.name} app:{" "}
+                <span className="font-mono">{customerOwnedScopes(accessStepMethod).join(" ")}</span>
+              </p>
+            ) : null}
+            {accessStepMethod.warnings?.length ? (
+              <ul className="list-disc space-y-2 pl-5">
+                {accessStepMethod.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
           </div>
         ) : null}
         defaults={curatedOAuthDefaults}
@@ -4021,6 +4047,20 @@ function OAuthClientFields({
             ? `${entry.name} does not let Paperclip register itself automatically, so this connector needs an OAuth app you create. Add the callback URL below in ${entry.name}, then paste the client details back here.`
             : `Register Paperclip's callback URI in ${entry.name}, then enter the customer-owned client details.`}
         </p>
+        {/*
+          The provider console needs work before consent will succeed, and the
+          method guidance is the only place it is written down. Show it here,
+          next to the client fields, while the reader can still act on it.
+        */}
+        {SETUP_GUIDANCE_SLUGS.has(entry.slug) && !method.oauthClientSecretRequired ? (
+          <p className="mt-2 text-xs text-muted-foreground">{method.guidanceMd}</p>
+        ) : null}
+        {SETUP_GUIDANCE_SLUGS.has(entry.slug) && customerOwnedScopes(method).length > 0 ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Add these scopes to your {entry.name} app:{" "}
+            <span className="font-mono">{customerOwnedScopes(method).join(" ")}</span>
+          </p>
+        ) : null}
         {method.consoleLinks?.register ? (
           <a
             href={method.consoleLinks.register}
