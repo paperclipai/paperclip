@@ -158,7 +158,7 @@ export interface ProjectRepository {
 }
 
 export interface ProjectRepositoryOptions {
-  connections?: Array<{ id: string; name: string }>;
+  connections?: Array<{ id: string; name: string; managementUrl?: string }>;
   repositories: ProjectRepository[];
   connectionCount: number;
   failedConnectionCount: number;

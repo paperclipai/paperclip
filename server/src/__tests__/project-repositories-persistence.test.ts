@@ -83,6 +83,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [conn] = await db.insert(toolConnections).values({ companyId: targetCompanyId, applicationId: app.id, name, uid: name, status: "active", enabled: true,
         transport: "mcp_remote", authKind: "api_key", credentialPolicy: kind === "user" ? "per_user" : "shared", config: { sourceTemplateKey: "github" } }).returning();
       const [grant] = await db.insert(connectionGrants).values({ companyId: targetCompanyId, connectionId: conn.id, kind, subjectUserId: owner,
+        providerTenant: { github: { managementUrl: name === "personal" ? "https://github.com/settings/installations/123" : "https://untrusted.example/settings/installations/456" } },
         credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }] }).returning();
       for (const subjectId of audience) await db.insert(connectionGrantMembers).values({ companyId: targetCompanyId, grantId: grant.id, subjectType: "user", subjectId });
       return secret.id;
@@ -106,6 +107,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const result = await toolAccessService(db).listProjectRepositories(companyId, "alice");
     expect(result.connectionCount).toBe(4);
     expect(result.failedConnectionCount).toBe(2);
+    expect(result.connections?.find(connection => connection.name === "personal")?.managementUrl).toBe("https://github.com/settings/installations/123");
+    expect(result.connections?.find(connection => connection.name === "shared")?.managementUrl).toBe("https://github.com/settings/installations");
     expect(result.repositories.map((repo) => repo.id).sort()).toEqual(["10", "11", "12"]);
     expect(result.repositories.find((repo) => repo.id === "10")?.connections.sort()).toEqual(["personal", "shared"]);
     expect(JSON.stringify(result)).not.toContain("secret-provider-error");

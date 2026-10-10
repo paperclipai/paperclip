@@ -81,6 +81,8 @@ snapshots. The source records repository, branch, path, and installed commit;
 the connection supplies caller-authorized access. Originals remain viewable and
 testable, with independent editable copies. New upstream skills require selection,
 and deselection, source disconnection, or upstream removal retains installed content.
+The import dialog's Add repos action opens GitHub installation settings when a
+connection exists. Without a connection, it opens GitHub connection setup.
 
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 

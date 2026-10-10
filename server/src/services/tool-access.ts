@@ -17908,7 +17908,7 @@ export function toolAccessService(
         string,
         import("@paperclipai/shared").ProjectRepository
       >();
-      const usableConnections: Array<{ id: string; name: string }> = [];
+      const usableConnections: Array<{ id: string; name: string; managementUrl?: string }> = [];
       let connectionCount = 0;
       let failedConnectionCount = 0;
       for (const connection of connections) {
@@ -17943,7 +17943,17 @@ export function toolAccessService(
           (localTrusted || (!!userId && memberships.length > 0));
         if (!availableGrants.length && !legacyShared) continue;
         connectionCount += 1;
-        usableConnections.push({ id: connection.id, name: connection.name });
+        const managementUrls = new Set(availableGrants.map((grant) =>
+          githubInstallationManagementUrl(grant.providerTenant?.github?.managementUrl),
+        ).filter((url): url is string => Boolean(url)));
+        const usableConnection = {
+          id: connection.id,
+          name: connection.name,
+          managementUrl: managementUrls.size === 1
+            ? [...managementUrls][0]
+            : "https://github.com/settings/installations",
+        };
+        usableConnections.push(usableConnection);
         const actor: ActorInfo = {
           actorType: "user",
           actorId: userId ?? "board",

@@ -137,7 +137,7 @@ describe('GitHub skill source import', () => {
     await mount();
     expect(document.querySelectorAll('[cmdk-item]')).toHaveLength(2);
     expect(document.body.textContent).toContain('Personal · Engineering');
-    expect([...document.querySelectorAll('a')].find(el => el.textContent === 'Add repos')?.getAttribute('href')).toBe('/apps/connect?source=github');
+    expect([...document.querySelectorAll('a')].find(el => el.textContent === 'Add repos')?.getAttribute('href')).toBe('https://github.com/settings/installations');
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Refresh repositories"]')!.click());
     await flush();
     expect(skillSourcesApi.repositories).toHaveBeenCalledTimes(2);
@@ -162,6 +162,19 @@ describe('GitHub skill source import', () => {
     await input('input[placeholder="https://github.com/owner/repository"]', 'https://github.com/public/skills');
     await act(async () => button('Find skills').click());
     expect(skillSourcesApi.discoverStream).toHaveBeenLastCalledWith('company-1', { repositoryUrl: 'https://github.com/public/skills', connectionId: null }, expect.any(Function), expect.any(AbortSignal));
+  });
+  it('opens the existing installation settings even when no repositories are available', async () => {
+    vi.mocked(skillSourcesApi.repositories).mockResolvedValue({ repositories: [], connections: [{ id: 'personal', name: 'Personal', managementUrl: 'https://github.com/settings/installations/123' }], connectionCount: 1, failedConnectionCount: 0 });
+    await mount();
+    const link = [...document.querySelectorAll('a')].find(el => el.textContent === 'Add repos');
+    expect(link?.getAttribute('href')).toBe('https://github.com/settings/installations/123');
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(document.body.textContent).not.toContain('Connect GitHub to see your repos');
+    vi.mocked(skillSourcesApi.repositories).mockResolvedValue(structuredClone(repos));
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Refresh repositories"]')!.click());
+    await flush();
+    expect(skillSourcesApi.repositories).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll('[cmdk-item]')).toHaveLength(2);
   });
   it('links empty repositories to standard GitHub setup in Apps while preserving the import draft', async () => {
     vi.mocked(skillSourcesApi.repositories).mockResolvedValue({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
