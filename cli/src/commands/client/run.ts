@@ -13,6 +13,38 @@ import {
 interface RunListOptions extends BaseClientOptions {
   agentId?: string;
   limit?: string;
+  all?: boolean;
+}
+
+// `GET /companies/:companyId/heartbeat-runs` applies no LIMIT at all when the
+// caller sends none, so a bare `paperclip run list` asks for the company's
+// entire run corpus — tens of thousands of rows and tens of megabytes on a
+// long-lived instance. Default to a bounded page and say so on stderr whenever
+// the page is full, so the truncation is never silent; `--all` keeps the
+// unbounded form available, since there is no `offset` on this route and the
+// server clamps `limit` to 1000.
+const RUN_LIST_DEFAULT_LIMIT = 200;
+
+// The route also clamps `limit` down to 1000 without saying so, so a requested
+// limit above this is not the number of rows the server can return. The notice
+// below must compare against the EFFECTIVE limit: `rows.length >= 2000` can
+// never be true against a 1000-row ceiling, so a notice keyed to the requested
+// value would be unable to fire in exactly the truncated case it exists for.
+// Mirroring the bound here is a second copy, and it fails in the loud direction
+// if the server raises it (a notice when none was needed). It goes away once
+// the route reports `X-Result-Truncated`.
+const RUN_LIST_SERVER_MAX_LIMIT = 1000;
+
+// The route parses `limit` as `parseInt(limit, 10) || 200`, so a malformed
+// value is silently served as 200 rows. Reject it here instead: otherwise the
+// caller gets a bounded page it never asked for and no indication of it.
+function parseRunListLimit(raw: string | undefined): number {
+  if (raw === undefined) return RUN_LIST_DEFAULT_LIMIT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`--limit must be a positive integer (got ${JSON.stringify(raw)})`);
+  }
+  return parsed;
 }
 
 interface RunLiveOptions extends BaseClientOptions {
@@ -50,17 +82,33 @@ export function registerRunCommands(command: Command): void {
       .description("List heartbeat runs for a company")
       .option("-C, --company-id <id>", "Company ID")
       .option("--agent-id <id>", "Filter by agent ID")
-      .option("--limit <n>", "Maximum runs to return")
+      .option("--limit <n>", `Maximum runs to return (default ${RUN_LIST_DEFAULT_LIMIT})`)
+      .option("--all", "Return every run for the company (unbounded response)")
       .action(async (opts: RunListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.agentId) params.set("agentId", opts.agentId);
-          if (opts.limit) params.set("limit", opts.limit);
+          if (opts.all && opts.limit !== undefined) {
+            throw new Error("--all and --limit cannot be combined");
+          }
+          const requested = opts.all ? null : parseRunListLimit(opts.limit);
+          if (requested !== null) params.set("limit", String(requested));
           const query = params.toString();
           const rows = (await ctx.api.get<HeartbeatRun[]>(
             `${apiPath`/api/companies/${ctx.companyId}/heartbeat-runs`}${query ? `?${query}` : ""}`,
           )) ?? [];
+          const effective =
+            requested === null ? null : Math.min(requested, RUN_LIST_SERVER_MAX_LIMIT);
+          if (effective !== null && rows.length >= effective) {
+            // Do not advise raising a limit that is already clamped: that is
+            // advice which cannot work in the one case it is printed.
+            const remedy = requested !== null && requested > effective
+              ? `--limit ${requested} is above the server maximum of ${RUN_LIST_SERVER_MAX_LIMIT},`
+                + " so raising it does nothing. Pass --all for the whole corpus."
+              : `Raise --limit (server max ${RUN_LIST_SERVER_MAX_LIMIT}) or pass --all.`;
+            console.error(`Showing ${rows.length} run(s); more may exist. ${remedy}`);
+          }
           printRuns(rows, ctx.json);
         } catch (err) {
           handleCommandError(err);
