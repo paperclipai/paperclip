@@ -1,35 +1,15 @@
-import type { Agent } from "@paperclipai/shared";
-
-export interface AgentModelProfileOverlay {
-  enabled?: boolean;
-  adapterConfig?: Record<string, unknown>;
-  /**
-   * Mark the cheap profile for clearing. When true, the patch removes
-   * `runtimeConfig.modelProfiles.cheap` instead of merging into it.
-   */
-  cleared?: boolean;
-}
+import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentConfigOverlay {
   identity: Record<string, unknown>;
   adapterType?: string;
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
+  debug: Record<string, unknown>;
   runtime: Record<string, unknown>;
-  modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
 
-const ADAPTER_AGNOSTIC_KEYS = [
-  "env",
-  "promptTemplate",
-  "instructionsFilePath",
-  "cwd",
-  "timeoutSec",
-  "graceSec",
-  "bootstrapPromptTemplate",
-] as const;
-
-function omitUndefinedEntries(value: Record<string, unknown>) {
+export function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
   );
@@ -67,10 +47,10 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
-  const cheapOverlay = overlay.modelProfiles?.cheap;
-  const hasModelProfileChange = cheapOverlay !== undefined;
-
-  if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
+  if (
+    Object.keys(overlay.heartbeat).length > 0
+    || Object.keys(overlay.debug).length > 0
+  ) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
     const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
       ?? { ...existingRc };
@@ -80,30 +60,13 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
       nextRuntimeConfig.heartbeat = { ...existingHb, ...overlay.heartbeat };
     }
 
-    if (hasModelProfileChange) {
-      const existingProfiles = ((existingRc.modelProfiles ?? {}) as Record<string, unknown>);
-      const existingCheap = ((existingProfiles.cheap ?? {}) as Record<string, unknown>);
-      const nextProfiles = { ...existingProfiles };
-
-      if (cheapOverlay?.cleared) {
-        delete nextProfiles.cheap;
-      } else if (cheapOverlay) {
-        const mergedAdapterConfig = {
-          ...((existingCheap.adapterConfig ?? {}) as Record<string, unknown>),
-          ...(cheapOverlay.adapterConfig ?? {}),
-        };
-        const enabled = cheapOverlay.enabled ?? (existingCheap.enabled !== false);
-        nextProfiles.cheap = {
-          ...existingCheap,
-          enabled,
-          adapterConfig: mergedAdapterConfig,
-        };
-      }
-
-      if (Object.keys(nextProfiles).length === 0) {
-        delete nextRuntimeConfig.modelProfiles;
+    if (Object.keys(overlay.debug).length > 0) {
+      const existingDebug = (existingRc.debug ?? {}) as Record<string, unknown>;
+      const nextDebug = omitUndefinedEntries({ ...existingDebug, ...overlay.debug });
+      if (Object.keys(nextDebug).length === 0) {
+        delete nextRuntimeConfig.debug;
       } else {
-        nextRuntimeConfig.modelProfiles = nextProfiles;
+        nextRuntimeConfig.debug = nextDebug;
       }
     }
 

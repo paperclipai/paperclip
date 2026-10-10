@@ -2,9 +2,10 @@ import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
-  CircleDot,
+  CircleCheck,
   SquarePen,
   Users,
+  MessageCircle,
   Inbox,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -12,6 +13,9 @@ import { useDialogActions } from "../context/DialogContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
+import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
+import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -39,12 +43,19 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
 
+  // PAP-670: with both flags off the bar is the original Home · Tasks · + ·
+  // Agents · Inbox. Agent Chat adds Chat in the second slot (Home · Chat · + ·
+  // Tasks · Agents). Combined Inbox + Task List drops Inbox as a destination —
+  // it is a view inside Tasks, so its unread badge rides on Tasks. The grid
+  // tracks the live count, so the bar stays evenly divided in every mix.
   const items = useMemo<MobileNavItem[]>(
-    () => [
+    () => !agentChatEnabled && !combinedInboxTasksEnabled ? [
       { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
+      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
       {
         type: "link",
@@ -53,19 +64,40 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
+    ] : [
+      { type: "link", to: "/dashboard", label: "Home", icon: House },
+      ...(agentChatEnabled
+        ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
+        : []),
+      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
+      {
+        type: "link",
+        to: "/issues",
+        label: "Tasks",
+        icon: CircleCheck,
+        badge: combinedInboxTasksEnabled ? inboxBadge.inbox : undefined,
+      },
+      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      ...(!combinedInboxTasksEnabled
+        ? [{ type: "link", to: "/inbox", label: "Inbox", icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
+        : []),
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled],
   );
 
   return (
     <nav
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
-        visible ? "translate-y-0" : "translate-y-full",
+        "mobile-bottom-nav fixed bottom-0 left-0 right-0 z-30 bg-muted md:hidden pb-(--sz-safe-bottom)",
       )}
+      data-visible={visible}
+      inert={!visible}
       aria-label="Mobile navigation"
     >
-      <div className="grid h-16 grid-cols-5 px-1">
+      <div
+        className="grid h-16 px-1"
+        style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
+      >
         {items.map((item) => {
           if (item.type === "action") {
             const Icon = item.icon;
@@ -76,13 +108,13 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
                 type="button"
                 onClick={item.onClick}
                 className={cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors",
+                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-(length:--text-nano) font-medium transition-colors",
                   active
                     ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                <Icon className="h-[18px] w-[18px]" />
+                <Icon className="h-(--sz-18px) w-(--sz-18px)" />
                 <span className="truncate">{item.label}</span>
               </button>
             );
@@ -96,7 +128,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
               state={SIDEBAR_SCROLL_RESET_STATE}
               className={({ isActive }) =>
                 cn(
-                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors",
+                  "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-(length:--text-nano) font-medium transition-colors",
                   isActive
                     ? "text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -106,11 +138,11 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
               {({ isActive }) => (
                 <>
                   <span className="relative">
-                    <Icon className={cn("h-[18px] w-[18px]", isActive && "stroke-[2.3]")} />
+                    <Icon className={cn("h-(--sz-18px) w-(--sz-18px)", isActive && "stroke-(length:--sw-2_3)")} />
                     {item.badge != null && item.badge > 0 && (
-                      <span className="absolute -right-2 -top-2 rounded-full bg-primary px-1.5 py-0.5 text-[10px] leading-none text-primary-foreground">
+                      <Badge variant="ghost" className="absolute -right-2 -top-2 bg-primary px-1.5 text-(length:--text-nano) leading-none text-primary-foreground">
                         {item.badge > 99 ? "99+" : item.badge}
-                      </span>
+                      </Badge>
                     )}
                   </span>
                   <span className="truncate">{item.label}</span>

@@ -27,7 +27,7 @@ export const createIssueTreeHoldSchema = z
     mode: issueTreeControlModeSchema,
     reason: z.string().trim().min(1).max(1000).optional().nullable(),
     releasePolicy: issueTreeHoldReleasePolicySchema.optional().nullable(),
-    metadata: z.record(z.unknown()).optional().nullable(),
+    metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict();
 
@@ -37,7 +37,7 @@ export const releaseIssueTreeHoldSchema = z
   .object({
     reason: z.string().trim().min(1).max(1000).optional().nullable(),
     releasePolicy: issueTreeHoldReleasePolicySchema.optional().nullable(),
-    metadata: z.record(z.unknown()).optional().nullable(),
+    metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict();
 

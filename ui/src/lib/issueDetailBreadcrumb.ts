@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import { TASK_VIEW_PARAM, normalizeTaskViewKey, taskView } from "./task-views";
 
 type IssueDetailSource = "issues" | "inbox";
 
@@ -11,12 +12,23 @@ export type IssueDetailHeaderSeed = {
   id: string;
   identifier: string | null;
   title: string;
-  status: Issue["status"];
+  status: string;
   blockerAttention?: Issue["blockerAttention"];
-  priority: Issue["priority"];
+  priority: string;
   projectId: string | null;
   projectName: string | null;
-  originKind?: Issue["originKind"];
+  originKind?: string;
+  originId?: string | null;
+};
+
+type IssueDetailHeaderSeedSource = Pick<Issue, "id" | "title"> & {
+  identifier?: string | null;
+  status: string;
+  blockerAttention?: Issue["blockerAttention"];
+  priority: string;
+  projectId?: string | null;
+  project?: { name?: string | null } | null;
+  originKind?: string;
   originId?: string | null;
 };
 
@@ -65,7 +77,7 @@ function isIssueDetailHeaderSeed(value: unknown): value is IssueDetailHeaderSeed
   );
 }
 
-function createIssueDetailHeaderSeed(issue: Issue): IssueDetailHeaderSeed {
+function createIssueDetailHeaderSeed(issue: IssueDetailHeaderSeedSource): IssueDetailHeaderSeed {
   return {
     id: issue.id,
     identifier: issue.identifier ?? null,
@@ -80,7 +92,7 @@ function createIssueDetailHeaderSeed(issue: Issue): IssueDetailHeaderSeed {
   };
 }
 
-export function withIssueDetailHeaderSeed(state: unknown, issue: Issue): IssueDetailLocationState {
+export function withIssueDetailHeaderSeed(state: unknown, issue: IssueDetailHeaderSeedSource): IssueDetailLocationState {
   const headerSeed = createIssueDetailHeaderSeed(issue);
   if (typeof state !== "object" || state === null) {
     return { issueDetailHeaderSeed: headerSeed };
@@ -118,20 +130,32 @@ function readIssueDetailBreadcrumbHrefFromSearch(search?: string): string | null
   return href && href.startsWith("/") ? href : null;
 }
 
+export function isInboxBackedTaskViewHref(href: string): boolean {
+  const query = href.slice(href.indexOf("?") + 1);
+  if (!href.includes("?")) return false;
+  const view = new URLSearchParams(query).get(TASK_VIEW_PARAM);
+  const key = normalizeTaskViewKey(view);
+  return key !== null && taskView(key).surface === "inbox";
+}
+
 function inferIssueDetailSource(
   state: Partial<IssueDetailLocationState> | null,
   breadcrumb: IssueDetailBreadcrumb | null,
 ): IssueDetailSource | null {
   if (isIssueDetailSource(state?.issueDetailSource)) return state.issueDetailSource;
   if (!breadcrumb) return null;
-  if (breadcrumb.label === "Inbox" || breadcrumb.href.includes("/inbox")) return "inbox";
-  if (breadcrumb.label === "Issues" || breadcrumb.href.includes("/issues")) return "issues";
+  if (breadcrumb.href.includes("/inbox")) return "inbox";
+  // Since PAP-670 the inbox is a set of views on /issues, so the href alone no
+  // longer separates the two sources — the view key does.
+  if (isInboxBackedTaskViewHref(breadcrumb.href)) return "inbox";
+  if (breadcrumb.label === "Inbox") return "inbox";
+  if (breadcrumb.label === "Tasks" || breadcrumb.href.includes("/issues")) return "issues";
   return null;
 }
 
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
   if (source === "inbox") return { label: "Inbox", href: "/inbox" };
-  return { label: "Issues", href: "/issues" };
+  return { label: "Tasks", href: "/issues" };
 }
 
 export function createIssueDetailLocationState(

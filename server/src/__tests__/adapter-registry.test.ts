@@ -1,34 +1,13 @@
+import { probeAcpxClaudeInstallation, probeAcpxPiInstallation } from "../vendor/paperclip-runner/live/index.js";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
-
-const hermesExecuteMock = vi.hoisted(() =>
-  vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-  })),
-);
-
-vi.mock("hermes-paperclip-adapter/server", () => ({
-  execute: hermesExecuteMock,
-  testEnvironment: async () => ({
-    adapterType: "hermes_local",
-    status: "pass",
-    checks: [],
-    testedAt: new Date(0).toISOString(),
-  }),
-  sessionCodec: null,
-  listSkills: async () => [],
-  syncSkills: async () => ({ entries: [] }),
-  detectModel: async () => null,
-}));
 
 import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
   listAdapterModels,
-  listAdapterModelProfiles,
   registerServerAdapter,
   requireServerAdapter,
   unregisterServerAdapter,
@@ -37,6 +16,21 @@ import {
   resolveExternalAdapterRegistration,
   setOverridePaused,
 } from "../adapters/registry.js";
+
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxPiInstallation: vi.fn(async () => undefined),
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
+}));
+
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -58,15 +52,18 @@ const externalAdapter: ServerAdapterModule = {
 describe("server adapter registry", () => {
   beforeEach(() => {
     unregisterServerAdapter("external_test");
+    unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
   });
 
   afterEach(() => {
     unregisterServerAdapter("external_test");
+    unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
-    hermesExecuteMock.mockClear();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -77,31 +74,6 @@ describe("server adapter registry", () => {
     expect(requireServerAdapter("external_test")).toBe(externalAdapter);
     expect(await listAdapterModels("external_test")).toEqual([
       { id: "external-model", label: "External Model" },
-    ]);
-  });
-
-  it("exposes adapter model profiles when adapters declare them", async () => {
-    const adapterWithProfiles: ServerAdapterModule = {
-      ...externalAdapter,
-      modelProfiles: [
-        {
-          key: "cheap",
-          label: "Cheap",
-          adapterConfig: { model: "external-mini" },
-          source: "adapter_default",
-        },
-      ],
-    };
-
-    registerServerAdapter(adapterWithProfiles);
-
-    expect(await listAdapterModelProfiles("external_test")).toEqual([
-      {
-        key: "cheap",
-        label: "Cheap",
-        adapterConfig: { model: "external-mini" },
-        source: "adapter_default",
-      },
     ]);
   });
 
@@ -146,6 +118,88 @@ describe("server adapter registry", () => {
     expect(resolved.models).toEqual([
       { id: "plugin-model", label: "Plugin Override" },
     ]);
+  });
+
+  it("ships Hermes adapters as built-ins and still accepts external overrides", () => {
+    const builtInLocal = findServerAdapter("hermes_local");
+    const builtInGateway = findServerAdapter("hermes_gateway");
+
+    expect(builtInLocal).not.toBeNull();
+    expect(builtInLocal?.supportsLocalAgentJwt).toBe(true);
+    expect(builtInLocal?.supportsInstructionsBundle).toBe(true);
+    expect(builtInLocal?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInLocal?.detectModel).toBeTypeOf("function");
+    expect(builtInLocal?.getConfigSchema).toBeTypeOf("function");
+
+    expect(builtInGateway).not.toBeNull();
+    expect(builtInGateway?.supportsLocalAgentJwt).toBe(false);
+    expect(builtInGateway?.supportsInstructionsBundle).toBe(false);
+    expect(builtInGateway?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInGateway?.getConfigSchema).toBeTypeOf("function");
+
+    const hermesLocalExternalAdapter: ServerAdapterModule = {
+      type: "hermes_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "hermes_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: true,
+      supportsInstructionsBundle: true,
+      instructionsPathKey: "instructionsFilePath",
+      requiresMaterializedRuntimeSkills: false,
+      listSkills: async () => ({
+        adapterType: "hermes_local",
+        supported: true,
+        mode: "ephemeral",
+        desiredSkills: [],
+        entries: [],
+        warnings: [],
+      }),
+      getConfigSchema: () => ({ fields: [{ key: "provider", label: "Provider", type: "text" }] }),
+      detectModel: async () => ({
+        model: "hermes-model",
+        provider: "openrouter",
+        source: "test",
+      }),
+    };
+
+    const hermesGatewayExternalAdapter: ServerAdapterModule = {
+      type: "hermes_gateway",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "hermes_gateway",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: false,
+      supportsInstructionsBundle: false,
+      requiresMaterializedRuntimeSkills: false,
+      getConfigSchema: () => ({
+        fields: [{ key: "apiBaseUrl", label: "API URL", type: "text" }],
+      }),
+    };
+
+    registerServerAdapter(hermesLocalExternalAdapter);
+
+    expect(requireServerAdapter("hermes_local")).toBe(hermesLocalExternalAdapter);
+    expect(findActiveServerAdapter("hermes_local")?.supportsLocalAgentJwt).toBe(true);
+
+    unregisterServerAdapter("hermes_local");
+
+    expect(requireServerAdapter("hermes_local")).toBe(builtInLocal);
+
+    registerServerAdapter(hermesGatewayExternalAdapter);
+
+    expect(requireServerAdapter("hermes_gateway")).toBe(hermesGatewayExternalAdapter);
+    expect(findActiveServerAdapter("hermes_gateway")?.supportsLocalAgentJwt).toBe(false);
+
+    unregisterServerAdapter("hermes_gateway");
+
+    expect(requireServerAdapter("hermes_gateway")).toBe(builtInGateway);
   });
 
   it("exposes capability flags from registered adapters", () => {
@@ -193,43 +247,165 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
-  it("built-in local adapters declare cheap model profile defaults where supported", async () => {
-    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  it("rejects an incomplete managed runner provider before probing Codex", async () => {
+    const adapter = requireServerAdapter("paperclip_runner");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    const result = await adapter.testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "claude_managed" },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "fail",
+      checks: [{
+        code: "paperclip_runner_claude_managed_profile_required",
+        level: "error",
+      }],
+    });
+  });
+
+  it.each([
+    ["claude_managed", {
+      managedProfileId: "managed-primary",
+      managedAgentsRetentionAcknowledged: true,
+    }, "claude_managed_profile_selected"],
+    ["aws_agentcore", {
+      agentCoreProfileId: "agentcore-primary",
+      agentCoreRetentionAcknowledged: true,
+    }, "aws_agentcore_profile_selected"],
+  ] as const)("accepts a complete %s profile selection", async (provider, config, code) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider, ...config },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: expect.arrayContaining([expect.objectContaining({ code, level: "info" })]),
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"],
+  ] as const)("does not claim runtime readiness from the remote ACPX %s platform alone", async (acpxAgent, model) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent, model },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        providerKey: "test-provider",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" }],
+    });
+  });
+
+  it.each([true, false])("checks actual local ACPX installation readiness (%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxClaudeInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Runtime package integrity verification failed"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "claude", model: "custom-claude-model" },
+    });
+    expect(probe).toHaveBeenLastCalledWith("custom-claude-model");
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
+    });
+  });
+
+  it.each([true, false])("probes the exact Pi installation without qualification opt-in (ready=%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxPiInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Pi closure unavailable"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: {
+        provider: "acpx",
+        acpxAgent: "pi",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [{ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" }],
+    });
+    expect(probe).toHaveBeenLastCalledWith("openrouter/deepseek/deepseek-v4-flash-0731");
+  });
+  it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
+    const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
+    const previous = process.env[key];
+    process.env[key] = JSON.stringify([{ agent: "copilot", model: "exact-model" }]);
+    try {
+      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+        companyId: "company-1", adapterType: "paperclip_runner",
+        config: { provider: "acpx", acpxAgent: "copilot", model: "exact-model" },
+      });
+      expect(result).toMatchObject({ status: "warn", checks: [{ code: "acpx_candidate_qualification_only" }] });
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+  it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
+    const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
+    const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
+    const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
+    const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.160.0")}; fi`;
+    const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.34")}; fi`;
+
+    expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "claude",
+      detectCommand: "claude",
+      installCommand: expectedClaudeInstall,
+    });
+    expect(findActiveServerAdapter("codex_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedCodexInstall,
+    });
+    expect(findActiveServerAdapter("gemini_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "gemini",
+      detectCommand: "gemini",
+      installCommand: expectedGeminiInstall,
+    });
+    expect(findActiveServerAdapter("opencode_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "codex" })).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedRunnerCodexInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "opencode" })).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedRunnerOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "acpx" })).toEqual({
+      command: "paperclip-runnerd",
+      detectCommand: null,
+      installCommand: null,
+    });
   });
 
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
@@ -276,180 +452,6 @@ describe("server adapter registry", () => {
     expect(await listAdapterModels("claude_local")).toEqual(builtIn?.models ?? []);
     expect(await detectAdapterModel("claude_local")).toBeNull();
     expect(detectModel).toHaveBeenCalledTimes(1);
-  });
-
-  it("injects the local agent JWT and Paperclip API auth guidance into Hermes", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-
-    await adapter.execute({
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {
-          env: {
-            OPENAI_API_KEY: "llm-token",
-          },
-          promptTemplate: "Existing prompt",
-        },
-      },
-      runtime: {},
-      config: {},
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-      authToken: "agent-run-jwt",
-    });
-
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig).toMatchObject({
-      env: {
-        OPENAI_API_KEY: "llm-token",
-        PAPERCLIP_API_KEY: "agent-run-jwt",
-        PAPERCLIP_RUN_ID: "run-123",
-      },
-    });
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
-      "Authorization: Bearer $PAPERCLIP_API_KEY",
-    );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
-      "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
-    );
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Existing prompt");
-  });
-
-  it("preserves Hermes command normalization while injecting auth", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-
-    await adapter.execute({
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {
-          command: "agent-hermes",
-        },
-      },
-      runtime: {},
-      config: {
-        command: "runtime-hermes",
-      },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-      authToken: "agent-run-jwt",
-    });
-
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.config.hermesCommand).toBe("runtime-hermes");
-    expect(patchedCtx.agent.adapterConfig.hermesCommand).toBe("agent-hermes");
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
-  });
-
-  it("passes the original Hermes context through when authToken is absent", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-    const ctx = {
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {
-          env: {
-            PAPERCLIP_API_KEY: "server-level-key",
-          },
-          promptTemplate: "Existing prompt",
-        },
-      },
-      runtime: {},
-      config: {},
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-    };
-
-    await adapter.execute(ctx);
-
-    expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
-    expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
-  });
-
-  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-
-    await adapter.execute({
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {
-          env: {
-            PAPERCLIP_API_KEY: "explicit-agent-key",
-            PAPERCLIP_RUN_ID: "stale-run-id",
-          },
-        },
-      },
-      runtime: {},
-      config: {},
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-      authToken: "agent-run-jwt",
-    });
-
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    // No custom promptTemplate was set — Hermes must use its built-in default.
-    // Setting promptTemplate here would replace the full default with just the auth guard text,
-    // stripping assigned issue / workflow instructions.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
-  });
-
-  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-
-    await adapter.execute({
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {},
-      },
-      runtime: {},
-      config: {},
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-      authToken: "agent-run-jwt",
-    });
-
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
-    // Auth token is still injected.
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 });
 

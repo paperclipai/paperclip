@@ -1,19 +1,21 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
 let issueWorkspaceDraftCalls = 0;
-let issueWorkspaceDraft = {
+let issueWorkspaceDraft: Record<string, unknown> | null = {
   executionWorkspaceId: null as string | null,
   executionWorkspacePreference: "shared_workspace",
   executionWorkspaceSettings: { mode: "shared_workspace" },
 };
 let issueWorkspaceBranchName: string | null = null;
+let issueWorkspaceCanSave = true;
 let latestWorkspaceIssue: Record<string, unknown> | null = null;
 
 vi.mock("../api/instanceSettings", () => ({
@@ -32,7 +34,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
     }: {
       issue: Record<string, unknown>;
       onDraftChange?: (
-        data: Record<string, unknown>,
+        data: Record<string, unknown> | null,
         meta: { canSave: boolean; workspaceBranchName?: string | null },
       ) => void;
     }) => {
@@ -43,7 +45,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
           throw new Error("IssueWorkspaceCard onDraftChange looped");
         }
         onDraftChange?.(issueWorkspaceDraft, {
-          canSave: true,
+          canSave: issueWorkspaceCanSave,
           workspaceBranchName: issueWorkspaceBranchName,
         });
       }, [onDraftChange]);
@@ -55,6 +57,17 @@ vi.mock("./IssueWorkspaceCard", async () => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function settleEffects() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function flushUi(callback: () => void) {
+  flushSync(callback);
+  await settleEffects();
+}
 
 function createProject(): Project {
   return {
@@ -70,6 +83,7 @@ function createProject(): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#22c55e",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -135,6 +149,7 @@ function createExecutionWorkspace(): ExecutionWorkspace {
     strategyType: "git_worktree",
     name: "PAP-1634",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1634",
     repoUrl: null,
     baseRef: "main",
@@ -161,6 +176,58 @@ function createExecutionWorkspace(): ExecutionWorkspace {
   };
 }
 
+function createQueryClient(hiddenSettings: string[] = []) {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+  client.setQueryData(queryKeys.health, { hiddenSettings });
+  return client;
+}
+
+async function renderRoutineRunDialog(container: HTMLDivElement, props: {
+  variables: RoutineVariable[];
+  onSubmit?: (data: unknown) => void;
+}) {
+  const root = createRoot(container);
+  const queryClient = createQueryClient();
+  const onSubmit = props.onSubmit ?? vi.fn();
+
+  await flushUi(() => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <RoutineRunVariablesDialog
+          open
+          onOpenChange={() => {}}
+          companyId="company-1"
+          projects={[]}
+          agents={[createAgent()]}
+          defaultAssigneeAgentId="agent-1"
+          variables={props.variables}
+          isPending={false}
+          onSubmit={onSubmit}
+        />
+      </QueryClientProvider>,
+    );
+  });
+
+  return { root, onSubmit };
+}
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function findRunButton() {
+  return Array.from(document.querySelectorAll("button"))
+    .find((button) => button.textContent === "Run routine") as HTMLButtonElement | undefined;
+}
+
 describe("RoutineRunVariablesDialog", () => {
   let container: HTMLDivElement;
 
@@ -174,6 +241,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "shared_workspace" },
     };
     issueWorkspaceBranchName = null;
+    issueWorkspaceCanSave = true;
     latestWorkspaceIssue = null;
   });
 
@@ -184,15 +252,9 @@ describe("RoutineRunVariablesDialog", () => {
 
   it("does not loop when the workspace card reports the same draft repeatedly", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -209,9 +271,6 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     expect(issueWorkspaceDraftCalls).toBeLessThanOrEqual(2);
@@ -219,7 +278,125 @@ describe("RoutineRunVariablesDialog", () => {
     expect(document.body.textContent).not.toContain("Search agents...");
     expect(document.body.textContent).not.toContain("Search projects...");
 
-    await act(async () => {
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides workspace overrides while retaining an automatic workspace branch", async () => {
+    const root = createRoot(container);
+    const queryClient = createQueryClient(["workspaces.isolation"]);
+    const onSubmit = vi.fn();
+    const workspace = createExecutionWorkspace();
+    await flushUi(() => root.render(
+      <QueryClientProvider client={queryClient}>
+        <RoutineRunVariablesDialog open onOpenChange={() => {}} companyId="company-1"
+          projects={[createProject()]} agents={[createAgent()]} defaultProjectId="project-1"
+          defaultAssigneeAgentId="agent-1" defaultExecutionWorkspace={workspace}
+          variables={[{ name: "workspaceBranch", required: true } as RoutineVariable]}
+          isPending={false} onSubmit={onSubmit} />
+      </QueryClientProvider>,
+    ));
+    await flushUi(() => {});
+    expect(document.body.textContent).not.toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(false);
+    await flushUi(() => findRunButton()?.click());
+    expect(onSubmit).toHaveBeenCalledWith({
+      variables: { workspaceBranch: workspace.branchName }, assigneeAgentId: "agent-1", projectId: "project-1",
+    });
+    expect(issueWorkspaceDraftCalls).toBe(0);
+    await flushUi(() => root.unmount());
+  });
+
+  it("keeps the run disabled while a reusable workspace selection is incomplete", async () => {
+    issueWorkspaceDraft = null;
+    issueWorkspaceCanSave = false;
+    const root = createRoot(container);
+    const queryClient = createQueryClient();
+
+    await flushUi(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            variables={[]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushUi(() => {});
+
+    expect(document.body.textContent).toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(true);
+
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the mobile dialog bounded with an internal form scroll region", async () => {
+    const root = createRoot(container);
+    const queryClient = createQueryClient();
+
+    await flushUi(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            variables={[
+              {
+                name: "notes",
+                label: "notes",
+                type: "textarea",
+                defaultValue: null,
+                required: false,
+                options: [],
+              },
+            ]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("max-h-(--sz-calc-18)"),
+    );
+    expect(dialogContent?.className).toContain("h-(--sz-calc-18)");
+    expect(dialogContent?.className).toContain("overflow-hidden");
+
+    const notesInput = document.querySelector("textarea");
+    const formScrollRegion = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("overscroll-contain"),
+    );
+    expect(formScrollRegion?.className).toContain("min-h-0");
+    expect(formScrollRegion?.className).toContain("flex-1");
+    expect(formScrollRegion?.className).toContain("overflow-y-auto");
+    expect(formScrollRegion?.contains(notesInput)).toBe(true);
+
+    const footer = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("pb-(--sz-calc-19)"),
+    );
+    expect(footer?.className).toContain("shrink-0");
+    expect(footer?.contains(formScrollRegion ?? null)).toBe(false);
+    expect(footer?.textContent).toContain("Run routine");
+
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -233,15 +410,9 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = "pap-1634-routine-branch";
     const onSubmit = vi.fn();
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -267,15 +438,18 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    for (let i = 0; i < 10 && !document.querySelector('[data-testid="workspace-card"]'); i += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+    // The workspace card mounts once experimental settings resolve, then reports its
+    // branch name through an effect callback. That callback triggers a follow-up render,
+    // so wait for the branch value itself to land — not merely for the card to appear —
+    // otherwise we assert against the intermediate render before the branch propagates.
+    const hasBranchInput = () =>
+      Array.from(document.querySelectorAll("input")).some(
+        (input) => input.value === "pap-1634-routine-branch",
+      );
+    for (let i = 0; i < 20 && !hasBranchInput(); i += 1) {
+      await settleEffects();
     }
 
     const branchInput = Array.from(document.querySelectorAll("input"))
@@ -287,7 +461,7 @@ describe("RoutineRunVariablesDialog", () => {
       .find((button) => button.textContent === "Run routine");
     expect(runButton).toBeTruthy();
 
-    await act(async () => {
+    await flushUi(() => {
       runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
@@ -302,7 +476,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
 
-    await act(async () => {
+    await flushUi(() => {
       root.unmount();
     });
   });
@@ -317,15 +491,9 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = workspace.branchName;
 
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
-    await act(async () => {
+    await flushUi(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <RoutineRunVariablesDialog
@@ -343,15 +511,10 @@ describe("RoutineRunVariablesDialog", () => {
           />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     for (let i = 0; i < 10 && latestWorkspaceIssue === null; i += 1) {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      await settleEffects();
     }
 
     expect(latestWorkspaceIssue).toMatchObject({
@@ -361,7 +524,104 @@ describe("RoutineRunVariablesDialog", () => {
       projectWorkspaceId: workspace.projectWorkspaceId,
     });
 
-    await act(async () => {
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
+  it("respects explicit date and text variable types for Date-suffixed names", async () => {
+    const { root } = await renderRoutineRunDialog(container, {
+      variables: [
+        {
+          name: "startDate",
+          label: null,
+          type: "text",
+          defaultValue: "2026-06-26",
+          required: true,
+          options: [],
+        },
+        {
+          name: "releaseOn",
+          label: "Release on",
+          type: "date",
+          defaultValue: "2026-07-01",
+          required: false,
+          options: [],
+        },
+      ],
+    });
+
+    const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+    expect(dateInputs).toHaveLength(1);
+    expect(dateInputs[0]?.value).toBe("2026-07-01");
+
+    const textInput = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="text"]'))
+      .find((input) => input.value === "2026-06-26");
+    expect(textInput).toBeTruthy();
+
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
+  it("blocks empty required dates, submits date strings, and omits optional empty dates", async () => {
+    const onSubmit = vi.fn();
+    const { root } = await renderRoutineRunDialog(container, {
+      variables: [
+        {
+          name: "startDate",
+          label: null,
+          type: "date",
+          defaultValue: null,
+          required: true,
+          options: [],
+        },
+        {
+          name: "releaseOn",
+          label: "Release on",
+          type: "date",
+          defaultValue: null,
+          required: true,
+          options: [],
+        },
+        {
+          name: "endDate",
+          label: null,
+          type: "date",
+          defaultValue: null,
+          required: false,
+          options: [],
+        },
+      ],
+      onSubmit,
+    });
+
+    const runButton = findRunButton();
+    expect(runButton?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Missing: startDate, Release on");
+
+    const dateInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+    await flushUi(() => {
+      setInputValue(dateInputs[0]!, "2026-07-04");
+      setInputValue(dateInputs[1]!, "2026-08-01");
+    });
+
+    expect(runButton?.disabled).toBe(false);
+
+    await flushUi(() => {
+      runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      variables: {
+        startDate: "2026-07-04",
+        releaseOn: "2026-08-01",
+      },
+      assigneeAgentId: "agent-1",
+      projectId: null,
+    });
+
+    await flushUi(() => {
       root.unmount();
     });
   });

@@ -1,38 +1,37 @@
-import { useState } from "react";
+import { authApi } from "@/api/auth";
+import { accessApi } from "@/api/access";
+import { canManageProjectPrivacy } from "@/lib/issuePrivacy";
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { useState, type ReactNode } from "react";
+import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
-import { StatusBadge } from "./StatusBadge";
+import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
-import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
+import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
-import { EnvVarEditor } from "./EnvVarEditor";
-
-const PROJECT_STATUSES = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
+import { Badge } from "@/components/ui/badge";
+import { ProjectAccessMembers } from "./ProjectAccessMembers";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog";
 
 interface ProjectPropertiesProps {
   project: Project;
+  repositories?: ReactNode;
   onUpdate?: (data: Record<string, unknown>) => void;
   onFieldUpdate?: (field: ProjectConfigFieldKey, data: Record<string, unknown>) => void;
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
@@ -45,21 +44,46 @@ export type ProjectConfigFieldKey =
   | "name"
   | "description"
   | "status"
+  | "visibility"
   | "goals"
   | "env"
   | "execution_workspace_enabled"
   | "execution_workspace_default_mode"
+  | "execution_workspace_shared_concurrency"
   | "execution_workspace_environment"
   | "execution_workspace_base_ref"
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
+  | "execution_workspace_runtime_provision_command"
   | "execution_workspace_teardown_command";
+
+const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
+  value: SharedWorkspaceConcurrency;
+  label: string;
+  help: string;
+}[] = [
+  {
+    value: "auto",
+    label: "Auto",
+    help: "Concurrent runs on local/SSH runners; runs take turns in cloud environments.",
+  },
+  {
+    value: "serialize",
+    label: "Serialize",
+    help: "Sandbox runs take turns in the shared project workspace. Local/SSH folders allow concurrent runs.",
+  },
+  {
+    value: "allow",
+    label: "Allow",
+    help: "Runs never wait for the workspace; concurrent edits are possible.",
+  },
+];
 
 function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   if (state === "saving") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+      <span className="inline-flex items-center gap-1 text-(length:--text-micro) text-muted-foreground">
         <Loader2 className="h-3 w-3 animate-spin" />
         Saving
       </span>
@@ -67,7 +91,7 @@ function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   }
   if (state === "saved") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 text-(length:--text-micro) text-green-600 dark:text-green-400">
         <Check className="h-3 w-3" />
         Saved
       </span>
@@ -75,7 +99,7 @@ function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   }
   if (state === "error") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-destructive">
+      <span className="inline-flex items-center gap-1 text-(length:--text-micro) text-destructive">
         <AlertCircle className="h-3 w-3" />
         Failed
       </span>
@@ -91,8 +115,11 @@ function FieldLabel({
   label: string;
   state: ProjectFieldSaveState;
 }) {
+  // The label column is a fixed 80px wide, so the indicator stacks below the
+  // label instead of sitting beside it; otherwise "Description" + "Saving"
+  // overflows into the value column and overlaps the field content.
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-col items-start gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
       <SaveIndicator state={state} />
     </div>
@@ -117,42 +144,6 @@ function PropertyRow({
         {children}
       </div>
     </div>
-  );
-}
-
-function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (status: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const colorClass = statusBadge[status] ?? statusBadgeDefault;
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          className={cn(
-            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity",
-            colorClass,
-          )}
-        >
-          {status.replace("_", " ")}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
-        {PROJECT_STATUSES.map((s) => (
-          <Button
-            key={s.value}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s.value === status && "bg-accent")}
-            onClick={() => {
-              onChange(s.value);
-              setOpen(false);
-            }}
-          >
-            {s.label}
-          </Button>
-        ))}
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -221,14 +212,17 @@ function ArchiveDangerZone({
   );
 }
 
-export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+export function ProjectProperties({ project, repositories, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { selectedCompanyId } = useCompany();
+  const { data: privacySession } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  const { data: privacyAccess } = useQuery({ queryKey: queryKeys.access.currentBoardAccess, queryFn: () => accessApi.getCurrentBoardAccess() });
+  const canManagePrivacy = canManageProjectPrivacy(project, privacySession?.user?.id ?? privacySession?.session?.userId ?? null, privacyAccess);
   const queryClient = useQueryClient();
-  const [goalOpen, setGoalOpen] = useState(false);
+  const [openProjectConfirmation, setOpenProjectConfirmation] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<"local" | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
-  const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
@@ -240,11 +234,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   };
   const fieldState = (field: ProjectConfigFieldKey): ProjectFieldSaveState => getFieldSaveState?.(field) ?? "idle";
 
-  const { data: allGoals } = useQuery({
-    queryKey: queryKeys.goals.list(selectedCompanyId!),
-    queryFn: () => goalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -256,9 +245,17 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: userSecretDefinitions = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
+      : ["user-secret-definitions", "none"],
+    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
+  });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -272,29 +269,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
-  const linkedGoalIds = project.goalIds.length > 0
-    ? project.goalIds
-    : project.goalId
-      ? [project.goalId]
-      : [];
-
-  const linkedGoals = project.goals.length > 0
-    ? project.goals
-    : linkedGoalIds.map((id) => ({
-        id,
-        title: allGoals?.find((g) => g.id === id)?.title ?? id.slice(0, 8),
-      }));
-
-  const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
-  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
+  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id && !workspace.metadata?.githubRepositoryId);
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const executionWorkspaceDefaultMode =
     executionWorkspacePolicy?.defaultMode === "isolated_workspace" ? "isolated_workspace" : "shared_workspace";
+  // Absent/unset round-trips as "auto" — we only write a value once the user picks one.
+  const executionWorkspaceSharedConcurrency: SharedWorkspaceConcurrency =
+    executionWorkspacePolicy?.sharedWorkspaceConcurrency ?? "auto";
   const executionWorkspaceEnvironmentId = executionWorkspacePolicy?.environmentId ?? "";
   const executionWorkspaceStrategy = executionWorkspacePolicy?.workspaceStrategy ?? {
     type: "git_worktree",
@@ -302,12 +288,24 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     branchTemplate: "",
     worktreeParentDir: "",
   };
-  const runSelectableEnvironments = (environments ?? []).filter((environment) => {
+  // Defense in depth alongside the server's managed-sandbox-only read
+  // filter: a cached environments list may still carry the local row.
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // The gate for the host-path surfaces below. It fails closed whenever the
+  // policy is unknown — in flight and also on a failed read: an unresolved
+  // policy reads as "not managed", which would show the local folder the policy
+  // exists to hide.
+  const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
+  const runSelectableEnvironments = filterManagedSandboxSelectableEnvironments(
+    environments ?? [],
+    managedSandboxOnly,
+  ).filter((environment) => {
     if (environment.driver === "local" || environment.driver === "ssh") return true;
     if (environment.driver !== "sandbox") return false;
     const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
     return provider !== null && provider !== "fake";
   });
+  const showExecutionWorkspaceEnvironmentControl = environmentsEnabled && runSelectableEnvironments.length > 1;
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -315,7 +313,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.urlKey) });
     }
     if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
     }
   };
 
@@ -323,7 +321,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     mutationFn: (data: Record<string, unknown>) => projectsApi.createWorkspace(project.id, data),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
@@ -334,7 +331,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, workspaceId),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
@@ -345,23 +341,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       projectsApi.updateWorkspace(project.id, workspaceId, data),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
     },
   });
-
-  const removeGoal = (goalId: string) => {
-    if (!onUpdate && !onFieldUpdate) return;
-    commitField("goals", { goalIds: linkedGoalIds.filter((id) => id !== goalId) });
-  };
-
-  const addGoal = (goalId: string) => {
-    if ((!onUpdate && !onFieldUpdate) || linkedGoalIds.includes(goalId)) return;
-    commitField("goals", { goalIds: [...linkedGoalIds, goalId] });
-    setGoalOpen(false);
-  };
 
   const updateExecutionWorkspacePolicy = (patch: Record<string, unknown>) => {
     if (!onUpdate && !onFieldUpdate) return;
@@ -378,17 +362,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const looksLikeRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
-
   const isSafeExternalUrl = (value: string | null | undefined) => {
     if (!value) return false;
     try {
@@ -396,20 +369,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       return parsed.protocol === "http:" || parsed.protocol === "https:";
     } catch {
       return false;
-    }
-  };
-
-  const formatRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      if (segments.length < 2) return parsed.host;
-      const owner = segments[0];
-      const repo = segments[1]?.replace(/\.git$/i, "");
-      if (!owner || !repo) return parsed.host;
-      return `${parsed.host}/${owner}/${repo}`;
-    } catch {
-      return value;
     }
   };
 
@@ -459,21 +418,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     persistCodebase({ cwd });
   };
 
-  const submitRepoWorkspace = () => {
-    const repoUrl = workspaceRepoUrl.trim();
-    if (!repoUrl) {
-      setWorkspaceError(null);
-      persistCodebase({ repoUrl: null });
-      return;
-    }
-    if (!looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
-      return;
-    }
-    setWorkspaceError(null);
-    persistCodebase({ repoUrl });
-  };
-
   const clearLocalWorkspace = () => {
     const confirmed = window.confirm(
       codebase.repoUrl
@@ -484,26 +428,26 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     persistCodebase({ cwd: null });
   };
 
-  const clearRepoWorkspace = () => {
-    const hasLocalFolder = Boolean(codebase.localFolder);
-    const confirmed = window.confirm(
-      hasLocalFolder
-        ? "Clear repo from this workspace?"
-        : "Delete this workspace repo?",
-    );
-    if (!confirmed) return;
-    if (primaryCodebaseWorkspace && hasLocalFolder) {
-      updateWorkspace.mutate({
-        workspaceId: primaryCodebaseWorkspace.id,
-        data: { repoUrl: null, repoRef: null, defaultRef: null, sourceType: deriveSourceType(codebase.localFolder, null) },
-      });
-      return;
-    }
-    persistCodebase({ repoUrl: null });
-  };
-
   return (
     <div>
+      <AlertDialog open={openProjectConfirmation} onOpenChange={setOpenProjectConfirmation}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Open this project to the company?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Everyone in the company will be able to discover this project. Its private tasks stay private.
+              Members who only have access through this project will lose access to those tasks.
+              Share tasks directly first if you want them to keep access.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep private</AlertDialogCancel>
+            <AlertDialogAction onClick={() => commitField("visibility", { visibility: "open" })}>
+              Open to company
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="space-y-1 pb-4">
         <PropertyRow label={<FieldLabel label="Name" state={fieldState("name")} />}>
           {onUpdate || onFieldUpdate ? (
@@ -539,105 +483,51 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </p>
           )}
         </PropertyRow>
-        <PropertyRow label={<FieldLabel label="Status" state={fieldState("status")} />}>
-          {onUpdate || onFieldUpdate ? (
-            <ProjectStatusPicker
-              status={project.status}
-              onChange={(status) => commitField("status", { status })}
-            />
-          ) : (
-            <StatusBadge status={project.status} />
-          )}
+        <PropertyRow label={<FieldLabel label="Visibility" state={fieldState("visibility")} />} alignStart>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm">
+              <ToggleSwitch
+                aria-label="Private project"
+                checked={project.visibility === "private"}
+                onCheckedChange={(checked) => {
+                  if (!checked) {
+                    setOpenProjectConfirmation(true);
+                    return;
+                  }
+                  commitField("visibility", { visibility: "private" });
+                }}
+                disabled={!canManagePrivacy || (!onUpdate && !onFieldUpdate)}
+              />
+              <span>{project.visibility === "private" ? "Private" : "Open to company"}</span>
+            </label>
+            <p className="text-(length:--text-micro) text-muted-foreground">
+              {project.visibility === "private"
+                ? "Only access members can discover this project. Tasks shared directly remain readable on their own."
+                : "Everyone in the company can discover this project. Individually private tasks keep their own access rules."}
+            </p>
+            {project.visibility === "private" ? <ProjectAccessMembers project={project} canManage={canManagePrivacy} /> : null}
+          </div>
         </PropertyRow>
-        {project.leadAgentId && (
-          <PropertyRow label="Lead">
-            <span className="text-sm font-mono">{project.leadAgentId.slice(0, 8)}</span>
-          </PropertyRow>
-        )}
-        <PropertyRow
-          label={<FieldLabel label="Goals" state={fieldState("goals")} />}
-          alignStart
-          valueClassName="space-y-2"
-        >
-          {linkedGoals.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {linkedGoals.map((goal) => (
-                <span
-                  key={goal.id}
-                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
-                >
-                  <Link to={`/goals/${goal.id}`} className="hover:underline break-words min-w-0">
-                    {goal.title}
-                  </Link>
-                  {(onUpdate || onFieldUpdate) && (
-                    <button
-                      className="text-muted-foreground hover:text-foreground"
-                      type="button"
-                      onClick={() => removeGoal(goal.id)}
-                      aria-label={`Remove goal ${goal.title}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
-          {(onUpdate || onFieldUpdate) && (
-            <Popover open={goalOpen} onOpenChange={setGoalOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className={cn("h-6 w-fit px-2", linkedGoals.length > 0 && "ml-1")}
-                  disabled={availableGoals.length === 0}
-                >
-                  <Plus className="h-3 w-3 mr-1" />
-                  Goal
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-56 p-1" align="start">
-                {availableGoals.length === 0 ? (
-                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                    All goals linked.
-                  </div>
-                ) : (
-                  availableGoals.map((goal) => (
-                    <button
-                      key={goal.id}
-                      className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => addGoal(goal.id)}
-                    >
-                      {goal.title}
-                    </button>
-                  ))
-                )}
-              </PopoverContent>
-            </Popover>
-          )}
-        </PropertyRow>
+        {repositories ?? <ProjectRepositories key={project.id} project={project} />}
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart
           valueClassName="space-y-2"
         >
           <div className="space-y-2">
-            <EnvVarEditor
+            <EnvironmentVariablesEditor
+              footerHint={null}
               value={project.env ?? {}}
               secrets={availableSecrets}
+              userSecretDefinitions={userSecretDefinitions}
               onCreateSecret={async (name, value) => {
                 const created = await createSecret.mutateAsync({ name, value });
                 return created;
               }}
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
-            <p className="text-[11px] text-muted-foreground">
-              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
-            </p>
+
           </div>
-        </PropertyRow>
-        <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
-          <span className="text-sm">{formatDate(project.createdAt)}</span>
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Updated" state="idle" />}>
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
@@ -652,128 +542,81 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       <Separator className="my-4" />
 
       <div className="space-y-1 py-4">
-        <div className="space-y-2">
+        {(!hideHostPaths || (primaryCodebaseWorkspace?.runtimeServices?.length ?? 0) > 0) && <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Codebase</span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-(length:--text-nano) text-muted-foreground hover:text-foreground"
                   aria-label="Codebase help"
                 >
                   ?
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top">
-                Repo identifies the source of truth. Local folder is the default place agents write code.
+                {hideHostPaths
+                  ? "Repo identifies the source of truth. Agents check it out in the platform-managed environment."
+                  : "Repo identifies the source of truth. Local folder is the default place agents write code."}
               </TooltipContent>
             </Tooltip>
           </div>
           <div className="space-y-2 rounded-md border border-border/70 p-3">
-            <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Repo</div>
-              {codebase.repoUrl ? (
+            {/*
+              The local folder is an absolute path on the execution host. Under
+              the managed-sandbox-only policy every agent runs in the
+              platform-managed environment, so the path, the folder controls,
+              and the edit panel below all disappear. A managed checkout keeps
+              its one-line label so the codebase still reads as accounted for,
+              but never renders the path itself.
+            */}
+            {hideHostPaths ? (
+              codebase.origin === "managed_checkout" ? (
+                <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
+              ) : null
+            ) : (
+              <div className="space-y-1">
+                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Local folder</div>
                 <div className="flex items-center justify-between gap-2">
-                  {isSafeExternalUrl(codebase.repoUrl) ? (
-                    <a
-                      href={codebase.repoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      <Github className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
-                      <ExternalLink className="h-3 w-3 shrink-0" />
-                    </a>
-                  ) : (
-                    <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                      <Github className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{codebase.repoUrl}</span>
+                  <div className="min-w-0 space-y-1">
+                    <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
+                      {codebase.effectiveLocalFolder}
                     </div>
-                  )}
+                    {codebase.origin === "managed_checkout" && (
+                      <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
+                    )}
+                  </div>
                   <div className="flex items-center gap-1">
                     <Button
                       variant="outline"
                       size="xs"
                       className="h-6 px-2"
                       onClick={() => {
-                        setWorkspaceMode("repo");
-                        setWorkspaceRepoUrl(codebase.repoUrl ?? "");
+                        setWorkspaceMode("local");
+                        setWorkspaceCwd(codebase.localFolder ?? "");
                         setWorkspaceError(null);
                       }}
                     >
-                      Change repo
+                      {codebase.localFolder ? "Change local folder" : "Set local folder"}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={clearRepoWorkspace}
-                      aria-label="Clear repo"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    {codebase.localFolder ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={clearLocalWorkspace}
+                        aria-label="Clear local folder"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    ) : null}
                   </div>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-muted-foreground">Not set.</div>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="h-6 px-2"
-                    onClick={() => {
-                      setWorkspaceMode("repo");
-                      setWorkspaceRepoUrl(codebase.repoUrl ?? "");
-                      setWorkspaceError(null);
-                    }}
-                  >
-                    Set repo
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
-                    {codebase.effectiveLocalFolder}
-                  </div>
-                  {codebase.origin === "managed_checkout" && (
-                    <div className="text-[11px] text-muted-foreground">Paperclip-managed folder.</div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="h-6 px-2"
-                    onClick={() => {
-                      setWorkspaceMode("local");
-                      setWorkspaceCwd(codebase.localFolder ?? "");
-                      setWorkspaceError(null);
-                    }}
-                  >
-                    {codebase.localFolder ? "Change local folder" : "Set local folder"}
-                  </Button>
-                  {codebase.localFolder ? (
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={clearLocalWorkspace}
-                      aria-label="Clear local folder"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  ) : null}
                 </div>
               </div>
-            </div>
+            )}
 
             {hasAdditionalLegacyWorkspaces && (
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-(length:--text-micro) text-muted-foreground">
                 Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
               </div>
             )}
@@ -787,10 +630,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   >
                     <div className="min-w-0 space-y-0.5">
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-medium">{service.serviceName}</span>
-                        <span
+                        <span className="text-(length:--text-micro) font-medium">{service.serviceName}</span>
+                        <Badge variant="ghost"
                           className={cn(
-                            "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                            "px-1.5 text-(length:--text-nano) uppercase tracking-wide",
                             service.status === "running"
                               ? "bg-green-500/15 text-green-700 dark:text-green-300"
                               : service.status === "failed"
@@ -799,9 +642,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           )}
                         >
                           {service.status}
-                        </span>
+                        </Badge>
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-(length:--text-micro) text-muted-foreground">
                         {service.url ? (
                           <a
                             href={service.url}
@@ -815,8 +658,20 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           service.command ?? "No URL"
                         )}
                       </div>
+                      {service.exposure && service.exposure.state !== "removed" ? (
+                        <div
+                          className={cn(
+                            "text-(length:--text-nano)",
+                            service.exposure.state === "failed" || service.exposure.state === "cleanup_pending"
+                              ? "text-destructive"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          HTTPS {service.exposure.state.replace("_", " ")}
+                        </div>
+                      ) : null}
                     </div>
-                    <div className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    <div className="text-(length:--text-nano) text-muted-foreground whitespace-nowrap">
                       {service.lifecycle}
                     </div>
                   </div>
@@ -824,7 +679,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             ) : null}
           </div>
-          {workspaceMode === "local" && (
+          {!hideHostPaths && workspaceMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
                 <input
@@ -860,39 +715,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             </div>
           )}
-          {workspaceMode === "repo" && (
-            <div className="space-y-1.5 rounded-md border border-border p-2">
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                value={workspaceRepoUrl}
-                onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/repo"
-              />
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="h-6 px-2"
-                  disabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitRepoWorkspace}
-                >
-                  Save
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  className="h-6 px-2"
-                  onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceRepoUrl("");
-                    setWorkspaceError(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
@@ -905,9 +727,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           {updateWorkspace.isError && (
             <p className="text-xs text-destructive">Failed to update workspace.</p>
           )}
-        </div>
+        </div>}
 
-        {isolatedWorkspacesEnabled ? (
+        {isolatedWorkspacesEnabled && workspaceIsolationControlsVisible ? (
           <>
             <Separator className="my-4" />
 
@@ -918,14 +740,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-(length:--text-nano) text-muted-foreground hover:text-foreground"
                       aria-label="Execution workspaces help"
                     >
                       ?
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Project-owned defaults for isolated issue checkouts and execution workspace behavior.
+                    Project-owned defaults for isolated task checkouts and execution workspace behavior.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -933,11 +755,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2 text-sm font-medium">
-                      <span>Enable isolated issue checkouts</span>
+                      <span>Enable isolated task checkouts</span>
                       <SaveIndicator state={fieldState("execution_workspace_enabled")} />
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Let issues choose between the project's primary checkout and an isolated execution workspace.
+                      Let tasks choose between the project's primary checkout and an isolated execution workspace.
                     </div>
                   </div>
                   {onUpdate || onFieldUpdate ? (
@@ -961,11 +783,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2 text-sm">
-                          <span>New issues default to isolated checkout</span>
+                          <span>New tasks default to isolated checkout</span>
                           <SaveIndicator state={fieldState("execution_workspace_default_mode")} />
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          If disabled, new issues stay on the project's primary checkout unless someone opts in.
+                        <div className="text-(length:--text-micro) text-muted-foreground">
+                          If disabled, new tasks stay on the project's primary checkout unless someone opts in.
                         </div>
                       </div>
                       <ToggleSwitch
@@ -981,6 +803,46 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             })!,
                           )}
                       />
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <div className="mb-1 flex items-center gap-1.5">
+                        <label className="flex items-center gap-2 text-sm">
+                          <span>Shared workspace concurrency</span>
+                          <SaveIndicator state={fieldState("execution_workspace_shared_concurrency")} />
+                        </label>
+                      </div>
+                      {onUpdate || onFieldUpdate ? (
+                        <select
+                          className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                          aria-label="Shared workspace concurrency"
+                          value={executionWorkspaceSharedConcurrency}
+                          onChange={(e) =>
+                            commitField(
+                              "execution_workspace_shared_concurrency",
+                              updateExecutionWorkspacePolicy({
+                                sharedWorkspaceConcurrency: e.target.value as SharedWorkspaceConcurrency,
+                              })!,
+                            )}
+                        >
+                          {SHARED_WORKSPACE_CONCURRENCY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="text-xs">
+                          {SHARED_WORKSPACE_CONCURRENCY_OPTIONS.find(
+                            (option) => option.value === executionWorkspaceSharedConcurrency,
+                          )?.label}
+                        </div>
+                      )}
+                      <p className="text-(length:--text-micro) text-muted-foreground">
+                        {SHARED_WORKSPACE_CONCURRENCY_OPTIONS.find(
+                          (option) => option.value === executionWorkspaceSharedConcurrency,
+                        )?.help}
+                      </p>
                     </div>
 
                     <div className="border-t border-border/60 pt-2">
@@ -1000,7 +862,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div className="text-xs text-muted-foreground">
                           Host-managed implementation: <span className="text-foreground">Git worktree</span>
                         </div>
-                        {environmentsEnabled ? (
+                        {showExecutionWorkspaceEnvironmentControl ? (
                           <div>
                             <div className="mb-1 flex items-center gap-1.5">
                               <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1022,7 +884,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                               <option value="">No environment</option>
                               {runSelectableEnvironments.map((environment) => (
                                 <option key={environment.id} value={environment.id}>
-                                  {environment.name} · {environment.driver}
+                                  {environmentDisplayLabel(environment)}
                                 </option>
                               ))}
                             </select>
@@ -1127,6 +989,33 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Runtime provision command</span>
+                              <SaveIndicator state={fieldState("execution_workspace_runtime_provision_command")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.runtimeProvisionCommand ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_runtime_provision_command", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    runtimeProvisionCommand: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                          />
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Runs once before the first runtime-service start (heavy setup, e.g. DB seed). Leave empty to keep eager provisioning.
+                          </p>
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <span>Teardown command</span>
                               <SaveIndicator state={fieldState("execution_workspace_teardown_command")} />
                             </label>
@@ -1148,7 +1037,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             placeholder="bash ./scripts/teardown-worktree.sh"
                           />
                         </div>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-(length:--text-micro) text-muted-foreground">
                           Provision runs inside the derived worktree before agent execution. Teardown is stored here for
                           future cleanup flows.
                         </p>
@@ -1178,6 +1067,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           </div>
         </>
       )}
+        <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
+          <span className="text-sm">{formatDate(project.createdAt)}</span>
+        </PropertyRow>
     </div>
   );
 }

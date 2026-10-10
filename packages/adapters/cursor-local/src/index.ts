@@ -1,12 +1,31 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "cursor";
-export const label = "Cursor CLI (local)";
+export const label = "Cursor";
+
+// Cursor CLI is not distributed as an npm package — the official install
+// path is the upstream installer script at cursor.com/install. Other adapters
+// in this repo prefer `npm install -g <pkg>` which is content-addressed by the
+// registry; cursor must use `curl | bash` until upstream publishes a registry
+// artifact. Pinning a commit/version here would require shipping our own
+// mirror of the installer; revisit if Cursor adds an npm/release-asset
+// equivalent.
+export const SANDBOX_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
 
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
   "auto",
+  "composer-2.5",
+  "claude-opus-5-5",
+  "claude-fable-5-1",
+  "claude-sonnet-5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gemini-3.8-flash",
+  "muse-spark-1.3",
+  "grok-4.7",
+  "grok-4.6",
+  "grok-4.5",
   "composer-1.5",
   "composer-1",
   "gpt-5.3-codex-low",
@@ -49,18 +68,6 @@ const CURSOR_FALLBACK_MODEL_IDS = [
 
 export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
 
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Cursor's known Codex mini model as the budget lane instead of assuming auto is cheap.",
-    adapterConfig: {
-      model: "gpt-5.1-codex-mini",
-    },
-    source: "adapter_default",
-  },
-];
-
 export const agentConfigurationDoc = `# cursor agent configuration
 
 Adapter: cursor
@@ -95,5 +102,5 @@ Notes:
 - Sessions are resumed with --resume when stored session cwd matches current cwd.
 - Paperclip auto-injects local skills into "~/.cursor/skills" when missing, so Cursor can discover "$paperclip" and related skills on local runs.
 - Paperclip auto-adds --yolo unless one of --trust/--yolo/-f is already present in extraArgs.
-- Remote sandbox runs prepend "~/.local/bin" to PATH and prefer "~/.local/bin/cursor-agent" when the default Cursor entrypoint is requested, so standard E2B-style installs do not need hardcoded absolute command paths.
+- Remote sandbox runs prepend "~/.cursor/bin" and "~/.local/bin" to PATH and prefer the installed absolute entrypoint from one of those directories when the default Cursor command is requested, so installer-managed sandbox leases do not need hardcoded command paths.
 `;

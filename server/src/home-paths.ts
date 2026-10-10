@@ -1,57 +1,50 @@
-import os from "node:os";
 import path from "node:path";
-
-const DEFAULT_INSTANCE_ID = "default";
-const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const FRIENDLY_PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
+import {
+  expandHomePrefix,
+  resolveDefaultBackupDir as resolveSharedDefaultBackupDir,
+  resolveDefaultEmbeddedPostgresDir as resolveSharedDefaultEmbeddedPostgresDir,
+  resolveDefaultLogsDir as resolveSharedDefaultLogsDir,
+  resolveDefaultSecretsKeyFilePath as resolveSharedDefaultSecretsKeyFilePath,
+  resolveDefaultStorageDir as resolveSharedDefaultStorageDir,
+  resolveHomeAwarePath,
+  resolvePaperclipConfigPathForInstance,
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+} from "@paperclipai/shared/home-paths";
 
-function expandHomePrefix(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
-  return value;
-}
-
-export function resolvePaperclipHomeDir(): string {
-  const envHome = process.env.PAPERCLIP_HOME?.trim();
-  if (envHome) return path.resolve(expandHomePrefix(envHome));
-  return path.resolve(os.homedir(), ".paperclip");
-}
-
-export function resolvePaperclipInstanceId(): string {
-  const raw = process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
-  if (!INSTANCE_ID_RE.test(raw)) {
-    throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${raw}'.`);
-  }
-  return raw;
-}
-
-export function resolvePaperclipInstanceRoot(): string {
-  return path.resolve(resolvePaperclipHomeDir(), "instances", resolvePaperclipInstanceId());
-}
+export {
+  expandHomePrefix,
+  resolveHomeAwarePath,
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+};
 
 export function resolveDefaultConfigPath(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "config.json");
+  return resolvePaperclipConfigPathForInstance();
 }
 
 export function resolveDefaultEmbeddedPostgresDir(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "db");
+  return resolveSharedDefaultEmbeddedPostgresDir();
 }
 
 export function resolveDefaultLogsDir(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "logs");
+  return resolveSharedDefaultLogsDir();
 }
 
 export function resolveDefaultSecretsKeyFilePath(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "secrets", "master.key");
+  return resolveSharedDefaultSecretsKeyFilePath();
 }
 
 export function resolveDefaultStorageDir(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "data", "storage");
+  return resolveSharedDefaultStorageDir();
 }
 
 export function resolveDefaultBackupDir(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
+  return resolveSharedDefaultBackupDir();
 }
 
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
@@ -71,6 +64,16 @@ function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback 
   return sanitized || fallback;
 }
 
+/**
+ * Resolve the managed checkout directory for one project:
+ * `<instanceRoot>/projects/<companyId>/<projectId>/<repoName|_default>`.
+ *
+ * Per-project directory isolation invariant: the `projectId` is a distinct path segment, so two
+ * different projects always resolve to sibling directories under `<companyId>/`. One project's
+ * directory can never nest inside, or be a path prefix of, another project's directory. A run that
+ * materializes several referenced projects can therefore place each in its own directory without
+ * collision. See the "distinct, non-nested managed dirs" test in `heartbeat-project-env.test.ts`.
+ */
 export function resolveManagedProjectWorkspaceDir(input: {
   companyId: string;
   projectId: string;
@@ -88,8 +91,4 @@ export function resolveManagedProjectWorkspaceDir(input: {
     sanitizeFriendlyPathSegment(projectId, "project"),
     sanitizeFriendlyPathSegment(input.repoName, "_default"),
   );
-}
-
-export function resolveHomeAwarePath(value: string): string {
-  return path.resolve(expandHomePrefix(value));
 }

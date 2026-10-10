@@ -1,57 +1,22 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "../index.js";
+  buildAdapterEnvConfig,
+  isPaperclipRunnerProvider,
+  normalizeLegacyRunnerProvider,
+  resolvePaperclipRunnerModel,
+  resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
+  resolvePaperclipRunnerPiThinkingLevel,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function parseEnvVars(text: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq <= 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const value = trimmed.slice(eq + 1);
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    env[key] = value;
-  }
-  return env;
-}
-
-function parseEnvBindings(bindings: unknown): Record<string, unknown> {
-  if (typeof bindings !== "object" || bindings === null || Array.isArray(bindings)) return {};
-  const env: Record<string, unknown> = {};
-  for (const [key, raw] of Object.entries(bindings)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    if (typeof raw === "string") {
-      env[key] = { type: "plain", value: raw };
-      continue;
-    }
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
-    const rec = raw as Record<string, unknown>;
-    if (rec.type === "plain" && typeof rec.value === "string") {
-      env[key] = { type: "plain", value: rec.value };
-      continue;
-    }
-    if (rec.type === "secret_ref" && typeof rec.secretId === "string") {
-      env[key] = {
-        type: "secret_ref",
-        secretId: rec.secretId,
-        ...(typeof rec.version === "number" || rec.version === "latest"
-          ? { version: rec.version }
-          : {}),
-      };
-    }
-  }
-  return env;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -70,17 +35,19 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   const ac: Record<string, unknown> = {};
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
-  ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;
+  if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
+  if (v.codexEngine === "cli" || v.codexEngine === "acp") ac.engine = v.codexEngine;
+  if (v.codexEngine === "acp") {
+    if (v.codexAcpAgentCommand) ac.agentCommand = v.codexAcpAgentCommand;
+    ac.mode = v.codexAcpMode ?? "persistent";
+    ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
+    if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
+    ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
+  }
   ac.timeoutSec = 0;
   ac.graceSec = 15;
-  const env = parseEnvBindings(v.envBindings);
-  const legacy = parseEnvVars(v.envVars);
-  for (const [key, value] of Object.entries(legacy)) {
-    if (!Object.prototype.hasOwnProperty.call(env, key)) {
-      env[key] = { type: "plain", value };
-    }
-  }
+  const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
   ac.fastMode = v.fastMode;
@@ -103,4 +70,223 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
+}
+
+/** Build a provider profile accepted by the experimental Rust runner. */
+export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
+  const config = buildCodexLocalConfig(v);
+  const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
+  for (const unsupportedKey of [
+    "engine",
+    "agentCommand",
+    "mode",
+    "nonInteractivePermissions",
+    "stateDir",
+    "warmHandleIdleMs",
+    "dangerouslyBypassApprovalsAndSandbox",
+    "dangerouslyBypassSandbox",
+    "modelReasoningEffort",
+    "search",
+    "fastMode",
+    "command",
+    "extraArgs",
+  ]) {
+    delete config[unsupportedKey];
+    delete schemaValues[unsupportedKey];
+  }
+  const providerCandidate = schemaValues.provider;
+  const provider = isPaperclipRunnerProvider(providerCandidate)
+    ? providerCandidate
+    : "codex";
+  if (provider === "openai_dot") {
+    return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
+      ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
+  }
+  const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
+  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
+    throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
+  }
+  const acpxAgent = selectedAcpxProfile?.value ?? "claude";
+  const cursorMode = resolvePaperclipRunnerCursorMode(provider, acpxAgent, schemaValues.acpxSessionMode);
+  const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(provider, acpxAgent, schemaValues.piThinkingLevel);
+
+  const schemaModel = typeof schemaValues.model === "string"
+    ? schemaValues.model.trim()
+    : "";
+  const configuredModel = typeof config.model === "string"
+    ? config.model.trim()
+    : "";
+  if (provider === "acpx" && ["cursor", "pi", "copilot"].includes(acpxAgent) && !configuredModel && !schemaModel) {
+    throw new Error(`${acpxAgent} requires an explicit provider model`);
+  }
+  const managedProfileId = typeof schemaValues.managedProfileId === "string"
+    ? schemaValues.managedProfileId.trim()
+    : "";
+  const agentCoreProfileId = typeof schemaValues.agentCoreProfileId === "string"
+    ? schemaValues.agentCoreProfileId.trim()
+    : "";
+  const maxSessionListCostUsd = Number(schemaValues.maxSessionListCostUsd ?? 1);
+  const maxEstimatedSessionCostUsd = Number(
+    schemaValues.maxEstimatedSessionCostUsd ?? 1,
+  );
+  const managedAgentsRetentionAcknowledged =
+    schemaValues.managedAgentsRetentionAcknowledged === true;
+  const agentCoreRetentionAcknowledged =
+    schemaValues.agentCoreRetentionAcknowledged === true;
+  const boundedLimit = (
+    value: unknown,
+    fallback: number,
+    maximum: number,
+    label: string,
+  ) => {
+    if (value === undefined || value === null || value === "") return fallback;
+    if (
+      typeof value !== "number"
+      || !Number.isSafeInteger(value)
+      || value <= 0
+      || value > maximum
+    ) {
+      throw new Error(`${label} must be an integer between 1 and ${maximum}.`);
+    }
+    return value;
+  };
+  const maxIterations = boundedLimit(
+    schemaValues.maxIterations,
+    8,
+    8,
+    "AWS AgentCore maxIterations",
+  );
+  const maxOutputTokens = boundedLimit(
+    schemaValues.maxOutputTokens,
+    4_096,
+    4_096,
+    "AWS AgentCore maxOutputTokens",
+  );
+  const timeoutSeconds = boundedLimit(
+    schemaValues.timeoutSeconds,
+    300,
+    300,
+    "AWS AgentCore timeoutSeconds",
+  );
+  const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
+  const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
+  const configuredIdleTimeoutMs =
+    v.paperclipRunnerIdleTimeoutMs ?? schemaValues.idleTimeoutMs;
+  const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
+    configuredIdleTimeoutMs,
+  );
+  const configuredCodexPermissionMode =
+    v.adapterSchemaValues?.codexPermissionMode ?? v.codexPermissionMode;
+  if (
+    provider === "codex"
+    && configuredCodexPermissionMode !== undefined
+    && configuredCodexPermissionMode !== "never"
+  ) {
+    throw new Error(
+      "Paperclip Runner currently supports Codex only with codexPermissionMode set to never. Select Full auto (never ask) before saving.",
+    );
+  }
+  for (const normalizedKey of [
+    "provider",
+    "model",
+    "acpxAgent",
+    "codexPermissionMode",
+    "opencodePermissionMode",
+    "acpxPermissionMode",
+    "acpxSessionMode",
+    "piThinkingLevel",
+    "managedProfileId",
+    "managedAgentsRetentionAcknowledged",
+    "maxSessionListCostUsd",
+    "anthropicAgentId",
+    "agentVersion",
+    "anthropicEnvironmentId",
+    "agentCoreProfileId",
+    "agentCoreRetentionAcknowledged",
+    "maxEstimatedSessionCostUsd",
+    "maxIterations",
+    "maxOutputTokens",
+    "timeoutSeconds",
+    "awsRegion",
+    "awsAccountId",
+    "harnessArn",
+    "harnessId",
+    "harnessVersion",
+    "endpointArn",
+    "endpointQualifier",
+    "agentRuntimeArn",
+    "memoryArn",
+    "memoryId",
+    "invocationRoleArn",
+    "contextBucket",
+    "contextPrefix",
+    "contextKmsKeyArn",
+    "qualificationRevision",
+    "lifecycleMode",
+    "idleTimeoutMs",
+  ]) {
+    delete schemaValues[normalizedKey];
+  }
+  return {
+    ...config,
+    ...schemaValues,
+    provider,
+    ...(provider === "codex"
+      ? { model: resolvePaperclipRunnerModel("codex", config.model) }
+      : {}),
+    codexPermissionMode: "never",
+    opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
+      "opencode",
+      v.adapterSchemaValues?.opencodePermissionMode,
+    ),
+    acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
+      "acpx",
+      v.adapterSchemaValues?.acpxPermissionMode,
+    ),
+    ...(provider === "opencode"
+      ? {
+          model: schemaModel
+            || configuredModel
+            || "openrouter/deepseek/deepseek-v4-flash-0731",
+        }
+      : {}),
+    ...(provider === "acpx"
+      ? {
+          acpxAgent,
+          ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
+          ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
+          model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
+        }
+      : {}),
+    ...(provider === "claude_managed"
+      ? {
+          ...(managedProfileId ? { managedProfileId } : {}),
+          model: configuredModel || "claude-sonnet-5",
+          maxSessionListCostUsd:
+            Number.isFinite(maxSessionListCostUsd) && maxSessionListCostUsd > 0
+              ? maxSessionListCostUsd
+              : 1,
+          managedAgentsRetentionAcknowledged:
+            managedAgentsRetentionAcknowledged,
+        }
+      : {}),
+    ...(provider === "aws_agentcore"
+      ? {
+          ...(agentCoreProfileId ? { agentCoreProfileId } : {}),
+          model: configuredModel || "global.anthropic.claude-sonnet-4-6",
+          maxEstimatedSessionCostUsd:
+            Number.isFinite(maxEstimatedSessionCostUsd)
+              && maxEstimatedSessionCostUsd > 0
+              ? maxEstimatedSessionCostUsd
+              : 1,
+          agentCoreRetentionAcknowledged:
+            agentCoreRetentionAcknowledged,
+          maxIterations,
+          maxOutputTokens,
+          timeoutSeconds,
+        }
+      : {}),
+    lifecycleMode,
+    ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
+  };
 }

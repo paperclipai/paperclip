@@ -112,4 +112,120 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Handoff",
     }));
   });
+
+  it("explains the revision guard and rejects missing or stale update revisions without changing the document", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const current = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+    const update = {
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown" as const,
+      body: "# Revised plan",
+    };
+
+    await expect(svc.upsertIssueDocument(update)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("set baseRevisionId to that latestRevisionId"),
+      details: { currentRevisionId: current.latestRevisionId },
+    });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: current.body,
+      latestRevisionId: current.latestRevisionId,
+    });
+
+    const saved = await svc.upsertIssueDocument({ ...update, baseRevisionId: current.latestRevisionId });
+    expect(saved.document.body).toBe(update.body);
+    expect(saved.document.latestRevisionNumber).toBe(current.latestRevisionNumber + 1);
+    await expect(svc.upsertIssueDocument({
+      ...update,
+      body: "# Stale replacement",
+      baseRevisionId: current.latestRevisionId,
+    })).rejects.toMatchObject({ status: 409, message: "Document was updated by someone else" });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: saved.document.body,
+      latestRevisionId: saved.document.latestRevisionId,
+    });
+  });
+
+  it("locks and unlocks issue documents", async () => {
+    const { issueId } = await createIssueWithDocuments();
+
+    const locked = await svc.lockIssueDocument({
+      issueId,
+      key: "plan",
+      lockedByUserId: "board-user",
+    });
+
+    expect(locked.changed).toBe(true);
+    expect(locked.document.lockedAt).toBeInstanceOf(Date);
+    expect(locked.document.lockedByUserId).toBe("board-user");
+
+    await expect(svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Updated plan",
+      baseRevisionId: locked.document.latestRevisionId,
+      createdByUserId: "board-user",
+    })).rejects.toMatchObject({
+      status: 409,
+      message: "Document is locked",
+    });
+
+    const unlocked = await svc.unlockIssueDocument(issueId, "plan");
+    expect(unlocked.changed).toBe(true);
+    expect(unlocked.document.lockedAt).toBeNull();
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Updated plan",
+      baseRevisionId: unlocked.document.latestRevisionId,
+      createdByUserId: "board-user",
+    });
+
+    expect(updated.created).toBe(false);
+    expect(updated.document.body).toBe("# Updated plan");
+  });
+
+  it("creates a new document instead of updating a locked document when requested", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const locked = await svc.lockIssueDocument({
+      issueId,
+      key: "plan",
+      lockedByUserId: "board-user",
+    });
+
+    const fallback = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Agent replacement plan",
+      baseRevisionId: locked.document.latestRevisionId,
+      lockedDocumentStrategy: "create_new_document",
+    });
+
+    expect(fallback.created).toBe(true);
+    expect(fallback.document.key).toBe("plan-2");
+    expect(fallback.document.body).toBe("# Agent replacement plan");
+    expect("redirectedFromLockedDocument" in fallback ? fallback.redirectedFromLockedDocument : null)
+      .toEqual({ id: locked.document.id, key: "plan" });
+
+    const originalPlan = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(originalPlan).toEqual(expect.objectContaining({
+      body: "# Plan",
+      lockedAt: expect.any(Date),
+    }));
+
+    const newPlan = await svc.getIssueDocumentByKey(issueId, "plan-2");
+    expect(newPlan).toEqual(expect.objectContaining({
+      body: "# Agent replacement plan",
+      lockedAt: null,
+    }));
+  });
 });

@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 const useQueryMock = vi.fn();
 
@@ -27,6 +35,10 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
+vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
+beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,6 +53,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "Issue sandbox",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/issue-sandbox",
     repoUrl: null,
     baseRef: null,
@@ -82,8 +95,10 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "in_progress",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 81,
@@ -110,23 +125,57 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     currentExecutionWorkspace: null,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
 describe("IssueWorkspaceCard", () => {
   let container: HTMLDivElement;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     container = document.createElement("div");
     document.body.appendChild(container);
     useQueryMock.mockReset();
   });
 
   afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver!;
     container.remove();
   });
 
-  it("locks the environment selector and clears the issue override when reusing a workspace", () => {
+  it("keeps workspace details and files while suppressing editing and draft writes", () => {
+    visibility.visible = false;
+    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => ({
+      data: options.queryKey[0] === "instance" ? { enableIsolatedWorkspaces: true } : [],
+    }));
+    const root = createRoot(container);
+    const onUpdate = vi.fn();
+    const onDraftChange = vi.fn();
+    const onBrowseFiles = vi.fn();
+    act(() => root.render(<IssueWorkspaceCard
+      issue={createIssue({ currentExecutionWorkspace: createExecutionWorkspace() })}
+      project={{ id: "project-1", executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } }}
+      initialEditing livePreview onUpdate={onUpdate} onDraftChange={onDraftChange} onBrowseFiles={onBrowseFiles}
+    />));
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.textContent).not.toContain("Save");
+    expect(container.textContent).toContain("View workspace details");
+    const browse = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Browse files"));
+    act(() => browse!.click());
+    expect(onBrowseFiles).toHaveBeenCalledOnce();
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("clears the legacy issue environment override when reusing a workspace", () => {
     const root = createRoot(container);
     const onUpdate = vi.fn();
     const reusableWorkspace = createExecutionWorkspace();
@@ -171,12 +220,8 @@ describe("IssueWorkspaceCard", () => {
     });
 
     const selects = container.querySelectorAll("select");
-    expect(selects).toHaveLength(3);
-
-    const environmentSelect = selects[2] as HTMLSelectElement;
-    expect(environmentSelect.disabled).toBe(true);
-    expect(environmentSelect.value).toBe("env-workspace");
-    expect(container.textContent).toContain("Environment selection is locked while reusing an existing workspace.");
+    expect(selects).toHaveLength(1);
+    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Issue sandbox");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save"));
     expect(saveButton).not.toBeUndefined();
@@ -239,7 +284,8 @@ describe("IssueWorkspaceCard", () => {
     });
 
     const selects = container.querySelectorAll("select");
-    expect(selects).toHaveLength(2);
+    expect(selects).toHaveLength(1);
+    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Issue sandbox");
     expect(container.textContent).not.toContain("Project default environment");
 
     act(() => {

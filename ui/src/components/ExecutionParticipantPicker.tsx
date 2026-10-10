@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useMemo, useState } from "react";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
@@ -10,10 +11,10 @@ import {
   buildExecutionPolicy,
   stageParticipantValues,
 } from "../lib/issue-execution-policy";
+import { useExecutionPolicy } from "../hooks/useExecutionPolicy";
 import { cn } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Eye, ShieldCheck } from "lucide-react";
-import { AgentIcon } from "./AgentIconPicker";
 
 type StageType = "review" | "approval";
 
@@ -34,6 +35,7 @@ export function ExecutionParticipantPicker({
 }: ExecutionParticipantPickerProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const policyAvailable = useExecutionPolicy(issue.executionPolicy).success;
 
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
@@ -73,6 +75,7 @@ export function ExecutionParticipantPicker({
   };
 
   const updatePolicy = (nextValues: string[]) => {
+    if (!policyAvailable) return;
     onUpdate({
       executionPolicy: buildExecutionPolicy({
         existingPolicy: issue.executionPolicy ?? null,
@@ -92,12 +95,16 @@ export function ExecutionParticipantPicker({
   const label = stageType === "review" ? "Reviewers" : "Approvers";
   const Icon = stageType === "review" ? Eye : ShieldCheck;
 
+  if (!policyAvailable) {
+    return <span role="status" className="text-xs text-muted-foreground">Execution policy unavailable. Refresh to try again.</span>;
+  }
+
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setSearch(""); }}>
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors cursor-pointer",
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium transition-colors cursor-pointer",
             values.length > 0
               ? "border-border text-foreground hover:bg-accent/50"
               : "border-dashed border-border/60 text-muted-foreground hover:border-border hover:text-foreground",
@@ -105,7 +112,7 @@ export function ExecutionParticipantPicker({
         >
           <Icon className="h-3 w-3" />
           {values.length > 0 ? (
-            <span className="truncate max-w-[100px]">
+            <span className="truncate max-w-(--sz-100px)">
               {values.map(participantLabel).join(", ")}
             </span>
           ) : (
@@ -189,7 +196,7 @@ export function ExecutionParticipantPicker({
                   )}
                   onClick={() => toggle(encoded)}
                 >
-                  <AgentIcon icon={agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                  <AgentAvatar agent={agent} size={16} className="shrink-0 h-3 w-3 text-muted-foreground"/>
                   {agent.name}
                 </button>
               );

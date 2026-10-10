@@ -3,10 +3,13 @@ import {
   parseAgentMentionHref,
   parseIssueReferenceHref,
   parseProjectMentionHref,
+  parseRoutineMentionHref,
   parseSkillMentionHref,
   parseUserMentionHref,
+  resolveAgentAppearance,
+  type AgentAppearance,
 } from "@paperclipai/shared";
-import { getAgentIcon } from "./agent-icons";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
 export type ParsedMentionChip =
@@ -14,6 +17,7 @@ export type ParsedMentionChip =
       kind: "agent";
       agentId: string;
       icon: string | null;
+      appearance?: AgentAppearance | null;
     }
   | {
       kind: "issue";
@@ -32,9 +36,11 @@ export type ParsedMentionChip =
       kind: "skill";
       skillId: string;
       slug: string | null;
+    }
+  | {
+      kind: "routine";
+      routineId: string;
     };
-
-const iconMaskCache = new Map<string, string>();
 
 export function parseMentionChipHref(href: string): ParsedMentionChip | null {
   if (/^https?:\/\//i.test(href.trim())) {
@@ -84,6 +90,14 @@ export function parseMentionChipHref(href: string): ParsedMentionChip | null {
     };
   }
 
+  const routine = parseRoutineMentionHref(href);
+  if (routine) {
+    return {
+      kind: "routine",
+      routineId: routine.routineId,
+    };
+  }
+
   return null;
 }
 
@@ -97,10 +111,8 @@ export function mentionChipInlineStyle(mention: ParsedMentionChip): CSSPropertie
   }
 
   if (mention.kind === "agent") {
-    const iconMask = buildAgentIconMask(mention.icon);
-    if (iconMask) {
-      style["--paperclip-mention-icon-mask"] = iconMask;
-    }
+    const appearance = resolveAgentAppearance(mention.appearance, mention.agentId);
+    style["--paperclip-mention-avatar-image"] = `url("${agentAvatarUrl(appearance, 16, 2)}")`;
   }
 
   return Object.keys(style).length > 0 ? (style as CSSProperties) : undefined;
@@ -135,6 +147,7 @@ export function clearMentionChipDecoration(element: HTMLElement) {
     "paperclip-mention-chip--agent",
     "paperclip-mention-chip--issue",
     "paperclip-mention-chip--project",
+    "paperclip-mention-chip--routine",
     "paperclip-mention-chip--user",
     "paperclip-mention-chip--skill",
     "paperclip-project-mention-chip",
@@ -145,6 +158,7 @@ export function clearMentionChipDecoration(element: HTMLElement) {
   element.style.removeProperty("color");
   element.style.removeProperty("--paperclip-mention-project-color");
   element.style.removeProperty("--paperclip-mention-icon-mask");
+  element.style.removeProperty("--paperclip-mention-avatar-image");
 }
 
 function projectMentionColors(color: string): Pick<CSSProperties, "borderColor" | "backgroundColor" | "color"> {
@@ -155,64 +169,4 @@ function projectMentionColors(color: string): Pick<CSSProperties, "borderColor" 
     backgroundColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.22)`,
     color: pickTextColorForPillBg(color),
   };
-}
-
-function buildAgentIconMask(iconName: string | null): string | null {
-  const cacheKey = iconName ?? "__default__";
-  const cached = iconMaskCache.get(cacheKey);
-  if (cached) return cached;
-
-  const Icon = getAgentIcon(iconName);
-  const iconNode = resolveLucideIconNode(Icon);
-  if (!Array.isArray(iconNode) || iconNode.length === 0) return null;
-
-  const body = iconNode.map(([tag, attrs]) => {
-    const attrString = Object.entries(attrs)
-      .filter(([key]) => key !== "key")
-      .map(([key, value]) => `${key}="${escapeAttribute(String(value))}"`)
-      .join(" ");
-    return `<${tag}${attrString ? ` ${attrString}` : ""}></${tag}>`;
-  }).join("");
-
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ` +
-    `fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" ` +
-    `stroke-linejoin="round">${body}</svg>`;
-  const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-  iconMaskCache.set(cacheKey, url);
-  return url;
-}
-
-function resolveLucideIconNode(
-  icon: unknown,
-): Array<[string, Record<string, string>]> | null {
-  const staticIconNode = (
-    icon as {
-      iconNode?: Array<[string, Record<string, string>]>;
-    }
-  ).iconNode;
-  if (Array.isArray(staticIconNode) && staticIconNode.length > 0) {
-    return staticIconNode;
-  }
-
-  const render = (
-    icon as {
-      render?: (props: Record<string, unknown>, ref: unknown) => {
-        props?: { iconNode?: Array<[string, Record<string, string>]> };
-      } | null;
-    }
-  ).render;
-  const rendered = typeof render === "function" ? render({}, null) : null;
-  const renderedIconNode = rendered?.props?.iconNode;
-  return Array.isArray(renderedIconNode) && renderedIconNode.length > 0
-    ? renderedIconNode
-    : null;
-}
-
-function escapeAttribute(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }

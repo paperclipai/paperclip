@@ -16,25 +16,42 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { assertForegroundRunAllowed } from "../services/service-manager.js";
+import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
+import { printUpdateNotice } from "../update-notice.js";
+import { ensureWorktreeSeeded } from "./worktree.js";
 
-interface RunOptions {
+export interface RunOptions {
   config?: string;
   instance?: string;
   repair?: boolean;
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
+  force?: boolean;
+  /** Internal lifecycle option used by foreground-only commands. */
+  installService?: boolean;
+  /** Internal lifecycle option for isolated instances that cannot collide with a managed service. */
+  skipServiceManagerCheck?: boolean;
+  /** Internal label override for commands that reuse the foreground run path. */
+  introLabel?: string;
+  /** Runs after the server is listening and all normal post-start initialization has completed. */
+  afterStart?: (server: StartedServer) => Promise<void>;
 }
 
-interface StartedServer {
+export interface StartedServer {
   apiUrl: string;
   databaseUrl: string;
   host: string;
   listenPort: number;
+  shutdown?: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  if (!opts.skipServiceManagerCheck) {
+    await assertForegroundRunAllowed(instanceId, opts.force);
+  }
 
   const homeDir = resolvePaperclipHomeDir();
   fs.mkdirSync(homeDir, { recursive: true });
@@ -45,21 +62,33 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
+  await printUpdateNotice(configPath);
 
-  p.intro(pc.bgCyan(pc.black(" paperclipai run ")));
+  p.intro(pc.bgCyan(pc.black(` ${opts.introLabel ?? "paperclipai run"} `)));
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));
   p.log.message(pc.dim(`Instance: ${paths.instanceId}`));
   p.log.message(pc.dim(`Config: ${configPath}`));
 
   if (!configExists(configPath)) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    if ((!process.stdin.isTTY || !process.stdout.isTTY) && !opts.yes) {
       p.log.error("No config found and terminal is non-interactive.");
       p.log.message(`Run ${pc.cyan("paperclipai onboard")} once, then retry ${pc.cyan("paperclipai run")}.`);
       process.exit(1);
     }
 
     p.log.step("No config found. Starting onboarding...");
-    await onboard({ config: configPath, invokedByRun: true, bind: opts.bind });
+    await onboard({
+      config: configPath,
+      invokedByRun: true,
+      bind: opts.bind,
+      yes: opts.yes,
+      installService: opts.installService,
+    });
+  }
+
+  const seedResult = await ensureWorktreeSeeded({ config: configPath });
+  if (seedResult.seeded) {
+    p.log.success("Completed deferred worktree database seed.");
   }
 
   p.log.step("Running doctor checks...");
@@ -82,6 +111,16 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
+  writeRuntimeInfo({
+    schemaVersion: 1,
+    instanceId,
+    pid: process.pid,
+    host: startedServer.host,
+    port: startedServer.listenPort,
+    dashboardUrl: startedServer.apiUrl.replace(/\/api\/?$/, ""),
+    startedAt: new Date().toISOString(),
+  });
+  process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
@@ -90,6 +129,15 @@ export async function runCommand(opts: RunOptions): Promise<void> {
       dbUrl: startedServer.databaseUrl,
       baseUrl: resolveBootstrapInviteBaseUrl(config, startedServer),
     });
+  }
+
+  if (opts.afterStart) {
+    try {
+      await opts.afterStart(startedServer);
+    } catch (error) {
+      await startedServer.shutdown?.("SIGTERM");
+      throw error;
+    }
   }
 }
 
