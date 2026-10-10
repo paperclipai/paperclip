@@ -1360,6 +1360,14 @@ lifecycle and ownership callbacks update its teardown state immediately, includi
 when preparation later throws. Public sandbox lifecycle and model fallback helpers
 remain re-exported by `heartbeat.ts`.
 
+Workspace preparation is in `server/src/services/heartbeat/workspace-preparation.ts`.
+`prepareHeartbeatWorkspace` resolves and provisions the workspace, persists its
+metadata and issue binding, then acquires and realizes the execution environment.
+It preserves the immutable workspace binding used by native recovery and records
+preparation spans even when acquisition or realization fails. The executor retains
+environment selection, dispatch gates, and terminal lease cleanup. Persistence
+failures still clean newly created workspace artifacts before propagating.
+
 Runtime execution is in `server/src/services/heartbeat/runtime-execution.ts`.
 `executeHeartbeatRuntime` dispatches a prepared native session or legacy adapter,
 captures usage, finalizes workspace operations, and releases gateway tokens and
