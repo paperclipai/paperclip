@@ -47,6 +47,22 @@ describe("Smol Machines provider", () => {
     expect(vm.stop).not.toHaveBeenCalled();
   });
 
+  it("requires an arm64 runtime image on a local arm64 host", async () => {
+    const originalArch = Object.getOwnPropertyDescriptor(process, "arch")!;
+    Object.defineProperty(process, "arch", { ...originalArch, value: "arm64" });
+    try {
+      await expect(plugin.definition.onEnvironmentAcquireLease?.(acquireParams)).rejects.toThrow("set an arm64 OCI image");
+      expect(create).not.toHaveBeenCalled();
+      const vm = machine(); create.mockResolvedValue(vm);
+      await plugin.definition.onEnvironmentAcquireLease?.({
+        ...acquireParams, config: { ...acquireParams.config, image: "example.com/agent:arm64" },
+      });
+      expect(create.mock.calls[0]?.[0]?.image).toBe("example.com/agent:arm64");
+    } finally {
+      Object.defineProperty(process, "arch", originalArch);
+    }
+  });
+
   it("removes a failed acquisition and does not guess an unpublished runtime image", async () => {
     const vm = machine(); create.mockResolvedValue(vm);
     vm.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "/home/paperclip", stderr: "" })

@@ -62,7 +62,12 @@ function connection(config: DriverConfig): ConnectOptions {
 
 function imageForRun(config: DriverConfig, adapterType?: string): string {
   if (config.image) return config.image;
-  if (adapterType && RUNTIME_IMAGES[adapterType]) return RUNTIME_IMAGES[adapterType];
+  if (adapterType && RUNTIME_IMAGES[adapterType]) {
+    if (config.target === "local" && process.arch === "arm64") {
+      throw new Error("Paperclip's published agent runtime images are linux/amd64 only; set an arm64 OCI image for local arm64 hosts.");
+    }
+    return RUNTIME_IMAGES[adapterType];
+  }
   if (adapterType) throw new Error(`No Smol Machines runtime image for adapter ${adapterType}; set image in the environment.`);
   return DEFAULT_PROBE_IMAGE;
 }
