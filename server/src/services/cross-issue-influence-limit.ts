@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,6 +110,24 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+
+    // An issue assigned to the run's agent is the run's own work when the run
+    // holds its checkout lock, or when nothing else scopes the run: a heartbeat
+    // timer wake carries no source issue, and its natural scope is the agent's
+    // own assignments. Refusing those writes left timer-woken agents unable to
+    // comment on, update, or block their own tasks.
+    const target = await tx
+      .select({ assigneeAgentId: issues.assigneeAgentId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      target?.assigneeAgentId === input.agentId &&
+      (!sourceIssueId || target.checkoutRunId === input.runId)
+    ) {
+      return null;
+    }
+
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||
