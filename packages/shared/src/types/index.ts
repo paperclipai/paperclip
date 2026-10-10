@@ -899,6 +899,7 @@ export type {
   RoutineRunSummary,
   RoutineExecutionIssueOrigin,
   RoutineListItem,
+  RoutineHealth,
 } from "./routine.js";
 export type { CostEvent, CostSummary, IssueCostSummary, CostByUser, CostByUserReport, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
