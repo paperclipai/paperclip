@@ -240,3 +240,24 @@ export function matchWorkspaceRuntimeServiceToCommand<
 
   return bestScore > 0 ? bestMatch : null;
 }
+
+/**
+ * Resolves what a stop (or the stop half of a restart) may touch. A request
+ * that names one service, by runtime service id, workspace command, or
+ * service index, must stop only that service: `runtimeServiceId` is its
+ * running instance, or null when it has none, so nothing is stopped. A
+ * request with no target stops every service (`scope: "all"`).
+ */
+export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServiceMatchCandidate & { id: string }>(input: {
+  workspaceRuntime: Record<string, unknown> | null | undefined;
+  runtimeServiceId: string | null | undefined;
+  serviceIndex: number | null | undefined;
+  runtimeServices: T[] | null | undefined;
+}): { scope: "all" } | { scope: "one"; runtimeServiceId: string | null } {
+  if (input.runtimeServiceId) return { scope: "one", runtimeServiceId: input.runtimeServiceId };
+  if (input.serviceIndex === null || input.serviceIndex === undefined) return { scope: "all" };
+  const command = listWorkspaceServiceCommandDefinitions(input.workspaceRuntime)
+    .find((entry) => entry.serviceIndex === input.serviceIndex);
+  const runtimeService = command ? matchWorkspaceRuntimeServiceToCommand(command, input.runtimeServices) : null;
+  return { scope: "one", runtimeServiceId: runtimeService?.id ?? null };
+}

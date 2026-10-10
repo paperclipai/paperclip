@@ -3,6 +3,7 @@ import {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
+  resolveRuntimeServiceStopTarget,
 } from "./workspace-commands.js";
 
 describe("workspace command helpers", () => {
@@ -175,5 +176,63 @@ describe("workspace command helpers", () => {
     }, "service:web");
 
     expect(command).toEqual(expect.objectContaining({ port: null }));
+  });
+});
+
+describe("resolveRuntimeServiceStopTarget", () => {
+  const workspaceRuntime = {
+    services: [
+      { name: "web", command: "pnpm dev" },
+      { name: "worker", command: "pnpm worker" },
+    ],
+  };
+  const runtimeServices = [
+    { id: "runtime-web", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: null, configIndex: 0 },
+    { id: "runtime-worker", serviceName: "worker", command: "pnpm worker", cwd: "/repo", port: null, configIndex: 1 },
+  ];
+
+  it("stops every service when the request names no target", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: null,
+      runtimeServices,
+    })).toEqual({ scope: "all" });
+  });
+
+  it("stops only the named runtime service", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: "runtime-worker",
+      serviceIndex: null,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-worker" });
+  });
+
+  it("stops only the running instance of the service at the given index", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-worker" });
+  });
+
+  it("stops nothing when the service at the given index is not running", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 1,
+      runtimeServices: [runtimeServices[0]!],
+    })).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("stops nothing when the given index has no configured service", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex: 5,
+      runtimeServices,
+    })).toEqual({ scope: "one", runtimeServiceId: null });
   });
 });
