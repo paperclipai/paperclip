@@ -1032,7 +1032,7 @@ export function environmentRoutes(
     const input = {
       ...req.body,
       ...(req.body.driver === "computer" ? {
-        status: "inactive" as const,
+        status: "archived" as const,
         metadata: { ...req.body.metadata, computerCompanyId: companyId },
       } : {}),
       envVars: await secrets.normalizeEnvBindingsForPersistence(
@@ -1276,7 +1276,7 @@ export function environmentRoutes(
       if (parsed.driver !== "computer") throw unprocessable("Invalid Boat configuration.");
       await computerService(db).attach({ companyId: computerCompanyId, environmentId: environment.id,
         sandboxId: parsed.config.sandboxId, apiKeySecretRef: parsed.config.apiKeySecretRef });
-      if (req.body.status !== "inactive") environment = (await svc.update(environment.id, { status: "active" }))!;
+      if (req.body.status !== "archived") environment = (await svc.update(environment.id, { status: "active" }))!;
     }
     let customImageReconciliation: Awaited<
       ReturnType<typeof customImages.reconcileActiveTemplateForConfigChange>
@@ -1323,7 +1323,7 @@ export function environmentRoutes(
       if (typeof companyId !== "string") throw unprocessable("Computer attachment has no company.");
       assertCompanyAccess(req, companyId);
       if (impact.staticReferences.isInstanceDefault) throw conflict("Choose another default environment before disconnecting this computer.");
-      await svc.update(existing.id, { status: "inactive" });
+      await svc.update(existing.id, { status: "archived" });
       await computerService(db).detach({ companyId, environmentId: existing.id });
       await Promise.all([
         executionWorkspaces.clearEnvironmentSelection(companyId, existing.id),
@@ -1332,7 +1332,7 @@ export function environmentRoutes(
       ]);
       await logInstanceEnvironmentActivity({ actor, action: "environment.disconnected", entityId: existing.id,
         details: { name: existing.name, driver: "computer", filesRetained: true } });
-      res.json({ ...existing, status: "inactive", disconnected: true, destroyedReusableSandboxLeaseCount: 0 });
+      res.json({ ...existing, status: "archived", disconnected: true, destroyedReusableSandboxLeaseCount: 0 });
       return;
     }
     // With explicit consent, destroy the environment's reusable sandbox leases
@@ -1541,7 +1541,7 @@ export function environmentRoutes(
 
   router.use((error: unknown, _req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
     if (!(error instanceof ComputerError)) return next(error);
-    res.status(error.code === "conflict" ? 409 : error.code === "invalid" ? 422 : error.code === "not_found" ? 404 : 502).json({ error: error.message, code: error.code });
+    res.status(error.code === "conflict" ? 409 : error.code === "invalid" ? 422 : error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 502).json({ error: error.message, code: error.code });
   });
   return router;
 }

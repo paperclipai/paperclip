@@ -37,7 +37,7 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
       .orderBy(desc(environmentLeases.updatedAt)).limit(1);
     const [agent] = issue.assigneeAgentId ? await db.select().from(agents)
       .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, issue.assigneeAgentId))).limit(1) : [];
-    const environmentId = lease?.environmentId ?? agent?.defaultEnvironmentId ?? (await settings.getGeneral()).defaultEnvironmentId;
+    const environmentId = lease?.environmentId ?? agent?.defaultEnvironmentId ?? (await settings.get()).defaultEnvironmentId;
     const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1) : [];
     if (!environment || environment.driver !== "computer" || environment.metadata?.computerCompanyId !== issue.companyId || environment.status !== "active") {
       if (req.method === "GET") { res.json(null); return; }
@@ -100,7 +100,7 @@ export function computerRoutes(db: Db, computers = computerService(db)) {
 
   router.use((error: unknown, _req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
     if (!(error instanceof ComputerError)) return next(error);
-    res.status(error.code === "conflict" ? 409 : error.code === "invalid" ? 422 : error.code === "not_found" ? 404 : 502).json({ error: error.message, code: error.code });
+    res.status(error.code === "conflict" ? 409 : error.code === "invalid" ? 422 : error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 502).json({ error: error.message, code: error.code });
   });
   return router;
 }

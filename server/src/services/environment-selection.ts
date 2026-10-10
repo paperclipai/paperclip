@@ -7,9 +7,10 @@ export async function assertEnvironmentSelectionForCompany(
       driver: string;
       status?: string | null;
       config: Record<string, unknown> | null;
+      metadata?: Record<string, unknown> | null;
     } | null>;
   },
-  _companyId: string,
+  companyId: string,
   environmentId: string | null | undefined,
   options?: {
     allowedDrivers?: string[];
@@ -20,6 +21,9 @@ export async function assertEnvironmentSelectionForCompany(
   const environment = await environmentsSvc.getById(environmentId);
   if (!environment) {
     throw unprocessable("Environment not found.");
+  }
+  if (environment.driver === "computer" && environment.metadata?.computerCompanyId !== companyId) {
+    throw unprocessable("Computer environment is not available in this company.");
   }
   if (environment.status === "archived") {
     throw unprocessable("Environment is archived.");
