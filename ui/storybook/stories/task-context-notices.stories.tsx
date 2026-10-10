@@ -7,6 +7,8 @@ import { ExecutionBlockerNotice } from "@/components/ExecutionBlockerNotice";
 import { EmailMessageCard } from "@/components/EmailMessageCard";
 import { queryKeys } from "@/lib/queryKeys";
 
+const shellSectionClass = "mx-auto w-full max-w-(--tc-shell-max-w)";
+
 function TaskContextNotices() {
   const [client] = useState(() => {
     const cache = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
@@ -21,12 +23,13 @@ function TaskContextNotices() {
   return (
     <QueryClientProvider client={client}>
       <main className="min-h-screen bg-background p-6 text-foreground">
-        <div className="mx-auto w-full max-w-(--tc-shell-max-w) space-y-3">
-          <h1 className="text-xl font-semibold">Chat connection and recovery</h1>
-          <ExternallyConnectedTaskBanner className="mt-3" companyId="demo" issueId="context-notices" />
-          <ExecutionBlockerNotice companyId="demo" issueId="context-notices" onRetried={() => {}}
+        <div className="w-full space-y-3">
+          <h1 className={`${shellSectionClass} text-xl font-semibold`}>Chat connection and recovery</h1>
+          <ExternallyConnectedTaskBanner className={`${shellSectionClass} mt-3`} companyId="demo" issueId="context-notices" />
+          <ExecutionBlockerNotice className={shellSectionClass} companyId="demo" issueId="context-notices" onRetried={() => {}}
             blocker={{ recoveryActionId: "demo-recovery", runId: null, agentId: null, cause: "action_outcome_unknown",
               nextAction: "Inspect the run before continuing. Recorded work is preserved." }} />
+          <div className={shellSectionClass}>
           <EmailMessageCard contextNotice issueId="context-notices" message={{
             id: "email-demo", providerMessageId: "email-demo", direction: "inbound",
             from: "operator@example.com", to: ["agent@example.com"], subject: "Card styling",
@@ -34,6 +37,7 @@ function TaskContextNotices() {
             fullText: "Please keep the connection and recovery cards consistent.",
             commentId: null, attachmentIds: [], timestamp: "2026-10-09T12:00:00Z", automatic: false,
           }} />
+          </div>
         </div>
       </main>
     </QueryClientProvider>
