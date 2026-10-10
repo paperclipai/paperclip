@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   issueCreateIdempotencyKeys,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(projects);
     await db.delete(companies);
   });
 
@@ -113,6 +115,62 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       deduplicationReason: "idempotency_key",
     });
     expect(await db.select().from(issueCreateIdempotencyKeys)).toHaveLength(1);
+  });
+
+  it("rejects an unknown project before replaying an idempotency key", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+    const idempotencyKey = "run-1:unknown-project-retry";
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "Create the original issue", idempotencyKey })
+      .expect(201);
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Do not replay around stale project validation",
+        projectId: randomUUID(),
+        idempotencyKey,
+      })
+      .expect(404);
+
+    expect(response.body).toEqual({ error: "Project not found" });
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toEqual([
+      expect.objectContaining({ id: first.body.id }),
+    ]);
+  });
+
+  it("rejects a cross-company project before replaying a duplicate title", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const otherCompanyId = await seedCompany();
+    const [otherCompanyProject] = await db.insert(projects).values({
+      companyId: otherCompanyId,
+      name: "Other company project",
+      status: "in_progress",
+    }).returning();
+    const app = createApp();
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "Prevent unauthorized project reassignment" })
+      .expect(201);
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "  prevent unauthorized PROJECT reassignment ",
+        projectId: otherCompanyProject.id,
+      })
+      .expect(404);
+
+    expect(response.body).toEqual({ error: "Project not found" });
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toEqual([
+      expect.objectContaining({ id: first.body.id }),
+    ]);
   });
 
   it("expires old idempotency keys before replay lookup", async () => {
@@ -226,6 +284,22 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       .expect(201);
 
     expect(duplicate.body.id).not.toBe(first.body.id);
+  });
+
+  it("rejects an unknown project before the issue insert", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        projectId: randomUUID(),
+        title: "Do not turn stale project references into server errors",
+      })
+      .expect(404);
+
+    expect(response.body).toEqual({ error: "Project not found" });
+    expect(await db.select().from(issues)).toHaveLength(0);
   });
 
   it("does not apply the route soft guard to internal service creates", async () => {
