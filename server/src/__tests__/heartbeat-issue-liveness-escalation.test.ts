@@ -527,14 +527,14 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_path_recovery_exhausted"))).toHaveLength(1);
   });
 
-  it.each(["restart", "transaction_failure"] as const)("recovers a committed review repair after %s with a one-connection pool", async (gap) => {
+  it.each(["restart", "transaction_failure", "due_monitor", "claimed_monitor", "expired_monitor", "exhausted_monitor"] as const)("reconciles a committed review repair after %s with a one-connection pool", async (gap) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const wakeId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}` });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Repair finalized before restart", status: "in_review", assigneeAgentId: agentId });
+    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Repair finalized before restart", status: "in_review", assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
     await db.insert(agentWakeupRequests).values({
       id: wakeId, companyId, agentId, source: "automation", status: "completed",
       reason: "issue_review_path_lost", payload: { issueId, reviewPathRecoveryAttempt: 1 },
@@ -543,6 +543,26 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       companyId, agentId, issueId, status: "succeeded", wakeupRequestId: wakeId, finishedAt: new Date(),
       contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
     }).returning();
+    const dueAt = new Date(Date.now() - 60_000);
+    if (gap.endsWith("monitor")) {
+      const monitored = await issueService(db).update(issueId, {
+        monitorNextCheckAt: dueAt, monitorNotes: "Check external build",
+        executionPolicy: { monitor: {
+          nextCheckAt: dueAt.toISOString(), notes: "Check external build", scheduledBy: "assignee",
+          kind: "external_service", serviceName: "github_checks",
+          timeoutAt: new Date(Date.now() + 60_000).toISOString(), maxAttempts: 3,
+        } },
+      });
+      if (gap === "claimed_monitor") {
+        await db.update(issues).set({ monitorWakeRequestedAt: new Date() }).where(eq(issues.id, issueId));
+      } else if (gap === "expired_monitor" || gap === "exhausted_monitor") {
+        const policy = monitored!.executionPolicy as { monitor: Record<string, unknown> };
+        await db.update(issues).set({
+          executionPolicy: { ...policy, monitor: { ...policy.monitor, ...(gap === "expired_monitor" ? { timeoutAt: new Date(Date.now() - 1_000).toISOString() } : { maxAttempts: 1 }) } },
+          ...(gap === "exhausted_monitor" ? { monitorAttemptCount: 1 } : {}),
+        }).where(eq(issues.id, issueId));
+      }
+    }
     // Only the terminal run and completed wake were persisted before the crash.
     // A new service must restore the missing action without invoking the agent.
     const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
@@ -559,6 +579,30 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       }
       const recovery = heartbeatService(singleConnectionDb);
       const result = await recovery.reconcileStrandedAssignedIssues();
+      if (gap === "due_monitor" || gap === "claimed_monitor") {
+        expect(result.escalated).toBe(0);
+        expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+        expect(await db.select().from(issueComments)).toHaveLength(0);
+        const current = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+        expect(current).toMatchObject({ status: "in_review", monitorNextCheckAt: dueAt });
+        // A claim left by a crashed dispatcher can be reclaimed after its lease.
+        if (gap === "claimed_monitor") {
+          await db.update(issues).set({ monitorWakeRequestedAt: new Date(Date.now() - 6 * 60_000) }).where(eq(issues.id, issueId));
+        }
+        const execute = mockAdapterExecute.getMockImplementation()!;
+        mockAdapterExecute.mockImplementationOnce(async () => {
+          await issueService(db).update(issueId, { status: "done" });
+          return execute();
+        });
+        const dispatcher = heartbeatService(db, { runtimeEnv: {} });
+        await dispatcher.tickTimers();
+        await dispatcher.drainActiveRunExecutions();
+        const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "issue_monitor_due"));
+        expect(wakes).toHaveLength(1);
+        expect(mockAdapterExecute).toHaveBeenCalledOnce();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done", monitorNextCheckAt: null });
+        return;
+      }
       expect(result).toMatchObject({ escalated: 1, issueIds: [issueId] });
       expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
       expect(await db.select().from(issueComments)).toHaveLength(1);

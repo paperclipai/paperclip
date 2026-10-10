@@ -17,6 +17,7 @@ import {
   reviewPathConsumedRefFromRun,
 } from "./review-path-recovery.js";
 import { buildStrandedRecoveryEscalationNotice } from "./stranded-notice.js";
+import { hasUnconsumedIssueMonitorPath } from "./issue-graph-liveness.js";
 
 /** A spent repair wake must leave an operator action, never another automatic wake. */
 export async function escalateExhaustedIssueReviewPathRecovery(
@@ -38,6 +39,10 @@ export async function escalateExhaustedIssueReviewPathRecovery(
     if (!issue || issue.status !== "in_review" || issue.assigneeAgentId !== run.agentId
       || issue.assigneeUserId || isWaitingConversation(issue)
       || issue.externalConversationState === "waiting") return null;
+
+    // Startup recovery precedes monitor ticks. A due (or claimed) saved check
+    // still belongs to that dispatcher until it is consumed or its bounds expire.
+    if (hasUnconsumedIssueMonitorPath(issue, new Date())) return null;
 
     const attention = (await issuesSvc.listReviewAttention(run.companyId, [issue], tx)).get(issueId);
     if (!attention || decideIssueReviewPathRecovery({
