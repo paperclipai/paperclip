@@ -63,6 +63,7 @@ function fixture() {
     stop: vi.fn(async () => ({ id: "stop_1", status: stopStatus })),
     stopStatus: vi.fn(async () => ({ id: "stop_1", status: stopStatus })),
     renew: vi.fn(async () => {}),
+    computerTool: () => ({ command: "cua-driver", args: ["mcp"] }),
     desktop: vi.fn(async () => ({
       viewerUrl: "https://test.on.boat.dev/#credential",
       expiresAt: new Date(clock.getTime() + 540_000).toISOString(),
@@ -579,5 +580,31 @@ with open(output,'wb') as out,open(error,'wb') as err:
     await f.service.reconcile();
     expect(f.repository.runState).not.toHaveBeenCalled();
     expect(f.backend.retire).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("computer retirement proof", () => {
+  it("proves only the exact retired run without provider actions", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    const input = { ...f.scope, owner: binding.owner, agentId: "agent", runId: "run" };
+    expect(await f.service.isRetired(input)).toBe(false);
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    await f.service.retire(input);
+    vi.mocked(f.backend.retire).mockClear();
+    vi.mocked(f.backend.inspect).mockClear();
+    expect(await f.service.isRetired(input)).toBe(true);
+    for (const change of [
+      { agentId: "other-agent" },
+      { runId: "other-run" },
+      { owner: { ...binding.owner, computerId: "other-computer" } },
+      { owner: { ...binding.owner, ownerId: "other-owner" } },
+      { owner: { ...binding.owner, generation: binding.owner.generation + 1 } },
+    ]) expect(await f.service.isRetired({ ...input, ...change })).toBe(false);
+    await expect(f.service.isRetired({ ...input, companyId: "other-company" })).rejects.toMatchObject({ code: "not_found" });
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    expect(f.backend.inspect).not.toHaveBeenCalled();
   });
 });

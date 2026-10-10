@@ -289,6 +289,7 @@ finally:
     return {
       owner: ownerRef,
       runner: runnerFor(false),
+      computerTool: backend.computerTool(),
       process: {
         runner: runnerFor(true),
         async ingress(input?: { port?: number; path?: string }) {
@@ -482,6 +483,18 @@ finally:
         now().getTime() + input.idleTimeoutMs,
       ).toISOString();
     });
+  }
+  async function isRetired(input: Scope & { owner: OwnerRef; agentId: string; runId: string }) {
+    const record = await repository.get(input);
+    if (record.id !== input.owner.computerId) return false;
+    return record.ledger.owners.some((owner) =>
+      owner.id === input.owner.ownerId &&
+      owner.generation === input.owner.generation &&
+      owner.kind === "runner" &&
+      owner.phase === "retired" &&
+      owner.agentId === input.agentId &&
+      owner.runId === input.runId,
+    );
   }
   async function retire(input: Scope & { owner: OwnerRef }) {
     const state = await repository.update(input, (record) => {
@@ -955,6 +968,7 @@ finally:
     },
     recover,
     retainWarm,
+    isRetired,
     retire,
     connect,
     renewViewer,

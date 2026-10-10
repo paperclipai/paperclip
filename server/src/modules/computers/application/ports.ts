@@ -53,6 +53,7 @@ export interface ComputerBackend {
     id: string,
   ): Promise<{ id: string; status: string }>;
   renew(record: ComputerRecord): Promise<void>;
+  computerTool(): { command: string; args: string[] };
   desktop(
     record: ComputerRecord,
   ): Promise<{ viewerUrl: string; expiresAt: string }>;

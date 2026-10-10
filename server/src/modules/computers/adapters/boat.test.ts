@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { boatBackend, processProgram } from "./boat.js";
+import { boatBackend, desktopReadinessProgram, processProgram } from "./boat.js";
 import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
 const record: ComputerRecord = {
@@ -382,5 +382,68 @@ case "$*" in *show*) printf '%s\\n' '${state}';; esac
     expect(existsSync(join(active, "command-one", "stdin"))).toBe(true);
     expect(f.cleanup([{ id: "missing-owner", generation: 7 }]).status).toBe(0);
     expect(existsSync(f.calls)).toBe(false);
+  });
+});
+
+
+describe("Boat desktop input readiness", () => {
+  function desktopFixture(initiallyHealthy: boolean) {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-desktop-")));
+    roots.push(temp);
+    const runtime = join(temp, String(process.getuid!()));
+    const bin = join(temp, "bin");
+    const healthy = join(temp, "healthy");
+    const calls = join(temp, "repairs");
+    mkdirSync(runtime, { mode: 0o700 });
+    mkdirSync(bin);
+    if (initiallyHealthy) writeFileSync(healthy, "ready");
+    writeFileSync(join(bin, "ibus"), "#!/bin/sh\nprintf '%s\\n' 'unix:path=/test/ibus'\n", { mode: 0o700 });
+    writeFileSync(join(bin, "gdbus"), `#!/bin/sh\ntest -f '${healthy}'\n`, { mode: 0o700 });
+    writeFileSync(join(bin, "ibus-daemon"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ntouch '${healthy}'\n`, { mode: 0o700 });
+    const call = (program = desktopReadinessProgram) => spawnSync("python3", ["-c", program.replaceAll("/run/user/", `${temp}/`)], {
+      encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    return { temp, runtime, healthy, calls, call };
+  }
+
+  it("preserves a healthy input service and emits no MCP protocol output", () => {
+    const f = desktopFixture(true);
+    const result = f.call();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(existsSync(f.calls)).toBe(false);
+  });
+
+  it("repairs a disconnected restored socket and checks it again after another resume", () => {
+    const f = desktopFixture(false);
+    expect(f.call().status).toBe(0);
+    const expected = `--replace --daemonize --xim --address unix:path=${f.runtime}/paperclip-ibus/bus\n`;
+    expect(readFileSync(f.calls, "utf8")).toBe(expected);
+    expect(f.call().status).toBe(0);
+    expect(readFileSync(f.calls, "utf8")).toBe(expected);
+    rmSync(f.healthy);
+    expect(f.call().status).toBe(0);
+    expect(readFileSync(f.calls, "utf8")).toBe(expected.repeat(2));
+  });
+
+  it("rejects a symlink input directory without replacing the daemon", () => {
+    const f = desktopFixture(false);
+    symlinkSync(f.temp, join(f.runtime, "paperclip-ibus"));
+    const result = f.call();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid desktop input directory");
+    expect(existsSync(f.calls)).toBe(false);
+  });
+
+  it("executes the existing Cua MCP process only after input readiness", () => {
+    const f = desktopFixture(false);
+    const tool = boatBackend(async () => "unused").computerTool();
+    const cua = join(f.temp, "cua");
+    writeFileSync(cua, `#!/bin/sh\nprintf '%s\\n' "$*"\n`, { mode: 0o700 });
+    expect(tool.command).toBe("python3");
+    const result = f.call(tool.args[1]!.replaceAll("/opt/ascii/cua-driver/cua-driver", cua));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("mcp --socket /run/ascii-cua/driver.sock\n");
+    expect(existsSync(f.healthy)).toBe(true);
   });
 });
