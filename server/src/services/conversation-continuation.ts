@@ -17,6 +17,15 @@ export function isConversationAdapter(adapterType: string): boolean {
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
 
+/** A live PID whose start time cannot be read is indistinguishable from a
+ * recycled PID. Holding execution authority on that ambiguity is unbounded: the
+ * candidate run is already terminal, so the hold outlives the work and blocks
+ * both admission and wake-queue drain for the issue until whatever unrelated
+ * process now owns the PID happens to exit. The grace is measured from the moment
+ * the run reached its terminal state, because a process that outlives its own
+ * terminal run by this long is not plausibly still executing that run's work. */
+export const UNVERIFIED_PROCESS_IDENTITY_GRACE_MS = 6 * 60 * 60_000;
+
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {
   return result?.workspaceRestoreFailure !== "restore_unsafe_archive" && !hasRequiredWorkspaceRecovery(result) && result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
@@ -100,23 +109,50 @@ function processMayBeAlive(pid: number): boolean {
 /** A terminal conversation row does not prove that its execution authority ended.
  * Other adapters keep their existing bootstrap and ownership protocols.
  */
-export async function getConversationOwnershipBlocker(db: Db, companyId: string, issueId: string) {
-  const activeLease = sql`exists (select 1 from ${environmentLeases}
+export async function getConversationOwnershipBlocker(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  options: {
+    isProcessAlive?: (pid: number) => boolean;
+    readProcessStartedAt?: (pid: number) => Promise<string | null>;
+    now?: () => number;
+  } = {},
+) {
+  const isAlive = options.isProcessAlive ?? processMayBeAlive;
+  const readStartedAt = options.readProcessStartedAt ?? readProcessStartedAt;
+  const now = options.now ?? Date.now;
+  // A lease in pending_cleanup (or with a failed cleanup) is work the runtime
+  // still owes: destroy that environment before the issue continues. The
+  // pending-cleanup sweep retries and caps those, so this hold tracks real
+  // cleanup intent and stays unconditional.
+  const cleanupPendingLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
       and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
-      and (${environmentLeases.releasedAt} is null
-        or ${environmentLeases.status} = 'pending_cleanup'
+      and (${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  // A lease that is merely unreleased (`released_at is null`, no cleanup pending)
+  // means its terminal run never finished its release. Nothing reclaims that row,
+  // so an unconditional hold wedges the issue forever: every later wake reads the
+  // same stale lease and defers. Bound it by the same terminal-age grace as an
+  // unverifiable PID, because a lease that outlives its own terminal run by that
+  // long is not plausibly still executing that run's work.
+  const unreleasedLease = sql`exists (select 1 from ${environmentLeases}
+    where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
+      and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
+      and ${environmentLeases.releasedAt} is null
+      and ${environmentLeases.status} <> 'pending_cleanup'
+      and coalesce(${environmentLeases.cleanupStatus}, '') <> 'failed')`;
+  const candidates = await db.select({ run: heartbeatRuns, cleanupPendingLease, unreleasedLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease,
+      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), cleanupPendingLease, unreleasedLease,
         sql`${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'`),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-  for (const { run, activeLease: leaseHeld } of candidates) {
+  for (const { run, cleanupPendingLease: cleanupPending, unreleasedLease: leaseUnreleased } of candidates) {
     if (hasRequiredWorkspaceRecovery(run.resultJson)) {
       const leases = await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -136,22 +172,59 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       // A separate local lease keeps the existing host process checks below.
       if (leases.every(lease => lease.provider !== "local")) continue;
     }
-    let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
+    // The run is already terminal; every hold below is bounded by how long it has
+    // been terminal, never by how old the run itself is.
+    const terminalAt = run.finishedAt ?? run.updatedAt ?? run.createdAt;
+    const terminalAgeMs = now() - new Date(terminalAt).getTime();
+    const pastTerminalGrace = Number.isFinite(terminalAgeMs) && terminalAgeMs > UNVERIFIED_PROCESS_IDENTITY_GRACE_MS;
+    let pidAlive = run.processPid !== null && isAlive(run.processPid);
+    let identityUnverified = false;
     if (pidAlive && run.processStartedAt) {
-      // A recycled PID cannot keep an old task blocked. An unreadable identity
-      // stays conservative; the original process may still own execution.
-      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) pidAlive = false;
+      // A recycled PID cannot keep an old task blocked.
+      const observed = await readStartedAt(run.processPid!).catch(() => null);
+      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
+        pidAlive = false;
+      } else if (!observed) {
+        // An unreadable identity stays conservative, but only for a bounded
+        // grace: the run is already terminal, so past the grace the ambiguity
+        // resolves toward release instead of wedging the issue forever.
+        if (pastTerminalGrace) {
+          console.warn(
+            `[conversation-continuation] releasing unverifiable execution hold on run ${run.id}: `
+            + `PID ${run.processPid} is alive but its start time could not be read, and the run has been `
+            + `terminal for ${Math.round(terminalAgeMs / 60_000)} minutes`,
+          );
+          pidAlive = false;
+        } else {
+          identityUnverified = true;
+        }
+      }
     }
-    const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
+    const groupAlive = run.processGroupId !== null && isAlive(-run.processGroupId);
+    let leaseHeld = cleanupPending;
+    if (!leaseHeld && leaseUnreleased) {
+      if (pastTerminalGrace) {
+        console.warn(
+          `[conversation-continuation] releasing unreleased environment lease hold on run ${run.id}: `
+          + `the terminal run's lease was never released and the run has been `
+          + `terminal for ${Math.round(terminalAgeMs / 60_000)} minutes`,
+        );
+      } else {
+        leaseHeld = true;
+      }
+    }
     if (pidAlive || groupAlive || leaseHeld) {
+      const heldByProcess = pidAlive || groupAlive;
       return {
         runId: run.id,
         agentId: run.agentId,
         cause: "execution_owner_active",
-        nextAction: pidAlive || groupAlive
-          ? "The previous provider process is still running. Stop it before continuing this task."
+        nextAction: heldByProcess
+          ? (identityUnverified
+            ? "The previous provider process is still running and its start time could not be read, so a recycled process id cannot be ruled out yet. Stop it before continuing this task."
+            : "The previous provider process is still running. Stop it before continuing this task.")
           : "The previous execution has not released its environment lease. Wait for cleanup before continuing this task.",
+        ...(identityUnverified ? { identityUnverified: true } : {}),
       };
     }
   }
