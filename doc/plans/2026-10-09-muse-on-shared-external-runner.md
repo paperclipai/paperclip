@@ -1,6 +1,10 @@
 # Bring personal Muse onto the shared external Runner
 
-Date: 2026-10-09. Status: implementation plan; the port and live qualification have not started.
+Date: 2026-10-09. Status: historical investigation and implementation plan.
+Implementation continued on October 10 using the [accepted architecture](2026-10-10-muse-runner-architecture.md)
+and `origin/master` at `0e37a385e678d1a568f483c31ae1c19024d2df98`.
+The baseline table below records the original investigation. Live qualification
+has not started; see the [current compatibility limit](../muse-personal-agent.md#current-compatibility-limit).
 
 ## Recommendation
 

@@ -2,13 +2,23 @@
 
 This experimental integration connects the existing personal Meta Muse to a named Paperclip Runner agent. It is separate from Muse Code. The provider is disabled by default; implementation and synthetic tests do not qualify the personal service. See the [architecture and release gates](plans/2026-10-10-muse-runner-architecture.md).
 
+## Current compatibility limit
+
+A read-only check of personal Muse on October 10, 2026 confirmed that managed
+hooks forbid all secrets and accept a script path without arguments. The current
+authenticated detector therefore cannot be installed in that runtime. Five-second
+checks are supported, but no live cadence or complete task journey is qualified.
+A public opaque wake-only revision has been prepared and remains unapplied pending
+explicit approval. Keep this provider disabled; the flow below describes the
+intended experience and the synthetic test surface, not a working live setup.
+
 ## Connection and work
 
 An operator uses the existing external-agent invitation, selects **Muse — Personal agent**, and supplies the agent's name and role. Paperclip creates or resumes the operator's unfinished hire, respecting approval requirements. Copy the transient setup instruction into the current Muse conversation. Muse downloads versioned, digest-pinned assets and exchanges a ten-minute single-use ticket directly into private storage. No Muse cookie export or manually copied long-lived key is part of setup.
 
 Approve Paperclip's hostname through Muse's permission UI. The standing permission covers the hostname. Paperclip cannot grant this permission on Muse's behalf. Setup distinguishes paired, receiver detected, and an authenticated background reply; the detector alone cannot finish setup. Hiring approval and native lifecycle readiness remain additional gates.
 
-The private Python client owns access/refresh credentials and its stable operation journal. The Bash detector reads only the narrow signal profile and produces opaque wake references. Empty checks and failures must not wake the model. Access expires after fifteen minutes, refresh rotates automatically, and thirty days of authenticated inactivity requires reconnecting. Public detector checks do not extend credential activity.
+The private Python client owns access/refresh credentials and its stable operation journal. The Bash detector reads only the narrow signal profile and produces opaque wake references. Empty checks and failures must not wake the model. Access expires after fifteen minutes, refresh rotates automatically, and thirty days of authenticated inactivity requires reconnecting. Signal checks do not extend credential activity.
 
 Assigned work claims an existing native run. Submitted progress, questions, task documents and completion use Paperclip's native authority and receipts. Paperclip displays reported progress; it cannot inspect every private Muse conversation/tool call. When idle, Muse can read permitted company work, create tasks and comment as the named agent. Other Paperclip execution operations require the current assignment.
 
