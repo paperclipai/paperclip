@@ -8,6 +8,7 @@ import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
+import { isLoopbackHost } from "./url-utils.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -97,6 +98,14 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /**
+   * Origin of the app itself, when OAuth 3LO callbacks arrive on a different
+   * one (a public address in front of an otherwise private deployment,
+   * because providers cannot redirect into a private network). Such a
+   * callback carries no board session, so it is handed back to this origin
+   * instead of being completed where the session cookie cannot reach.
+   */
+  oauthCallbackAppOrigin: string | null;
   telemetryEnabled: boolean;
   announcementsEnabled: boolean;
   announcementsFeedUrl: string;
@@ -256,6 +265,28 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  const oauthCallbackAppOrigin = (() => {
+    const raw = process.env.PAPERCLIP_OAUTH_CALLBACK_APP_ORIGIN?.trim();
+    if (!raw) return null;
+    // Fail at startup rather than silently ignore a malformed value: a value
+    // that is set but not honoured looks exactly like the 403 it was meant to
+    // fix. `.origin` also drops any path, query or fragment.
+    const invalid = (reason: string) =>
+      new Error(`PAPERCLIP_OAUTH_CALLBACK_APP_ORIGIN ${reason}: ${raw}`);
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw invalid("is not a URL");
+    }
+    if (parsed.username || parsed.password) throw invalid("must not carry credentials");
+    // This origin is a redirect target for a browser returning from an
+    // identity provider, with an authorization code in the query. Plaintext is
+    // only ever reasonable on loopback.
+    if (parsed.protocol === "https:") return parsed.origin;
+    if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)) return parsed.origin;
+    throw invalid("must be an https origin (or http on loopback)");
+  })();
   const databaseBackupEnabled =
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -363,6 +394,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    oauthCallbackAppOrigin,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
     announcementsEnabled: process.env.PAPERCLIP_ANNOUNCEMENTS_ENABLED !== "false",
     announcementsFeedUrl: process.env.PAPERCLIP_ANNOUNCEMENTS_FEED_URL?.trim() || "https://pages.paperclip.ing/announcements/v1/current.json",
