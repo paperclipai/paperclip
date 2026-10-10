@@ -290,11 +290,20 @@ function trustRuleIsActive(policy: typeof toolPolicies.$inferSelect, now = new D
 function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string): string {
   return `side_effect:${sha256({
     companyId: ctx.companyId,
+    actorType: ctx.actorType,
+    actorId: ctx.actorId,
+    agentId: ctx.agentId,
     runId: ctx.heartbeatRunId,
     issueId: ctx.issueId,
+    gatewayId: ctx.gatewayId,
     applicationId: ctx.applicationId,
     connectionId: ctx.connectionId,
     catalogEntryId: ctx.catalogEntryId,
+    catalogVersionHash: ctx.catalogVersionHash,
+    catalogSchemaHash: ctx.catalogSchemaHash,
+    providerType: ctx.providerType,
+    applicationKey: ctx.applicationKey,
+    upstreamToolName: ctx.upstreamToolName,
     toolName: ctx.toolName,
     argumentsHash,
   })}`;

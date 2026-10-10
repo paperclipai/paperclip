@@ -987,6 +987,70 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(replay.invocation.id).toBe(first.invocation.id);
   });
 
+  it("derives distinct side-effect keys for separate gateway callers", async () => {
+    const company = await createCompany(db);
+    const firstAgent = await createAgent(db, company.id);
+    const secondAgent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `gateway-${randomUUID()}`,
+      name: `Gateway ${randomUUID()}`,
+    }).returning().then((rows) => rows[0]!);
+    const [firstGateway, secondGateway] = await db.insert(toolMcpGateways).values([
+      {
+        companyId: company.id,
+        name: `First gateway ${randomUUID()}`,
+        slug: `first-${randomUUID()}`,
+        profileId: profile.id,
+      },
+      {
+        companyId: company.id,
+        name: `Second gateway ${randomUUID()}`,
+        slug: `second-${randomUUID()}`,
+        profileId: profile.id,
+      },
+    ]).returning();
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review gateway writes",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+    const request = {
+      connectionId: connection.id,
+      toolName: "send_email",
+      arguments: { to: "ops@example.com", body: "same call" },
+      sideEffecting: true,
+    };
+    const firstInput = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: firstAgent.id, agentId: firstAgent.id },
+      runContext: { gatewayId: firstGateway!.id },
+      request,
+    };
+    const secondInput = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: secondAgent.id, agentId: secondAgent.id },
+      runContext: { gatewayId: secondGateway!.id },
+      request,
+    };
+    const service = toolAccessPolicyService(db);
+
+    const first = await service.recordInvocation(firstInput, await service.decide(firstInput));
+    const second = await service.recordInvocation(secondInput, await service.decide(secondInput));
+    const replay = await service.recordInvocation(firstInput, await service.decide(firstInput));
+
+    expect(first.replayed).toBe(false);
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.id).not.toBe(first.invocation.id);
+    expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    expect(replay).toMatchObject({ replayed: true });
+    expect(replay.invocation.id).toBe(first.invocation.id);
+    expect(await db.select().from(toolInvocations)).toHaveLength(2);
+    expect(await db.select().from(toolActionRequests)).toHaveLength(2);
+  });
+
   it("enforces rate-limit policies before explicit grants", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
