@@ -1,3 +1,5 @@
+import { AgentIdentity } from "./AgentIdentity";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
@@ -14,16 +16,16 @@ import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
-import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -102,9 +104,10 @@ interface CommentThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -232,7 +235,7 @@ function runStatusClass(status: string) {
     case "timed_out":
       return "text-orange-700 dark:text-orange-300";
     case "running":
-      return "text-cyan-700 dark:text-cyan-300";
+      return "text-blue-700 dark:text-blue-300";
     case "queued":
     case "pending":
       return "text-amber-700 dark:text-amber-300";
@@ -240,27 +243,6 @@ function runStatusClass(status: string) {
       return "text-muted-foreground";
     default:
       return "text-foreground";
-  }
-}
-
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
   }
 }
 
@@ -290,7 +272,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
       title={label}
       aria-label="Copy comment as markdown"
       onClick={() => {
-        void copyTextWithFallback(text)
+        void copyTextToClipboard(text)
           .then(() => setStatus("copied"))
           .catch(() => setStatus("failed"));
 
@@ -324,6 +306,7 @@ function CommentCard({
   voting = false,
   highlightCommentId,
   queued = false,
+  externalReferences,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -339,10 +322,12 @@ function CommentCard({
   voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const isDeleted = Boolean(comment.deletedAt);
   const followUpRequested = comment.followUpRequested === true;
 
   return (
@@ -352,16 +337,16 @@ function CommentCard({
       className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
           ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
-          : isHighlighted
+          : isHighlighted && !isDeleted
             ? "border-primary/50 bg-primary/5"
             : "border-border"
-      } ${isPending ? "opacity-80" : ""}`}
+      } ${isPending ? "opacity-80" : ""} ${isDeleted ? "bg-muted/30 text-muted-foreground" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
         {comment.authorAgentId ? (
           <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-            <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+            <AgentIdentity
+              agent={agentMap?.get(comment.authorAgentId) ?? { id: comment.authorAgentId, name: comment.authorAgentId.slice(0, 8) }}
               size="sm"
             />
           </Link>
@@ -370,16 +355,16 @@ function CommentCard({
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               Queued
-            </span>
+            </Badge>
           ) : null}
           {followUpRequested ? (
-            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+            <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
               Follow-up
             </Badge>
           ) : null}
-          {companyId && !isPending ? (
+          {companyId && !isPending && !isDeleted ? (
             <PluginSlotOutlet
               slotTypes={["commentContextMenuItem"]}
               entityType="comment"
@@ -405,11 +390,15 @@ function CommentCard({
               {formatDateTime(comment.createdAt)}
             </a>
           )}
-          <CopyMarkdownButton text={comment.body} />
+          {!isDeleted ? <CopyMarkdownButton text={comment.body} /> : null}
         </span>
       </div>
-      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
-      {companyId && !isPending ? (
+      {isDeleted ? (
+        <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+      ) : (
+        <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>{comment.body}</MarkdownBody>
+      )}
+      {companyId && !isPending && !isDeleted ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
             slotTypes={["commentAnnotation"]}
@@ -427,7 +416,7 @@ function CommentCard({
           />
         </div>
       ) : null}
-      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+      {comment.authorAgentId && onVote && !isQueued && !isPending && !isDeleted ? (
         <OutputFeedbackButtons
           activeVote={feedbackVote}
           disabled={voting}
@@ -438,29 +427,29 @@ function CommentCard({
             comment.runAgentId ? (
               <Link
                 to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
               >
                 run {comment.runId.slice(0, 8)}
               </Link>
             ) : (
-              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
                 run {comment.runId.slice(0, 8)}
               </span>
             )
           ) : undefined}
         />
       ) : null}
-      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+      {comment.runId && !isPending && !isDeleted && !(comment.authorAgentId && onVote && !isQueued) ? (
         <div className="mt-3 pt-3 border-t border-border/60">
           {comment.runAgentId ? (
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
             >
               run {comment.runId.slice(0, 8)}
             </Link>
           ) : (
-            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
               run {comment.runId.slice(0, 8)}
             </span>
           )}
@@ -490,9 +479,9 @@ function TimelineEventCard({
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
-      <Avatar size="sm" className="mt-0.5">
-        <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-      </Avatar>
+      {event.actorType === "agent" ? <AgentAvatar agent={agentMap?.get(event.actorId) ?? { id: event.actorId, name: actorName }} size={32} className="mt-0.5" /> : (
+        <Avatar size="sm" className="mt-0.5"><AvatarFallback>{initialsForName(actorName)}</AvatarFallback></Avatar>
+      )}
 
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
@@ -508,7 +497,7 @@ function TimelineEventCard({
 
         {event.statusChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Status
             </span>
             <span className="text-muted-foreground">
@@ -523,7 +512,7 @@ function TimelineEventCard({
 
         {event.assigneeChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Assignee
             </span>
             <span className="text-muted-foreground">
@@ -532,6 +521,21 @@ function TimelineEventCard({
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
+            </span>
+          </div>
+        ) : null}
+
+        {event.workspaceChange ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(event.workspaceChange.to)}
             </span>
           </div>
         ) : null}
@@ -555,6 +559,7 @@ const TimelineList = memo(function TimelineList({
   onVote,
   votingTargetId,
   highlightCommentId,
+  externalReferences,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -577,6 +582,7 @@ const TimelineList = memo(function TimelineList({
   ) => Promise<void>;
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
@@ -619,9 +625,7 @@ const TimelineList = memo(function TimelineList({
           const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
           return (
             <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
-              <Avatar size="sm">
-                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-              </Avatar>
+              <AgentAvatar agent={agentMap?.get(run.agentId) ?? { id: run.agentId, name: actorName }} size={32} />
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
@@ -647,11 +651,16 @@ const TimelineList = memo(function TimelineList({
                 </div>
               </div>
               {run.environment || run.environmentLease ? (
-                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-(length:--text-micro) text-muted-foreground">
                   {run.environment ? (
                     <span>
                       Environment <span className="text-foreground">{run.environment.name}</span>
-                      <span> · {run.environment.driver}</span>
+                      {/* The raw "sandbox" driver key stays off run details — the
+                          environment's name and the Provider entry below already
+                          identify it; other drivers (ssh, local) remain useful. */}
+                      {run.environment.driver !== "sandbox" ? (
+                        <span> · {run.environment.driver}</span>
+                      ) : null}
                     </span>
                   ) : null}
                   {run.environmentLease?.provider ? (
@@ -698,6 +707,7 @@ const TimelineList = memo(function TimelineList({
             onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
+            externalReferences={externalReferences}
           />
         );
       })}
@@ -736,6 +746,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
+  externalReferences,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -817,6 +828,7 @@ export function CommentThread({
         kind: "agent",
         agentId: a.id,
         agentIcon: a.icon,
+        agentAppearance: a.appearance,
       }));
   }, [agentMap, providedMentions]);
 
@@ -848,6 +860,15 @@ export function CommentThread({
     const hash = location.hash;
     if (!hash.startsWith("#comment-") || comments.length + queuedComments.length === 0) return;
     const commentId = hash.slice("#comment-".length);
+    const targetComment = [...comments, ...queuedComments].find((comment) => comment.id === commentId);
+    if (targetComment?.deletedAt) {
+      setHighlightCommentId(null);
+      hasScrolledRef.current = false;
+      if (typeof window !== "undefined") {
+        window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+      }
+      return;
+    }
     // Only scroll once per hash
     if (hasScrolledRef.current) return;
     const el = document.getElementById(`comment-${commentId}`);
@@ -945,6 +966,7 @@ export function CommentThread({
         votingTargetId={votingTargetId}
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
+        externalReferences={externalReferences}
       />
 
       {liveRunSlot}
@@ -952,7 +974,7 @@ export function CommentThread({
       {queuedComments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+            <h4 className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
               Queued Comments ({queuedComments.length})
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
@@ -977,6 +999,7 @@ export function CommentThread({
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}
                 queued
+                externalReferences={externalReferences}
               />
             ))}
           </div>
@@ -997,7 +1020,7 @@ export function CommentThread({
             mentions={mentions}
             onSubmit={handleSubmit}
             imageUploadHandler={imageUploadHandler}
-            contentClassName="min-h-[60px] text-sm"
+            contentClassName="min-h-(--sz-60px) text-sm"
           />
           <div className="flex items-center justify-end gap-3">
             {(imageUploadHandler || onAttachImage) && (
@@ -1024,20 +1047,20 @@ export function CommentThread({
               <InlineEntitySelector
                 value={reassignTarget}
                 options={reassignOptions}
-                placeholder="Assignee"
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                placeholder="Responsible"
+                noneLabel="No responsible"
+                searchPlaceholder="Search responsible..."
+                emptyMessage="No responsible found."
                 onChange={setReassignTarget}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
-                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                  if (!option) return <span className="text-muted-foreground">Responsible</span>;
                   const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                   const agent = agentId ? agentMap?.get(agentId) : null;
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>
@@ -1050,7 +1073,7 @@ export function CommentThread({
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>

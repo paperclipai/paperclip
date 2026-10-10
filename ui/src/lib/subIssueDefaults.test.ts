@@ -10,6 +10,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     projectWorkspaceId: "project-workspace-1",
     sourceIssueId: null,
     status: "active",
+    deliveryState: "unknown",
     mode: "isolated_workspace",
     strategyType: "git_worktree",
     name: "Parent workspace",
@@ -46,8 +47,10 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
@@ -69,6 +72,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-07T00:00:00.000Z"),
     updatedAt: new Date("2026-04-07T00:00:00.000Z"),
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 

@@ -24,13 +24,17 @@ export function IssueGroupHeader({
       {collapsible ? (
         <button
           type="button"
-          className="flex min-w-0 items-center gap-1.5 text-left"
+          className="flex min-w-0 items-center gap-2 text-left"
           aria-expanded={!collapsed}
           onClick={onToggle}
         >
-          <ChevronRight
-            className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")}
-          />
+          {/* w-4 centered chevron box matches the task rows' chevron column so
+              the header chevron lines up exactly with the chevrons below it. */}
+          <span className="inline-flex w-4 shrink-0 items-center justify-center">
+            <ChevronRight
+              className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")}
+            />
+          </span>
           <span className="truncate text-sm font-semibold uppercase tracking-wide">
             {label}
           </span>

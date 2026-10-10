@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
 import {
+  buildIssueSiblingNavigation,
   buildSubIssueProgressSummary,
   shouldRenderRichSubIssuesSection,
   shouldRenderSubIssueProgressSummary,
@@ -21,6 +22,21 @@ function issue(
     status,
     createdAt: new Date(createdAt),
     blockedBy: blockedByIds.map((blockerId) => ({ id: blockerId })),
+  } as Issue;
+}
+
+function siblingIssue(
+  id: string,
+  createdAt: string,
+  blockedByIds: string[] = [],
+  overrides: Partial<Issue> = {},
+): Issue {
+  return {
+    ...issue(id, "todo", createdAt, blockedByIds),
+    parentId: "parent-1",
+    title: `Sibling ${id}`,
+    hiddenAt: null,
+    ...overrides,
   } as Issue;
 }
 
@@ -76,5 +92,114 @@ describe("buildSubIssueProgressSummary", () => {
 
     expect(summary.target?.kind).toBe("blocked");
     expect(summary.target?.issue.id).toBe("2");
+  });
+});
+
+describe("buildIssueSiblingNavigation", () => {
+  it("orders linear blocker chains before selecting previous and next siblings", () => {
+    const current = siblingIssue("2", "2026-04-02T00:00:00.000Z", ["1"]);
+    const navigation = buildIssueSiblingNavigation(current, [
+      siblingIssue("3", "2026-04-03T00:00:00.000Z", ["2"]),
+      siblingIssue("1", "2026-04-01T00:00:00.000Z"),
+      current,
+    ]);
+
+    expect(navigation?.previous?.id).toBe("1");
+    expect(navigation?.next?.id).toBe("3");
+    expect(navigation?.currentIndex).toBe(1);
+    expect(navigation?.totalCount).toBe(3);
+  });
+
+  it("degrades branch and merge graphs to stable workflow order", () => {
+    const current = siblingIssue("3", "2026-04-03T00:00:00.000Z", ["1"]);
+    const navigation = buildIssueSiblingNavigation(current, [
+      siblingIssue("4", "2026-04-04T00:00:00.000Z", ["2", "3"]),
+      siblingIssue("2", "2026-04-02T00:00:00.000Z", ["1"]),
+      current,
+      siblingIssue("1", "2026-04-01T00:00:00.000Z"),
+    ]);
+
+    expect(navigation?.previous?.id).toBe("2");
+    expect(navigation?.next?.id).toBe("4");
+  });
+
+  it("falls back to created time and id when siblings have no direct blocker hints", () => {
+    const current = siblingIssue("2", "2026-04-01T00:00:00.000Z");
+    const navigation = buildIssueSiblingNavigation(current, [
+      siblingIssue("3", "2026-04-02T00:00:00.000Z"),
+      siblingIssue("1", "2026-04-01T00:00:00.000Z"),
+      current,
+    ]);
+
+    expect(navigation?.previous?.id).toBe("1");
+    expect(navigation?.next?.id).toBe("3");
+  });
+
+  it("hides navigation for root issues without children or hidden current issues", () => {
+    expect(buildIssueSiblingNavigation(siblingIssue("1", "2026-04-01T00:00:00.000Z", [], { parentId: null }), []))
+      .toBeNull();
+    expect(buildIssueSiblingNavigation(siblingIssue("1", "2026-04-01T00:00:00.000Z", [], { parentId: null }), [
+      siblingIssue("2", "2026-04-02T00:00:00.000Z", [], { parentId: null }),
+    ])).toBeNull();
+    expect(buildIssueSiblingNavigation(siblingIssue("1", "2026-04-01T00:00:00.000Z", [], { hiddenAt: new Date() }), []))
+      .toBeNull();
+  });
+
+  it("hides navigation when the current issue is the only visible child", () => {
+    const current = siblingIssue("1", "2026-04-01T00:00:00.000Z");
+    const navigation = buildIssueSiblingNavigation(current, [
+      current,
+      siblingIssue("2", "2026-04-02T00:00:00.000Z", [], { hiddenAt: new Date() }),
+    ]);
+
+    expect(navigation).toBeNull();
+  });
+
+  it("returns only next for the first sibling and only previous for the last sibling", () => {
+    const first = siblingIssue("1", "2026-04-01T00:00:00.000Z");
+    const last = siblingIssue("3", "2026-04-03T00:00:00.000Z");
+    const siblings = [
+      siblingIssue("2", "2026-04-02T00:00:00.000Z"),
+      last,
+      first,
+    ];
+
+    expect(buildIssueSiblingNavigation(first, siblings)).toMatchObject({
+      previous: null,
+      next: { id: "2" },
+    });
+    expect(buildIssueSiblingNavigation(last, siblings)).toMatchObject({
+      previous: { id: "2" },
+      next: null,
+    });
+  });
+
+  it("uses the first direct child as next when a root issue has no sibling next", () => {
+    const current = siblingIssue("1", "2026-04-01T00:00:00.000Z", [], { parentId: null });
+    const navigation = buildIssueSiblingNavigation(current, [], [
+      siblingIssue("3", "2026-04-03T00:00:00.000Z", ["2"], { parentId: "1" }),
+      siblingIssue("2", "2026-04-02T00:00:00.000Z", [], { parentId: "1" }),
+    ]);
+
+    expect(navigation).toMatchObject({
+      previous: null,
+      next: { id: "2" },
+    });
+  });
+
+  it("uses the first direct child as next when the current sibling is last", () => {
+    const current = siblingIssue("2", "2026-04-02T00:00:00.000Z");
+    const navigation = buildIssueSiblingNavigation(current, [
+      siblingIssue("1", "2026-04-01T00:00:00.000Z"),
+      current,
+    ], [
+      siblingIssue("4", "2026-04-04T00:00:00.000Z", ["3"], { parentId: "2" }),
+      siblingIssue("3", "2026-04-03T00:00:00.000Z", [], { parentId: "2" }),
+    ]);
+
+    expect(navigation).toMatchObject({
+      previous: { id: "1" },
+      next: { id: "3" },
+    });
   });
 });

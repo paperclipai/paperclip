@@ -1,33 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
-import { Button } from "@/components/ui/button";
+import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { cn, relativeTime } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
-import { Check, ChevronDown, ChevronRight, Copy, History } from "lucide-react";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import { ChevronDown, ChevronRight, History } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 type IssueContinuationHandoffProps = {
   document: IssueDocument | null | undefined;
   focusSignal?: number;
+  externalReferences?: MarkdownExternalReferenceMap;
 };
 
 export function IssueContinuationHandoff({
   document,
   focusSignal = 0,
+  externalReferences,
 }: IssueContinuationHandoffProps) {
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [highlighted, setHighlighted] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (copiedTimerRef.current) {
-        clearTimeout(copiedTimerRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (!document || focusSignal <= 0) return;
@@ -37,16 +30,6 @@ export function IssueContinuationHandoff({
     const timer = setTimeout(() => setHighlighted(false), 3000);
     return () => clearTimeout(timer);
   }, [document, focusSignal]);
-
-  const copyBody = useCallback(async () => {
-    if (!document) return;
-    await navigator.clipboard?.writeText(document.body);
-    setCopied(true);
-    if (copiedTimerRef.current) {
-      clearTimeout(copiedTimerRef.current);
-    }
-    copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
-  }, [document]);
 
   if (!document) return null;
 
@@ -75,23 +58,30 @@ export function IssueContinuationHandoff({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{title}</span>
-            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase text-muted-foreground">
               handoff
-            </span>
+            </Badge>
           </div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-(length:--text-micro) text-muted-foreground">
             Updated {relativeTime(document.updatedAt)}
             {document.latestRevisionNumber > 0 ? ` - revision ${document.latestRevisionNumber}` : ""}
           </div>
         </div>
-        <Button variant="ghost" size="sm" onClick={copyBody} className="shrink-0">
-          {copied ? <Check className="mr-1.5 h-3.5 w-3.5" /> : <Copy className="mr-1.5 h-3.5 w-3.5" />}
-          {copied ? "Copied" : "Copy"}
-        </Button>
+        <AgentSetupPrompt
+          prompt={document.body}
+          label="Continue with an agent"
+          title="Task handoff"
+          description="Paste this into your agent to continue from this handoff."
+          align="end"
+        />
       </div>
       {expanded ? (
         <div className="mt-3 rounded-md border border-border bg-background/80 p-3">
-          <MarkdownBody className="paperclip-edit-in-place-content text-sm leading-6" softBreaks={false}>
+          <MarkdownBody
+            className="paperclip-edit-in-place-content text-sm leading-6"
+            softBreaks={false}
+            externalReferences={externalReferences}
+          >
             {document.body}
           </MarkdownBody>
         </div>

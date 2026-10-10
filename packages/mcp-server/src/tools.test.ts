@@ -52,6 +52,23 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("lists the company skill library with the default company id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ key: "paperclipai/bundled/product/wireframe", name: "wireframe" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListSkills");
+    const response = await tool.execute({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills",
+    );
+    expect(response.content[0]?.text).toContain("wireframe");
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),
@@ -84,6 +101,32 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       agentId: "22222222-2222-2222-2222-222222222222",
       expectedStatuses: ["todo", "backlog", "blocked"],
+    });
+  });
+
+  it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1", status: "todo" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Assigned follow-up",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: "Assigned follow-up",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      requestDepth: 0,
     });
   });
 
@@ -262,6 +305,62 @@ describe("paperclip MCP tools", () => {
           revisionId: "33333333-3333-4333-8333-333333333333",
           revisionNumber: 3,
         },
+      },
+    });
+  });
+
+  it("creates request_checkbox_confirmation interactions with checkbox payloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "interaction-1", kind: "request_checkbox_confirmation" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipRequestCheckboxConfirmation");
+    await tool.execute({
+      issueId: "PAP-1135",
+      idempotencyKey: "confirmation:PAP-1135:files",
+      title: "Choose files",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        detailsMarkdown: "Pick the files to attach.",
+        options: [
+          { id: "file-a", label: "File A", description: "Primary draft" },
+          { id: "file-b", label: "File B" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+        acceptLabel: "Use selected files",
+        rejectLabel: "Do not attach files",
+        rejectRequiresReason: true,
+        allowDeclineReason: false,
+      },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      kind: "request_checkbox_confirmation",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "confirmation:PAP-1135:files",
+      title: "Choose files",
+      payload: {
+        version: 1,
+        prompt: "Which files should be included?",
+        detailsMarkdown: "Pick the files to attach.",
+        options: [
+          { id: "file-a", label: "File A", description: "Primary draft" },
+          { id: "file-b", label: "File B" },
+        ],
+        defaultSelectedOptionIds: ["file-a"],
+        minSelected: 1,
+        maxSelected: 2,
+        acceptLabel: "Use selected files",
+        rejectLabel: "Do not attach files",
+        rejectRequiresReason: true,
+        allowDeclineReason: false,
       },
     });
   });

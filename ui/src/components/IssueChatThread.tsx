@@ -1,7 +1,14 @@
-import {
-  AssistantRuntimeProvider,
-  useAui,
-} from "@assistant-ui/react";
+import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
+import { useWorkspaceBaseRefRecovery } from "./WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
+import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
+import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
+import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
+import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
+import { useEmailComment } from "./EmailMessageCard";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -16,6 +23,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -24,6 +32,7 @@ import {
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type Ref,
   type ReactNode,
 } from "react";
@@ -34,15 +43,47 @@ import type {
   FeedbackVote,
   FeedbackVoteValue,
   IssueAttachment,
+  IssueDocumentSummary,
   IssueBlockerAttention,
+  IssueRecoveryAction,
+  IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
+  IssueScheduledRetry,
+  SuccessfulRunHandoffState,
+  IssueWorkMode,
+  IssueWorkProduct,
+  IssueAssigneeAdapterOverrides,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { findUIAdapter } from "../adapters/registry";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
-import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useSecondTick } from "../hooks/useSecondTick";
+import {
+  usePaperclipIssueRuntime,
+  type PaperclipIssueRuntimeReassignment,
+} from "../hooks/usePaperclipIssueRuntime";
+import { useOptionalToastActions } from "../context/ToastContext";
+import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  loadDraft,
+  loadDraftIfAvailable,
+  loadDraftRecoveryKey,
+  preserveDraftInTab,
+  saveDraft,
+  clearDraft,
+  loadDraftAttachments,
+  saveDraftAttachments,
+  loadDraftSubmission,
+  saveDraftSubmission,
+  clearDraftSubmission,
+  settleDraftSubmission,
+  type ComposerDraftSubmission,
+} from "../lib/composer-draft";
+import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import {
   buildIssueChatMessages,
   formatDurationWords,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -54,13 +95,28 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictValue,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
-import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
+import {
+  buildIssueThreadInteractionSummary,
+  isIssueThreadInteraction,
+} from "../lib/issue-thread-interactions";
+import { isLiveIssueRun } from "../lib/liveIssueIds";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import {
+  formatTimelineWorkspaceLabel,
+  type IssueTimelineAssignee,
+  type IssueTimelineEvent,
+  type IssueTimelineWorkspace,
+  type IssueWorkModeChange,
+} from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/InlineBanner";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -72,17 +128,53 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MarkdownBody } from "./MarkdownBody";
-import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
+import {
+  MarkdownBody,
+  type MarkdownExternalReferenceMap,
+} from "./MarkdownBody";
+import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
+import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
+import {
+  MarkdownEditor,
+  type MentionOption,
+  type MarkdownEditorRef,
+} from "./MarkdownEditor";
 import { Identity } from "./Identity";
-import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import {
+  InlineEntitySelector,
+  type InlineEntityOption,
+} from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
-import { AgentIcon } from "./AgentIconPicker";
+import {
+  AssigneeChip,
+  ComposerHandoffPreviewRow,
+  ComposerMentionCoach,
+  HandoffWakeRow,
+  RunStatusBadge,
+  type HandoffChipResolvers,
+} from "./interrupt-handoff/InterruptHandoffViews";
+import {
+  computeComposerHandoffPreview,
+  extractAgentMentionIds,
+  findPlainAgentNameCandidate,
+  type ComposerHandoffPreview,
+  type HandoffAgentMention,
+} from "../lib/interrupt-handoff";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
   captureComposerViewportSnapshot,
@@ -90,9 +182,29 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
+import {
+  isSuccessfulRunHandoffComment,
+  isSuccessfulRunHandoffEscalationComment,
+} from "../lib/successful-run-handoff";
+import {
+  SystemNotice,
+  type SystemNoticeMetadataRow,
+  type SystemNoticeMetadataSection,
+  type SystemNoticeProps,
+  type SystemNoticeTone,
+} from "./SystemNotice";
+import {
+  buildSystemNoticeProps,
+  mapCommentMetadataToSystemNoticeSections,
+  systemNoticeLabelForTone,
+} from "../lib/system-notice-comment";
+import type {
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+  SourceTrustMetadata,
+} from "@paperclipai/shared";
 import {
   describeToolInput,
   displayToolName,
@@ -102,12 +214,55 @@ import {
   summarizeToolInput,
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
+import { buildAgentMentionHref } from "@paperclipai/shared";
+import { useComposerStop } from "@/hooks/useComposerStop";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { liveBlueBadge } from "../lib/status-colors";
+import {
+  nextWorkMode,
+  workModeMetaFor,
+} from "../lib/work-mode-meta";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Brain,
+  Check,
+  ChevronDown,
+  ClipboardList,
+  Copy,
+  Hammer,
+  Loader2,
+  MoreHorizontal,
+  Paperclip,
+  PauseCircle,
+  Search,
+  Square,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+  X,
+} from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
+import {
+  IssueRecoveryActionCard,
+  type RecoveryReissueRequest,
+  type RecoveryResolveOutcome,
+} from "./IssueRecoveryActionCard";
+import { SourceTrustBadge } from "./SourceTrustBadge";
+import { CommentAttributionChip } from "./CommentAttributionChip";
+import { resolveCommentAttribution } from "../lib/comment-attribution";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -122,27 +277,80 @@ interface IssueChatMessageContext {
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
+  runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  /** New task-view composer takeover action. The classic thread does not render it. */
+  onSkipInteraction?: (
+    interaction: IssueThreadInteraction,
+  ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: {
+      id: string;
+      verdict: RequestItemVerdictValue;
+      reason?: string;
+    }[],
+  ) => Promise<void> | void;
+  onUploadImage?: (file: File) => Promise<string>;
+  issueStatus?: string;
+  /**
+   * Current assignee. Agent comments from anyone else are cross-issue writes, so
+   * they carry a "for {user}" attribution chip (the open cross-task write design (attribution)).
+   */
+  issueAssigneeAgentId?: string | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  issueStatus: undefined,
+  successfulRunHandoff: null,
 });
+
+const AGENT_COMMENT_BUBBLE_WIDTH_CLASS =
+  "max-w-(--sz-calc-7) sm:max-w-(--pct-85)";
+
+export type IssueChatRunFinalizationAction = {
+  id: "cancel" | "done";
+  label: string;
+  pendingLabel: string;
+  onSelect: (runId: string) => Promise<void> | void;
+  isPending?: boolean;
+  disabled?: boolean;
+};
 
 export function resolveAssistantMessageFoldedState(args: {
   messageId: string;
@@ -186,7 +394,10 @@ function findCoTSegmentIndex(
   let inCoT = false;
   for (const part of messageParts) {
     if (part.type === "reasoning" || part.type === "tool-call") {
-      if (!inCoT) { segIdx++; inCoT = true; }
+      if (!inCoT) {
+        segIdx++;
+        inCoT = true;
+      }
       if (part === firstPart) return segIdx;
     } else {
       inCoT = false;
@@ -195,18 +406,79 @@ function findCoTSegmentIndex(
   return -1;
 }
 
-function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!active || !startMs) return;
-    const interval = setInterval(() => rerender((n) => n + 1), 1000);
-    return () => clearInterval(interval);
-  }, [active, startMs]);
+function useLiveElapsed(
+  startMs: number | null | undefined,
+  active: boolean,
+): string | null {
+  // Drive the 1s refresh from the shared page-wide ticker instead of a
+  // per-instance setInterval, so a thread with many live elements uses one
+  // timer rather than one per element.
+  useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
   return formatDurationWords(Date.now() - startMs);
 }
 
-function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
+function readCustomString(
+  custom: Record<string, unknown>,
+  key: string,
+): string {
+  return typeof custom[key] === "string" ? custom[key].trim() : "";
+}
+
+function toTimestampOrNull(value: string): number | null {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function IssueChatLiveRunStatusLine({
+  custom,
+  active,
+  className,
+}: {
+  custom: Record<string, unknown>;
+  active: boolean;
+  className?: string;
+}) {
+  const currentStatusMessage = readCustomString(custom, "currentStatusMessage");
+  const currentToolName = readCustomString(custom, "currentToolName");
+  const lastAssistantSnippet = readCustomString(custom, "lastAssistantSnippet");
+  const lastEventAt = readCustomString(custom, "lastEventAt");
+  const lastEventAtMs = toTimestampOrNull(lastEventAt);
+  const lastActivityElapsed = useLiveElapsed(lastEventAtMs, active);
+  const lastActivityAgeMs = lastEventAtMs ? Date.now() - lastEventAtMs : null;
+
+  if (!active) return null;
+
+  const primary = currentToolName
+    ? `Using ${currentToolName}`
+    : lastAssistantSnippet
+      ? lastAssistantSnippet
+      : currentStatusMessage;
+  const activityText = lastActivityElapsed
+    ? lastActivityAgeMs !== null && lastActivityAgeMs >= 15_000
+      ? `no output for ${lastActivityElapsed} - still running`
+      : `${lastActivityElapsed} ago`
+    : "";
+  const text = [primary, activityText].filter(Boolean).join(" · ");
+  if (!text) return null;
+
+  return (
+    <span
+      className={cn(
+        "mt-0.5 block truncate text-xs leading-4 text-muted-foreground/70",
+        className,
+      )}
+      title={text}
+    >
+      {text}
+    </span>
+  );
+}
+
+function useStableEvent<T extends (...args: never[]) => unknown>(
+  callback: T | undefined,
+): T | undefined {
   const callbackRef = useRef(callback);
   useLayoutEffect(() => {
     callbackRef.current = callback;
@@ -226,38 +498,110 @@ interface CommentReassignment {
   assigneeUserId: string | null;
 }
 
+export function shouldRenderComposerHandoffPreview(
+  body: string,
+  preview: ComposerHandoffPreview,
+): boolean {
+  return Boolean(body.trim()) && preview.kind !== "none";
+}
+
 export interface IssueChatComposerHandle {
   focus: () => void;
   restoreDraft: (submittedBody: string) => void;
 }
 
 interface IssueChatComposerProps {
+  onSend: IssueChatThreadProps["onAdd"];
+  confirmedSubmissionIds: ReadonlySet<string>;
+  onReviewConversation?: () => Promise<void>;
+  onStop?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   onImageUpload?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
+  companyId?: string | null;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
+  /** Whether an agent run is currently in flight, so the composer can preview an interrupt. */
+  hasActiveRun?: boolean;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
+  issueWorkMode?: IssueWorkMode;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
 }
 
 interface IssueChatThreadProps {
+  /** Browser sessions are placed chronologically by the default task thread. */
+  browsers?: import("@paperclipai/shared").TaskBrowser[];
+  onOpenBrowser?: (browserId: string) => void;
+  hasOlderComments?: boolean;
   comments: IssueChatComment[];
   interactions?: IssueThreadInteraction[];
+  /** App-authoritative resources interleaved by the default task thread. */
+  documents?: IssueDocumentSummary[];
+  workProducts?: IssueWorkProduct[];
+  attachments?: IssueAttachment[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
   linkedRuns?: IssueChatLinkedRun[];
   timelineEvents?: IssueTimelineEvent[];
+  /**
+   * Work-mode switch history from the activity feed. Only the chat-style
+   * TaskChatThread consumes this to tag each agent reply with the mode its
+   * request ran under; this thread — the classic task view behind
+   * enableClassicTaskInterface — ignores it.
+   */
+  workModeChanges?: IssueWorkModeChange[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
+  /** Company-wide set of issue ids with a live (queued/running) run. */
+  liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+  recoveryAction?: IssueRecoveryAction | null;
+  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
+  reissueIsolatedRecoveryActionPending?: boolean;
+  onReconcileForwardRecoveryAction?: () => void;
+  onBreakGlassOverrideRecoveryAction?: (reason: string) => void;
+  onQuarantineRestoreRecoveryAction?: () => void;
+  quarantineRestoreRecoveryActionPending?: boolean;
+  canBreakGlassRecoveryAction?: boolean;
+  reconcileRecoveryActionPending?: boolean;
+  canFalsePositiveRecoveryAction?: boolean;
+  legacyRecoverySourceIssue?: {
+    identifier: string | null;
+    href: string;
+    title?: string | null;
+  } | null;
+  assigneeUserId?: string | null;
+  /** Current assignee agent, used to mark cross-issue agent comments (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId?: string | null;
+  onResumeFromBacklog?: () => Promise<void> | void;
+  resumeFromBacklogPending?: boolean;
+  /** Resume a paused assignee agent so runs can start again. */
+  onResumeAssignee?: () => Promise<void> | void;
+  resumeAssigneePending?: boolean;
+  /** Requeues a blocked task after its no-live-execution-path recovery notice. */
+  onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
+  tryAgainNoLiveExecutionPathPending?: boolean;
+  /** Starts a fresh on-demand run for the selected failed run. */
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -270,51 +614,130 @@ interface IssueChatThreadProps {
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (
+    body: string,
+    reopen?: boolean,
+    reassignment?: CommentReassignment,
+    attachmentIds?: string[],
+    clientRequestId?: string,
+    runSettings?: ComposerRunSettings,
+  ) => Promise<void>;
+  onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
+  runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
   imageUploadHandler?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  autoScrollToLatestOnInitialLoad?: boolean;
+  autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
+  footer?: ReactNode;
+  /**
+   * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
+   * the thread's scroll viewport so it scrolls away with the messages. Only
+   * the chat-style TaskChatThread consumes this; this thread ignores it — its
+   * header stays in the page flow.
+   */
+  threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble
+   * (PAP-375). Only the chat-style TaskChatThread consumes it; this thread
+   * ignores it — its description stays in the page header via InlineEditor.
+   */
+  issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  /** Authoritative PRP queue. The classic thread intentionally ignores it. */
+  queuedCommentQueue?: IssueQueuedCommentQueue | null;
+  onEditQueuedComment?: (
+    commentId: string,
+    body: string,
+    revision: string,
+  ) => Promise<void>;
+  onReorderQueuedComments?: (
+    orderedCommentIds: string[],
+    revision: string,
+  ) => Promise<void>;
+  onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  onDiscardQueuedComment?: (
+    commentId: string,
+    revision: string,
+  ) => Promise<void>;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  /** New task-view composer takeover action. The classic thread does not render it. */
+  onSkipInteraction?: (
+    interaction: IssueThreadInteraction,
+  ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: {
+      id: string;
+      verdict: RequestItemVerdictValue;
+      reason?: string;
+    }[],
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  /** Optional node rendered inline directly above the sticky composer dock (e.g. the monitor strip). */
+  composerAccessory?: ReactNode;
+  issueWorkMode?: IssueWorkMode;
   /**
    * Hook for the parent to refetch comments when the user explicitly asks
    * to jump to the latest comment. Used to make sure the absolute newest
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
+  /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
+  linkCaseReferences?: boolean;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -322,6 +745,7 @@ type IssueChatErrorBoundaryProps = {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
   children: ReactNode;
 };
 
@@ -329,7 +753,10 @@ type IssueChatErrorBoundaryState = {
   hasError: boolean;
 };
 
-class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, IssueChatErrorBoundaryState> {
+class IssueChatErrorBoundary extends Component<
+  IssueChatErrorBoundaryProps,
+  IssueChatErrorBoundaryState
+> {
   override state: IssueChatErrorBoundaryState = { hasError: false };
 
   static getDerivedStateFromError(): IssueChatErrorBoundaryState {
@@ -337,10 +764,13 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
-    console.error("Issue chat renderer failed; falling back to safe transcript view", {
-      error,
-      info: info.componentStack,
-    });
+    console.error(
+      "Issue chat renderer failed; falling back to safe transcript view",
+      {
+        error,
+        info: info.componentStack,
+      },
+    );
   }
 
   override componentDidUpdate(prevProps: IssueChatErrorBoundaryProps): void {
@@ -356,6 +786,7 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
           messages={this.props.messages}
           emptyMessage={this.props.emptyMessage}
           variant={this.props.variant}
+          externalReferences={this.props.externalReferences}
         />
       );
     }
@@ -363,32 +794,66 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 }
 
-function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+export function IssueAssigneePausedNotice({
+  agent,
+  onResume,
+  resuming,
+}: {
+  agent: Agent | null;
+  onResume?: () => Promise<void> | void;
+  resuming?: boolean;
+}) {
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
-      : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+      : agent.pauseReason === "import"
+        ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
+        : agent.pauseReason === "system"
+          ? "It was paused by the system."
+          : "It was paused manually.";
+  // Budget pauses clear on their own when the budget resets; resuming by hand
+  // would fight the hard stop, so the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
 
   return (
-    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
-      <div className="flex items-start gap-2">
-        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
-        <p className="min-w-0 leading-5">
-          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
-        </p>
-      </div>
+    <div data-testid="issue-assignee-paused-notice" className="mb-3">
+      <InlineBanner
+        tone="warning"
+        icon={PauseCircle}
+        compact
+        title={
+          <>
+            <span className="font-medium">{agent.name}</span> is paused.
+          </>
+        }
+        actions={
+          canResume ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onResume}
+              disabled={resuming}
+              data-testid="issue-assignee-paused-resume"
+            >
+              {resuming ? "Resuming…" : "Resume agent"}
+            </Button>
+          ) : undefined
+        }
+      >
+        New runs will not start until the agent is resumed. {pauseDetail}
+      </InlineBanner>
     </div>
   );
 }
 
 function fallbackAuthorLabel(message: ThreadMessage) {
-  const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+  const custom = message.metadata?.custom as
+    Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
-  if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
+  if (typeof custom?.["runAgentName"] === "string")
+    return custom["runAgentName"];
   if (message.role === "assistant") return "Agent";
   if (message.role === "user") return "You";
   return "System";
@@ -404,13 +869,19 @@ function fallbackTextParts(message: ThreadMessage) {
     if (part.type === "tool-call") {
       const lines = [`Tool: ${part.toolName}`];
       if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
-      if (typeof part.result === "string" && part.result.trim()) lines.push(`Result:\n${part.result}`);
+      if (typeof part.result === "string" && part.result.trim())
+        lines.push(`Result:\n${part.result}`);
       contentLines.push(lines.join("\n\n"));
     }
   }
 
-  const custom = message.metadata?.custom as Record<string, unknown> | undefined;
-  if (contentLines.length === 0 && typeof custom?.["waitingText"] === "string" && custom["waitingText"].trim()) {
+  const custom = message.metadata?.custom as
+    Record<string, unknown> | undefined;
+  if (
+    contentLines.length === 0 &&
+    typeof custom?.["waitingText"] === "string" &&
+    custom["waitingText"].trim()
+  ) {
     contentLines.push(custom["waitingText"]);
   }
   return contentLines;
@@ -420,10 +891,12 @@ function IssueChatFallbackThread({
   messages,
   emptyMessage,
   variant,
+  externalReferences,
 }: {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
@@ -431,45 +904,64 @@ function IssueChatFallbackThread({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">
+              Chat renderer hit an internal state error.
+            </p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              Showing a safe fallback transcript instead of crashing the tasks
+              page.
             </p>
           </div>
         </div>
       </div>
 
       {messages.length === 0 ? (
-        <div className={cn(
-          "text-center text-sm text-muted-foreground",
-          variant === "embedded"
-            ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-            : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
-        )}>
+        <Card
+          className={cn(
+            "block shadow-none text-center text-sm text-muted-foreground",
+            variant === "embedded"
+              ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+              : "border-dashed px-6 py-10",
+          )}
+        >
           {emptyMessage}
-        </div>
+        </Card>
       ) : (
         <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
           {messages.map((message) => {
             const lines = fallbackTextParts(message);
             return (
-              <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
+              <Card
+                key={message.id}
+                className="block border-border/60 bg-card/70 px-4 py-3"
+              >
                 <div className="mb-2 flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  <span className="font-medium text-foreground">
+                    {fallbackAuthorLabel(message)}
+                  </span>
                   {message.createdAt ? (
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-(length:--text-micro) text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
                     </span>
                   ) : null}
                 </div>
                 <div className="space-y-2">
-                  {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
-                  )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                  {lines.length > 0 ? (
+                    lines.map((line, index) => (
+                      <MarkdownBody
+                        key={`${message.id}:fallback:${index}`}
+                        externalReferences={externalReferences}
+                      >
+                        {line}
+                      </MarkdownBody>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No message content.
+                    </p>
                   )}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
@@ -484,6 +976,7 @@ const SUBMIT_SCROLL_RESERVE_VH = 0.4;
 
 type ComposerAttachmentItem = {
   id: string;
+  attachmentId?: string;
   name: string;
   size: number;
   status: "uploading" | "attached" | "error";
@@ -508,35 +1001,23 @@ function toIsoString(value: string | Date | null | undefined): string | null {
   return typeof value === "string" ? value : value.toISOString();
 }
 
-function loadDraft(draftKey: string): string {
-  try {
-    return localStorage.getItem(draftKey) ?? "";
-  } catch {
-    return "";
-  }
+/**
+ * ISO timestamp for display, or undefined when the value does not parse as a
+ * real date. Comment timestamps can arrive malformed (e.g. a server
+ * serialization bug turning Dates into `{}`); formatting must degrade to "no
+ * timestamp" instead of throwing mid-render (PAP-16607).
+ */
+function toValidIsoString(
+  value: Date | string | number | undefined,
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function saveDraft(draftKey: string, value: string) {
-  try {
-    if (value.trim()) {
-      localStorage.setItem(draftKey, value);
-    } else {
-      localStorage.removeItem(draftKey);
-    }
-  } catch {
-    // Ignore localStorage failures.
-  }
-}
-
-function clearDraft(draftKey: string) {
-  try {
-    localStorage.removeItem(draftKey);
-  } catch {
-    // Ignore localStorage failures.
-  }
-}
-
-function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | null {
+function parseReassignment(
+  target: string,
+): PaperclipIssueRuntimeReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
@@ -551,8 +1032,14 @@ function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | 
   return null;
 }
 
-function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
-  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+function shouldImplicitlyReopenComment(
+  issueStatus: string | undefined,
+  assigneeValue: string,
+) {
+  const resumesToTodo =
+    issueStatus === "done" ||
+    issueStatus === "cancelled" ||
+    issueStatus === "blocked";
   return resumesToTodo && assigneeValue.startsWith("agent:");
 }
 
@@ -569,38 +1056,87 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
-const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+const IssueChatTextPart = memo(function IssueChatTextPart({
+  text,
+  recessed,
+  onAccent,
+}: {
+  text: string;
+  recessed?: boolean;
+  onAccent?: boolean;
+}) {
+  const { onImageClick, externalReferences, linkCaseReferences } =
+    useContext(IssueChatCtx);
+  if (isSuccessfulRunHandoffComment(text)) {
+    return (
+      <SuccessfulRunHandoffCommentCallout
+        text={text}
+        recessed={recessed}
+        onImageClick={onImageClick}
+      />
+    );
+  }
   return (
-    <MarkdownBody
-      className="text-sm leading-6"
+    <WorkspaceFileMarkdownBody
+      className={cn(
+        "text-sm leading-6",
+        onAccent && "paperclip-markdown-on-accent",
+      )}
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
+      externalReferences={externalReferences}
+      linkCaseReferences={linkCaseReferences}
     >
       {text}
-    </MarkdownBody>
+    </WorkspaceFileMarkdownBody>
   );
 });
+
+export function SuccessfulRunHandoffCommentCallout({
+  text,
+  recessed,
+  onImageClick,
+}: {
+  text: string;
+  recessed?: boolean;
+  onImageClick?: (src: string) => void;
+}) {
+  const escalated = isSuccessfulRunHandoffEscalationComment(text);
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2.5 text-sm shadow-sm",
+        escalated
+          ? "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100"
+          : "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+      )}
+      style={recessed ? { opacity: 0.55 } : undefined}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle
+          className={cn(
+            "mt-1 h-4 w-4 shrink-0",
+            escalated
+              ? "text-red-600 dark:text-red-300"
+              : "text-amber-600 dark:text-amber-300",
+          )}
+        />
+        <MarkdownBody
+          className="min-w-0 text-sm leading-6"
+          softBreaks
+          onImageClick={onImageClick}
+        >
+          {text}
+        </MarkdownBody>
+      </div>
+    </div>
+  );
+}
 
 function humanizeValue(value: string | null) {
   if (!value) return "None";
   return value.replace(/_/g, " ");
-}
-
-function formatTimelineAssigneeLabel(
-  assignee: IssueTimelineAssignee,
-  agentMap?: Map<string, Agent>,
-  currentUserId?: string | null,
-  userLabelMap?: ReadonlyMap<string, string> | null,
-) {
-  if (assignee.agentId) {
-    return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
-  }
-  if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
-  }
-  return "Unassigned";
 }
 
 function initialsForName(name: string) {
@@ -621,62 +1157,16 @@ function formatInteractionActorLabel(args: {
   const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
   if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   if (userId) {
-    return userLabelMap?.get(userId)
-      ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
-      ?? "Board";
+    return (
+      userLabelMap?.get(userId) ??
+      formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ??
+      "Board"
+    );
   }
   return "System";
 }
 
-export function resolveIssueChatHumanAuthor(args: {
-  authorName?: string | null;
-  authorUserId?: string | null;
-  currentUserId?: string | null;
-  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-}) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
-  const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
-  const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
-  const resolvedAuthorName = profile?.label?.trim()
-    || authorName?.trim()
-    || (authorUserId === "local-board" ? "Board" : (isCurrentUser ? "You" : "User"));
-
-  return {
-    isCurrentUser,
-    authorName: resolvedAuthorName,
-    avatarUrl: profile?.image ?? null,
-  };
-}
-
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
-
-function runStatusClass(status: string) {
-  switch (status) {
-    case "succeeded":
-      return "text-green-700 dark:text-green-300";
-    case "failed":
-    case "error":
-      return "text-red-700 dark:text-red-300";
-    case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
-    case "running":
-      return "text-cyan-700 dark:text-cyan-300";
-    case "queued":
-    case "pending":
-      return "text-amber-700 dark:text-amber-300";
-    case "cancelled":
-      return "text-muted-foreground";
-    default:
-      return "text-foreground";
-  }
-}
+export { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   if (toolParts.length === 0) return null;
@@ -687,7 +1177,8 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
     else other++;
   }
   const parts: string[] = [];
-  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
+  if (commands > 0)
+    parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
   if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
   return parts.join(", ");
 }
@@ -695,9 +1186,10 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
 function cleanToolDisplayText(tool: ToolCallMessagePart): string {
   const name = displayToolName(tool.toolName, tool.args);
   if (isCommandTool(tool.toolName, tool.args)) return name;
-  const summary = tool.result === undefined
-    ? summarizeToolInput(tool.toolName, tool.args)
-    : null;
+  const summary =
+    tool.result === undefined
+      ? summarizeToolInput(tool.toolName, tool.args)
+      : null;
   return summary ? `${name} ${summary}` : name;
 }
 
@@ -712,11 +1204,25 @@ function IssueChatChainOfThought({
 }) {
   const { agentMap } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
-  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
-  const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
+  const runAgentId =
+    typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const authorAgentId =
+    typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
-  const isMessageRunning = message.role === "assistant" && message.status?.type === "running";
+  // Adapters whose backends overwhelm the one-line reasoning ticker declare
+  // a scrollable live reasoning view via their UI adapter module
+  // (transcriptPresentation.liveReasoningView); resolved through the registry
+  // so this component never branches on adapter identities. Every adapter
+  // without a declaration keeps the existing ticker rendering.
+  const adapterType =
+    typeof custom.adapterType === "string" ? custom.adapterType : null;
+  const isVerboseStreamingBackend =
+    (adapterType
+      ? findUIAdapter(adapterType)?.transcriptPresentation?.liveReasoningView
+      : undefined) === "scrollLog";
+  const isMessageRunning =
+    message.role === "assistant" && message.status?.type === "running";
 
   const myIndex = useMemo(
     () => findCoTSegmentIndex(message.content, cotParts),
@@ -724,20 +1230,26 @@ function IssueChatChainOfThought({
   );
 
   const allReasoningText = cotParts
-    .filter((p): p is { type: "reasoning"; text: string } => p.type === "reasoning" && !!p.text)
+    .filter(
+      (p): p is { type: "reasoning"; text: string } =>
+        p.type === "reasoning" && !!p.text,
+    )
     .map((p) => p.text)
     .join("\n");
   const toolParts = cotParts.filter(
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const isActive = isMessageRunning;
-  const [expanded, setExpanded] = useState(isActive);
-
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
-  const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
+  const segmentTiming = myIndex >= 0 ? (rawSegments[myIndex] ?? null) : null;
+  const isActive = isCoTSegmentActive({
+    isMessageRunning,
+    segmentIndex: myIndex,
+    segmentCount: rawSegments.length,
+  });
+  const [expanded, setExpanded] = useState(isActive);
   const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
 
   useEffect(() => {
@@ -765,45 +1277,85 @@ function IssueChatChainOfThought({
     <div>
       <button
         type="button"
-        className="group flex w-full items-center gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
+        className="group flex w-full items-start gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
         onClick={() => hasContent && setExpanded((v) => !v)}
       >
-        <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-          {agentIcon ? (
-            <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-          ) : isActive ? (
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+              {agentId ? (
+                <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
+              ) : isActive ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+              ) : (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                </span>
+              )}
+              {isActive ? (
+                <span className="shimmer-text">{headerVerb}</span>
+              ) : (
+                headerVerb
+              )}
             </span>
-          )}
-          {isActive ? (
-            <span className="shimmer-text">{headerVerb}</span>
-          ) : (
-            headerVerb
-          )}
-        </span>
-        {headerSuffix ? (
-          <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
-        ) : null}
-        {toolSummary ? (
-          <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
-        ) : null}
+            {headerSuffix ? (
+              <span className="text-xs text-muted-foreground/60">
+                {headerSuffix}
+              </span>
+            ) : null}
+            {toolSummary ? (
+              <span className="text-xs text-muted-foreground/40">
+                · {toolSummary}
+              </span>
+            ) : null}
+          </div>
+          <IssueChatLiveRunStatusLine
+            custom={custom}
+            active={isActive}
+            className="pl-6"
+          />
+        </div>
         {hasContent ? (
-          <ChevronDown className={cn("ml-auto h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
+          <ChevronDown
+            className={cn(
+              "mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
         ) : null}
       </button>
       {expanded && hasContent ? (
         <div className="space-y-1 py-1">
-          {isActive ? (
+          {isActive && isVerboseStreamingBackend ? (
             <>
-              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
-              {toolParts.length > 0 ? <IssueChatRollingToolPart toolParts={toolParts} /> : null}
+              {allReasoningText ? (
+                <IssueChatVerboseLiveReasoningPart text={allReasoningText} />
+              ) : null}
+              {toolParts.map((tool) => (
+                <IssueChatToolPart
+                  key={tool.toolCallId}
+                  toolName={tool.toolName}
+                  args={tool.args}
+                  argsText={tool.argsText}
+                  result={tool.result}
+                  isError={false}
+                />
+              ))}
+            </>
+          ) : isActive ? (
+            <>
+              {allReasoningText ? (
+                <IssueChatReasoningPart text={allReasoningText} />
+              ) : null}
+              {toolParts.length > 0 ? (
+                <IssueChatRollingToolPart toolParts={toolParts} />
+              ) : null}
             </>
           ) : (
             <>
-              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
+              {allReasoningText ? (
+                <IssueChatReasoningPart text={allReasoningText} />
+              ) : null}
               {toolParts.map((tool) => (
                 <IssueChatToolPart
                   key={tool.toolCallId}
@@ -818,6 +1370,55 @@ function IssueChatChainOfThought({
           )}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Live reasoning for verbose streaming backends: the one-line
+// ticker cannot keep up with token-level delta volume, so show the full
+// reasoning in a scrollable box that auto-follows the newest line unless the
+// reader has scrolled up to review earlier thinking. All other adapters keep
+// the ticker (IssueChatReasoningPart below), which is unchanged.
+function IssueChatVerboseLiveReasoningPart({ text }: { text: string }) {
+  const lines = text.split("\n").filter((l) => l.trim());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    if (pinnedToBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [text]);
+
+  if (lines.length <= 1) {
+    return <IssueChatReasoningPart text={text} />;
+  }
+
+  return (
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-0.5">
+        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+      </div>
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          const node = scrollRef.current;
+          if (!node) return;
+          pinnedToBottomRef.current =
+            node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+        }}
+        className="min-w-0 flex-1 max-h-40 space-y-0.5 overflow-y-auto pr-1"
+      >
+        {lines.map((line, index) => (
+          <p
+            key={index}
+            className="whitespace-pre-wrap break-words text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
+          >
+            {line}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -849,7 +1450,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -858,7 +1459,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -869,7 +1470,11 @@ function IssueChatReasoningPart({ text }: { text: string }) {
   );
 }
 
-function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePart[] }) {
+function IssueChatRollingToolPart({
+  toolParts,
+}: {
+  toolParts: ToolCallMessagePart[];
+}) {
   const latest = toolParts[toolParts.length - 1];
   if (!latest) return null;
 
@@ -906,7 +1511,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -915,7 +1520,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -926,8 +1531,15 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
   );
 }
 
-function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
+function CopyablePreBlock({
+  children,
+  className,
+}: {
+  children: string;
+  className?: string;
+}) {
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -940,10 +1552,21 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          });
+          void copyTextToClipboard(children)
+            .then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            })
+            .catch((error) => {
+              toastActions?.pushToast({
+                title: "Copy failed",
+                body:
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to copy text",
+                tone: "error",
+              });
+            });
         }}
       >
         {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -952,11 +1575,16 @@ function CopyablePreBlock({ children, className }: { children: string; className
   );
 }
 
-const TOOL_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  // Extend with specific tool icons as they become known
+const TOOL_ICON_MAP: Record<
+  string,
+  React.ComponentType<{ className?: string }>
+> = {
+  paperclip_provider_activity: ClipboardList,
 };
 
-function getToolIcon(toolName: string): React.ComponentType<{ className?: string }> {
+function getToolIcon(
+  toolName: string,
+): React.ComponentType<{ className?: string }> {
   return TOOL_ICON_MAP[toolName] ?? Hammer;
 }
 
@@ -974,6 +1602,16 @@ function IssueChatToolPart({
   isError?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  if (toolName === "paperclip_provider_activity") {
+    return (
+      <IssueChatProviderActivity
+        args={args}
+        running={result === undefined}
+        open={open}
+        onToggle={() => setOpen((current) => !current)}
+      />
+    );
+  }
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
   const resultText =
@@ -1009,30 +1647,43 @@ function IssueChatToolPart({
           className="flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors hover:bg-accent/5"
           onClick={() => setOpen((current) => !current)}
         >
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground/80">
+          <span className="min-w-0 flex-1 truncate text-(length:--text-compact) text-muted-foreground/80">
             {title}
-            {!intentDetail && summary ? <span className="ml-1.5 text-muted-foreground/50">{summary}</span> : null}
+            {!intentDetail && summary ? (
+              <span className="ml-1.5 text-muted-foreground/50">{summary}</span>
+            ) : null}
           </span>
           {result === undefined ? (
             <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground/50" />
           ) : null}
-          <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform",
+              open && "rotate-180",
+            )}
+          />
         </button>
 
         {open ? (
           <div className="mt-1 space-y-2 pb-1">
             {nonIntentDetails.length > 0 ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Input
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
                     <div key={`${detail.label}:${detail.value}`}>
-                      <dt className="text-[10px] font-medium text-muted-foreground/60">
+                      <dt className="text-(length:--text-nano) font-medium text-muted-foreground/60">
                         {detail.label}
                       </dt>
-                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-[11px]")}>
+                      <dd
+                        className={cn(
+                          "text-xs leading-5 text-foreground/70",
+                          detail.tone === "code" &&
+                            "font-mono text-(length:--text-micro)",
+                        )}
+                      >
                         {detail.value}
                       </dd>
                     </div>
@@ -1041,19 +1692,185 @@ function IssueChatToolPart({
               </div>
             ) : rawArgsText ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Input
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">
+                  {rawArgsText}
+                </CopyablePreBlock>
               </div>
             ) : null}
             {result !== undefined ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Result
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">
+                  {resultText}
+                </CopyablePreBlock>
               </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function IssueChatProviderActivity({
+  args,
+  running,
+  open,
+  onToggle,
+}: {
+  args: unknown;
+  running: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const value =
+    typeof args === "object" && args !== null && !Array.isArray(args)
+      ? (args as Record<string, unknown>)
+      : {};
+  const payload =
+    typeof value.payload === "object" &&
+    value.payload !== null &&
+    !Array.isArray(value.payload)
+      ? (value.payload as Record<string, unknown>)
+      : {};
+  const title =
+    typeof value.title === "string" ? value.title : "Provider activity";
+  const summary = typeof value.summary === "string" ? value.summary : "";
+  const steps = Array.isArray(payload.steps) ? payload.steps.slice(0, 256) : [];
+  const children = Array.isArray(payload.children)
+    ? payload.children.slice(0, 64)
+    : [];
+  const sources = Array.isArray(payload.sources)
+    ? payload.sources.slice(0, 64)
+    : [];
+  const output =
+    typeof payload.output === "string" ? payload.output.slice(-(8 * 1024)) : "";
+  const effectiveModel =
+    typeof payload.effectiveModel === "string" ? payload.effectiveModel : null;
+  const requestedModel =
+    typeof payload.requestedModel === "string" ? payload.requestedModel : null;
+  const hasDetails =
+    steps.length > 0 ||
+    children.length > 0 ||
+    sources.length > 0 ||
+    output.length > 0 ||
+    effectiveModel !== null;
+  return (
+    <div
+      className="flex gap-2 px-1"
+      data-provider-family={String(value.family ?? "unknown")}
+    >
+      <div className="pt-1">
+        <ClipboardList className="h-3.5 w-3.5 text-muted-foreground/50" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md py-0.5 text-left hover:bg-accent/5"
+          onClick={onToggle}
+          aria-expanded={open}
+        >
+          <span className="min-w-0 flex-1 truncate text-(length:--text-compact) text-muted-foreground/80">
+            {title}
+            {summary ? (
+              <span className="ml-1.5 text-muted-foreground/50">{summary}</span>
+            ) : null}
+          </span>
+          {running ? (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/50" />
+          ) : null}
+          {hasDetails ? (
+            <ChevronDown
+              className={cn(
+                "h-3.5 w-3.5 text-muted-foreground/40 transition-transform",
+                open && "rotate-180",
+              )}
+            />
+          ) : null}
+        </button>
+        {open && hasDetails ? (
+          <div className="mt-1 space-y-2 rounded-md border border-border/50 bg-accent/15 p-2 text-xs">
+            {steps.map((entry, index) => {
+              const step =
+                typeof entry === "object" && entry !== null
+                  ? (entry as Record<string, unknown>)
+                  : {};
+              return (
+                <div key={String(step.stepId ?? index)} className="flex gap-2">
+                  <span aria-hidden>
+                    {step.status === "completed"
+                      ? "✓"
+                      : step.status === "blocked"
+                        ? "!"
+                        : "○"}
+                  </span>
+                  <span>{String(step.body ?? "")}</span>
+                </div>
+              );
+            })}
+            {children.map((entry, index) => {
+              const child =
+                typeof entry === "object" && entry !== null
+                  ? (entry as Record<string, unknown>)
+                  : {};
+              return (
+                <div key={String(child.childId ?? index)}>
+                  <span className="font-medium">
+                    {String(child.role ?? "Child agent")}
+                  </span>{" "}
+                  · {String(child.status ?? "unknown")}
+                  {child.summary ? ` — ${String(child.summary)}` : ""}
+                </div>
+              );
+            })}
+            {sources.map((entry, index) => {
+              const source =
+                typeof entry === "object" && entry !== null
+                  ? (entry as Record<string, unknown>)
+                  : {};
+              const href =
+                typeof source.url === "string" &&
+                /^https?:\/\//.test(source.url)
+                  ? source.url
+                  : null;
+              return (
+                <div key={String(source.sourceId ?? index)}>
+                  {href ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      {String(source.title ?? href)}
+                    </a>
+                  ) : (
+                    <span>{String(source.title ?? "Unavailable source")}</span>
+                  )}{" "}
+                  <span className="text-muted-foreground">
+                    (provider-reported)
+                  </span>
+                </div>
+              );
+            })}
+            {effectiveModel ? (
+              <div>
+                <span className="text-muted-foreground">Model</span>{" "}
+                {requestedModel && requestedModel !== effectiveModel
+                  ? `${requestedModel} → `
+                  : ""}
+                {effectiveModel}
+              </div>
+            ) : null}
+            {output ? (
+              <CopyablePreBlock className="max-h-56 overflow-auto whitespace-pre-wrap rounded bg-background/70 p-2 font-mono text-(length:--text-micro)">
+                {output}
+              </CopyablePreBlock>
             ) : null}
           </div>
         ) : null}
@@ -1072,9 +1889,11 @@ function getThreadMessageCopyText(message: ThreadMessage) {
 const IssueChatTextParts = memo(function IssueChatTextParts({
   message,
   recessed = false,
+  onAccent = false,
 }: {
   message: ThreadMessage;
   recessed?: boolean;
+  onAccent?: boolean;
 }) {
   return (
     <>
@@ -1085,6 +1904,7 @@ const IssueChatTextParts = memo(function IssueChatTextParts({
             key={`${message.id}:text:${index}`}
             text={part.text}
             recessed={recessed}
+            onAccent={onAccent}
           />
         ))}
     </>
@@ -1106,7 +1926,11 @@ function groupAssistantParts(
 
   const flushCoT = () => {
     if (pendingCoT.length === 0) return;
-    groups.push({ type: "cot", parts: pendingCoT, startIndex: pendingStartIndex });
+    groups.push({
+      type: "cot",
+      parts: pendingCoT,
+      startIndex: pendingStartIndex,
+    });
     pendingCoT = [];
     pendingStartIndex = -1;
   };
@@ -1134,7 +1958,10 @@ const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
   message: ThreadMessage;
   hasCoT: boolean;
 }) {
-  const groupedParts = useMemo(() => groupAssistantParts(message.content), [message.content]);
+  const groupedParts = useMemo(
+    () => groupAssistantParts(message.content),
+    [message.content],
+  );
   return (
     <>
       {groupedParts.map((group) => {
@@ -1169,21 +1996,40 @@ function IssueChatUserMessage({
   const {
     onInterruptQueued,
     onCancelQueued,
+    onDeleteComment,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
-  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
-  const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
-  const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
-  const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
-  const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const anchorId =
+    typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentId =
+    typeof custom.commentId === "string" ? custom.commentId : message.id;
+  const authorName =
+    typeof custom.authorName === "string" ? custom.authorName : null;
+  const authorUserId =
+    typeof custom.authorUserId === "string" ? custom.authorUserId : null;
+  const queued =
+    custom.queueState === "queued" || custom.clientStatus === "queued";
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust)
+    ? custom.sourceTrust
+    : null;
   const followUpRequested = custom.followUpRequested === true;
-  const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
-  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
+  const sentFromIMessage = isIssueCommentMetadata(custom.commentMetadata) &&
+    custom.commentMetadata.sourceChannel === "imessage-photon";
+  const queueReason =
+    typeof custom.queueReason === "string" ? custom.queueReason : null;
+  const queueBadgeLabel =
+    queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
-  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const deleted = Boolean(custom.deletedAt);
+  const queueTargetRunId =
+    typeof custom.queueTargetRunId === "string"
+      ? custom.queueTargetRunId
+      : null;
   const [copied, setCopied] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1196,16 +2042,46 @@ function IssueChatUserMessage({
   });
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
-      {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
+      {avatarUrl ? (
+        <AvatarImage src={avatarUrl} alt={resolvedAuthorName} />
+      ) : null}
       <AvatarFallback>{initialsForName(resolvedAuthorName)}</AvatarFallback>
     </Avatar>
   );
+  const canDeleteComment = Boolean(
+    onDeleteComment && isCurrentUser && !queued && !pending && !deleted,
+  );
+  const handleDeleteComment = () => {
+    if (!canDeleteComment) return;
+    setDeleteDialogOpen(true);
+  };
+  const confirmDeleteComment = () => {
+    if (!canDeleteComment) return;
+    setDeleteDialogOpen(false);
+    void onDeleteComment?.(commentId);
+  };
   const messageBody = (
-    <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
-      <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
-        <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+    <div
+      className={cn(
+        "flex min-w-0 max-w-(--pct-85) flex-col",
+        isCurrentUser && "items-end",
+      )}
+    >
+      <div
+        className={cn(
+          "mb-1 flex items-center gap-2 px-1",
+          isCurrentUser ? "justify-end" : "justify-start",
+        )}
+      >
+        <span className="text-sm font-medium text-foreground">
+          {resolvedAuthorName}
+        </span>
+        <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
         {followUpRequested ? (
-          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+          <Badge
+            variant="outline"
+            className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
+          >
             Follow-up
           </Badge>
         ) : null}
@@ -1213,22 +2089,34 @@ function IssueChatUserMessage({
       <div
         className={cn(
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
+          // Tail-hugging corner: flatten the bottom corner nearest the avatar so
+          // the bubble points at it (bottom-right for the right-aligned human).
+          isCurrentUser ? "rounded-br-(--rad-4)" : "rounded-bl-(--rad-4)",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
-            : "bg-muted",
+            : deleted
+              ? "bg-muted/50 text-muted-foreground"
+              : isCurrentUser
+                ? // Liveness blue (--liveness-blue, decoupled from --status-task-in_progress
+                  // in DECISION-SHEET.md A6) for the human's own messages (PAP-95 rev 5).
+                  "bg-(--liveness-blue) text-white"
+                : "bg-muted",
           pending && "opacity-80",
         )}
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge
+              variant="outline"
+              className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200"
+            >
               {queueBadgeLabel}
-            </span>
-            {queueTargetRunId && onInterruptQueued ? (
+            </Badge>
+            {onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="h-6 border-red-300 px-2 text-(length:--text-micro) text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
@@ -1239,7 +2127,7 @@ function IssueChatUserMessage({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                className="h-6 border-amber-300 px-2 text-(length:--text-micro) text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
                 Cancel
@@ -1247,13 +2135,32 @@ function IssueChatUserMessage({
             ) : null}
           </div>
         ) : null}
-        <div className="min-w-0 max-w-full space-y-3">
-          <IssueChatTextParts message={message} />
-        </div>
+        {deleted ? (
+          <div className="text-sm italic text-muted-foreground">
+            Comment deleted
+          </div>
+        ) : (
+          <div className="min-w-0 max-w-full space-y-3">
+            <IssueChatTextParts
+              message={message}
+              onAccent={isCurrentUser && !queued}
+            />
+          </div>
+        )}
       </div>
 
+      {sentFromIMessage && !deleted ? (
+        <div className="mt-1 px-1 text-xs text-muted-foreground">
+          Sent from iMessage
+        </div>
+      ) : null}
       {pending ? (
-        <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
+        <div
+          className={cn(
+            "mt-1 flex px-1 text-(length:--text-micro) text-muted-foreground",
+            isCurrentUser ? "justify-end" : "justify-start",
+          )}
+        >
           Sending...
         </div>
       ) : (
@@ -1267,7 +2174,7 @@ function IssueChatUserMessage({
             <TooltipTrigger asChild>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
               >
                 {message.createdAt ? commentDateLabel(message.createdAt) : ""}
               </a>
@@ -1276,45 +2183,104 @@ function IssueChatUserMessage({
               {message.createdAt ? formatDateTime(message.createdAt) : ""}
             </TooltipContent>
           </Tooltip>
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
-            onClick={() => {
-              const text = message.content
-                .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                .map((p) => p.text)
-                .join("\n\n");
-              void navigator.clipboard.writeText(text).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              });
-            }}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
+          {!deleted ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy message"
+              aria-label="Copy message"
+              onClick={() => {
+                const text = message.content
+                  .filter(
+                    (p): p is { type: "text"; text: string } =>
+                      p.type === "text",
+                  )
+                  .map((p) => p.text)
+                  .join("\n\n");
+                void copyTextToClipboard(text)
+                  .then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  })
+                  .catch((error) => {
+                    toastActions?.pushToast({
+                      title: "Copy failed",
+                      body:
+                        error instanceof Error
+                          ? error.message
+                          : "Unable to copy message",
+                      tone: "error",
+                    });
+                  });
+              }}
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : null}
+          {canDeleteComment ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-destructive"
+              title="Delete comment"
+              aria-label="Delete comment"
+              onClick={handleDeleteComment}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </div>
       )}
     </div>
   );
 
   return (
-    <div id={anchorId}>
-      <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
-        {isCurrentUser ? (
-          <>
-            {messageBody}
-            {authorAvatar}
-          </>
-        ) : (
-          <>
-            {authorAvatar}
-            {messageBody}
-          </>
-        )}
+    <>
+      <div id={anchorId}>
+        <div
+          className={cn(
+            "group flex items-end gap-2",
+            isCurrentUser && "justify-end",
+          )}
+        >
+          {isCurrentUser ? (
+            <>
+              {messageBody}
+              {authorAvatar}
+            </>
+          ) : (
+            <>
+              {authorAvatar}
+              {messageBody}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete comment?</DialogTitle>
+            <DialogDescription>
+              This will replace the comment with a deleted-comment marker.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDeleteComment}>
+              Delete comment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -1335,40 +2301,85 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
+    stopRunLabel = "Stop run",
+    stoppingRunLabel = "Stopping...",
+    stopRunVariant = "stop",
+    runFinalizationActions = [],
+    userLabelMap,
+    issueAssigneeAgentId,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
-  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
-  const authorName = typeof custom.authorName === "string"
-    ? custom.authorName
-    : typeof custom.runAgentName === "string"
-      ? custom.runAgentName
-      : "Agent";
-  const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
+  const anchorId =
+    typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const authorName =
+    typeof custom.authorName === "string"
+      ? custom.authorName
+      : typeof custom.runAgentName === "string"
+        ? custom.runAgentName
+        : "Agent";
+  const authorAgentId =
+    typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
-  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
-  const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
+  const runAgentId =
+    typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runStatus =
+    typeof custom.runStatus === "string" ? custom.runStatus : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
-  const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
+  const commentId =
+    typeof custom.commentId === "string" ? custom.commentId : null;
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust)
+    ? custom.sourceTrust
+    : null;
+  const attribution = resolveCommentAttribution({
+    authorAgentId,
+    onBehalfOfUserId:
+      typeof custom.onBehalfOfUserId === "string"
+        ? custom.onBehalfOfUserId
+        : null,
+    issueAssigneeAgentId,
+    resolveUserLabel: (userId) => userLabelMap?.get(userId),
+  });
   const notices = Array.isArray(custom.notices)
-    ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
+    ? custom.notices.filter(
+        (notice): notice is string =>
+          typeof notice === "string" && notice.length > 0,
+      )
     : [];
-  const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
-  const isRunning = message.role === "assistant" && message.status?.type === "running";
-  const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
-  const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
-  const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
-  const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
+  const waitingText =
+    typeof custom.waitingText === "string" ? custom.waitingText : "";
+  const isRunning =
+    message.role === "assistant" && message.status?.type === "running";
+  const runHref =
+    runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
+  const canStopRun =
+    Boolean(runId) &&
+    (isRunActive || runStatus === "queued" || runStatus === "running");
+  const chainOfThoughtLabel =
+    typeof custom.chainOfThoughtLabel === "string"
+      ? custom.chainOfThoughtLabel
+      : null;
+  const hasCoT = message.content.some(
+    (p) => p.type === "reasoning" || p.type === "tool-call",
+  );
+  const deleted = Boolean(custom.deletedAt);
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
-  const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
+  const [prevFoldKey, setPrevFoldKey] = useState({
+    messageId: message.id,
+    isFoldable,
+  });
   const [copied, setCopied] = useState(false);
-  const copyText = getThreadMessageCopyText(message);
+  const toastActions = useOptionalToastActions();
+  const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
   // visible "jump" when loading a page with already-folded work sections.
-  if (message.id !== prevFoldKey.messageId || isFoldable !== prevFoldKey.isFoldable) {
+  if (
+    message.id !== prevFoldKey.messageId ||
+    isFoldable !== prevFoldKey.isFoldable
+  ) {
     const nextFolded = resolveAssistantMessageFoldedState({
       messageId: message.id,
       currentFolded: folded,
@@ -1392,16 +2403,224 @@ function IssueChatAssistantMessage({
 
   const followUpRequested = custom.followUpRequested === true;
 
+  const kind = typeof custom.kind === "string" ? custom.kind : null;
+  const hasCommentText = message.content.some(
+    (part) =>
+      part.type === "text" &&
+      typeof part.text === "string" &&
+      part.text.trim().length > 0,
+  );
+  // A genuine posted agent comment (kind "comment" with real text) renders in a
+  // left-aligned neutral bubble — the mirror of the human blue bubble. Run
+  // activity (chain-of-thought, tool calls, waiting shimmer, "worked N min")
+  // keeps the existing flat / metadata treatment (PAP-95 rev 6).
+  const isGenuineComment =
+    kind === "comment" &&
+    !!commentId &&
+    !isRunning &&
+    (hasCommentText || deleted);
+
+  const agentAvatar = <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId, name: authorName } : { name: authorName }} size={32} />;
+
+  const messageActionBar = (
+    <div className="mt-2 flex items-center gap-1">
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        title="Copy message"
+        aria-label="Copy message"
+        onClick={() => {
+          void copyTextToClipboard(copyText)
+            .then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            })
+            .catch((error) => {
+              toastActions?.pushToast({
+                title: "Copy failed",
+                body:
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to copy message",
+                tone: "error",
+              });
+            });
+        }}
+      >
+        {copied ? (
+          <Check className="h-3.5 w-3.5" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" />
+        )}
+      </button>
+      {commentId && onVote ? (
+        <IssueChatFeedbackButtons
+          activeVote={activeVote}
+          sharingPreference={feedbackDataSharingPreference}
+          termsUrl={feedbackTermsUrl ?? null}
+          onVote={handleVote}
+        />
+      ) : null}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <a
+            href={anchorId ? `#${anchorId}` : undefined}
+            className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
+          >
+            {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+          </a>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          {message.createdAt ? formatDateTime(message.createdAt) : ""}
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground hover:text-foreground"
+            title="More actions"
+            aria-label="More actions"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            onClick={() => {
+              void copyTextToClipboard(copyText).catch((error) => {
+                toastActions?.pushToast({
+                  title: "Copy failed",
+                  body:
+                    error instanceof Error
+                      ? error.message
+                      : "Unable to copy message",
+                  tone: "error",
+                });
+              });
+            }}
+          >
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            Copy message
+          </DropdownMenuItem>
+          {canStopRun && onStopRun && runId ? (
+            <DropdownMenuItem
+              disabled={isStoppingRun}
+              className={cn(
+                stopRunVariant === "pause"
+                  ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+                  : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+              )}
+              onSelect={() => {
+                void onStopRun(runId);
+              }}
+            >
+              {stopRunVariant === "pause" ? (
+                <PauseCircle className="mr-2 h-3.5 w-3.5" />
+              ) : (
+                <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+              )}
+              {isStoppingRun ? stoppingRunLabel : stopRunLabel}
+            </DropdownMenuItem>
+          ) : null}
+          {runHref ? (
+            <DropdownMenuItem asChild>
+              <Link to={runHref} target="_blank" rel="noreferrer noopener">
+                <Search className="mr-2 h-3.5 w-3.5" />
+                View run
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
+  // Genuine agent comment → neutral left-aligned bubble (mirror of the human
+  // blue bubble in IssueChatUserMessage). See PAP-95 rev 6.
+  if (isGenuineComment) {
+    return (
+      <div id={anchorId}>
+        <div className="group flex flex-col items-start py-1.5">
+          {/* Icon + name together in a header ABOVE the bubble (PAP-95 rev 7). */}
+          <div className="mb-1 flex items-center gap-1.5 px-1">
+            <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+              {agentId ? (
+                <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
+              ) : (
+                <Avatar size="sm" className="size-5">
+                  <AvatarFallback className="text-(length:--text-nano)">
+                    {initialsForName(authorName)}
+                  </AvatarFallback>
+                </Avatar>
+              )}
+            </span>
+            <span className="text-sm font-medium text-foreground">
+              {authorName}
+            </span>
+            {/* Reads as "Fable · for Dotta" beside the author name (the open cross-task write design (attribution)). */}
+            {attribution ? (
+              <CommentAttributionChip
+                agentName={authorName}
+                userName={attribution.userName}
+              />
+            ) : null}
+            <SourceTrustBadge
+              sourceTrust={sourceTrust}
+              artifactLabel="comment"
+            />
+            {followUpRequested ? (
+              <Badge
+                variant="outline"
+                className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
+              >
+                Follow-up
+              </Badge>
+            ) : null}
+          </div>
+          {/* Canonical conference-room agent bubble (BoardChat.tsx:712). */}
+          <div
+            className={cn(
+              "min-w-0 break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible [border-radius:14px_14px_14px_4px]",
+              AGENT_COMMENT_BUBBLE_WIDTH_CLASS,
+              deleted
+                ? "border border-border bg-muted/50 text-muted-foreground"
+                : "border border-border bg-card text-foreground",
+            )}
+          >
+            {deleted ? (
+              <div className="text-sm italic text-muted-foreground">
+                Comment deleted
+              </div>
+            ) : (
+              <div className="min-w-0 max-w-full space-y-3">
+                <IssueChatAssistantParts message={message} hasCoT={false} />
+                {notices.length > 0 ? (
+                  <div className="space-y-2">
+                    {notices.map((notice, index) => (
+                      <div
+                        key={`${message.id}:notice:${index}`}
+                        className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
+                      >
+                        {notice}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+          {!deleted ? messageActionBar : null}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div id={anchorId}>
       <div className="flex items-start gap-2.5 py-1.5">
-        <Avatar size="sm" className="shrink-0">
-          {agentIcon ? (
-            <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-          ) : (
-            <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
-          )}
-        </Avatar>
+        {agentAvatar}
 
         <div className="min-w-0 flex-1">
           {isFoldable ? (
@@ -1410,48 +2629,88 @@ function IssueChatAssistantMessage({
               className="group flex w-full items-center gap-2 py-0.5 text-left"
               onClick={() => setFolded((v) => !v)}
             >
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
-              <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
-              <span className="ml-auto flex items-center gap-1.5">
-                {message.createdAt ? (
-                  <span className="text-[11px] text-muted-foreground/50">
-                    {commentDateLabel(message.createdAt)}
-                  </span>
-                ) : null}
-                <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", !folded && "rotate-180")} />
+              <span className="text-sm font-medium text-foreground">
+                {authorName}
               </span>
+              <SourceTrustBadge
+                sourceTrust={sourceTrust}
+                artifactLabel="comment"
+              />
+              <span className="text-xs text-muted-foreground/60">
+                {chainOfThoughtLabel?.toLowerCase()}
+              </span>
+              <ChevronDown
+                aria-hidden="true"
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100",
+                  !folded && "rotate-180",
+                )}
+              />
+              {message.createdAt ? (
+                <span className="ml-auto text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
             </button>
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <span className="text-sm font-medium text-foreground">
+                {authorName}
+              </span>
+              <SourceTrustBadge
+                sourceTrust={sourceTrust}
+                artifactLabel="comment"
+              />
               {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                <Badge
+                  variant="outline"
+                  className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
+                >
                   Follow-up
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                // Running chip shares the liveness-blue badge recipe with the
+                // issue header's "Live" badge (one live/running blue).
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
+                    liveBlueBadge,
+                  )}
+                >
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
-                </span>
+                </Badge>
               ) : null}
             </div>
           )}
 
-          {!folded ? (
+          {deleted ? (
+            <div className="rounded-sm bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
+              Comment deleted
+            </div>
+          ) : !folded ? (
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
                 {message.content.length === 0 && waitingText ? (
-                  <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
-                    <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-                      {agentIcon ? (
-                        <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-                      ) : (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                      )}
-                      <span className="shimmer-text">{waitingText}</span>
-                    </span>
+                  <div className="rounded-lg px-1 py-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                        {agentId ? (
+                          <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
+                        ) : (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                        )}
+                        <span className="shimmer-text">{waitingText}</span>
+                      </span>
+                    </div>
+                    <IssueChatLiveRunStatusLine
+                      custom={custom}
+                      active={isRunning}
+                      className="pl-6"
+                    />
                   </div>
                 ) : null}
                 {notices.length > 0 ? (
@@ -1468,86 +2727,7 @@ function IssueChatAssistantMessage({
                 ) : null}
               </div>
 
-              <div className="mt-2 flex items-center gap-1">
-                <button
-                  type="button"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="Copy message"
-                  aria-label="Copy message"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(copyText).then(() => {
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
-                    });
-                  }}
-                >
-                  {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                </button>
-                {commentId && onVote ? (
-                  <IssueChatFeedbackButtons
-                    activeVote={activeVote}
-                    sharingPreference={feedbackDataSharingPreference}
-                    termsUrl={feedbackTermsUrl ?? null}
-                    onVote={handleVote}
-                  />
-                ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <a
-                      href={anchorId ? `#${anchorId}` : undefined}
-                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
-                    </a>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="text-xs">
-                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
-                  </TooltipContent>
-                </Tooltip>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
-                    >
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={() => {
-                        void navigator.clipboard.writeText(copyText);
-                      }}
-                    >
-                      <Copy className="mr-2 h-3.5 w-3.5" />
-                      Copy message
-                    </DropdownMenuItem>
-                    {canStopRun && onStopRun && runId ? (
-                      <DropdownMenuItem
-                        disabled={isStoppingRun}
-                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
-                        onSelect={() => {
-                          void onStopRun(runId);
-                        }}
-                      >
-                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {isStoppingRun ? "Stopping…" : "Stop run"}
-                      </DropdownMenuItem>
-                    ) : null}
-                    {runHref ? (
-                      <DropdownMenuItem asChild>
-                        <Link to={runHref} target="_blank" rel="noreferrer noopener">
-                          <Search className="mr-2 h-3.5 w-3.5" />
-                          View run
-                        </Link>
-                      </DropdownMenuItem>
-                    ) : null}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+              {messageActionBar}
             </>
           ) : null}
         </div>
@@ -1565,10 +2745,14 @@ function IssueChatFeedbackButtons({
   activeVote: FeedbackVoteValue | null;
   sharingPreference: FeedbackDataSharingPreference;
   termsUrl: string | null;
-  onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
+  onVote: (
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
 }) {
   const [isSaving, setIsSaving] = useState(false);
-  const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
+  const [optimisticVote, setOptimisticVote] =
+    useState<FeedbackVoteValue | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [downvoteReason, setDownvoteReason] = useState("");
   const [pendingSharingDialog, setPendingSharingDialog] = useState<{
@@ -1578,7 +2762,8 @@ function IssueChatFeedbackButtons({
   const visibleVote = optimisticVote ?? activeVote ?? null;
 
   useEffect(() => {
-    if (optimisticVote && activeVote === optimisticVote) setOptimisticVote(null);
+    if (optimisticVote && activeVote === optimisticVote)
+      setOptimisticVote(null);
   }, [activeVote, optimisticVote]);
 
   async function doVote(
@@ -1671,7 +2856,9 @@ function IssueChatFeedbackButtons({
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">
+            What could have been better?
+          </div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
@@ -1717,19 +2904,21 @@ function IssueChatFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
+              Choose whether voted AI outputs can be shared with Paperclip Labs.
+              This answer becomes the default for future thumbs up and thumbs
+              down votes.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>This vote is always saved locally.</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              Choose{" "}
+              <span className="font-medium text-foreground">Always allow</span>{" "}
+              to share this vote and future voted AI outputs. Choose{" "}
+              <span className="font-medium text-foreground">Don't allow</span>{" "}
+              to keep this vote and future votes local.
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>You can change this later in Settings &gt; General.</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -1750,7 +2939,9 @@ function IssueChatFeedbackButtons({
                 if (!pendingSharingDialog) return;
                 void doVote(
                   pendingSharingDialog.vote,
-                  pendingSharingDialog.reason ? { reason: pendingSharingDialog.reason } : undefined,
+                  pendingSharingDialog.reason
+                    ? { reason: pendingSharingDialog.reason }
+                    : undefined,
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
@@ -1763,7 +2954,9 @@ function IssueChatFeedbackButtons({
                 if (!pendingSharingDialog) return;
                 void doVote(pendingSharingDialog.vote, {
                   allowSharing: true,
-                  ...(pendingSharingDialog.reason ? { reason: pendingSharingDialog.reason } : {}),
+                  ...(pendingSharingDialog.reason
+                    ? { reason: pendingSharingDialog.reason }
+                    : {}),
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
@@ -1791,15 +2984,20 @@ function ExpiredRequestConfirmationActivity({
     userLabelMap,
     onAcceptInteraction,
     onRejectInteraction,
+    onCancelInteraction,
+    onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
-  const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
+  const hasResolvedActor = Boolean(
+    interaction.resolvedByAgentId || interaction.resolvedByUserId,
+  );
   const actorAgentId = hasResolvedActor
-    ? interaction.resolvedByAgentId ?? null
-    : interaction.createdByAgentId ?? null;
+    ? (interaction.resolvedByAgentId ?? null)
+    : (interaction.createdByAgentId ?? null);
   const actorUserId = hasResolvedActor
-    ? interaction.resolvedByUserId ?? null
-    : interaction.createdByUserId ?? null;
+    ? (interaction.resolvedByUserId ?? null)
+    : (interaction.createdByUserId ?? null);
   const actorName = formatInteractionActorLabel({
     agentId: actorAgentId,
     userId: actorUserId,
@@ -1807,14 +3005,25 @@ function ExpiredRequestConfirmationActivity({
     currentUserId,
     userLabelMap,
   });
-  const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
-  const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
-  const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
+  const actorIcon = actorAgentId
+    ? agentMap?.get(actorAgentId)?.icon
+    : undefined;
+  const isCurrentUser = Boolean(
+    actorUserId && currentUserId && actorUserId === currentUserId,
+  );
+  const detailsId = anchorId
+    ? `${anchorId}-details`
+    : `${interaction.id}-details`;
   const summary = buildIssueThreadInteractionSummary(interaction);
 
   const rowContent = (
     <div className="min-w-0 flex-1">
-      <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs",
+          isCurrentUser && "justify-end",
+        )}
+      >
         <span className="font-medium text-foreground">{actorName}</span>
         <span className="text-muted-foreground">updated this task</span>
         <a
@@ -1825,17 +3034,27 @@ function ExpiredRequestConfirmationActivity({
         </a>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           aria-expanded={expanded}
           aria-controls={detailsId}
           onClick={() => setExpanded((current) => !current)}
         >
-          <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          <ChevronDown
+            className={cn(
+              "h-3 w-3 transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
           {expanded ? "Hide confirmation" : "Expired confirmation"}
         </button>
       </div>
       {expanded ? (
-        <p className={cn("mt-1 text-xs text-muted-foreground", isCurrentUser && "text-right")}>
+        <p
+          className={cn(
+            "mt-1 text-xs text-muted-foreground",
+            isCurrentUser && "text-right",
+          )}
+        >
           {summary}
         </p>
       ) : null}
@@ -1850,13 +3069,11 @@ function ExpiredRequestConfirmationActivity({
         </div>
       ) : (
         <div className="flex items-start gap-2.5 py-1">
-          <Avatar size="sm" className="mt-0.5">
-            {actorIcon ? (
-              <AvatarFallback><AgentIcon icon={actorIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-            ) : (
-              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-            )}
-          </Avatar>
+          {actorAgentId ? (
+            <AgentAvatar agent={agentMap?.get(actorAgentId) ?? { id: actorAgentId, name: actorName }} size={32} />
+          ) : (
+            <Avatar size="sm" className="mt-0.5"><AvatarFallback>{initialsForName(actorName)}</AvatarFallback></Avatar>
+          )}
           {rowContent}
         </div>
       )}
@@ -1869,9 +3086,626 @@ function ExpiredRequestConfirmationActivity({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onCancelInteraction={onCancelInteraction}
+            onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function isIssueCommentPresentation(
+  value: unknown,
+): value is IssueCommentPresentation {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.kind === "system_notice" || v.kind === "message";
+}
+
+function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && Array.isArray(v.sections);
+}
+
+function isSourceTrustMetadata(value: unknown): value is SourceTrustMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    v.preset === "low_trust_review" &&
+    (v.disposition === "quarantined" || v.disposition === "promoted")
+  );
+}
+
+function issueStatusIsTerminalDisposition(issueStatus: string | undefined) {
+  return issueStatus === "done" || issueStatus === "cancelled";
+}
+
+function sourceRunIdFromSuccessfulRunHandoffMetadata(
+  metadata: IssueCommentMetadata | null,
+) {
+  if (metadata?.sourceRunId) return metadata.sourceRunId;
+  const runLinks = [];
+  for (const section of metadata?.sections ?? []) {
+    for (const row of section.rows) {
+      if (row.type === "run_link") runLinks.push(row.runId);
+    }
+  }
+  return runLinks.length === 1 ? runLinks[0] : null;
+}
+
+function isStaleSuccessfulRunHandoffNotice(input: {
+  bodyText: string;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  runId?: string | null;
+  metadata: IssueCommentMetadata | null;
+}) {
+  if (!isSuccessfulRunHandoffComment(input.bodyText)) return false;
+
+  const currentHandoff = input.successfulRunHandoff ?? null;
+  if (currentHandoff?.state === "resolved") return true;
+  if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+  // A live continuation (running/queued run or queued wake) means an agent is
+  // already handling the issue — fold the warning until the issue is actually
+  // stuck again.
+  if (currentHandoff?.hasLiveContinuation) return true;
+
+  const noticeSourceRunId =
+    sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ??
+    input.runId ??
+    null;
+  if (
+    noticeSourceRunId &&
+    currentHandoff?.sourceRunId &&
+    noticeSourceRunId !== currentHandoff.sourceRunId
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function StaleDispositionWarningMetadataRow({
+  row,
+}: {
+  row: SystemNoticeMetadataRow;
+}) {
+  const label = (
+    <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+      {row.label}
+    </span>
+  );
+  const value = (() => {
+    switch (row.kind) {
+      case "text":
+        return <span>{row.value}</span>;
+      case "code":
+        return (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
+            {row.value}
+          </code>
+        );
+      case "issue": {
+        const content = (
+          <>
+            <span>{row.identifier}</span>
+            {row.title ? (
+              <span className="text-muted-foreground"> - {row.title}</span>
+            ) : null}
+          </>
+        );
+        return row.href ? (
+          <a
+            href={row.href}
+            className="font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            {content}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{content}</span>
+        );
+      }
+      case "agent":
+        return row.href ? (
+          <a
+            href={row.href}
+            className="font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            {row.name}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{row.name}</span>
+        );
+      case "run": {
+        const runShort =
+          row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
+        const content = (
+          <>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
+              {runShort}
+            </code>
+            {row.status ? <span>{row.status}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a
+            href={row.href}
+            className="inline-flex items-center gap-1.5 underline-offset-2 hover:underline"
+          >
+            {content}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5">{content}</span>
+        );
+      }
+    }
+  })();
+
+  return (
+    <div className="grid grid-cols-(--gtc-7) gap-2 text-xs leading-5">
+      {label}
+      <div className="min-w-0 break-words text-foreground/80">{value}</div>
+    </div>
+  );
+}
+
+function metadataRowKey(row: SystemNoticeMetadataRow) {
+  switch (row.kind) {
+    case "issue":
+      return `issue:${row.label}:${row.identifier}:${row.href ?? ""}:${row.title ?? ""}`;
+    case "agent":
+      return `agent:${row.label}:${row.name}:${row.href ?? ""}`;
+    case "run":
+      return `run:${row.label}:${row.runId}:${row.href ?? ""}:${row.status ?? ""}`;
+    default:
+      return `${row.kind}:${row.label}:${row.value}`;
+  }
+}
+
+function metadataSectionKey(section: SystemNoticeMetadataSection) {
+  return `${section.title ?? "details"}:${section.rows.map(metadataRowKey).join("|")}`;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const workspace = value as Record<string, unknown>;
+  return (
+    isNullableString(workspace.label) &&
+    isNullableString(workspace.projectWorkspaceId) &&
+    isNullableString(workspace.executionWorkspaceId) &&
+    isNullableString(workspace.mode)
+  );
+}
+
+function isTimelineWorkspaceChange(
+  value: unknown,
+): value is NonNullable<IssueTimelineEvent["workspaceChange"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const change = value as Record<string, unknown>;
+  return isTimelineWorkspace(change.from) && isTimelineWorkspace(change.to);
+}
+
+function StaleDispositionWarningDetails({
+  sections,
+}: {
+  sections: SystemNoticeMetadataSection[];
+}) {
+  if (sections.length === 0) {
+    return (
+      <div className="text-xs leading-5 text-muted-foreground">
+        No additional details.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 text-left">
+      {sections.map((section) => (
+        <div key={metadataSectionKey(section)} className="space-y-1.5">
+          {section.title ? (
+            <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              {section.title}
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            {section.rows.map((row) => (
+              <StaleDispositionWarningMetadataRow
+                key={metadataRowKey(row)}
+                row={row}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StaleDispositionWarningRow({
+  anchorId,
+  message,
+  metadata,
+  runAgentId,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  metadata: IssueCommentMetadata | null;
+  runAgentId?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const sections = mapCommentMetadataToSystemNoticeSections(metadata, {
+    runAgentId,
+  });
+
+  return (
+    <div id={anchorId} data-testid="stale-disposition-warning">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="group flex w-full items-center gap-2 py-0.5 text-left"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="text-sm font-medium text-foreground/80">
+              Stale disposition warning
+            </span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {message.createdAt ? (
+                <span
+                  data-testid="stale-disposition-warning-time"
+                  className="text-(length:--text-micro) text-muted-foreground/50"
+                >
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 text-muted-foreground/40 transition-transform",
+                  open && "rotate-180",
+                )}
+              />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="space-y-1 py-1">
+            <StaleDispositionWarningDetails sections={sections} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Tone-colored dot for the fully-collapsed compact notice row. Tone is never
+// conveyed by color alone — the adjacent title text names the notice.
+const COMPACT_TONE_DOT: Record<SystemNoticeTone, string> = {
+  neutral: "bg-muted-foreground/40",
+  info: "bg-sky-500 dark:bg-sky-400",
+  success: "bg-emerald-500 dark:bg-emerald-400",
+  warning: "bg-amber-500 dark:bg-amber-400",
+  danger: "bg-red-500 dark:bg-red-400",
+};
+
+// A system notice whose presentation opts into `density: "compact"` collapses to
+// a single quiet row — tone dot + title (+ author) + timestamp + chevron.
+// Expanding reveals the full SystemNotice card (body + details), so no
+// information is lost. Generalized from the StaleDispositionWarningRow precedent.
+function CompactSystemNoticeRow({
+  anchorId,
+  message,
+  tone,
+  title,
+  source,
+  noticeProps,
+  defaultOpen = false,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  tone: SystemNoticeTone;
+  title: string;
+  source?: SystemNoticeProps["source"];
+  noticeProps: SystemNoticeProps;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const detailsId = useId();
+
+  return (
+    <div id={anchorId} data-testid="compact-system-notice" className="group">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/5"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                COMPACT_TONE_DOT[tone],
+              )}
+              aria-hidden
+            />
+            <span className="truncate text-sm font-medium text-foreground/80">
+              {title}
+            </span>
+            {source ? (
+              <span className="truncate text-(length:--text-micro) text-muted-foreground">
+                · {source.label}
+              </span>
+            ) : null}
+            {/* Trailing meta never shrinks — keeps the timestamp on one line so the
+                collapsed row stays a single quiet line on narrow / mobile widths. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {message.createdAt ? (
+                <span
+                  data-testid="compact-system-notice-time"
+                  className="whitespace-nowrap text-(length:--text-micro) text-muted-foreground/50"
+                >
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground/70",
+                  open && "rotate-180",
+                )}
+              />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="py-1">
+            <SystemNotice {...noticeProps} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SystemNoticeCommentRow(props: { message: ThreadMessage; anchorId?: string }) {
+  const custom = props.message.metadata.custom as Record<string, unknown>;
+  const email = useEmailComment(typeof custom.commentId === "string" ? custom.commentId : props.message.id);
+  return email ?? <SystemNoticeCommentContent {...props} />;
+}
+function SystemNoticeCommentContent({
+  message,
+  anchorId,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+}) {
+  const { onImageClick, agentMap, issueStatus, successfulRunHandoff } =
+    useContext(IssueChatCtx);
+  const toastActions = useOptionalToastActions();
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation)
+    ? custom.presentation
+    : null;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata)
+    ? custom.commentMetadata
+    : null;
+  const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(commentMetadata);
+  const runAgentId =
+    typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runId = typeof custom.runId === "string" ? custom.runId : null;
+  const authorType =
+    typeof custom.authorType === "string" ? custom.authorType : null;
+  const authorName =
+    typeof custom.authorName === "string" ? custom.authorName : null;
+  const bodyText = message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n");
+  const staleSuccessfulRunHandoffNotice = isStaleSuccessfulRunHandoffNotice({
+    bodyText,
+    issueStatus,
+    successfulRunHandoff,
+    runId,
+    metadata: commentMetadata,
+  });
+  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const source = (() => {
+    const runAgentName = runAgentId
+      ? (agentMap?.get(runAgentId)?.name ?? null)
+      : null;
+    if (authorType === "system") {
+      const label = runAgentName ?? "Paperclip";
+      if (runAgentId && runId)
+        return { label, href: `/agents/${runAgentId}/runs/${runId}` };
+      return { label };
+    }
+    if (runAgentId && runId) {
+      return {
+        label: authorName ?? runAgentName ?? "Paperclip",
+        href: `/agents/${runAgentId}/runs/${runId}`,
+      };
+    }
+    if (authorName) return { label: authorName };
+    return undefined;
+  })();
+
+  const props = buildSystemNoticeProps({
+    presentation,
+    metadata: commentMetadata,
+    body: (
+      <MarkdownBody
+        className="text-sm leading-6"
+        softBreaks
+        onImageClick={onImageClick}
+      >
+        {bodyText}
+      </MarkdownBody>
+    ),
+    timestamp: toValidIsoString(message.createdAt),
+    source,
+    runAgentId,
+  });
+
+  const handleCopy = () => {
+    void copyTextToClipboard(bodyText)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch((error) => {
+        toastActions?.pushToast({
+          title: "Copy failed",
+          body:
+            error instanceof Error
+              ? error.message
+              : "Unable to copy system notice",
+          tone: "error",
+        });
+      });
+  };
+
+  const handleCopyLink = () => {
+    if (!anchorId || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
+    void copyTextToClipboard(url)
+      .then(() => {
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2000);
+      })
+      .catch((error) => {
+        toastActions?.pushToast({
+          title: "Copy failed",
+          body:
+            error instanceof Error
+              ? error.message
+              : "Unable to copy system notice link",
+          tone: "error",
+        });
+      });
+  };
+
+  if (authorType === "system" && branchRecovery) return <div id={anchorId}><WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} /></div>;
+
+  if (authorType === "system" && recoverySnapshot) {
+    return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;
+  }
+
+  if (staleSuccessfulRunHandoffNotice) {
+    return (
+      <StaleDispositionWarningRow
+        anchorId={anchorId}
+        message={message}
+        metadata={commentMetadata}
+        runAgentId={runAgentId}
+      />
+    );
+  }
+
+  // Compact presentation collapses the notice to a single quiet row. Notices
+  // without `density` (old comments / old data) keep today's full card.
+  if (presentation?.density === "compact") {
+    const tone = presentation.tone ?? "neutral";
+    const title = systemNoticeLabelForTone(tone, presentation.title);
+    return (
+      <CompactSystemNoticeRow
+        anchorId={anchorId}
+        message={message}
+        tone={tone}
+        title={title}
+        source={source}
+        noticeProps={props}
+        defaultOpen={Boolean(presentation.detailsDefaultOpen)}
+      />
+    );
+  }
+
+  return (
+    <div id={anchorId} className="group">
+      <div className="py-1">
+        <SystemNotice {...props} />
+        <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={anchorId ? `#${anchorId}` : undefined}
+                className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+            </TooltipContent>
+          </Tooltip>
+          {anchorId ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy link"
+              aria-label="Copy link to system notice"
+              onClick={handleCopyLink}
+            >
+              {copiedLink ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Paperclip className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy notice text"
+            aria-label="Copy system notice"
+            onClick={handleCopy}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Non-comment timeline items (run/status events, "updated this task",
+// "worked for N minutes") render as quiet, subordinate metadata rows hung off a
+// left rail — visually distinct from the bubbles used for genuine comments.
+// Virtualized rows are absolutely positioned, so each row carries its own rail
+// segment; stacked rows read as one continuous rail. See PAP-95 mockup rev 5.
+function IssueChatMetadataRow({
+  anchorId,
+  icon,
+  children,
+  testid = "issue-chat-metadata-row",
+}: {
+  anchorId?: string;
+  icon: ReactNode;
+  children: ReactNode;
+  testid?: string;
+}) {
+  return (
+    <div id={anchorId} data-testid={testid}>
+      <div className="ml-3 flex items-start gap-2.5 border-l-2 border-border/50 py-0.5 pl-3">
+        <span className="mt-px flex size-(--sz-18px) shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/30 text-muted-foreground/60">
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">{children}</div>
+      </div>
     </div>
   );
 }
@@ -1884,31 +3718,54 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    onCancelInteraction,
+    onSubmitInteractionVerdicts,
+    onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
-  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const anchorId =
+    typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
-  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
-  const runAgentName = typeof custom.runAgentName === "string" ? custom.runAgentName : null;
-  const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
-  const actorName = typeof custom.actorName === "string" ? custom.actorName : null;
-  const actorType = typeof custom.actorType === "string" ? custom.actorType : null;
+  const runAgentId =
+    typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runAgentName =
+    typeof custom.runAgentName === "string" ? custom.runAgentName : null;
+  const runStatus =
+    typeof custom.runStatus === "string" ? custom.runStatus : null;
+  const actorName =
+    typeof custom.actorName === "string" ? custom.actorName : null;
+  const actorType =
+    typeof custom.actorType === "string" ? custom.actorType : null;
   const actorId = typeof custom.actorId === "string" ? custom.actorId : null;
-  const statusChange = typeof custom.statusChange === "object" && custom.statusChange
-    ? custom.statusChange as { from: string | null; to: string | null }
-    : null;
-  const assigneeChange = typeof custom.assigneeChange === "object" && custom.assigneeChange
-    ? custom.assigneeChange as {
-        from: IssueTimelineAssignee;
-        to: IssueTimelineAssignee;
-      }
+  const statusChange =
+    typeof custom.statusChange === "object" && custom.statusChange
+      ? (custom.statusChange as { from: string | null; to: string | null })
+      : null;
+  const assigneeChange =
+    typeof custom.assigneeChange === "object" && custom.assigneeChange
+      ? (custom.assigneeChange as {
+          from: IssueTimelineAssignee;
+          to: IssueTimelineAssignee;
+        })
+      : null;
+  const workspaceChange = isTimelineWorkspaceChange(custom.workspaceChange)
+    ? custom.workspaceChange
     : null;
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
 
+  if (custom.kind === "system_notice") {
+    return <SystemNoticeCommentRow message={message} anchorId={anchorId} />;
+  }
+
   if (custom.kind === "interaction" && interaction) {
-    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+    if (
+      interaction.kind === "request_confirmation" &&
+      interaction.status === "expired" &&
+      !interaction.payload.secretProposal
+    ) {
       return (
         <ExpiredRequestConfirmationActivity
           message={message}
@@ -1929,6 +3786,10 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
+            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+            onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       </div>
@@ -1936,127 +3797,146 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   }
 
   if (custom.kind === "event" && actorName) {
-    const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
     const isAgent = actorType === "agent";
     const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
+    const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
+    const rowIcon = isAgent
+      ? <AgentAvatar agent={actorId ? agentMap?.get(actorId) ?? { id: actorId } : undefined} size={16} />
+      : <ClipboardList className="h-3 w-3" />;
+    const handoffResolvers: HandoffChipResolvers = {
+      agentMap,
+      currentUserId,
+      resolveUserLabel: (userId) =>
+        formatAssigneeUserLabel(userId, null, userLabelMap),
+    };
 
-    const eventContent = (
-      <div className="min-w-0 space-y-1">
-        <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
+    return (
+      <IssueChatMetadataRow anchorId={anchorId} icon={rowIcon}>
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs">
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
-            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+            {custom.followUpRequested === true
+              ? "requested follow-up"
+              : "updated this task"}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
-            className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+            className="text-xs text-muted-foreground/70 transition-colors hover:text-foreground hover:underline"
           >
             {timeAgo(message.createdAt)}
           </a>
         </div>
 
         {statusChange ? (
-          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
               Status
             </span>
-            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
-            <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+            <span className="text-muted-foreground">
+              {humanizeValue(statusChange.from)}
+            </span>
+            <ArrowRight className="h-3 w-3 text-muted-foreground/70" />
+            <span className="font-medium text-foreground">
+              {humanizeValue(statusChange.to)}
+            </span>
           </div>
         ) : null}
 
         {assigneeChange ? (
-          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Assignee
+          <div className="space-y-1">
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-1.5 text-xs",
+                isCurrentUser && "justify-end",
+              )}
+            >
+              <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
+                Assignee
+              </span>
+              <AssigneeChip
+                assignee={assigneeChange.from}
+                resolvers={handoffResolvers}
+              />
+              <ArrowRight className="h-3 w-3 text-muted-foreground/70" />
+              <AssigneeChip
+                assignee={assigneeChange.to}
+                resolvers={handoffResolvers}
+              />
+            </div>
+            <div className={cn(isCurrentUser && "flex justify-end")}>
+              <HandoffWakeRow
+                to={assigneeChange.to}
+                resolvers={handoffResolvers}
+                interruptedRunAttached={custom.interruptedRunId != null}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {workspaceChange ? (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
+              Workspace
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineWorkspaceLabel(workspaceChange.from)}
             </span>
-            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+            <ArrowRight className="h-3 w-3 text-muted-foreground/70" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineWorkspaceLabel(workspaceChange.to)}
             </span>
           </div>
         ) : null}
-      </div>
-    );
-
-    if (isCurrentUser) {
-      return (
-        <div id={anchorId}>
-          <div className="flex items-start justify-end gap-2 py-1">
-            {eventContent}
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div id={anchorId}>
-        <div className="flex items-start gap-2.5 py-1">
-          <Avatar size="sm" className="mt-0.5">
-            {agentIcon ? (
-              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-            ) : (
-              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-            )}
-          </Avatar>
-          <div className="flex-1">
-            {eventContent}
-          </div>
-        </div>
-      </div>
+      </IssueChatMetadataRow>
     );
   }
 
-  const displayedRunAgentName = runAgentName ?? (runAgentId ? agentMap?.get(runAgentId)?.name ?? runAgentId.slice(0, 8) : null);
+  const displayedRunAgentName =
+    runAgentName ??
+    (runAgentId
+      ? (agentMap?.get(runAgentId)?.name ?? runAgentId.slice(0, 8))
+      : null);
   const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
   if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
-    return (
-      <div id={anchorId}>
-        <div className="flex items-center gap-2.5 py-1">
-          <Avatar size="sm">
-            {runAgentIcon ? (
-              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-            ) : (
-              <AvatarFallback>{initialsForName(displayedRunAgentName)}</AvatarFallback>
-            )}
-          </Avatar>
+    const rowIcon = <AgentAvatar agent={agentMap?.get(runAgentId) ?? { id: runAgentId }} size={16} />;
 
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
-              <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
-                {displayedRunAgentName}
-              </Link>
-              <span className="text-muted-foreground">run</span>
-              <Link
-                to={`/agents/${runAgentId}/runs/${runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-              >
-                {runId.slice(0, 8)}
-              </Link>
-              <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
-              </span>
-              <a
-                href={anchorId ? `#${anchorId}` : undefined}
-                className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
-              >
-                {timeAgo(message.createdAt)}
-              </a>
-            </div>
-          </div>
+    return (
+      <IssueChatMetadataRow anchorId={anchorId} icon={rowIcon}>
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+          <Link
+            to={`/agents/${runAgentId}`}
+            className="font-medium text-foreground transition-colors hover:underline"
+          >
+            {displayedRunAgentName}
+          </Link>
+          <span className="text-muted-foreground">run</span>
+          <Link
+            to={`/agents/${runAgentId}/runs/${runId}`}
+            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            {runId.slice(0, 8)}
+          </Link>
+          <RunStatusBadge
+            status={runStatus}
+            operatorInterrupted={custom.runOperatorInterrupted === true}
+          />
+          <a
+            href={anchorId ? `#${anchorId}` : undefined}
+            className="text-xs text-muted-foreground/70 transition-colors hover:text-foreground hover:underline"
+          >
+            {timeAgo(message.createdAt)}
+          </a>
         </div>
-      </div>
+      </IssueChatMetadataRow>
     );
   }
 
   return null;
 }
 
-function issueChatMessageCustom(message: ThreadMessage): Record<string, unknown> {
+function issueChatMessageCustom(
+  message: ThreadMessage,
+): Record<string, unknown> {
   return (message.metadata?.custom ?? {}) as Record<string, unknown>;
 }
 
@@ -2075,9 +3955,13 @@ function issueChatMessageRunId(message: ThreadMessage): string | null {
   return typeof custom.runId === "string" ? custom.runId : null;
 }
 
-function issueChatMessageQueueTargetRunId(message: ThreadMessage): string | null {
+function issueChatMessageQueueTargetRunId(
+  message: ThreadMessage,
+): string | null {
   const custom = issueChatMessageCustom(message);
-  return typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  return typeof custom.queueTargetRunId === "string"
+    ? custom.queueTargetRunId
+    : null;
 }
 
 function issueChatMessageActiveVote(
@@ -2085,7 +3969,7 @@ function issueChatMessageActiveVote(
   feedbackVoteByTargetId: ReadonlyMap<string, FeedbackVoteValue>,
 ): FeedbackVoteValue | null {
   const commentId = issueChatMessageCommentId(message);
-  return commentId ? feedbackVoteByTargetId.get(commentId) ?? null : null;
+  return commentId ? (feedbackVoteByTargetId.get(commentId) ?? null) : null;
 }
 
 function issueChatMessageRunIsActive(
@@ -2109,7 +3993,19 @@ function issueChatMessageQueuedRunIsInterrupting(
   interruptingQueuedRunId: string | null | undefined,
 ): boolean {
   const queueTargetRunId = issueChatMessageQueueTargetRunId(message);
-  return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
+  return Boolean(
+    queueTargetRunId && interruptingQueuedRunId === queueTargetRunId,
+  );
+}
+
+function issueChatMessageIsDeleted(message: ThreadMessage): boolean {
+  const custom = issueChatMessageCustom(message);
+  return Boolean(custom.deletedAt);
+}
+
+function issueChatMessageDeletedAt(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.deletedAt === "string" ? custom.deletedAt : null;
 }
 
 // Above ~150 merged rows the direct render path forces React to mount and
@@ -2136,7 +4032,10 @@ interface VirtualizedIssueChatThreadListProps {
 interface VirtualizedIssueChatThreadListHandle {
   scrollToIndex: (
     index: number,
-    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    options?: {
+      align?: "start" | "center" | "end" | "auto";
+      behavior?: ScrollBehavior;
+    },
   ) => void;
   scrollToLatest: (options?: { behavior?: ScrollBehavior }) => void;
   measure: () => void;
@@ -2147,11 +4046,18 @@ function issueChatMessageAnchorId(message: ThreadMessage): string | null {
   return typeof custom?.anchorId === "string" ? custom.anchorId : null;
 }
 
-function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
-  return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+function findMessageAnchorIndex(
+  messages: readonly ThreadMessage[],
+  anchorId: string,
+): number {
+  return messages.findIndex(
+    (message) => issueChatMessageAnchorId(message) === anchorId,
+  );
 }
 
-export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+export function findLatestCommentMessageIndex(
+  messages: readonly ThreadMessage[],
+): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
@@ -2166,8 +4072,7 @@ type VirtualizedVisibleAnchorSnapshot = {
 };
 
 type VirtualizedScrollMode =
-  | { kind: "window" }
-  | { kind: "element"; element: HTMLElement };
+  { kind: "window" } | { kind: "element"; element: HTMLElement };
 
 type SimpleVirtualItem = {
   index: number;
@@ -2175,6 +4080,18 @@ type SimpleVirtualItem = {
   start: number;
   size: number;
 };
+
+export function getVirtualizedMeasurementScrollAdjustment(args: {
+  itemStart: number;
+  previousSize: number;
+  nextSize: number;
+  viewportStart: number;
+}) {
+  const { itemStart, previousSize, nextSize, viewportStart } = args;
+  const previousEnd = itemStart + previousSize;
+  if (previousEnd > viewportStart) return 0;
+  return nextSize - previousSize;
+}
 
 function useIssueThreadVirtualizer({
   count,
@@ -2209,18 +4126,25 @@ function useIssueThreadVirtualizer({
   }
   const totalSize = Math.max(0, nextStart - scrollMargin - gap);
 
-  const viewportHeight = () => (mode.kind === "window" ? window.innerHeight : mode.element.clientHeight);
-  const scrollOffset = () => (mode.kind === "window" ? window.scrollY : mode.element.scrollTop);
+  const viewportHeight = () =>
+    mode.kind === "window" ? window.innerHeight : mode.element.clientHeight;
+  const scrollOffset = () =>
+    mode.kind === "window" ? window.scrollY : mode.element.scrollTop;
   const maxScrollOffset = () => {
-    const targetScrollHeight = mode.kind === "window"
-      ? document.documentElement.scrollHeight
-      : mode.element.scrollHeight;
-    return Math.max(0, Math.max(targetScrollHeight, totalSize) - viewportHeight());
+    const targetScrollHeight =
+      mode.kind === "window"
+        ? document.documentElement.scrollHeight
+        : mode.element.scrollHeight;
+    return Math.max(
+      0,
+      Math.max(targetScrollHeight, totalSize) - viewportHeight(),
+    );
   };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const target: Window | HTMLElement = mode.kind === "window" ? window : mode.element;
+    const target: Window | HTMLElement =
+      mode.kind === "window" ? window : mode.element;
     const update = () => rerender((value) => value + 1);
     target.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
@@ -2234,8 +4158,8 @@ function useIssueThreadVirtualizer({
   const rawEnd = rawStart + viewportHeight();
   let visibleStartIndex = 0;
   while (
-    visibleStartIndex < count - 1
-    && itemStarts[visibleStartIndex] + itemSizes[visibleStartIndex] < rawStart
+    visibleStartIndex < count - 1 &&
+    itemStarts[visibleStartIndex] + itemSizes[visibleStartIndex] < rawStart
   ) {
     visibleStartIndex += 1;
   }
@@ -2257,13 +4181,19 @@ function useIssueThreadVirtualizer({
 
   const scrollToIndex = (
     index: number,
-    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    options?: {
+      align?: "start" | "center" | "end" | "auto";
+      behavior?: ScrollBehavior;
+    },
   ) => {
     const clampedIndex = Math.max(0, Math.min(index, count - 1));
     const targetMax = maxScrollOffset();
     let top = itemStarts[clampedIndex] ?? scrollMargin;
     if (options?.align === "center") {
-      top = top - viewportHeight() / 2 + (itemSizes[clampedIndex] ?? estimatedSize) / 2;
+      top =
+        top -
+        viewportHeight() / 2 +
+        (itemSizes[clampedIndex] ?? estimatedSize) / 2;
     } else if (options?.align === "end") {
       top = top + (itemSizes[clampedIndex] ?? estimatedSize) - viewportHeight();
     }
@@ -2285,12 +4215,27 @@ function useIssueThreadVirtualizer({
       if (!element) return;
       const index = Number(element.dataset.index);
       if (!Number.isInteger(index) || index < 0 || index >= count) return;
-      const measuredSize = element.getBoundingClientRect().height || element.offsetHeight;
+      const measuredSize =
+        element.getBoundingClientRect().height || element.offsetHeight;
       if (!Number.isFinite(measuredSize) || measuredSize <= 0) return;
       const key = getItemKey(index);
-      const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
+      const previousSize =
+        measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
       if (Math.abs(previousSize - measuredSize) < 1) return;
+      const scrollAdjustment = getVirtualizedMeasurementScrollAdjustment({
+        itemStart: itemStarts[index] ?? scrollMargin,
+        previousSize,
+        nextSize: measuredSize,
+        viewportStart: Math.max(scrollMargin, scrollOffset()),
+      });
       measuredSizeByKeyRef.current.set(key, measuredSize);
+      if (Math.abs(scrollAdjustment) >= 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        }
+      }
       rerender((value) => value + 1);
     },
   };
@@ -2305,9 +4250,17 @@ function useIssueThreadVirtualizer({
 function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
   if (!el || typeof window === "undefined") return null;
   let current: HTMLElement | null = el.parentElement;
-  while (current && current !== document.body && current !== document.documentElement) {
+  while (
+    current &&
+    current !== document.body &&
+    current !== document.documentElement
+  ) {
     const overflowY = window.getComputedStyle(current).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+    if (
+      overflowY === "auto" ||
+      overflowY === "scroll" ||
+      overflowY === "overlay"
+    ) {
       return current;
     }
     current = current.parentElement;
@@ -2315,7 +4268,10 @@ function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadListHandle, VirtualizedIssueChatThreadListProps>(function VirtualizedIssueChatThreadList(props, ref) {
+const VirtualizedIssueChatThreadList = forwardRef<
+  VirtualizedIssueChatThreadListHandle,
+  VirtualizedIssueChatThreadListProps
+>(function VirtualizedIssueChatThreadList(props, ref) {
   const probeRef = useRef<HTMLDivElement | null>(null);
   // Default to window scroll on first render so the imperative handle is
   // available immediately for hash-target / submit-scroll effects. After mount
@@ -2363,24 +4319,31 @@ interface VirtualizedIssueChatThreadListInnerProps extends VirtualizedIssueChatT
 const VirtualizedIssueChatThreadListInner = forwardRef<
   VirtualizedIssueChatThreadListHandle,
   VirtualizedIssueChatThreadListInnerProps
->(function VirtualizedIssueChatThreadListInner({
-  messages,
-  feedbackVoteByTargetId,
-  activeRunIds,
-  stoppingRunId,
-  interruptingQueuedRunId,
-  variant,
-  mode,
-  probeRef,
-}, ref) {
+>(function VirtualizedIssueChatThreadListInner(
+  {
+    messages,
+    feedbackVoteByTargetId,
+    activeRunIds,
+    stoppingRunId,
+    interruptingQueuedRunId,
+    variant,
+    mode,
+    probeRef,
+  },
+  ref,
+) {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
-  const pendingPrependAnchorRef = useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
+  const pendingPrependAnchorRef =
+    useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
 
-  const setRefs = useCallback((element: HTMLDivElement | null) => {
-    parentRef.current = element;
-    probeRef.current = element;
-  }, [probeRef]);
+  const setRefs = useCallback(
+    (element: HTMLDivElement | null) => {
+      parentRef.current = element;
+      probeRef.current = element;
+    },
+    [probeRef],
+  );
 
   useLayoutEffect(() => {
     const element = parentRef.current;
@@ -2388,10 +4351,15 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     const update = () => {
       if (!parentRef.current) return;
       const rect = parentRef.current.getBoundingClientRect();
-      const offset = mode.kind === "window"
-        ? rect.top + window.scrollY
-        : rect.top - mode.element.getBoundingClientRect().top + mode.element.scrollTop;
-      setScrollMargin((previous) => (Math.abs(previous - offset) < 0.5 ? previous : offset));
+      const offset =
+        mode.kind === "window"
+          ? rect.top + window.scrollY
+          : rect.top -
+            mode.element.getBoundingClientRect().top +
+            mode.element.scrollTop;
+      setScrollMargin((previous) =>
+        Math.abs(previous - offset) < 0.5 ? previous : offset,
+      );
     };
     update();
     window.addEventListener("resize", update);
@@ -2400,9 +4368,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     };
   }, [mode]);
 
-  const gap = variant === "embedded"
-    ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
-    : VIRTUALIZED_THREAD_GAP_FULL_PX;
+  const gap =
+    variant === "embedded"
+      ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
+      : VIRTUALIZED_THREAD_GAP_FULL_PX;
 
   const virtualizer = useIssueThreadVirtualizer({
     count: messages.length,
@@ -2414,25 +4383,29 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     mode,
   });
 
-  useImperativeHandle(ref, () => ({
-    scrollToIndex: (index, options) => {
-      if (index < 0 || index >= messages.length) return;
-      virtualizer.scrollToIndex(index, {
-        align: options?.align ?? "center",
-        behavior: options?.behavior ?? "smooth",
-      });
-    },
-    scrollToLatest: (options) => {
-      if (messages.length === 0) return;
-      virtualizer.scrollToIndex(messages.length - 1, {
-        align: "end",
-        behavior: options?.behavior ?? "smooth",
-      });
-    },
-    measure: () => {
-      virtualizer.measure();
-    },
-  }), [messages.length, virtualizer]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToIndex: (index, options) => {
+        if (index < 0 || index >= messages.length) return;
+        virtualizer.scrollToIndex(index, {
+          align: options?.align ?? "center",
+          behavior: options?.behavior ?? "smooth",
+        });
+      },
+      scrollToLatest: (options) => {
+        if (messages.length === 0) return;
+        virtualizer.scrollToIndex(messages.length - 1, {
+          align: "end",
+          behavior: options?.behavior ?? "smooth",
+        });
+      },
+      measure: () => {
+        virtualizer.measure();
+      },
+    }),
+    [messages.length, virtualizer],
+  );
 
   useLayoutEffect(() => {
     return () => {
@@ -2441,7 +4414,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
       const rows = Array.from(
         element.querySelectorAll<HTMLElement>("[data-anchor-id][data-index]"),
       );
-      const visibleRow = rows.find((row) => row.getBoundingClientRect().bottom >= 0);
+      const visibleRow = rows.find(
+        (row) => row.getBoundingClientRect().bottom >= 0,
+      );
       if (!visibleRow) return;
       const anchorId = visibleRow.dataset.anchorId;
       const index = Number(visibleRow.dataset.index);
@@ -2466,7 +4441,8 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     requestAnimationFrame(() => {
       const element = document.getElementById(pendingAnchor.anchorId);
       if (!element) return;
-      const delta = element.getBoundingClientRect().top - pendingAnchor.viewportTop;
+      const delta =
+        element.getBoundingClientRect().top - pendingAnchor.viewportTop;
       if (Math.abs(delta) > 1) {
         if (mode.kind === "window") {
           window.scrollBy({ top: delta, behavior: "auto" });
@@ -2543,6 +4519,39 @@ interface IssueChatMessageRowProps {
   interruptingQueuedRunId?: string | null;
 }
 
+function IssueChatDeletedComment({
+  message,
+  deletedAt,
+}: {
+  message: ThreadMessage;
+  deletedAt: string;
+}) {
+  const custom = issueChatMessageCustom(message);
+  const anchorId =
+    typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const authorName =
+    typeof custom.authorName === "string" ? custom.authorName : "Comment";
+  const deletedDate = new Date(deletedAt);
+  const deletedDateLabel = Number.isNaN(deletedDate.getTime())
+    ? ""
+    : formatDateTime(deletedDate);
+
+  return (
+    <div id={anchorId} className="flex items-start gap-2.5 py-1.5">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40 text-muted-foreground">
+        <Trash2 className="h-3.5 w-3.5" />
+      </div>
+      <div className="min-w-0 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+        <span className="font-medium text-foreground/80">{authorName}</span>
+        <span> deleted this comment</span>
+        {deletedDateLabel ? (
+          <span className="text-xs"> · {deletedDateLabel}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const IssueChatMessageRow = memo(function IssueChatMessageRow({
   message,
   feedbackVoteByTargetId,
@@ -2551,27 +4560,34 @@ const IssueChatMessageRow = memo(function IssueChatMessageRow({
   interruptingQueuedRunId,
 }: IssueChatMessageRowProps) {
   const kind = issueChatMessageKind(message);
-  const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
+  const deletedAt = issueChatMessageDeletedAt(message);
+  const activeVote = issueChatMessageActiveVote(
+    message,
+    feedbackVoteByTargetId,
+  );
   const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
   const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
-  const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
-  const renderedMessage = message.role === "user"
-    ? (
-      <IssueChatUserMessage
-        message={message}
-        isInterruptingQueuedRun={isInterruptingQueuedRun}
-      />
-    )
-    : message.role === "assistant"
-      ? (
-        <IssueChatAssistantMessage
-          message={message}
-          activeVote={activeVote}
-          isRunActive={isRunActive}
-          isStoppingRun={isStoppingRun}
-        />
-      )
-      : <IssueChatSystemMessage message={message} />;
+  const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(
+    message,
+    interruptingQueuedRunId,
+  );
+  const renderedMessage = deletedAt ? (
+    <IssueChatDeletedComment message={message} deletedAt={deletedAt} />
+  ) : message.role === "user" ? (
+    <IssueChatUserMessage
+      message={message}
+      isInterruptingQueuedRun={isInterruptingQueuedRun}
+    />
+  ) : message.role === "assistant" ? (
+    <IssueChatAssistantMessage
+      message={message}
+      activeVote={activeVote}
+      isRunActive={isRunActive}
+      isStoppingRun={isStoppingRun}
+    />
+  ) : (
+    <IssueChatSystemMessage message={message} />
+  );
 
   return (
     <div
@@ -2589,45 +4605,194 @@ function areIssueChatMessageRowPropsEqual(
   next: IssueChatMessageRowProps,
 ) {
   if (prev.message !== next.message) return false;
-  if (issueChatMessageActiveVote(prev.message, prev.feedbackVoteByTargetId) !== issueChatMessageActiveVote(next.message, next.feedbackVoteByTargetId)) return false;
-  if (issueChatMessageRunIsActive(prev.message, prev.activeRunIds) !== issueChatMessageRunIsActive(next.message, next.activeRunIds)) return false;
-  if (issueChatMessageRunIsStopping(prev.message, prev.stoppingRunId) !== issueChatMessageRunIsStopping(next.message, next.stoppingRunId)) return false;
-  if (issueChatMessageQueuedRunIsInterrupting(prev.message, prev.interruptingQueuedRunId) !== issueChatMessageQueuedRunIsInterrupting(next.message, next.interruptingQueuedRunId)) return false;
+  if (
+    issueChatMessageActiveVote(prev.message, prev.feedbackVoteByTargetId) !==
+    issueChatMessageActiveVote(next.message, next.feedbackVoteByTargetId)
+  )
+    return false;
+  if (
+    issueChatMessageRunIsActive(prev.message, prev.activeRunIds) !==
+    issueChatMessageRunIsActive(next.message, next.activeRunIds)
+  )
+    return false;
+  if (
+    issueChatMessageRunIsStopping(prev.message, prev.stoppingRunId) !==
+    issueChatMessageRunIsStopping(next.message, next.stoppingRunId)
+  )
+    return false;
+  if (
+    issueChatMessageQueuedRunIsInterrupting(
+      prev.message,
+      prev.interruptingQueuedRunId,
+    ) !==
+    issueChatMessageQueuedRunIsInterrupting(
+      next.message,
+      next.interruptingQueuedRunId,
+    )
+  )
+    return false;
   return true;
 }
 
-const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
-  onImageUpload,
-  onAttachImage,
-  draftKey,
-  enableReassign = false,
-  reassignOptions = [],
-  currentAssigneeValue = "",
-  suggestedAssigneeValue,
-  mentions = [],
-  agentMap,
-  composerDisabledReason = null,
-  composerHint = null,
-  issueStatus,
-}, forwardedRef) {
-  const api = useAui();
-  const toastActions = useOptionalToastActions();
-  const [body, setBody] = useState("");
+const IssueChatComposer = forwardRef<
+  IssueChatComposerHandle,
+  IssueChatComposerProps
+>(function IssueChatComposer(
+  {
+    onSend,
+    confirmedSubmissionIds,
+    onReviewConversation,
+    onStop,
+    stopPending,
+    stopScope = "leaf",
+    onImageUpload,
+    onAttachImage,
+    draftKey: sharedDraftKey,
+    enableReassign = false,
+    reassignOptions = [],
+    currentAssigneeValue = "",
+    companyId,
+    assigneeAdapterOverrides,
+    suggestedAssigneeValue,
+    mentions = [],
+    agentMap,
+    hasActiveRun = false,
+    currentUserId = null,
+    userLabelMap = null,
+    composerPause = null,
+    composerDisabledReason = null,
+    composerHint = null,
+    issueStatus,
+    issueWorkMode,
+    onWorkModeChange,
+  },
+  forwardedRef,
+) {
+  const stopControl = useComposerStop(onStop, stopPending);
+  const restoredRecovery = useMemo(() => {
+    const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
+    return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
+  }, [sharedDraftKey]);
+  const [newRecovery, setDraftRecovery] = useState<{ sourceKey: string; key: string; persisted: boolean } | null>(null);
+  const draftRecovery = newRecovery?.sourceKey === sharedDraftKey ? newRecovery : restoredRecovery;
+  const draftKey = draftRecovery?.key ?? sharedDraftKey;
+  // Keep the active buffer through send completion. Re-entering a task may
+  // return to its shared draft after an empty recovery has been retired.
+  useEffect(() => setDraftRecovery(restoredRecovery), [sharedDraftKey, restoredRecovery]);
+  const retiredDraftKeyRef = useRef<string | undefined>(undefined);
+  // Initialize before StrictMode's mount cleanup can flush an empty value over
+  // the stored draft. The effect below handles subsequent task-key changes.
+  const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState(false);
+  const [uncertainSubmission, setUncertainSubmission] =
+    useState<ComposerDraftSubmission | null>(() =>
+      draftKey ? loadDraftSubmission(draftKey) : null,
+    );
+  const mountedTaskKey = useRef(draftKey);
+  useEffect(() => {
+    mountedTaskKey.current = draftKey;
+    setUncertainSubmission(draftKey ? loadDraftSubmission(draftKey) : null);
+    return () => {
+      mountedTaskKey.current = undefined;
+    };
+  }, [draftKey]);
+  const bodyRef = useRef(body);
+  bodyRef.current = body;
+  const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
+  const pendingDraftRef = useRef<{
+    draftKey: string;
+    attemptId: string;
+    submittedBody: string;
+    submittedAttachmentIds: string[];
+  } | null>(null);
+  function changeBody(update: string | ((current: string) => string)) {
+    const value = typeof update === "function" ? update(bodyRef.current) : update;
+    bodyRef.current = value;
+    setBody(value);
+    const pending = pendingDraftRef.current;
+    if (!pending || pending.draftKey !== draftKey ||
+        loadDraftSubmission(pending.draftKey)?.attemptId !== pending.attemptId) return;
+    // Persist the next draft while delivery is pending, before navigation or a
+    // lost response can turn the original submission into an uncertain one.
+    saveDraft(pending.draftKey,
+      value ? `${pending.submittedBody}\n\n${value}` : pending.submittedBody,
+      pending.attemptId);
+    saveDraftSubmission(pending.draftKey, {
+      attemptId: pending.attemptId, reviewed: false,
+      nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
+      submittedAttachmentIds: pending.submittedAttachmentIds,
+    });
+  }
+  const submittingRef = useRef(submitting);
+  submittingRef.current = submitting;
   const [attaching, setAttaching] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const [composerAttachments, setComposerAttachmentState] = useState<
+    ComposerAttachmentItem[]
+  >(() =>
+    draftKey
+      ? loadDraftAttachments(draftKey).map((item) => ({
+          ...item,
+          size: item.size ?? 0,
+          id: `receipt:${item.attachmentId}`,
+          status: "attached",
+        }))
+      : [],
+  );
+  const composerAttachmentsRef = useRef(composerAttachments);
+  function setComposerAttachments(
+    update:
+      | ComposerAttachmentItem[]
+      | ((previous: ComposerAttachmentItem[]) => ComposerAttachmentItem[]),
+  ) {
+    const next =
+      typeof update === "function"
+        ? update(composerAttachmentsRef.current)
+        : update;
+    composerAttachmentsRef.current = next;
+    setComposerAttachmentState(next);
+    const pending = pendingDraftRef.current;
+    if (pending && pending.draftKey === draftKey) {
+      saveDraftAttachments(pending.draftKey, next
+        .filter(item => item.status === "attached" && item.attachmentId)
+        .map(item => ({ ...item, inline: item.inline === true })), pending.attemptId);
+    }
+  }
   const dragDepthRef = useRef(0);
-  const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
-  const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
-  const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const effectiveSuggestedAssigneeValue =
+    suggestedAssigneeValue ?? currentAssigneeValue;
+  const [reassignTarget, setReassignTarget] = useState(
+    effectiveSuggestedAssigneeValue,
+  );
+  const [runSettings, setRunSettings] = useState<ComposerRunSettings | null>(null);
+  useEffect(() => setRunSettings(null), [draftKey, currentAssigneeValue]);
+  const [noAssigneeDialogOpen, setNoAssigneeDialogOpen] = useState(false);
+  const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(
+    null,
+  );
+  const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
+  const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(
+    resolvedIssueWorkMode,
+  );
+  const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const reassignTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const focusAssigneeOnDialogCloseRef = useRef(false);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
+  const canAcceptFiles =
+    !uncertainSubmission && Boolean(onImageUpload || onAttachImage);
+  const uploadUnsettled =
+    attaching || composerAttachments.some((item) => item.status !== "attached");
+  const attachedFiles = composerAttachments.filter(
+    (item) => item.status === "attached" && !item.inline && item.contentPath,
+  );
 
-  function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
+  function queueViewportRestore(
+    snapshot: ReturnType<typeof captureComposerViewportSnapshot>,
+  ) {
     if (!snapshot) return;
     requestAnimationFrame(() => {
       restoreComposerViewportSnapshot(snapshot, composerContainerRef.current);
@@ -2636,120 +4801,301 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
   function focusComposer() {
     if (typeof composerContainerRef.current?.scrollIntoView === "function") {
-      composerContainerRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+      composerContainerRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
     }
     requestAnimationFrame(() => {
-      window.scrollBy({ top: COMPOSER_FOCUS_SCROLL_PADDING_PX, behavior: "smooth" });
+      window.scrollBy({
+        top: COMPOSER_FOCUS_SCROLL_PADDING_PX,
+        behavior: "smooth",
+      });
       editorRef.current?.focus();
     });
   }
 
   useEffect(() => {
-    if (!draftKey) return;
+    if (!draftKey || (draftRecovery?.key === draftKey && !draftRecovery.persisted)) return;
     setBody(loadDraft(draftKey));
+    setComposerAttachments(
+      loadDraftAttachments(draftKey).map((item) => ({
+        ...item,
+        size: item.size ?? 0,
+        id: `receipt:${item.attachmentId}`,
+        status: "attached",
+      })),
+    );
   }, [draftKey]);
 
+  // A server receipt for this exact request settles a restored submission.
+  // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
-    if (!draftKey) return;
+    if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    const { attemptId } = uncertainSubmission;
+    const reconciled = reconciledSubmissionRef.current;
+    if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
+    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
+      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
+    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    let nextAttachments = submittedIds
+      ? composerAttachmentsRef.current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
+      : [];
+    if (draftKey) {
+      const retained = loadDraftSubmission(draftKey);
+      // Settle storage from its own snapshot, never from this tab's stale copy.
+      // A different retained attempt is owned by its original tab.
+      if (retained?.attemptId === attemptId) settleDraftSubmission(draftKey, attemptId);
+      const storedDraft = loadDraftIfAvailable(draftKey);
+      const storedAttachments = loadDraftAttachments(draftKey).filter(item => !submittedIds?.includes(item.attachmentId));
+      const foreignAttempt = retained && retained.attemptId !== attemptId;
+      const differentAttachments = JSON.stringify(nextAttachments.map(item => item.attachmentId).sort()) !==
+        JSON.stringify(storedAttachments.map(item => item.attachmentId).sort());
+      if (storedDraft !== null && (foreignAttempt || !retained || storedDraft !== nextDraft || differentAttachments)) {
+        // Text has no cross-tab ordering. Preserve each buffer separately. When
+        // both snapshots describe the same text, retain all attachment receipts.
+        if (!foreignAttempt && (storedDraft === nextDraft || storedDraft === bodyRef.current)) {
+          const ids = new Set(nextAttachments.map(item => item.attachmentId));
+          const combined = [...nextAttachments, ...storedAttachments.filter(item => !ids.has(item.attachmentId)).map(item => ({
+            ...item, size: item.size ?? 0, id: `receipt:${item.attachmentId}`, status: "attached" as const,
+          }))];
+          // Each draft is limited to 20 receipts. If their union exceeds that,
+          // keep the local selection here and the other selection in shared storage.
+          if (combined.length <= 20) nextAttachments = combined;
+        }
+        const recovered = preserveDraftInTab(sharedDraftKey!, nextDraft, nextAttachments);
+        // Fence old effect cleanups before switching keys or updating bodyRef.
+        retiredDraftKeyRef.current = draftKey;
+        setDraftRecovery({ sourceKey: sharedDraftKey!, ...recovered });
+      }
+      // With unavailable storage, the confirmed in-memory attempt still settles.
+    }
+    reconciledSubmissionRef.current = { draftKey, attemptId };
+    setUncertainSubmission(null);
+    setBody(nextDraft);
+    bodyRef.current = nextDraft;
+    setComposerAttachments(nextAttachments);
+  }, [confirmedSubmissionIds, draftKey, sharedDraftKey, uncertainSubmission]);
+
+  useEffect(() => {
+    if (
+      !draftKey || retiredDraftKeyRef.current === draftKey ||
+      submitting ||
+      composerAttachments !== composerAttachmentsRef.current
+    )
+      return;
+    saveDraftAttachments(
+      draftKey,
+      composerAttachments.filter(
+        (item) => item.status === "attached" && item.attachmentId,
+      ),
+    );
+  }, [composerAttachments, draftKey, submitting]);
+
+  useEffect(() => {
+    if (!draftKey || submitting) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      saveDraft(draftKey, body);
+      if (retiredDraftKeyRef.current !== draftKey) saveDraft(draftKey, body);
     }, DRAFT_DEBOUNCE_MS);
-  }, [body, draftKey]);
+  }, [body, draftKey, submitting]);
 
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (draftKey && retiredDraftKeyRef.current !== draftKey && !submittingRef.current)
+        saveDraft(draftKey, bodyRef.current);
     };
-  }, []);
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    const flushDraft = () => {
+      if (retiredDraftKeyRef.current !== draftKey && !submittingRef.current) saveDraft(draftKey, bodyRef.current);
+    };
+    window.addEventListener("beforeunload", flushDraft);
+    return () => window.removeEventListener("beforeunload", flushDraft);
+  }, [draftKey]);
 
   useEffect(() => {
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
   useEffect(() => {
-    setUnassignedConfirmed(false);
-  }, [reassignTarget]);
+    setPendingWorkMode(resolvedIssueWorkMode);
+  }, [resolvedIssueWorkMode]);
 
-  useImperativeHandle(forwardedRef, () => ({
-    focus: focusComposer,
-    restoreDraft: (submittedBody: string) => {
-      setBody((current) =>
-        restoreSubmittedCommentDraft({
-          currentBody: current,
-          submittedBody,
-        }),
-      );
-      focusComposer();
-    },
-  }), []);
+  useImperativeHandle(
+    forwardedRef,
+    () => ({
+      focus: focusComposer,
+      restoreDraft: (submittedBody: string) => {
+        setBody((current) =>
+          restoreSubmittedCommentDraft({
+            currentBody: current,
+            submittedBody,
+          }),
+        );
+        focusComposer();
+      },
+    }),
+    [],
+  );
+
+  const showStop =
+    !submitting &&
+    !attaching &&
+    body.trim().length === 0 &&
+    composerAttachments.length === 0 &&
+    Boolean(onStop || stopControl.stopping);
 
   async function handleSubmit() {
+    if (composerPause) return;
     const trimmed = body.trim();
-    if (!trimmed || submitting) return;
-
-    const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
     if (
-      composerHasAssigneePicker
-      && isUnassignedReassignValue(reassignTarget)
-      && !unassignedConfirmed
+      (!trimmed && attachedFiles.length === 0) ||
+      submitting ||
+      uploadUnsettled ||
+      uncertainSubmission
+    )
+      return;
+
+    const composerHasAssigneePicker =
+      enableReassign && reassignOptions.length > 0;
+    if (
+      composerHasAssigneePicker &&
+      isUnassignedReassignValue(reassignTarget)
     ) {
-      toastActions?.pushToast({
-        title: "No assignee selected",
-        body: "Pick an assignee or click Send again to post without one.",
-        tone: "warn",
-        dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
-      });
-      setUnassignedConfirmed(true);
+      setNoAssigneeDialogOpen(true);
       return;
     }
 
-    const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
-    const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
+    await submitComment();
+  }
+
+  async function submitComment() {
+    if (composerPause) return;
+    const trimmed = body.trim();
+    if (
+      (!trimmed && attachedFiles.length === 0) ||
+      submitting ||
+      uploadUnsettled ||
+      uncertainSubmission
+    )
+      return;
+
+    const hasReassignment =
+      enableReassign && reassignTarget !== currentAssigneeValue;
+    const reassignment = hasReassignment
+      ? (parseReassignment(reassignTarget) ?? undefined)
+      : undefined;
     const reopen = shouldImplicitlyReopenComment(
       issueStatus,
       hasReassignment ? reassignTarget : currentAssigneeValue,
-    ) ? true : undefined;
-    const submittedBody = trimmed;
-    const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
+    )
+      ? true
+      : undefined;
+    const submittedBody = [
+      trimmed,
+      ...attachedFiles.map(
+        (item) =>
+          `[${item.name.replace(/[[\]]/g, "\\$&")}](${item.contentPath})`,
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const submittedAttachmentKeys = new Set(
+      composerAttachments.map((item) => item.id),
+    );
+    const attachmentIds = [
+      ...new Set(
+        composerAttachments
+          .filter(
+            (item) =>
+              item.status === "attached" &&
+              item.attachmentId &&
+              (!item.inline ||
+                (item.contentPath && trimmed.includes(item.contentPath))),
+          )
+          .map((item) => item.attachmentId!),
+      ),
+    ];
+    const viewportSnapshot = captureComposerViewportSnapshot(
+      composerContainerRef.current,
+    );
 
+    const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
+    if (draftKey) saveDraft(draftKey, trimmed);
     setSubmitting(true);
+    bodyRef.current = "";
     setBody("");
-    setUnassignedConfirmed(false);
+    let attemptId: string | null = null;
     try {
-      const appendPromise = api.thread().append({
-        role: "user",
-        content: [{ type: "text", text: submittedBody }],
-        metadata: { custom: {} },
-        attachments: [],
-        runConfig: {
-          custom: {
-            ...(reopen ? { reopen: true } : {}),
-            ...(reassignment ? { reassignment } : {}),
-          },
-        },
-      });
+      if (workModeChanged && onWorkModeChange) {
+        await onWorkModeChange(pendingWorkMode);
+      }
+      const retained = draftKey ? loadDraftSubmission(draftKey) : null;
+      if (retained) {
+        setUncertainSubmission(retained);
+        setBody(trimmed);
+        return;
+      }
+      attemptId = crypto.randomUUID();
+      if (draftKey) {
+        saveDraft(draftKey, trimmed);
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds };
+        changeBody(bodyRef.current);
+      }
+      // assistant-ui thread.append is fire-and-forget. Await the actual Board
+      // mutation; it already owns optimistic echo and durable error handling.
+      const sendPromise = runSettings
+        ? onSend(submittedBody, reopen, reassignment,
+            attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings)
+        : onSend(submittedBody, reopen, reassignment,
+            attachmentIds.length ? attachmentIds : undefined, attemptId);
       queueViewportRestore(viewportSnapshot);
-      await appendPromise;
-      if (draftKey) clearDraft(draftKey);
-      setComposerAttachments([]);
-      setReassignTarget(effectiveSuggestedAssigneeValue);
-    } catch {
-      setBody((current) =>
-        restoreSubmittedCommentDraft({
-          currentBody: current,
-          submittedBody,
-        }),
+      await sendPromise;
+      // Settle the captured task even if the user navigated away. The exact
+      // attempt guard preserves any newer submission in this or another tab.
+      if (draftKey) settleDraftSubmission(draftKey, attemptId,
+        mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
+      if (mountedTaskKey.current !== draftKey) return;
+      setComposerAttachments((current) =>
+        current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
+      setReassignTarget(effectiveSuggestedAssigneeValue);
+      setRunSettings(null);
+    } catch (error) {
+      if (mountedTaskKey.current !== draftKey) return;
+      const nextDraft = bodyRef.current;
+      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+        const uncertain = {
+          attemptId, reviewed: false,
+          nextDraftOffset: trimmed.length + (nextDraft ? 2 : 0),
+          submittedAttachmentIds: attachmentIds,
+        };
+        setUncertainSubmission(uncertain);
+        if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
+          saveDraftSubmission(draftKey, uncertain);
+      } else if (draftKey && attemptId)
+        clearDraftSubmission(draftKey, attemptId);
+      const restoredBody = nextDraft ? `${trimmed}\n\n${nextDraft}` : trimmed;
+      if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
+      setBody(restoredBody);
     } finally {
+      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
       queueViewportRestore(viewportSnapshot);
     }
   }
 
-  async function attachFile(file: File) {
+  async function attachFile(
+    file: File,
+    insertInline = true,
+  ): Promise<string | undefined> {
     const attachmentId = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
-    const inline = Boolean(onImageUpload && file.type.startsWith("image/"));
+    const inline = file.type.startsWith("image/");
     setComposerAttachments((prev) => [
       ...prev,
       {
@@ -2762,45 +5108,79 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     ]);
 
     try {
-      if (onImageUpload && file.type.startsWith("image/")) {
+      if (!onAttachImage && onImageUpload && inline) {
         const url = await onImageUpload(file);
+        if (
+          !composerAttachmentsRef.current.some(
+            (item) => item.id === attachmentId,
+          )
+        )
+          return undefined;
         const safeName = file.name.replace(/[[\]]/g, "\\$&");
         const markdown = `![${safeName}](${url})`;
-        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-        setComposerAttachments((prev) => prev.map((item) =>
-          item.id === attachmentId
-            ? { ...item, status: "attached", contentPath: url }
-            : item,
-        ));
+        if (insertInline)
+          changeBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
+        setComposerAttachments((prev) =>
+          prev.map((item) =>
+            item.id === attachmentId
+              ? { ...item, status: "attached", contentPath: url }
+              : item,
+          ),
+        );
+        return url;
       } else if (onAttachImage) {
         const attachment = await onAttachImage(file);
-        setComposerAttachments((prev) => prev.map((item) =>
+        if (!attachment?.contentPath)
+          throw new Error("Upload did not return a file URL");
+        if (
+          !composerAttachmentsRef.current.some(
+            (item) => item.id === attachmentId,
+          )
+        )
+          return undefined;
+        if (inline && insertInline) {
+          const markdown = `![${file.name.replace(/[[\]]/g, "\\$&")}](${attachment.contentPath})`;
+          changeBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
+        }
+        setComposerAttachments((prev) =>
+          prev.map((item) =>
+            item.id === attachmentId
+              ? {
+                  ...item,
+                  status: "attached",
+                  attachmentId: attachment.id,
+                  contentPath: attachment?.contentPath,
+                  name: attachment?.originalFilename ?? item.name,
+                }
+              : item,
+          ),
+        );
+        return attachment.contentPath;
+      } else {
+        setComposerAttachments((prev) =>
+          prev.map((item) =>
+            item.id === attachmentId
+              ? {
+                  ...item,
+                  status: "error",
+                  error: "This file type cannot be attached here",
+                }
+              : item,
+          ),
+        );
+      }
+    } catch (err) {
+      setComposerAttachments((prev) =>
+        prev.map((item) =>
           item.id === attachmentId
             ? {
                 ...item,
-                status: "attached",
-                contentPath: attachment?.contentPath,
-                name: attachment?.originalFilename ?? item.name,
+                status: "error",
+                error: err instanceof Error ? err.message : "Upload failed",
               }
             : item,
-        ));
-      } else {
-        setComposerAttachments((prev) => prev.map((item) =>
-          item.id === attachmentId
-            ? { ...item, status: "error", error: "This file type cannot be attached here" }
-            : item,
-        ));
-      }
-    } catch (err) {
-      setComposerAttachments((prev) => prev.map((item) =>
-        item.id === attachmentId
-          ? {
-              ...item,
-              status: "error",
-              error: err instanceof Error ? err.message : "Upload failed",
-            }
-          : item,
-      ));
+        ),
+      );
     }
   }
 
@@ -2864,7 +5244,94 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     void handleDroppedFiles(evt.dataTransfer?.files);
   }
 
-  const canSubmit = !submitting && !!body.trim();
+  const canSubmit =
+    !submitting &&
+    !uploadUnsettled &&
+    !uncertainSubmission &&
+    (!!body.trim() || attachedFiles.length > 0);
+
+  // Interrupt-handoff clarity (PAP-10669): preview what this comment will durably
+  // do, and coach plain agent names toward real mentions.
+  const agentMentionOptions = useMemo<HandoffAgentMention[]>(
+    () =>
+      mentions
+        .filter((m) => (m.kind ?? "agent") === "agent" && (m.agentId ?? m.id))
+        .map((m) => ({
+          agentId: m.agentId ?? m.id.replace(/^agent:/, ""),
+          name: m.name,
+        })),
+    [mentions],
+  );
+  const handoffResolvers = useMemo<HandoffChipResolvers>(
+    () => ({
+      agentMap,
+      currentUserId,
+      resolveUserLabel: (userId: string) =>
+        formatAssigneeUserLabel(userId, null, userLabelMap),
+    }),
+    [agentMap, currentUserId, userLabelMap],
+  );
+  const mentionedAgentIds = useMemo(() => extractAgentMentionIds(body), [body]);
+  const plainNameCandidate = useMemo(
+    () =>
+      mentionedAgentIds.length > 0
+        ? null
+        : findPlainAgentNameCandidate(body, agentMentionOptions),
+    [body, mentionedAgentIds, agentMentionOptions],
+  );
+  const handoffPreview = useMemo(
+    () =>
+      computeComposerHandoffPreview({
+        reassignTarget,
+        currentAssigneeValue,
+        hasActiveRun,
+        bodyHasAgentMention: mentionedAgentIds.length > 0,
+        mentionedAgentId: mentionedAgentIds[0] ?? null,
+        plainNameCandidate,
+      }),
+    [
+      reassignTarget,
+      currentAssigneeValue,
+      hasActiveRun,
+      mentionedAgentIds,
+      plainNameCandidate,
+    ],
+  );
+  const coachVisible = Boolean(
+    plainNameCandidate &&
+    plainNameCandidate.matchedText !== dismissedCoachToken,
+  );
+  const coachAgentName = plainNameCandidate
+    ? (agentMap?.get(plainNameCandidate.agentId)?.name ??
+      plainNameCandidate.matchedText)
+    : "";
+
+  function insertCoachMention() {
+    if (!plainNameCandidate) return;
+    const option = mentions.find(
+      (m) =>
+        (m.agentId ?? m.id.replace(/^agent:/, "")) ===
+        plainNameCandidate.agentId,
+    );
+    const agentId = plainNameCandidate.agentId;
+    const name = option?.name ?? plainNameCandidate.matchedText;
+    const markdown = `[@${name}](${buildAgentMentionHref(agentId, option?.agentIcon ?? null)}) `;
+    // Replace the first bare occurrence of the matched token (outside links).
+    const tokenRe = new RegExp(
+      `(?<![\\w@/])${plainNameCandidate.matchedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`,
+      "i",
+    );
+    changeBody((current) => {
+      if (tokenRe.test(current))
+        return current.replace(tokenRe, markdown.trimEnd());
+      return current ? `${current} ${markdown}` : markdown;
+    });
+    setDismissedCoachToken(plainNameCandidate.matchedText);
+  }
+
+  if (composerPause) {
+    return <TaskChatPausedTakeover {...composerPause} hasDraft={Boolean(body.trim() || attachedFiles.length)} />;
+  }
 
   if (composerDisabledReason) {
     return (
@@ -2874,14 +5341,32 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode);
+
+  function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
+    // Match the period via both `code` and `key`: iOS Safari with a hardware
+    // keyboard often leaves `code` empty for cmd-period, so relying on it alone
+    // lets the event fall through and triggers Safari's default cancel/dismiss
+    // (which closes the view). Catching `key === "."` keeps the shortcut working
+    // on iOS while preserving desktop behavior.
+    const isPeriod = evt.code === "Period" || evt.key === ".";
+    if (!(evt.metaKey || evt.ctrlKey) || !isPeriod) return;
+    evt.preventDefault();
+    setPendingWorkMode((current) => nextWorkMode(current));
+  }
+
   return (
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
+      data-pending-work-mode={pendingWorkMode}
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
+        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-(--tp-border-color-background-color-box-shadow) duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
+        pendingWorkModeMeta.classes.container,
+        isDragOver &&
+          "border-primary/45 bg-background shadow-(--shadow-extract-7)",
       )}
+      onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
       onDragOverCapture={handleFileDragOver}
       onDragLeaveCapture={handleFileDragLeave}
@@ -2890,37 +5375,131 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       {isDragOver && canAcceptFiles ? (
         <div
           data-testid="issue-chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-(--blur-2px) dark:bg-background/65"
         >
           <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Paperclip className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="text-sm font-medium text-foreground">
+                Drop to upload
+              </div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Images insert into the reply. Other files are added to this issue.
+                Images insert into the reply. Other files are added to this
+                task.
               </div>
             </div>
           </div>
         </div>
       ) : null}
 
+      {draftRecovery && draftRecovery.sourceKey === sharedDraftKey ? (
+        <p role="status" className="mb-3 text-sm text-muted-foreground">
+          Another tab changed the saved draft. This draft is kept separately in this tab.
+          {!draftRecovery.persisted ? " Browser storage is unavailable; copy your text before leaving." : " It will be restored if you reload this tab."}
+        </p>
+      ) : null}
+      {uncertainSubmission ? (
+        <div
+          role="alert"
+          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
+        >
+          <p>
+            We couldn’t confirm whether this comment was saved. It may already
+            be in the conversation. Review it before starting another draft.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              setReviewError(false);
+              try {
+                if (!onReviewConversation)
+                  throw new Error("Review unavailable");
+                await onReviewConversation();
+                if (mountedTaskKey.current !== draftKey) return;
+                const reviewed = { ...uncertainSubmission, reviewed: true };
+                setUncertainSubmission(reviewed);
+                if (
+                  draftKey &&
+                  loadDraftSubmission(draftKey)?.attemptId ===
+                    reviewed.attemptId
+                )
+                  saveDraftSubmission(draftKey, reviewed);
+              } catch {
+                setReviewError(true);
+              }
+            }}
+          >
+            Review conversation
+          </Button>
+          {reviewError ? (
+            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
+          ) : null}
+          {uncertainSubmission.reviewed ? (
+            <>
+              <p>
+                Discarding this draft does not remove any saved comment or
+                uploaded file.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (draftKey)
+                    clearDraft(draftKey, uncertainSubmission.attemptId);
+                  bodyRef.current = "";
+                  setBody("");
+                  setComposerAttachments([]);
+                  setUncertainSubmission(null);
+                }}
+              >
+                Discard draft and start new
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <MarkdownEditor
         ref={editorRef}
+        readOnly={!!uncertainSubmission}
         value={body}
-        onChange={setBody}
+        onChange={changeBody}
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
-        imageUploadHandler={onImageUpload}
+        imageUploadHandler={
+          canAcceptFiles
+            ? async (file) => {
+                const url = await attachFile(file, false);
+                if (!url) throw new Error("Upload did not return a file URL");
+                return url;
+              }
+            : undefined
+        }
         fileDropTarget="parent"
         bordered={false}
-        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
+      {coachVisible && plainNameCandidate ? (
+        <div className="mt-2">
+          <ComposerMentionCoach
+            candidate={plainNameCandidate}
+            agentDisplayName={coachAgentName}
+            onInsert={insertCoachMention}
+            onDismiss={() =>
+              setDismissedCoachToken(plainNameCandidate.matchedText)
+            }
+          />
+        </div>
+      ) : null}
+
       {composerHint ? (
-        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-(length:--text-micro) text-muted-foreground">
           {composerHint}
         </div>
       ) : null}
@@ -2934,12 +5513,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading to issue"
+                ? "Uploading to task"
                 : attachment.status === "error"
-                  ? attachment.error ?? "Upload failed"
+                  ? (attachment.error ?? "Upload failed")
                   : attachment.inline
                     ? "Inserted inline"
-                    : "Attached to issue";
+                    : "Attached to task";
             return (
               <div
                 key={attachment.id}
@@ -2961,67 +5540,118 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   {attachment.name}
                 </span>
                 {sizeLabel ? (
-                  <span className="shrink-0 text-muted-foreground">{sizeLabel}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {sizeLabel}
+                  </span>
                 ) : null}
-                <span className="shrink-0 text-muted-foreground">{statusLabel}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {statusLabel}
+                </span>
+                {!attachment.inline || attachment.status !== "attached" ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove ${attachment.name}`}
+                    disabled={!!uncertainSubmission}
+                    onClick={() =>
+                      setComposerAttachments((current) =>
+                        current.filter((item) => item.id !== attachment.id),
+                      )
+                    }
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                ) : null}
               </div>
             );
           })}
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        {(onImageUpload || onAttachImage) ? (
-          <div className="mr-auto flex items-center gap-3">
-            <input
-              ref={attachInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleAttachFile}
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => attachInputRef.current?.click()}
-              disabled={attaching}
-              title="Attach file"
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-          </div>
-        ) : null}
+      {shouldRenderComposerHandoffPreview(body, handoffPreview) ? (
+        <div className="my-2">
+          <ComposerHandoffPreviewRow
+            preview={handoffPreview}
+            resolvers={handoffResolvers}
+          />
+        </div>
+      ) : null}
 
-        {enableReassign && reassignOptions.length > 0 ? (
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <div className="mr-auto flex items-center gap-2">
+          {canAcceptFiles ? (
+            <input ref={attachInputRef} type="file" className="hidden" onChange={handleAttachFile} />
+          ) : null}
+          <ComposerAddMenu mode={pendingWorkMode}
+            onModeChange={canToggleWorkMode ? setPendingWorkMode : undefined}
+            onAttachFile={canAcceptFiles ? () => attachInputRef.current?.click() : undefined}
+            attachDisabled={attaching}
+            disabled={!!uncertainSubmission}
+            triggerTestId="issue-chat-composer-add" menuTestId="issue-chat-composer-add-menu" />
+          <ComposerModeChip mode={pendingWorkMode}
+            onRemove={canToggleWorkMode ? () => setPendingWorkMode("standard") : undefined}
+            disabled={!!uncertainSubmission}
+            testId="issue-chat-composer-work-mode-chip" />
+        </div>
+
+        {enableReassign && reassignOptions.length > 0 && companyId && agentMap ? (
+          <ComposerRunSettingsPicker
+            companyId={companyId}
+            assigneeValue={reassignTarget}
+            currentAssigneeValue={currentAssigneeValue}
+            options={reassignOptions}
+            agents={agentMap}
+            overrides={assigneeAdapterOverrides}
+            settings={runSettings}
+            onSettingsChange={setRunSettings}
+            onAssigneeChange={setReassignTarget}
+            triggerRef={reassignTriggerRef}
+            renderAssigneeIdentity={(value) => {
+              const selected = value.startsWith("agent:") ? agentMap.get(value.slice(6)) : null;
+              return selected ? <AgentAvatar agent={selected} size={16} className="size-4 shrink-0" /> : null;
+            }}
+          />
+        ) : enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
+            ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder="Responsible"
+            noneLabel="No responsible"
+            searchPlaceholder="Search responsible..."
+            emptyMessage="No responsible found."
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
-              const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+              if (!option)
+                return (
+                  <span className="text-muted-foreground">Responsible</span>
+                );
+              const agentId = option.id.startsWith("agent:")
+                ? option.id.slice("agent:".length)
+                : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
                 <>
                   {agent ? (
-                    <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>
               );
             }}
             renderOption={(option) => {
-              if (!option.id) return <span className="truncate">{option.label}</span>;
-              const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+              if (!option.id)
+                return <span className="truncate">{option.label}</span>;
+              const agentId = option.id.startsWith("agent:")
+                ? option.id.slice("agent:".length)
+                : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
                 <>
                   {agent ? (
-                    <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>
@@ -3030,10 +5660,79 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           />
         ) : null}
 
-        <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
-        </Button>
+        {showStop ? (
+          <Button
+            size="icon-sm"
+            disabled={stopControl.stopping}
+            onClick={() => void stopControl.stop()}
+            aria-label={stopControl.stopping ? "Stopping…" : "Stop"}
+            title="Stop response"
+          >
+            {stopControl.stopping ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <Square className="h-4 w-4 fill-current" aria-hidden />
+            )}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            disabled={!canSubmit}
+            onClick={() => void handleSubmit()}
+          >
+            {submitting ? "Posting..." : "Send"}
+          </Button>
+        )}
       </div>
+
+      {stopControl.error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {stopControl.error}
+        </p>
+      ) : null}
+
+      {/* No-assignee warning modal (PAP-128 C): replaces the old press-Send-again toast. */}
+      <AlertDialog
+        open={noAssigneeDialogOpen}
+        onOpenChange={setNoAssigneeDialogOpen}
+      >
+        <AlertDialogContent
+          data-testid="issue-chat-no-assignee-dialog"
+          onCloseAutoFocus={(event) => {
+            if (!focusAssigneeOnDialogCloseRef.current) return;
+            event.preventDefault();
+            focusAssigneeOnDialogCloseRef.current = false;
+            reassignTriggerRef.current?.focus();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>No responsible selected</AlertDialogTitle>
+            <AlertDialogDescription>
+              This comment will be posted without an assignee, so no agent will
+              be woken to act on it. Go back to pick a responsible, or send
+              anyway.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="issue-chat-no-assignee-go-back"
+              onClick={() => {
+                focusAssigneeOnDialogCloseRef.current = true;
+              }}
+            >
+              Go back
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="issue-chat-no-assignee-send-anyway"
+              onClick={() => {
+                void submitComment();
+              }}
+            >
+              Send anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 });
@@ -3048,19 +5747,44 @@ export function IssueChatThread({
   timelineEvents = [],
   liveRuns = [],
   activeRun = null,
+  issueId = null,
   blockedBy = [],
+  liveIssueIds,
   blockerAttention = null,
+  successfulRunHandoff = null,
+  scheduledRetry = null,
+  recoveryAction = null,
+  onResolveRecoveryAction,
+  onReissueIsolatedRecoveryAction,
+  reissueIsolatedRecoveryActionPending = false,
+  onReconcileForwardRecoveryAction,
+  onBreakGlassOverrideRecoveryAction,
+  onQuarantineRestoreRecoveryAction,
+  quarantineRestoreRecoveryActionPending = false,
+  canBreakGlassRecoveryAction = false,
+  reconcileRecoveryActionPending = false,
+  canFalsePositiveRecoveryAction = false,
+  legacyRecoverySourceIssue = null,
   companyId,
+  assigneeAdapterOverrides,
   projectId,
   issueStatus,
+  issueAssigneeAgentId = null,
   agentMap,
   currentUserId,
   userLabelMap,
   userProfileMap,
   onVote,
   onAdd,
+  onReviewConversation,
   onCancelRun,
+  stopPending,
+  stopScope,
   onStopRun,
+  stopRunLabel,
+  stoppingRunLabel,
+  stopRunVariant,
+  runFinalizationActions,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -3069,11 +5793,15 @@ export function IssueChatThread({
   currentAssigneeValue = "",
   suggestedAssigneeValue,
   mentions = [],
+  composerPause = null,
   composerDisabledReason = null,
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
+  autoScrollToLatestOnInitialLoad = false,
+  autoScrollToHashOnInitialLoad = false,
   emptyMessage,
+  footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
@@ -3081,38 +5809,64 @@ export function IssueChatThread({
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   onCancelQueued,
+  onDeleteComment,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  onCancelInteraction,
+  onSubmitInteractionVerdicts,
   composerRef,
+  composerAccessory,
+  issueWorkMode,
+  onWorkModeChange,
   onRefreshLatestComments,
+  assigneeUserId = null,
+  onResumeFromBacklog,
+  resumeFromBacklogPending = false,
+  onResumeAssignee,
+  resumeAssigneePending = false,
+  onTryAgainNoLiveExecutionPath: _onTryAgainNoLiveExecutionPath,
+  tryAgainNoLiveExecutionPathPending: _tryAgainNoLiveExecutionPathPending,
+  onRetryFailedRun: _onRetryFailedRun,
+  retryFailedRunId: _retryFailedRunId,
+  externalReferences,
+  linkCaseReferences = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
-  const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
+  const didInitialHashScrollDecisionRef = useRef(false);
+  const virtualizedThreadRef =
+    useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
-  const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
+  const composerViewportSnapshotRef =
+    useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
   const preserveComposerViewportRef = useRef(false);
   const pendingSubmitScrollRef = useRef(false);
   const lastUserMessageIdRef = useRef<string | null>(null);
+  const didInitialLatestScrollRef = useRef(false);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
+  const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
+      if (!isLiveIssueRun(run, issueStatus)) continue;
       deduped.set(run.id, run);
     }
-    if (activeRun) {
+    if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
       deduped.set(activeRun.id, {
         id: activeRun.id,
         status: activeRun.status,
         invocationSource: activeRun.invocationSource,
         triggerDetail: activeRun.triggerDetail,
+        contextCommentId: activeRun.contextCommentId,
+        contextWakeCommentId: activeRun.contextWakeCommentId,
         startedAt: toIsoString(activeRun.startedAt),
         finishedAt: toIsoString(activeRun.finishedAt),
         createdAt: toIsoString(activeRun.createdAt) ?? new Date().toISOString(),
@@ -3121,10 +5875,25 @@ export function IssueChatThread({
         adapterType: activeRun.adapterType,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
+        issueId: activeRun.issueId,
+        livenessState: activeRun.livenessState,
+        livenessReason: activeRun.livenessReason,
+        continuationAttempt: activeRun.continuationAttempt,
+        lastUsefulActionAt: toIsoString(activeRun.lastUsefulActionAt),
+        nextAction: activeRun.nextAction,
+        outputSilence: activeRun.outputSilence,
+        currentStatusMessage: activeRun.currentStatusMessage ?? null,
+        currentStatusUpdatedAt: toIsoString(activeRun.currentStatusUpdatedAt),
+        currentToolName: activeRun.currentToolName ?? null,
+        lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
+        lastEventAt: toIsoString(activeRun.lastEventAt),
       });
     }
-    return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [activeRun, liveRuns]);
+    return [...deduped.values()].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+  }, [activeRun, issueStatus, liveRuns]);
   const transcriptRuns = useMemo(() => {
     return resolveIssueChatTranscriptRuns({
       linkedRuns,
@@ -3141,6 +5910,34 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const hasActiveRun = useMemo(
+    () => displayLiveRuns.some((run) => run.status === "running"),
+    [displayLiveRuns],
+  );
+  // Real-time view of the handoff: a run that starts after the issue payload
+  // was fetched must quiet the missing-disposition warnings without waiting
+  // for a refetch to update `hasLiveContinuation`.
+  const successfulRunHandoffWithLiveness = useMemo(() => {
+    if (!successfulRunHandoff || successfulRunHandoff.hasLiveContinuation) {
+      return successfulRunHandoff ?? null;
+    }
+    const liveNow =
+      activeRunIds.size > 0 || Boolean(issueId && liveIssueIds?.has(issueId));
+    return liveNow
+      ? { ...successfulRunHandoff, hasLiveContinuation: true }
+      : successfulRunHandoff;
+  }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
+  const clearLatestSettleTimeouts = useCallback(() => {
+    for (const timeout of latestSettleTimeoutsRef.current) {
+      window.clearTimeout(timeout);
+    }
+    latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
+  }, []);
+
+  useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
+
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -3164,6 +5961,7 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        issueStatus,
       }),
     [
       comments,
@@ -3180,10 +5978,13 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      issueStatus,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
-  const stableMessageCacheRef = useRef<Map<string, StableThreadMessageCacheEntry>>(new Map());
+  const stableMessageCacheRef = useRef<
+    Map<string, StableThreadMessageCacheEntry>
+  >(new Map());
   const messages = useMemo(() => {
     const stabilized = stabilizeThreadMessages(
       rawMessages,
@@ -3194,10 +5995,18 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
-  const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
+  const isRunning = displayLiveRuns.some(
+    (run) => run.status === "queued" || run.status === "running",
+  );
   const unresolvedBlockers = useMemo(
-    () => blockedBy.filter((blocker) => blocker.status !== "done" && blocker.status !== "cancelled"),
+    () =>
+      blockedBy.filter(
+        (blocker) =>
+          blocker.status !== "done" && blocker.status !== "cancelled",
+      ),
     [blockedBy],
   );
   const assignedAgent = useMemo(() => {
@@ -3213,7 +6022,8 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
-  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const useVirtualizedThread =
+    messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
   const messageAnchorIndex = useMemo(() => {
     const map = new Map<string, number>();
     messages.forEach((message, index) => {
@@ -3225,10 +6035,23 @@ export function IssueChatThread({
 
   function scrollToThreadAnchor(
     anchorId: string,
-    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    options?: {
+      align?: "start" | "center" | "end" | "auto";
+      behavior?: ScrollBehavior;
+    },
+    messageSnapshot: readonly ThreadMessage[] = messages,
   ) {
-    const virtualIndex = messageAnchorIndex.get(anchorId);
-    if (useVirtualizedThread && virtualIndex !== undefined) {
+    const snapshotUsesVirtualizer =
+      messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (
+      snapshotUsesVirtualizer &&
+      virtualIndex !== undefined &&
+      virtualIndex >= 0
+    ) {
       if (!virtualizedThreadRef.current) return false;
       virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
         align: options?.align ?? "center",
@@ -3241,44 +6064,61 @@ export function IssueChatThread({
     if (!element) return false;
     element.scrollIntoView({
       behavior: options?.behavior ?? "smooth",
-      block: options?.align === "start"
-        ? "start"
-        : options?.align === "end"
-          ? "end"
-          : "center",
+      block:
+        options?.align === "start"
+          ? "start"
+          : options?.align === "end"
+            ? "end"
+            : "center",
     });
     return true;
   }
 
+  const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
+    (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+      pendingSubmitScrollRef.current = true;
+      return runSettings
+        ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
+        : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
+    },
+    [onAdd],
+  );
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment }) => {
-      pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment);
-    },
+    onSend: ({ body, reopen, reassignment, attachmentIds }) =>
+      sendComposerComment(body, reopen, reassignment, attachmentIds),
     onCancel: onCancelRun,
   });
 
   useEffect(() => {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserMessage = [...messages]
+      .reverse()
+      .find((m) => m.role === "user");
     const lastUserId = lastUserMessage?.id ?? null;
 
     if (
-      pendingSubmitScrollRef.current
-      && lastUserId
-      && lastUserId !== lastUserMessageIdRef.current
+      pendingSubmitScrollRef.current &&
+      lastUserId &&
+      lastUserId !== lastUserMessageIdRef.current
     ) {
       pendingSubmitScrollRef.current = false;
-      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
-      const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+      const custom = lastUserMessage?.metadata.custom as
+        { anchorId?: unknown } | undefined;
+      const anchorId =
+        typeof custom?.anchorId === "string" ? custom.anchorId : null;
       if (anchorId) {
-        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
+        const reserve = Math.round(
+          window.innerHeight * SUBMIT_SCROLL_RESERVE_VH,
+        );
         spacerBaselineAnchorRef.current = anchorId;
         spacerInitialReserveRef.current = reserve;
         setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
-          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
+          scrollToThreadAnchor(anchorId, {
+            align: "start",
+            behavior: "smooth",
+          });
         });
       }
     }
@@ -3294,7 +6134,8 @@ export function IssueChatThread({
     if (!userEl || !bottomEl) return;
     const contentBelow = Math.max(
       0,
-      bottomEl.getBoundingClientRect().top - userEl.getBoundingClientRect().bottom,
+      bottomEl.getBoundingClientRect().top -
+        userEl.getBoundingClientRect().bottom,
     );
     const next = Math.max(0, spacerInitialReserveRef.current - contentBelow);
     setBottomSpacerHeight((prev) => (prev === next ? prev : next));
@@ -3312,28 +6153,67 @@ export function IssueChatThread({
       );
     }
 
-    composerViewportSnapshotRef.current = captureComposerViewportSnapshot(composerElement);
-    preserveComposerViewportRef.current = shouldPreserveComposerViewport(composerElement);
+    composerViewportSnapshotRef.current =
+      captureComposerViewportSnapshot(composerElement);
+    preserveComposerViewportRef.current =
+      shouldPreserveComposerViewport(composerElement);
   }, [messages]);
 
   useEffect(() => {
-    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
-    if (
-      !(
-        hash.startsWith("#comment-")
-        || hash.startsWith("#activity-")
-        || hash.startsWith("#run-")
-        || hash.startsWith("#interaction-")
-      )
-    ) return;
-    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
+    const hash =
+      location.hash ||
+      (typeof window !== "undefined" ? window.location.hash : "");
+    const isThreadHash =
+      hash.startsWith("#comment-") ||
+      hash.startsWith("#activity-") ||
+      hash.startsWith("#run-") ||
+      hash.startsWith("#interaction-");
+    if (messages.length === 0) return;
+    if (!isThreadHash) {
+      if (!didInitialHashScrollDecisionRef.current) {
+        didInitialHashScrollDecisionRef.current = true;
+      }
+      return;
+    }
+    if (lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
+    if (targetId.startsWith("comment-")) {
+      const targetMessage = messages.find(
+        (message) => issueChatMessageAnchorId(message) === targetId,
+      );
+      if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        didInitialHashScrollDecisionRef.current = true;
+        lastScrolledHashRef.current = hash;
+        if (typeof window !== "undefined") {
+          window.history.replaceState(
+            null,
+            "",
+            `${location.pathname}${location.search}`,
+          );
+        }
+        return;
+      }
+    }
+    if (!didInitialHashScrollDecisionRef.current) {
+      didInitialHashScrollDecisionRef.current = true;
+      if (!autoScrollToHashOnInitialLoad) {
+        lastScrolledHashRef.current = hash;
+        return;
+      }
+    }
     let cancelled = false;
     const attemptScroll = (finalAttempt = false) => {
       if (cancelled || lastScrolledHashRef.current === hash) return;
-      const didScroll = scrollToThreadAnchor(targetId, { align: "center", behavior: "smooth" });
+      const didScroll = scrollToThreadAnchor(targetId, {
+        align: "center",
+        behavior: "smooth",
+      });
       if (!didScroll) return;
-      if (finalAttempt || !useVirtualizedThread || document.getElementById(targetId)) {
+      if (
+        finalAttempt ||
+        !useVirtualizedThread ||
+        document.getElementById(targetId)
+      ) {
         lastScrolledHashRef.current = hash;
       }
     };
@@ -3346,36 +6226,87 @@ export function IssueChatThread({
       cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [
+    autoScrollToHashOnInitialLoad,
+    location.hash,
+    messageAnchorIndex,
+    messages,
+    useVirtualizedThread,
+  ]);
+
+  // Optional legacy behavior: callers may explicitly request landing on the
+  // latest comment. The shared default stays off so ordinary page loads keep
+  // the user's initial viewport stable.
+  useEffect(() => {
+    if (didInitialLatestScrollRef.current) return;
+    if (!autoScrollToLatestOnInitialLoad) return;
+    if (variant !== "full") return;
+    if (messages.length === 0) return;
+    const hash =
+      location.hash ||
+      (typeof window !== "undefined" ? window.location.hash : "");
+    if (
+      hash.startsWith("#comment-") ||
+      hash.startsWith("#activity-") ||
+      hash.startsWith("#run-") ||
+      hash.startsWith("#interaction-")
+    ) {
+      didInitialLatestScrollRef.current = true;
+      return;
+    }
+    didInitialLatestScrollRef.current = true;
+    // Defer a frame so the virtualizer/DOM has mounted its initial rows before
+    // we resolve and scroll to the latest comment's anchor.
+    const frame = requestAnimationFrame(() =>
+      scrollToLatestCommentWithSettle(latestMessagesRef.current),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
       virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
       return;
     }
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    bottomAnchorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
   }
 
-  // Walks the thread by anchor and lands on the latest `comment-*` row, with
-  // a short series of settle passes. The virtualizer estimates row sizes for
-  // unmeasured rows, and that estimate undershoots tall markdown comments —
-  // so the first scroll often lands above the actual bottom and the user
-  // ends up clicking Jump to latest repeatedly to converge. Re-issuing the
-  // scroll after measurements catch up lets one click reach the actual
-  // latest comment (PAP-2672 follow-up).
-  function scrollToLatestCommentWithSettle() {
-    const latestCommentIndex = findLatestCommentMessageIndex(messages);
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(
+    messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current,
+  ) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
     }
-    const latestCommentAnchor = issueChatMessageAnchorId(messages[latestCommentIndex]);
+    const latestCommentAnchor = issueChatMessageAnchorId(
+      messageSnapshot[latestCommentIndex],
+    );
     if (!latestCommentAnchor) {
       jumpToLatestFallback();
       return;
     }
 
-    const initial = scrollToThreadAnchor(latestCommentAnchor, { align: "end", behavior: "smooth" });
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
     if (!initial) {
       jumpToLatestFallback();
       return;
@@ -3383,51 +6314,159 @@ export function IssueChatThread({
 
     if (typeof window === "undefined") return;
 
-    const settleDelays = [380, 760, 1140];
-    settleDelays.forEach((delay) => {
-      window.setTimeout(() => {
-        const el = document.getElementById(latestCommentAnchor);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "end" });
-          return;
-        }
-        // The row may still be outside the virtualizer's render buffer; nudge
-        // the offset so it gets mounted, then the next pass can align with
-        // real DOM measurements.
+    const startedAt =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
+    clearLatestSettleTimeouts();
+    const resolveScrollContainer = (): HTMLElement | null =>
+      document.getElementById("main-content") as HTMLElement | null;
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, {
+      once: true,
+      passive: true,
+    });
+    cancelTarget.addEventListener("touchstart", cancel, {
+      once: true,
+      passive: true,
+    });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
+      const timeout = window.setTimeout(() => {
+        latestSettleTimeoutsRef.current =
+          latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
           align: "end",
           behavior: "auto",
         });
-      }, delay);
-    });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight =
+        container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
   }
 
   function handleJumpToLatest() {
     if (onRefreshLatestComments) {
-      // Refetching from page 0 (newest first) brings any comments that
-      // arrived after the initial load into the cache before we scroll —
-      // otherwise we'd land on the latest *loaded* row rather than the
-      // absolute newest, which is what PAP-2672 reopened on.
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
       const refreshed = onRefreshLatestComments();
-      if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
+      if (
+        refreshed &&
+        typeof (refreshed as Promise<unknown>).then === "function"
+      ) {
         (refreshed as Promise<unknown>).then(
-          () => scrollToLatestCommentWithSettle(),
-          () => scrollToLatestCommentWithSettle(),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
         );
         return;
       }
     }
-    scrollToLatestCommentWithSettle();
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
   }
 
   const stableOnVote = useStableEvent(onVote);
   const stableOnStopRun = useStableEvent(onStopRun);
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
   const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnDeleteComment = useStableEvent(onDeleteComment);
   const stableOnImageClick = useStableEvent(onImageClick);
   const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
-  const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
+  const stableOnSubmitInteractionAnswers = useStableEvent(
+    onSubmitInteractionAnswers,
+  );
+  const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
+  const stableOnSubmitInteractionVerdicts = useStableEvent(
+    onSubmitInteractionVerdicts,
+  );
+  const stableOnUploadImage = useStableEvent(imageUploadHandler);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
@@ -3439,12 +6478,25 @@ export function IssueChatThread({
       userProfileMap,
       onVote: stableOnVote,
       onStopRun: stableOnStopRun,
-      onInterruptQueued: stableOnInterruptQueued,
-      onCancelQueued: stableOnCancelQueued,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      runFinalizationActions,
+      onInterruptQueued: composerPause ? undefined : stableOnInterruptQueued,
+      onCancelQueued: composerPause ? undefined : stableOnCancelQueued,
+      onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
+      onCancelInteraction: stableOnCancelInteraction,
+      onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
+      onUploadImage: stableOnUploadImage,
+      issueStatus,
+      issueAssigneeAgentId,
+      successfulRunHandoff: successfulRunHandoffWithLiveness,
+      externalReferences,
+      linkCaseReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -3455,21 +6507,38 @@ export function IssueChatThread({
       userProfileMap,
       stableOnVote,
       stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      runFinalizationActions,
+      composerPause,
       stableOnInterruptQueued,
       stableOnCancelQueued,
+      stableOnDeleteComment,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
+      stableOnCancelInteraction,
+      stableOnSubmitInteractionVerdicts,
+      stableOnUploadImage,
+      issueStatus,
+      issueAssigneeAgentId,
+      successfulRunHandoffWithLiveness,
+      externalReferences,
+      linkCaseReferences,
     ],
   );
 
   const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
-  const resolvedEmptyMessage = emptyMessage
-    ?? (variant === "embedded"
+  const resolvedEmptyMessage =
+    emptyMessage ??
+    (variant === "embedded"
       ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
-  const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
+      : "This task conversation is empty. Start with a message below.");
+  const previousErrorBoundaryMessagesRef = useRef<
+    readonly ThreadMessage[] | null
+  >(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
     previousErrorBoundaryMessagesRef.current = messages;
@@ -3480,110 +6549,230 @@ export function IssueChatThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
-      <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-        {resolvedShowJumpToLatest ? (
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleJumpToLatest}
-              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-            >
-              Jump to latest
-            </button>
-          </div>
-        ) : null}
+        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+          {resolvedShowJumpToLatest ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleJumpToLatest}
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Jump to latest
+              </button>
+            </div>
+          ) : null}
 
-        <IssueChatErrorBoundary
-          resetKey={errorBoundaryResetKey}
-          messages={messages}
-          emptyMessage={resolvedEmptyMessage}
-          variant={variant}
-        >
-          <div data-testid="thread-root">
-            <div
-              data-testid="thread-viewport"
-              className={variant === "embedded" ? "space-y-3" : "space-y-4"}
-            >
-              {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
-                  variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
-                )}>
-                  {resolvedEmptyMessage}
-                </div>
-              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
-                <VirtualizedIssueChatThreadList
-                  ref={virtualizedThreadRef}
-                  messages={messages}
-                  feedbackVoteByTargetId={feedbackVoteByTargetId}
-                  activeRunIds={activeRunIds}
-                  stoppingRunId={stoppingRunId}
-                  interruptingQueuedRunId={interruptingQueuedRunId}
-                  variant={variant}
-                />
-              ) : (
-                // Keep transcript rendering independent from assistant-ui's
-                // index-scoped message providers; live transcripts can shrink
-                // or regroup while the runtime still holds stale indices.
-                messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
+          <IssueChatErrorBoundary
+            resetKey={errorBoundaryResetKey}
+            messages={messages}
+            emptyMessage={resolvedEmptyMessage}
+            variant={variant}
+            externalReferences={externalReferences}
+          >
+            <div data-testid="thread-root">
+              <div
+                data-testid="thread-viewport"
+                className={variant === "embedded" ? "space-y-3" : "space-y-4"}
+              >
+                {messages.length === 0 ? (
+                  <Card
+                    className={cn(
+                      "block shadow-none text-center text-sm text-muted-foreground",
+                      variant === "embedded"
+                        ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+                        : "border-dashed px-6 py-10",
+                    )}
+                  >
+                    {resolvedEmptyMessage}
+                  </Card>
+                ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+                  <VirtualizedIssueChatThreadList
+                    ref={virtualizedThreadRef}
+                    messages={messages}
                     feedbackVoteByTargetId={feedbackVoteByTargetId}
                     activeRunIds={activeRunIds}
                     stoppingRunId={stoppingRunId}
                     interruptingQueuedRunId={interruptingQueuedRunId}
+                    variant={variant}
                   />
-                ))
-              )}
-              {showComposer ? (
-                <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <IssueBlockedNotice
-                    issueStatus={issueStatus}
-                    blockers={unresolvedBlockers}
-                    blockerAttention={blockerAttention}
+                ) : (
+                  // Keep transcript rendering independent from assistant-ui's
+                  // index-scoped message providers; live transcripts can shrink
+                  // or regroup while the runtime still holds stale indices.
+                  messages.map((message) => (
+                    <IssueChatMessageRow
+                      key={message.id}
+                      message={message}
+                      feedbackVoteByTargetId={feedbackVoteByTargetId}
+                      activeRunIds={activeRunIds}
+                      stoppingRunId={stoppingRunId}
+                      interruptingQueuedRunId={interruptingQueuedRunId}
+                    />
+                  ))
+                )}
+                {showComposer ? (
+                  <div
+                    data-testid="issue-chat-thread-notices"
+                    className="space-y-2"
+                  >
+                    <IssueAssignedBacklogNotice
+                      issueStatus={issueStatus ?? ""}
+                      assigneeAgent={assignedAgent}
+                      assigneeUserId={assigneeUserId}
+                      onResume={onResumeFromBacklog}
+                      resuming={resumeFromBacklogPending}
+                    />
+                    {recoveryAction ? (
+                      <IssueRecoveryActionCard
+                        action={recoveryAction}
+                        agentMap={agentMap}
+                        scheduledRetry={scheduledRetry}
+                        onResolve={onResolveRecoveryAction}
+                        onReissueIsolated={onReissueIsolatedRecoveryAction}
+                        reissuePending={reissueIsolatedRecoveryActionPending}
+                        onReconcileForward={onReconcileForwardRecoveryAction}
+                        onBreakGlassOverride={
+                          onBreakGlassOverrideRecoveryAction
+                        }
+                        onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                        quarantineRestorePending={
+                          quarantineRestoreRecoveryActionPending
+                        }
+                        canBreakGlass={canBreakGlassRecoveryAction}
+                        reconcilePending={reconcileRecoveryActionPending}
+                        canFalsePositive={canFalsePositiveRecoveryAction}
+                      />
+                    ) : null}
+                    {legacyRecoverySourceIssue ? (
+                      <SystemNotice
+                        tone="info"
+                        label="Legacy recovery task"
+                        body={
+                          <span>
+                            Legacy recovery task. Newer recovery actions live on
+                            the source task
+                            {legacyRecoverySourceIssue.identifier ? (
+                              <>
+                                {" — "}
+                                <Link
+                                  to={legacyRecoverySourceIssue.href}
+                                  className="underline-offset-2 hover:underline"
+                                >
+                                  {legacyRecoverySourceIssue.identifier}
+                                  {legacyRecoverySourceIssue.title ? (
+                                    <span className="text-muted-foreground">
+                                      {" "}
+                                      — {legacyRecoverySourceIssue.title}
+                                    </span>
+                                  ) : null}
+                                </Link>
+                              </>
+                            ) : (
+                              "."
+                            )}
+                          </span>
+                        }
+                      />
+                    ) : null}
+                    <IssueBlockedNotice
+                      issueId={issueId}
+                      issueStatus={issueStatus}
+                      blockers={unresolvedBlockers}
+                      allBlockers={blockedBy}
+                      liveIssueIds={liveIssueIds}
+                      blockerAttention={blockerAttention}
+                      successfulRunHandoff={
+                        recoveryAction ? null : successfulRunHandoffWithLiveness
+                      }
+                      scheduledRetry={scheduledRetry}
+                      agentName={
+                        successfulRunHandoff?.assigneeAgentId
+                          ? (agentMap?.get(successfulRunHandoff.assigneeAgentId)
+                              ?.name ?? null)
+                          : null
+                      }
+                    />
+                    <IssueAssigneePausedNotice
+                      agent={assignedAgent}
+                      onResume={onResumeAssignee}
+                      resuming={resumeAssigneePending}
+                    />
+                  </div>
+                ) : (
+                  // Read-only viewers still need to see why nothing is running.
+                  <div
+                    data-testid="issue-chat-thread-notices"
+                    className="space-y-2"
+                  >
+                    <IssueAssigneePausedNotice
+                      agent={assignedAgent}
+                      onResume={onResumeAssignee}
+                      resuming={resumeAssigneePending}
+                    />
+                  </div>
+                )}
+                {footer ? (
+                  <div data-testid="issue-chat-thread-footer">{footer}</div>
+                ) : null}
+                <div ref={bottomAnchorRef} />
+                {showComposer ? (
+                  <div
+                    aria-hidden
+                    data-testid="issue-chat-bottom-spacer"
+                    style={{ height: bottomSpacerHeight }}
                   />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
-                </div>
-              ) : null}
-              <div ref={bottomAnchorRef} />
-              {showComposer ? (
-                <div
-                  aria-hidden
-                  data-testid="issue-chat-bottom-spacer"
-                  style={{ height: bottomSpacerHeight }}
-                />
-              ) : null}
+                ) : null}
+              </div>
             </div>
-          </div>
-        </IssueChatErrorBoundary>
+          </IssueChatErrorBoundary>
 
-        {showComposer ? (
-          <div
-            ref={composerViewportAnchorRef}
-            data-testid="issue-chat-composer-dock"
-            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
-          >
-            <IssueChatComposer
-              ref={composerRef}
-              onImageUpload={imageUploadHandler}
-              onAttachImage={onAttachImage}
-              draftKey={draftKey}
-              enableReassign={enableReassign}
-              reassignOptions={reassignOptions}
-              currentAssigneeValue={currentAssigneeValue}
-              suggestedAssigneeValue={suggestedAssigneeValue}
-              mentions={mentions}
-              agentMap={agentMap}
-              composerDisabledReason={composerDisabledReason}
-              composerHint={composerHint}
-              issueStatus={issueStatus}
-            />
-          </div>
-        ) : null}
-      </div>
+          {showComposer && composerAccessory ? (
+            <div data-testid="issue-chat-composer-accessory" className="mb-2">
+              {composerAccessory}
+            </div>
+          ) : null}
+
+          {showComposer ? (
+            <div
+              ref={composerViewportAnchorRef}
+              data-testid="issue-chat-composer-dock"
+              className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+            >
+              <IssueChatComposer
+                ref={composerRef}
+                onSend={sendComposerComment}
+                onReviewConversation={onReviewConversation}
+                onImageUpload={imageUploadHandler}
+                onAttachImage={onAttachImage}
+                draftKey={draftKey}
+                confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                  comment.authorUserId === currentUserId && comment.clientRequestId &&
+                  !("clientStatus" in comment && comment.clientStatus)
+                ).map((comment) => comment.clientRequestId!))}
+                enableReassign={enableReassign}
+                reassignOptions={reassignOptions}
+                currentAssigneeValue={currentAssigneeValue}
+                companyId={companyId}
+                assigneeAdapterOverrides={assigneeAdapterOverrides}
+                suggestedAssigneeValue={suggestedAssigneeValue}
+                mentions={mentions}
+                agentMap={agentMap}
+                hasActiveRun={!!hasActiveRun}
+                onStop={hasActiveRun ? onCancelRun : undefined}
+                stopPending={stopPending}
+                stopScope={stopScope}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                composerPause={composerPause}
+                composerDisabledReason={composerDisabledReason}
+                composerHint={composerHint}
+                issueStatus={issueStatus}
+                issueWorkMode={issueWorkMode}
+                onWorkModeChange={onWorkModeChange}
+              />
+            </div>
+          ) : null}
+        </div>
       </IssueChatCtx.Provider>
     </AssistantRuntimeProvider>
   );

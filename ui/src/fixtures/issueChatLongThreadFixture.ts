@@ -94,6 +94,7 @@ function createComment(index: number): IssueChatComment {
     id: `long-thread-comment-${String(index + 1).padStart(3, "0")}`,
     companyId: "company-long-thread",
     issueId: "issue-long-thread",
+    authorType: authorAgentId ? "agent" : "user",
     authorAgentId,
     authorUserId: authorAgentId ? null : "user-board",
     body: isMarkdown
@@ -101,6 +102,8 @@ function createComment(index: number): IssueChatComment {
       : authorAgentId
         ? plainAssistantBody(index + 1)
         : plainUserBody(index + 1),
+    presentation: null,
+    metadata: null,
     createdAt: atMinute(index),
     updatedAt: atMinute(index),
   };

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 02 · Thread bottom — monitor strip above the composer. Desktop 1280×800 -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- top bar -->
+  <line x1="0" y1="56" x2="1280" y2="56" />
+  <text x="24" y="36" font-size="14" stroke="none" fill="#666">Issues /</text>
+  <text x="88" y="36" font-size="14" font-weight="600" stroke="none" fill="#000">PAP-14557</text>
+  <circle cx="1240" cy="28" r="12" fill="#e6e6e6" />
+
+  <!-- properties rail divider + abbreviated rail -->
+  <line x1="880" y1="56" x2="880" y2="800" />
+  <text x="904" y="96" font-size="12" stroke="none" fill="#666">PROPERTIES</text>
+  <text x="904" y="136" font-size="12" stroke="none" fill="#666">Status</text>
+  <text x="1032" y="136" font-size="14" stroke="none" fill="#000">In Progress</text>
+  <text x="904" y="184" font-size="12" stroke="none" fill="#666">Monitor</text>
+  <circle cx="1040" cy="180" r="7" />
+  <line x1="1040" y1="180" x2="1040" y2="175" />
+  <line x1="1040" y1="180" x2="1044" y2="180" />
+  <text x="1056" y="184" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+  <text x="1056" y="204" font-size="12" stroke="none" fill="#666">Jul 17, 4:08 PM · Attempt 1</text>
+
+  <!-- last agent comment (cut off at top) -->
+  <text x="440" y="76" font-size="12" text-anchor="middle" stroke="none" fill="#666">⌃  earlier comments</text>
+  <g transform="translate(48,96)">
+    <rect width="784" height="176" rx="8" />
+    <circle cx="32" cy="32" r="16" fill="#e6e6e6" />
+    <text x="56" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">Senior Engineer Fable</text>
+    <text x="720" y="28" font-size="12" stroke="none" fill="#666">15m ago</text>
+    <line x1="56" y1="56" x2="744" y2="56" stroke="#666" />
+    <line x1="56" y1="72" x2="744" y2="72" stroke="#666" />
+    <line x1="56" y1="88" x2="744" y2="88" stroke="#666" />
+    <text x="56" y="120" font-size="14" font-weight="600" stroke="none" fill="#000">Next action (armed):</text>
+    <line x1="216" y1="116" x2="744" y2="116" stroke="#666" />
+    <line x1="56" y1="140" x2="560" y2="140" stroke="#666" />
+  </g>
+
+  <!-- previous-issue nav card -->
+  <g transform="translate(48,304)">
+    <rect width="384" height="64" rx="8" />
+    <polyline points="24,24 16,32 24,40" fill="none" />
+    <text x="40" y="28" font-size="12" stroke="none" fill="#666">Previous · PAP-14544</text>
+    <text x="40" y="48" font-size="14" stroke="none" fill="#000">Phase 3 — rescore + gap re-runs…</text>
+  </g>
+
+  <!-- NEW: monitor strip -->
+  <g transform="translate(48,408)">
+    <rect width="784" height="64" rx="8" />
+    <circle cx="32" cy="32" r="12" />
+    <line x1="32" y1="32" x2="32" y2="24" />
+    <line x1="32" y1="32" x2="38" y2="32" />
+    <text x="56" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">Resumes in 2h 12m</text>
+    <text x="56" y="48" font-size="12" stroke="none" fill="#666">Thu Jul 17, 4:08 PM · Attempt 1 · Watching: vercel-deploy</text>
+    <g transform="translate(656,16)">
+      <rect width="112" height="32" rx="4" />
+      <text x="56" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#000">Check now</text>
+    </g>
+  </g>
+
+  <!-- composer -->
+  <g transform="translate(48,496)">
+    <rect width="784" height="152" rx="8" />
+    <text x="16" y="36" font-size="14" stroke="none" fill="#666">Reply…</text>
+    <g transform="translate(16,104)">
+      <rect width="32" height="32" rx="4" />
+      <line x1="10" y1="22" x2="22" y2="10" />
+    </g>
+    <g transform="translate(56,104)">
+      <rect width="128" height="32" rx="16" />
+      <text x="16" y="21" font-size="12" stroke="none" fill="#000">Agent mode</text>
+      <polyline points="100,14 106,20 112,14" fill="none" />
+    </g>
+    <g transform="translate(432,104)">
+      <rect width="192" height="32" rx="16" />
+      <text x="96" y="21" font-size="12" text-anchor="middle" stroke="none" fill="#000">Senior Engineer Fable</text>
+    </g>
+    <g transform="translate(640,104)">
+      <rect width="128" height="32" rx="4" fill="#000" />
+      <text x="64" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Send</text>
+    </g>
+  </g>
+
+  <!-- wake hint -->
+  <text x="48" y="676" font-size="12" stroke="none" fill="#666">Sending a reply wakes the agent now — before the scheduled check.</text>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <rect x="40" y="400" width="800" height="80" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(32,392)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="40" y="660" width="472" height="24" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(32,656)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+  </g>
+</svg>

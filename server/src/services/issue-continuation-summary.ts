@@ -1,14 +1,17 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
+import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
+const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
+  /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
 
 type IssueSummaryInput = {
   id: string;
@@ -42,6 +45,7 @@ export type IssueContinuationSummaryDocument = {
   body: string;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
+  sourceTrust: SourceTrustMetadata | null;
   updatedAt: Date;
 };
 
@@ -91,7 +95,7 @@ function extractPathCandidates(...texts: Array<string | null | undefined>) {
 
 function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   if (issue.status === "done" || issue.status === "in_review") return "review";
-  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled") return "implementation";
+  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled" || run.status === "interrupted") return "implementation";
   if (issue.status === "backlog" || issue.status === "todo") return "plan";
   return "implementation";
 }
@@ -120,6 +124,16 @@ function extractPreviousNextAction(previousBody: string | null | undefined) {
     .find(Boolean) ?? null;
 }
 
+export function extractContinuationSummaryNextAction(body: string | null | undefined) {
+  return extractPreviousNextAction(body);
+}
+
+export function continuationSummaryParksExecutor(body: string | null | undefined) {
+  const nextAction = extractContinuationSummaryNextAction(body);
+  if (!nextAction) return false;
+  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
+}
+
 export function buildContinuationSummaryMarkdown(input: {
   issue: IssueSummaryInput;
   run: RunSummaryInput;
@@ -128,12 +142,17 @@ export function buildContinuationSummaryMarkdown(input: {
 }) {
   const { issue, run, agent } = input;
   const resultSummary = readResultSummary(run.resultJson);
+  const terminalFailure = run.resultJson?.terminalSessionFailure;
+  const terminalFailureCategory = terminalFailure && typeof terminalFailure === "object" && !Array.isArray(terminalFailure)
+    ? ((terminalFailure as Record<string, unknown>).category ?? "unknown")
+    : null;
+  const modelError = summarizeRunErrorForModel(run.error, terminalFailureCategory);
   const recentActions = [
     `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
   ];
-  if (run.error) {
-    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
+  if (modelError) {
+    recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
@@ -206,6 +225,7 @@ export async function getIssueContinuationSummaryDocument(
       body: documents.latestBody,
       latestRevisionId: documents.latestRevisionId,
       latestRevisionNumber: documents.latestRevisionNumber,
+      sourceTrust: documents.sourceTrust,
       updatedAt: documents.updatedAt,
     })
     .from(issueDocuments)
@@ -220,6 +240,7 @@ export async function getIssueContinuationSummaryDocument(
     body: row.body,
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
+    sourceTrust: row.sourceTrust ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -235,6 +256,7 @@ export async function refreshIssueContinuationSummary(input: {
     db
       .select({
         id: issues.id,
+        conversationAgentId: issues.conversationAgentId,
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
@@ -247,7 +269,7 @@ export async function refreshIssueContinuationSummary(input: {
     getIssueContinuationSummaryDocument(db, issueId),
   ]);
 
-  if (!issue) return null;
+  if (!issue || issue.conversationAgentId) return null;
   const body = buildContinuationSummaryMarkdown({
     issue,
     run,

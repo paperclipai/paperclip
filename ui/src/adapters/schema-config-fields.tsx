@@ -1,3 +1,4 @@
+import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -246,22 +247,22 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 // Hook
 // ---------------------------------------------------------------------------
 
-function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
-  const [schema, setSchema] = useState<AdapterConfigSchema | null>(
-    schemaCache.get(adapterType) ?? null,
+export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
+  const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
+    () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
   );
 
   useEffect(() => {
     let cancelled = false;
     fetchConfigSchema(adapterType).then((s) => {
-      if (!cancelled) setSchema(s);
+      if (!cancelled) setLoaded({ adapterType, schema: s });
     });
     return () => {
       cancelled = true;
     };
   }, [adapterType]);
 
-  return schema;
+  return loaded.adapterType === adapterType ? loaded.schema : schemaCache.get(adapterType) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,11 +284,45 @@ function getDefaultValue(field: ConfigFieldSchema): unknown {
   }
 }
 
+export function fieldMatchesVisibleWhen(
+  field: ConfigFieldSchema,
+  readValue: (field: ConfigFieldSchema) => unknown,
+  schema: AdapterConfigSchema,
+): boolean {
+  const visibleWhen = field.meta?.visibleWhen;
+  if (!visibleWhen || typeof visibleWhen !== "object" || Array.isArray(visibleWhen)) return true;
+
+  const condition = visibleWhen as {
+    key?: unknown;
+    value?: unknown;
+    values?: unknown;
+    notValues?: unknown;
+  };
+  if (typeof condition.key !== "string" || condition.key.length === 0) return true;
+
+  const sourceField = schema.fields.find((candidate) => candidate.key === condition.key);
+  if (!sourceField) return true;
+
+  const actual = String(readValue(sourceField) ?? "");
+  if (typeof condition.value === "string") return actual === condition.value;
+  if (Array.isArray(condition.values)) {
+    const values = condition.values.filter((value): value is string => typeof value === "string");
+    return values.length > 0 && values.includes(actual);
+  }
+  if (Array.isArray(condition.notValues)) {
+    const values = condition.notValues.filter((value): value is string => typeof value === "string");
+    return !values.includes(actual);
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function SchemaConfigFields({
+  section,
+  hideModel,
   adapterType,
   isCreate,
   values,
@@ -298,9 +333,15 @@ export function SchemaConfigFields({
 }: AdapterConfigFieldsProps) {
   const schema = useConfigSchema(adapterType);
 
-  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const defaultsApplied = useRef({ adapterType, applied: false });
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied) return;
+    // Reset on the selection change even while the next schema is loading.
+    // A -> B -> A must initialize A again after the form clears its values.
+    if (defaultsApplied.current.adapterType !== adapterType) {
+      defaultsApplied.current = { adapterType, applied: false };
+    }
+    if (!schema || !isCreate || defaultsApplied.current.applied || (section && section !== "configuration")) return;
+    defaultsApplied.current.applied = true;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
       const def = getDefaultValue(field);
@@ -310,11 +351,10 @@ export function SchemaConfigFields({
     }
     if (Object.keys(defaults).length > 0) {
       set?.({
-        adapterSchemaValues: { ...values?.adapterSchemaValues, ...defaults },
+        adapterSchemaValues: { ...defaults, ...values?.adapterSchemaValues },
       });
     }
-    setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
+  }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section]);
 
   if (!schema || schema.fields.length === 0) return null;
 
@@ -369,111 +409,116 @@ export function SchemaConfigFields({
 
   return (
     <>
-      {schema.fields.map((field) => {
-        switch (field.type) {
-          case "select": {
-            const currentVal = String(readValue(field) ?? "");
-            return (
-              <Field key={field.key} label={field.label} hint={field.hint}>
-                <SelectField
-                  value={currentVal}
-                  options={field.options ?? []}
+      {schema.fields
+        .filter((field) => !hideModel || field.key !== "model")
+        .filter((field) => !section || schemaFieldSection(field.key) === section)
+        .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))
+        .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
+        .map((field) => {
+          switch (field.type) {
+            case "select": {
+              const currentVal = String(readValue(field) ?? "");
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <SelectField
+                    value={currentVal}
+                    options={field.options ?? []}
+                    onChange={(v) => writeValue(field, v)}
+                  />
+                </Field>
+              );
+            }
+
+            case "toggle":
+              return (
+                <ToggleField
+                  key={field.key}
+                  label={field.label}
+                  hint={field.hint}
+                  checked={readValue(field) === true}
                   onChange={(v) => writeValue(field, v)}
                 />
-              </Field>
-            );
-          }
+              );
 
-          case "toggle":
-            return (
-              <ToggleField
-                key={field.key}
-                label={field.label}
-                hint={field.hint}
-                checked={readValue(field) === true}
-                onChange={(v) => writeValue(field, v)}
-              />
-            );
+            case "number":
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <DraftNumberInput
+                    value={Number(readValue(field) ?? 0)}
+                    onCommit={(v) => writeValue(field, v)}
+                    immediate
+                    className={inputClass}
+                  />
+                </Field>
+              );
 
-          case "number":
-            return (
-              <Field key={field.key} label={field.label} hint={field.hint}>
-                <DraftNumberInput
-                  value={Number(readValue(field) ?? 0)}
-                  onCommit={(v) => writeValue(field, v)}
-                  immediate
-                  className={inputClass}
-                />
-              </Field>
-            );
+            case "textarea":
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <DraftTextarea
+                    value={String(readValue(field) ?? "")}
+                    onCommit={(v) => writeValue(field, v || undefined)}
+                    immediate
+                  />
+                </Field>
+              );
 
-          case "textarea":
-            return (
-              <Field key={field.key} label={field.label} hint={field.hint}>
-                <DraftTextarea
-                  value={String(readValue(field) ?? "")}
-                  onCommit={(v) => writeValue(field, v || undefined)}
-                  immediate
-                />
-              </Field>
-            );
-
-          case "combobox": {
-            const currentVal = String(readValue(field) ?? "");
-            // Dynamic options: if meta.providerModels exists, compute options
-            // based on the current provider value
-            let comboboxOptions = field.options ?? [];
-            if (field.meta?.providerModels) {
-              const providerVal = String(readValue(schema.fields.find((f) => f.key === "provider")!) ?? "auto");
-              const modelsByProvider = field.meta.providerModels as Record<string, string[]>;
-              if (providerVal === "auto") {
-                // Auto: show all models from all providers, grouped by provider
-                const providerLabel = schema.fields.find((f) => f.key === "provider");
-                const providerOptions = providerLabel?.options ?? [];
-                comboboxOptions = Object.entries(modelsByProvider).flatMap(([prov, models]) =>
-                  models.map((m) => ({
+            case "combobox": {
+              const currentVal = String(readValue(field) ?? "");
+              // Dynamic options: if meta.providerModels exists, compute options
+              // based on the current provider value
+              let comboboxOptions = field.options ?? [];
+              if (field.meta?.providerModels) {
+                const providerVal = String(readValue(schema.fields.find((f) => f.key === "provider")!) ?? "auto");
+                const modelsByProvider = field.meta.providerModels as Record<string, string[]>;
+                if (providerVal === "auto") {
+                  // Auto: show all models from all providers, grouped by provider
+                  const providerLabel = schema.fields.find((f) => f.key === "provider");
+                  const providerOptions = providerLabel?.options ?? [];
+                  comboboxOptions = Object.entries(modelsByProvider).flatMap(([prov, models]) =>
+                    models.map((m) => ({
+                      label: m,
+                      value: m,
+                      group: providerOptions.find((p) => p.value === prov)?.label ?? prov,
+                    })),
+                  );
+                } else {
+                  const providerModels = modelsByProvider[providerVal] ?? [];
+                  const providerLabel = schema.fields.find((f) => f.key === "provider");
+                  const provName = providerLabel?.options?.find((p) => p.value === providerVal)?.label ?? providerVal;
+                  comboboxOptions = providerModels.map((m) => ({
                     label: m,
                     value: m,
-                    group: providerOptions.find((p) => p.value === prov)?.label ?? prov,
-                  })),
-                );
-              } else {
-                const providerModels = modelsByProvider[providerVal] ?? [];
-                const providerLabel = schema.fields.find((f) => f.key === "provider");
-                const provName = providerLabel?.options?.find((p) => p.value === providerVal)?.label ?? providerVal;
-                comboboxOptions = providerModels.map((m) => ({
-                  label: m,
-                  value: m,
-                  group: provName,
-                }));
+                    group: provName,
+                  }));
+                }
               }
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <ComboboxField
+                    value={currentVal}
+                    options={comboboxOptions}
+                    onChange={(v) => writeValue(field, v || undefined)}
+                    placeholder={field.hint}
+                  />
+                </Field>
+              );
             }
-            return (
-              <Field key={field.key} label={field.label} hint={field.hint}>
-                <ComboboxField
-                  value={currentVal}
-                  options={comboboxOptions}
-                  onChange={(v) => writeValue(field, v || undefined)}
-                  placeholder={field.hint}
-                />
-              </Field>
-            );
-          }
 
-          case "text":
-          default:
-            return (
-              <Field key={field.key} label={field.label} hint={field.hint}>
-                <DraftInput
-                  value={String(readValue(field) ?? "")}
-                  onCommit={(v) => writeValue(field, v || undefined)}
-                  immediate
-                  className={inputClass}
-                />
-              </Field>
-            );
-        }
-      })}
+            case "text":
+            default:
+              return (
+                <Field key={field.key} label={field.label} hint={field.hint}>
+                  <DraftInput
+                    value={String(readValue(field) ?? "")}
+                    onCommit={(v) => writeValue(field, v || undefined)}
+                    immediate
+                    className={inputClass}
+                  />
+                </Field>
+              );
+          }
+        })}
     </>
   );
 }

@@ -44,8 +44,10 @@ describe("issueDetailBreadcrumb", () => {
       description: null,
       status: "todo",
       priority: "medium",
+      reviewPolicy: null,
       assigneeAgentId: null,
       assigneeUserId: null,
+      responsibleUserId: null,
       checkoutRunId: null,
       executionRunId: null,
       executionAgentNameKey: null,
@@ -82,6 +84,7 @@ describe("issueDetailBreadcrumb", () => {
         leadAgentId: null,
         targetDate: null,
         color: null,
+        icon: null,
         env: null,
         pauseReason: null,
         pausedAt: null,
@@ -114,6 +117,7 @@ describe("issueDetailBreadcrumb", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
+      workMode: overrides.workMode ?? "standard",
     };
   }
 

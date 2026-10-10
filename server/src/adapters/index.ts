@@ -12,9 +12,15 @@ export {
 } from "./registry.js";
 export type {
   ServerAdapterModule,
+  AcpTargetDescriptor,
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterRuntimeEvent,
+  AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpAccess,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

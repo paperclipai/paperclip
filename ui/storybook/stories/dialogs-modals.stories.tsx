@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
 import type {
   DocumentRevision,
   ExecutionWorkspaceCloseReadiness,
@@ -19,6 +20,7 @@ import { PathInstructionsModal } from "@/components/PathInstructionsModal";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
+import type { Agent } from "@paperclipai/shared";
 import {
   storybookAgents,
   storybookAuthSession,
@@ -136,6 +138,7 @@ const documentRevisions: DocumentRevision[] = [
 
 const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
   workspaceId: "execution-workspace-storybook",
+  deliveryState: "unmerged",
   state: "ready_with_warnings",
   blockingReasons: [],
   warnings: [
@@ -328,7 +331,7 @@ function DialogBackdropFrame({
 }
 
 function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
+  queryClient.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(COMPANY_ID), storybookProjects);
@@ -372,7 +375,7 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.setQueryData(queryKeys.adapters.all, [
     {
       type: "codex_local",
-      label: "Codex local",
+      label: "Codex",
       source: "builtin",
       modelsCount: 5,
       loaded: true,
@@ -382,11 +385,12 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
         supportsSkills: true,
         supportsLocalAgentJwt: true,
         requiresMaterializedRuntimeSkills: false,
+        supportsAcp: true,
       },
     },
     {
       type: "claude_local",
-      label: "Claude local",
+      label: "Claude Code",
       source: "builtin",
       modelsCount: 4,
       loaded: true,
@@ -396,6 +400,7 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
         supportsSkills: true,
         supportsLocalAgentJwt: true,
         requiresMaterializedRuntimeSkills: false,
+        supportsAcp: true,
       },
     },
   ]);
@@ -517,7 +522,7 @@ function IssueDialogOpener({
   useEffect(() => {
     if (variant !== "validation") return undefined;
     const timer = window.setTimeout(() => {
-      clickButtonByText("Create Issue");
+      document.querySelector<HTMLButtonElement>('[aria-label="Create task"]')?.click();
     }, 500);
     return () => window.clearTimeout(timer);
   }, [variant]);
@@ -525,7 +530,7 @@ function IssueDialogOpener({
   return <NewIssueDialog />;
 }
 
-function AgentDialogOpener({ advanced }: { advanced?: boolean }) {
+function AgentDialogOpener({ variant = "recommendation" }: { variant?: "recommendation" | "advanced" | "invite" }) {
   const { openNewAgent } = useDialog();
 
   useOpenWhenCompanyReady(() => {
@@ -533,12 +538,12 @@ function AgentDialogOpener({ advanced }: { advanced?: boolean }) {
   });
 
   useEffect(() => {
-    if (!advanced) return undefined;
+    if (variant === "recommendation") return undefined;
     const timer = window.setTimeout(() => {
-      clickButtonByText("advanced configuration");
+      clickButtonByText(variant === "advanced" ? "Configure a runtime" : "Invite an external agent");
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [advanced]);
+  }, [variant]);
 
   return <NewAgentDialog />;
 }
@@ -650,7 +655,7 @@ function ImageGalleryModalStory() {
       description="The image gallery opens full-screen with attachment metadata, download action, and previous/next navigation."
       badges={["full-screen", "navigation", "visual attachment"]}
     >
-      <ImageGalleryModal images={galleryImages} initialIndex={0} open onOpenChange={() => undefined} />
+      <ImageGalleryModal items={galleryImages} initialIndex={0} open onOpenChange={() => undefined} />
     </DialogStory>
   );
 }
@@ -684,6 +689,15 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+function constrainVisualViewportForPickerStory() {
+  const viewport = window.visualViewport;
+  if (!viewport) return null;
+  Object.defineProperty(viewport, "height", { configurable: true, value: 420 });
+  Object.defineProperty(viewport, "offsetTop", { configurable: true, value: 24 });
+  viewport.dispatchEvent(new Event("resize"));
+  return viewport;
+}
+
 export const NewIssueEmpty: Story = {
   name: "New Issue - Empty",
   render: () => (
@@ -710,6 +724,58 @@ export const NewIssuePrefilled: Story = {
       <IssueDialogOpener variant="prefilled" />
     </DialogStory>
   ),
+};
+
+export const NewIssueMobileAssigneePicker: Story = {
+  name: "New Issue - Mobile Assignee Picker",
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { waitForViewport: true },
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Mobile assignee picker"
+      description="The real new-task dialog with its assignee sheet open at an iOS viewport size."
+      badges={["iOS", "mobile", "assignee picker"]}
+    >
+      <IssueDialogOpener variant="empty" />
+    </DialogStory>
+  ),
+  play: async () => {
+    const page = within(document.body);
+    await userEvent.click(await page.findByRole("button", { name: "Select assignee" }));
+    await expect(await page.findByRole("listbox", { name: "Assignees" })).toBeVisible();
+  },
+};
+
+export const NewIssueMobileProjectPicker: Story = {
+  name: "New Issue - Mobile Project Picker",
+  parameters: {
+    viewport: { defaultViewport: "mobile" },
+  },
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Mobile project picker"
+      description="The real new-task dialog with its project sheet open at an iOS viewport size."
+      badges={["iOS", "mobile", "project picker"]}
+    >
+      <IssueDialogOpener variant="empty" />
+    </DialogStory>
+  ),
+  play: async () => {
+    const page = within(document.body);
+    await userEvent.click(await page.findByRole("button", { name: "Project" }));
+    const search = await page.findByPlaceholderText("Search projects...");
+    await userEvent.click(search);
+    const viewport = constrainVisualViewportForPickerStory();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const bounds = search.closest<HTMLElement>("[data-mobile-entity-picker]")?.getBoundingClientRect();
+    const offsetTop = viewport?.offsetTop ?? 0;
+    await expect((bounds?.top ?? -1) + offsetTop).toBeGreaterThanOrEqual(offsetTop);
+    await expect((bounds?.bottom ?? Number.POSITIVE_INFINITY) + offsetTop).toBeLessThanOrEqual(
+      offsetTop + (viewport?.height ?? window.innerHeight),
+    );
+  },
 };
 
 export const NewIssueValidationError: Story = {
@@ -749,7 +815,21 @@ export const NewAgentAdapterSelection: Story = {
       description="Advanced branch of the agent creation wizard showing registered adapter choices and recommended states."
       badges={["populated", "adapters", "advanced"]}
     >
-      <AgentDialogOpener advanced />
+      <AgentDialogOpener variant="advanced" />
+    </DialogStory>
+  ),
+};
+
+export const NewAgentExternalInvite: Story = {
+  name: "New Agent - External Invite",
+  render: () => (
+    <DialogStory
+      eyebrow="NewAgentDialog"
+      title="External agent invite"
+      description="Agent onboarding prompt generation inside the add-agent modal."
+      badges={["agent invite", "onboarding", "approval"]}
+    >
+      <AgentDialogOpener variant="invite" />
     </DialogStory>
   ),
 };

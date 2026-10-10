@@ -8,11 +8,17 @@ const DEFAULT_PROFILE = "default";
 export interface ClientContextProfile {
   apiBase?: string;
   companyId?: string;
+  persona?: "board" | "agent";
+  agentId?: string;
+  agentName?: string;
   apiKeyEnvVarName?: string;
+  tokenName?: string;
+  tokenId?: string;
+  tokenCreatedAt?: string;
 }
 
 export interface ClientContext {
-  version: 1;
+  version: 2;
   currentProfile: string;
   profiles: Record<string, ClientContextProfile>;
 }
@@ -43,7 +49,7 @@ export function resolveContextPath(overridePath?: string): string {
 
 export function defaultClientContext(): ClientContext {
   return {
-    version: 1,
+    version: 2,
     currentProfile: DEFAULT_PROFILE,
     profiles: {
       [DEFAULT_PROFILE]: {},
@@ -66,11 +72,20 @@ function toStringOrUndefined(value: unknown): string | undefined {
 function normalizeProfile(value: unknown): ClientContextProfile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   const profile = value as Record<string, unknown>;
+  const persona = profile.persona === "board" || profile.persona === "agent"
+    ? profile.persona
+    : undefined;
 
   return {
     apiBase: toStringOrUndefined(profile.apiBase),
     companyId: toStringOrUndefined(profile.companyId),
+    persona,
+    agentId: toStringOrUndefined(profile.agentId),
+    agentName: toStringOrUndefined(profile.agentName),
     apiKeyEnvVarName: toStringOrUndefined(profile.apiKeyEnvVarName),
+    tokenName: toStringOrUndefined(profile.tokenName),
+    tokenId: toStringOrUndefined(profile.tokenId),
+    tokenCreatedAt: toStringOrUndefined(profile.tokenCreatedAt),
   };
 }
 
@@ -80,7 +95,7 @@ function normalizeContext(raw: unknown): ClientContext {
   }
 
   const record = raw as Record<string, unknown>;
-  const version = record.version === 1 ? 1 : 1;
+  const version = 2;
   const currentProfile = toStringOrUndefined(record.currentProfile) ?? DEFAULT_PROFILE;
 
   const rawProfiles = record.profiles;
@@ -134,10 +149,17 @@ export function upsertProfile(
 ): ClientContext {
   const context = readContext(contextPath);
   const existing = context.profiles[profileName] ?? {};
-  const merged: ClientContextProfile = {
-    ...existing,
-    ...patch,
-  };
+  const merged: ClientContextProfile = { ...existing };
+
+  if (patch.apiBase !== undefined) merged.apiBase = patch.apiBase;
+  if (patch.companyId !== undefined) merged.companyId = patch.companyId;
+  if (patch.persona !== undefined) merged.persona = patch.persona;
+  if (patch.agentId !== undefined) merged.agentId = patch.agentId;
+  if (patch.agentName !== undefined) merged.agentName = patch.agentName;
+  if (patch.apiKeyEnvVarName !== undefined) merged.apiKeyEnvVarName = patch.apiKeyEnvVarName;
+  if (patch.tokenName !== undefined) merged.tokenName = patch.tokenName;
+  if (patch.tokenId !== undefined) merged.tokenId = patch.tokenId;
+  if (patch.tokenCreatedAt !== undefined) merged.tokenCreatedAt = patch.tokenCreatedAt;
 
   if (patch.apiBase !== undefined && patch.apiBase.trim().length === 0) {
     delete merged.apiBase;
@@ -145,8 +167,26 @@ export function upsertProfile(
   if (patch.companyId !== undefined && patch.companyId.trim().length === 0) {
     delete merged.companyId;
   }
+  if (patch.persona === undefined && "persona" in patch) {
+    delete merged.persona;
+  }
+  if (patch.agentId !== undefined && patch.agentId.trim().length === 0) {
+    delete merged.agentId;
+  }
+  if (patch.agentName !== undefined && patch.agentName.trim().length === 0) {
+    delete merged.agentName;
+  }
   if (patch.apiKeyEnvVarName !== undefined && patch.apiKeyEnvVarName.trim().length === 0) {
     delete merged.apiKeyEnvVarName;
+  }
+  if (patch.tokenName !== undefined && patch.tokenName.trim().length === 0) {
+    delete merged.tokenName;
+  }
+  if (patch.tokenId !== undefined && patch.tokenId.trim().length === 0) {
+    delete merged.tokenId;
+  }
+  if (patch.tokenCreatedAt !== undefined && patch.tokenCreatedAt.trim().length === 0) {
+    delete merged.tokenCreatedAt;
   }
 
   context.profiles[profileName] = merged;

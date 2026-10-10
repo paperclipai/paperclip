@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
+import type { RunForIssue } from "@/api/activity";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownAZ,
@@ -20,6 +21,7 @@ import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { IssueGroupHeader } from "@/components/IssueGroupHeader";
 import { IssueLinkQuicklook, IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
+import { useLocation } from "@/lib/router";
 import { IssueProperties } from "@/components/IssueProperties";
 import { IssueRunLedgerContent } from "@/components/IssueRunLedger";
 import { IssuesList } from "@/components/IssuesList";
@@ -31,6 +33,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { countActiveIssueFilters, defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { DEFAULT_INBOX_ISSUE_COLUMNS, type InboxIssueColumn } from "@/lib/inbox";
 import { queryKeys } from "@/lib/queryKeys";
@@ -51,7 +54,7 @@ import {
 const companyId = "company-storybook";
 const issueListViewKey = "storybook:issue-management:list";
 const scopedIssueListViewKey = `${issueListViewKey}:${companyId}`;
-const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "project", "workspace", "labels", "updated"];
+const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "kickedOffBy", "project", "workspace", "labels", "updated"];
 
 const issueDocumentSummaries = storybookIssueDocuments.map(({ body: _body, ...summary }) => summary);
 const primaryIssue: Issue = {
@@ -60,7 +63,109 @@ const primaryIssue: Issue = {
   documentSummaries: issueDocumentSummaries,
   currentExecutionWorkspace: storybookExecutionWorkspaces[0]!,
 };
+const modelOverrideIssue: Issue = {
+  ...primaryIssue,
+  id: "issue-model-override-visual",
+  identifier: "MOD-1",
+  issueNumber: 1,
+  title: "Verify task-level model override provenance",
+  assigneeAdapterOverrides: {
+    adapterConfig: {
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "high",
+    },
+  },
+};
 const childIssues = storybookIssues.filter((issue) => issue.parentId === primaryIssue.id);
+const longProject: Project = {
+  ...storybookProjects[0]!,
+  id: "project-long-properties-pane-regression",
+  name: "Project with a deliberately long name for properties pane truncation review",
+};
+const longLabels: IssueLabel[] = [
+  {
+    id: "label-long-properties-pane-regression",
+    companyId,
+    name: "label-with-a-deliberately-long-name-that-must-truncate-inside-the-pane",
+    color: "#0f766e",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  },
+  {
+    id: "label-long-properties-pane-follow-up",
+    companyId,
+    name: "secondary-overflow-regression-label",
+    color: "#b45309",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  },
+];
+const longParentIssue: Issue = {
+  ...storybookIssues[1]!,
+  id: "issue-long-properties-pane-parent",
+  identifier: "QAT-1",
+  issueNumber: 1,
+  projectId: longProject.id,
+  project: longProject,
+  title: "MAIN - properties pane QA target with a parent title long enough to overflow the 320px pane",
+};
+const longValueIssue: Issue = {
+  ...primaryIssue,
+  id: "issue-long-properties-pane-child",
+  identifier: "QAT-2",
+  issueNumber: 2,
+  parentId: longParentIssue.id,
+  projectId: longProject.id,
+  project: longProject,
+  labelIds: longLabels.map((label) => label.id),
+  labels: longLabels,
+  title: "Child task used to verify the properties pane does not scroll horizontally",
+  ancestors: [
+    {
+      id: longParentIssue.id,
+      identifier: longParentIssue.identifier,
+      title: longParentIssue.title,
+      description: longParentIssue.description,
+      status: longParentIssue.status,
+      priority: longParentIssue.priority,
+      assigneeAgentId: longParentIssue.assigneeAgentId,
+      assigneeUserId: longParentIssue.assigneeUserId,
+      projectId: longParentIssue.projectId,
+      goalId: longParentIssue.goalId,
+      project: null,
+      goal: null,
+    },
+  ],
+};
+const attributionIssues: Issue[] = [
+  {
+    ...primaryIssue,
+    id: "issue-attribution-explicit",
+    title: "Human kickoff with explicit responsible owner",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: "user-product",
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-collapsed",
+    title: "Responsible auto-derived from kickoff user",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: null,
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-unassigned",
+    title: "Agent-created task with no responsible human",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    responsibleUserId: null,
+    assigneeAgentId: "agent-qa",
+  },
+];
 
 function Section({
   eyebrow,
@@ -83,10 +188,11 @@ function Section({
 }
 
 function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
+  queryClient.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
+  queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), storybookProjects);
   queryClient.setQueryData(queryKeys.issues.list(companyId), storybookIssues);
   queryClient.setQueryData(queryKeys.issues.labels(companyId), storybookIssueLabels);
   queryClient.setQueryData(queryKeys.issues.documents(primaryIssue.id), storybookIssueDocuments);
@@ -106,6 +212,16 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
           id: "user-board",
           email: "riley@paperclip.local",
           name: "Riley Board",
+          image: null,
+        },
+      },
+      {
+        principalId: "user-product",
+        status: "active",
+        user: {
+          id: "user-product",
+          email: "morgan@paperclip.local",
+          name: "Morgan Product",
           image: null,
         },
       },
@@ -163,6 +279,165 @@ function StorybookData({ children }: { children: React.ReactNode }) {
   return ready ? children : null;
 }
 
+function LongValueStorybookData({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const [ready] = useState(() => {
+    hydrateStorybookQueries(queryClient);
+    queryClient.setQueryData(queryKeys.projects.list(companyId), [longProject, ...storybookProjects]);
+    queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), [longProject, ...storybookProjects]);
+    queryClient.setQueryData(queryKeys.issues.list(companyId), [
+      longValueIssue,
+      longParentIssue,
+      ...storybookIssues,
+    ]);
+    queryClient.setQueryData(queryKeys.issues.labels(companyId), [...longLabels, ...storybookIssueLabels]);
+    seedIssueListLocalStorage();
+    return true;
+  });
+
+  return ready ? children : null;
+}
+
+function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) {
+  return (
+    <LongValueStorybookData>
+      <div className="paperclip-story p-6">
+        <div
+          className={
+            inline
+              ? "mx-auto flex h-[620px] w-[390px] max-w-full flex-col overflow-hidden border border-border bg-background"
+              : "flex h-[620px] w-80 flex-col overflow-hidden border border-border bg-card"
+          }
+        >
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <ScrollArea className="flex-1">
+            <div className="p-4">
+              <IssueProperties
+                issue={longValueIssue}
+                childIssues={[]}
+                onAddSubIssue={() => undefined}
+                onUpdate={() => undefined}
+                inline={inline}
+              />
+            </div>
+          </ScrollArea>
+        </div>
+      </div>
+    </LongValueStorybookData>
+  );
+}
+
+const relationshipChildren: Issue[] = ["in_progress", "todo", "in_review", "done"].map((status, index) => ({
+  ...storybookIssues[0]!,
+  id: `relationship-child-${index}`,
+  identifier: `PAP-${18312 + index}`,
+  title: ["Implement task badges", "Review task relationships", "Verify keyboard navigation", "Ship task properties"][index]!,
+  status: status as Issue["status"],
+  parentId: "relationship-demo",
+}));
+const relationshipIssue: Issue = {
+  ...longValueIssue,
+  id: "relationship-demo",
+  projectId: primaryIssue.projectId,
+  project: primaryIssue.project,
+  identifier: "PAP-18311",
+  labels: [],
+  labelIds: [],
+  blockedBy: [relationshipChildren[1]!, relationshipChildren[2]!],
+  blocks: [relationshipChildren[3]!],
+};
+
+function IssuePropertiesRelationshipBadgesPane({ inline = false }: { inline?: boolean }) {
+  const [issue, setIssue] = useState(relationshipIssue);
+  const location = useLocation();
+  return (
+    <LongValueStorybookData>
+      <div className="paperclip-story flex flex-wrap items-start gap-6 p-6">
+        <div className="w-80 max-w-full border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={issue}
+              childIssues={relationshipChildren}
+              inline={inline}
+              sidePanelContentOnly
+              onUpdate={(patch) => setIssue((current) => ({
+                ...current,
+                ...patch,
+                blockedBy: patch.blockedByIssueIds
+                  ? [...relationshipChildren, ...storybookIssues, longParentIssue, longValueIssue].filter((child) => (patch.blockedByIssueIds as string[]).includes(child.id))
+                  : current.blockedBy,
+              }))}
+            />
+          </div>
+        </div>
+        <div className="max-w-sm space-y-3 text-sm">
+          <h2 className="font-semibold">Task relationship badges</h2>
+          <p className="text-muted-foreground">Click a status icon or task ID to navigate. Hover or focus a blocker to reveal its remove button. Only the X removes that blocker.</p>
+          <p className="text-muted-foreground">The arrow opens the relationship picker. Badge widths stay fixed on hover.</p>
+          <p>Current route: <code data-testid="relationship-route" className="font-mono text-xs">{location.pathname}</code></p>
+          <Button variant="outline" size="sm" onClick={() => setIssue(relationshipIssue)}>Reset blockers</Button>
+        </div>
+      </div>
+    </LongValueStorybookData>
+  );
+}
+
+function IssuePropertiesModelOverridePane() {
+  return (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <div className="mx-auto w-80 border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={modelOverrideIssue}
+              childIssues={[]}
+              onAddSubIssue={() => undefined}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
+  );
+}
+
+function IssuePropertiesMobileBlockerActionsPane() {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const openTimer = window.setTimeout(() => {
+      const trigger = rootRef.current?.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Actions for blocker"]',
+      );
+      if (!trigger) return;
+      trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger.click();
+    }, 0);
+    return () => window.clearTimeout(openTimer);
+  }, []);
+
+  return (
+    <StorybookData>
+      <div ref={rootRef} className="paperclip-story min-h-screen p-4">
+        <div className="mx-auto max-w-sm border border-border bg-background">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={storybookIssues[1]!}
+              childIssues={[]}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
+  );
+}
+
 function ColumnConfigurationMatrix() {
   const [columns, setColumns] = useState<InboxIssueColumn[]>(visibleColumns);
   const visibleColumnSet = useMemo(() => new Set(columns), [columns]);
@@ -180,8 +455,9 @@ function ColumnConfigurationMatrix() {
       <div className="overflow-hidden rounded-lg border border-border bg-background/70">
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)] items-center border-b border-border px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
           <span>Issue</span>
-          <span className="grid grid-cols-[6rem_7rem_9rem_6rem_4.5rem] gap-2">
+          <span className="grid grid-cols-[6rem_6rem_7rem_9rem_6rem_4.5rem] gap-2">
             <span>Assignee</span>
+            <span>Kicked off by</span>
             <span>Project</span>
             <span>Workspace</span>
             <span>Tags</span>
@@ -208,6 +484,8 @@ function ColumnConfigurationMatrix() {
               workspaceName={issue.currentExecutionWorkspace?.name ?? "Board UI"}
               assigneeName={issue.assigneeAgentId ? storybookAgentMap.get(issue.assigneeAgentId)?.name ?? null : null}
               assigneeUserName={issue.assigneeUserId ? "Riley Board" : null}
+              creatorAgentName={issue.createdByAgentId ? storybookAgentMap.get(issue.createdByAgentId)?.name ?? null : null}
+              creatorUserName={issue.createdByUserId ? "Riley Board" : null}
               currentUserId="user-board"
               parentIdentifier={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.identifier ?? null}
               parentTitle={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.title ?? null}
@@ -318,7 +596,6 @@ function OpenFiltersPopover() {
           currentUserId="user-board"
           enableRoutineVisibilityFilter
           buttonVariant="outline"
-          workspaces={storybookExecutionWorkspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
           creators={[
             { id: "user:user-board", label: "Riley Board", kind: "user", searchText: "board user human" },
             ...storybookAgents.map((agent) => ({
@@ -527,6 +804,19 @@ function IssueManagementStories() {
                 />
               </div>
             </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              {attributionIssues.map((issue) => (
+                <div key={issue.id} className="rounded-lg border border-border bg-background/70 p-4">
+                  <div className="mb-3 truncate text-sm font-medium">{issue.title}</div>
+                  <IssueProperties
+                    issue={issue}
+                    childIssues={[]}
+                    onUpdate={() => undefined}
+                    inline
+                  />
+                </div>
+              ))}
+            </div>
           </Section>
 
           <Section eyebrow="IssueDocumentsSection" title="Documents list with plan and notes documents">
@@ -599,3 +889,52 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const FullSurfaceMatrix: Story = {};
+
+export const IssuePropertiesUnavailablePolicy: Story = {
+  name: "IssueProperties - unavailable execution policy",
+  render: () => (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <IssueProperties
+          issue={{ ...primaryIssue, executionPolicy: { stages: {} } as unknown as Issue["executionPolicy"] }}
+          onUpdate={() => undefined}
+          inline
+        />
+      </div>
+    </StorybookData>
+  ),
+};
+
+export const IssuePropertiesLongValuesDesktop: Story = {
+  name: "IssueProperties - long values desktop pane",
+  render: () => <IssuePropertiesLongValuePane />,
+};
+
+export const IssuePropertiesLongValuesMobile: Story = {
+  name: "IssueProperties - long values mobile inline",
+  render: () => <IssuePropertiesLongValuePane inline />,
+};
+
+export const IssuePropertiesModelOverride: Story = {
+  name: "IssueProperties - task model override",
+  render: () => <IssuePropertiesModelOverridePane />,
+};
+
+export const IssuePropertiesMobileBlockerActions: Story = {
+  name: "IssueProperties - mobile blocker actions open",
+  render: () => <IssuePropertiesMobileBlockerActionsPane />,
+  globals: { viewport: { value: "mobile1" } },
+};
+
+// Keep preview stories passive. Interaction coverage lives in
+// tests/storybook-visual/relationship-badges.spec.ts so switching stories never
+// automatically focuses, navigates, removes, or restores a visible badge.
+export const IssuePropertiesRelationshipBadges: Story = {
+  name: "IssueProperties - relationship badges",
+  render: () => <IssuePropertiesRelationshipBadgesPane />,
+};
+
+export const IssuePropertiesRelationshipBadgesInline: Story = {
+  name: "IssueProperties - relationship badges inline",
+  render: () => <IssuePropertiesRelationshipBadgesPane inline />,
+};

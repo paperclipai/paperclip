@@ -1,5 +1,14 @@
 import type { Issue, IssueComment } from "@paperclipai/shared";
 
+/**
+ * First-page size for the issue-detail comment feed. Single source of truth so
+ * the render path (IssueDetail's `useInfiniteQuery`) and the navigation prefetch
+ * (`prefetchIssueComments`) request identically-shaped pages — a mismatch would
+ * leave the prefetched cache entry unable to satisfy the mounted query without a
+ * refetch, defeating warm-navigation instant paint.
+ */
+export const ISSUE_COMMENT_PAGE_SIZE = 50;
+
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -57,9 +66,12 @@ export function createOptimisticIssueComment(params: {
     clientId,
     companyId: params.companyId,
     issueId: params.issueId,
+    authorType: "user",
     authorAgentId: null,
     authorUserId: params.authorUserId,
     body: params.body,
+    presentation: null,
+    metadata: null,
     clientStatus: params.clientStatus ?? "pending",
     queueTargetRunId: params.queueTargetRunId ?? null,
     createdAt: now,
@@ -70,15 +82,24 @@ export function createOptimisticIssueComment(params: {
 export function isQueuedIssueComment(params: {
   comment: Pick<IssueTimelineComment, "createdAt"> &
     Partial<Pick<OptimisticIssueComment, "clientStatus">> & {
+      id?: string;
       authorAgentId?: string | null;
     };
   activeRunStartedAt?: Date | string | null;
   activeRunAgentId?: string | null;
+  activeRunCommentId?: string | null;
+  activeRunWakeCommentId?: string | null;
   runId?: string | null;
   interruptedRunId?: string | null;
 }) {
   if (params.runId) return false;
   if (params.interruptedRunId) return false;
+  if (
+    params.comment.id &&
+    (params.comment.id === params.activeRunWakeCommentId || params.comment.id === params.activeRunCommentId)
+  ) {
+    return false;
+  }
   if (params.comment.authorAgentId && params.activeRunAgentId && params.comment.authorAgentId === params.activeRunAgentId) {
     return false;
   }
@@ -111,12 +132,33 @@ export function mergeIssueComments(
   comments: IssueComment[] | undefined,
   optimisticComments: OptimisticIssueComment[],
 ): IssueTimelineComment[] {
-  const merged = [...(comments ?? [])];
+  const persistedComments = comments ?? [];
+  const merged = [...persistedComments];
   const existingIds = new Set(merged.map((comment) => comment.id));
+  const reconciledPersistedIds = new Set<string>();
   for (const comment of optimisticComments) {
-    if (!existingIds.has(comment.id)) {
-      merged.push(comment);
+    if (existingIds.has(comment.id)) continue;
+
+    // The mutation response and comments feed can publish the canonical
+    // comment in different React Query notifications. Keep the optimistic row
+    // mounted through that handoff without briefly rendering both versions.
+    // Consume matches one-for-one so repeated identical messages remain valid.
+    const matchingPersistedComment = persistedComments.find((persisted) =>
+      !reconciledPersistedIds.has(persisted.id) &&
+      persisted.issueId === comment.issueId &&
+      persisted.authorType === comment.authorType &&
+      persisted.authorUserId === comment.authorUserId &&
+      persisted.body === comment.body &&
+      Math.abs(toTimestamp(persisted.createdAt) - toTimestamp(comment.createdAt)) <= 60_000
+    );
+    if (matchingPersistedComment) {
+      reconciledPersistedIds.add(matchingPersistedComment.id);
+      const acknowledged = { ...matchingPersistedComment, clientId: comment.clientId };
+      merged[merged.findIndex((entry) => entry.id === matchingPersistedComment.id)] = acknowledged;
+      continue;
     }
+
+    merged.push(comment);
   }
   return sortIssueComments(merged);
 }
@@ -148,6 +190,47 @@ export function getNextIssueCommentPageParam(
 ): string | undefined {
   if (!lastPage || lastPage.length < pageSize) return undefined;
   return lastPage[lastPage.length - 1]?.id;
+}
+
+function getNextPageCursor<T extends { id: string }>(
+  lastPage: ReadonlyArray<T> | undefined,
+  pageSize: number,
+): string | undefined {
+  if (!lastPage || lastPage.length < pageSize) return undefined;
+  return lastPage[lastPage.length - 1]?.id;
+}
+
+export async function loadRemainingIssueCommentPages<T extends { id: string }>(params: {
+  pages: ReadonlyArray<ReadonlyArray<T>> | undefined;
+  pageParams: ReadonlyArray<string | null> | undefined;
+  pageSize: number;
+  maxPages?: number;
+  fetchPage: (afterCommentId: string) => Promise<ReadonlyArray<T>>;
+}): Promise<{ pages: T[][]; pageParams: Array<string | null> }> {
+  const pages = (params.pages ?? []).map((page) => [...page]);
+  const pageParams = params.pageParams
+    ? [...params.pageParams].slice(0, pages.length)
+    : pages.map(() => null);
+
+  while (pageParams.length < pages.length) {
+    pageParams.push(null);
+  }
+
+  if (params.pageSize <= 0) return { pages, pageParams };
+
+  let cursor = getNextPageCursor(pages[pages.length - 1], params.pageSize);
+  const maxPages = Math.max(0, params.maxPages ?? Number.POSITIVE_INFINITY);
+  const seenCursors = new Set<string>();
+  while (cursor && !seenCursors.has(cursor) && seenCursors.size < maxPages) {
+    seenCursors.add(cursor);
+    const nextPage = [...await params.fetchPage(cursor)];
+    pages.push(nextPage);
+    pageParams.push(cursor);
+
+    cursor = getNextPageCursor(nextPage, params.pageSize);
+  }
+
+  return { pages, pageParams };
 }
 
 export function shouldAutoloadOlderIssueComments(params: {

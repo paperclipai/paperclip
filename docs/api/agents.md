@@ -93,6 +93,15 @@ POST /api/agents/{agentId}/resume
 
 Resumes heartbeats for a paused agent.
 
+## Clear Agent Error
+
+```
+POST /api/agents/{agentId}/clear-error
+```
+
+Moves an agent from `error` back to `idle` without deleting run history or runtime diagnostics.
+Only agents currently in `error` can be cleared.
+
 ## Terminate Agent
 
 ```

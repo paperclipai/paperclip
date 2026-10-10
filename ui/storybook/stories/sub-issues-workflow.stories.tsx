@@ -172,7 +172,7 @@ const viewStateKey = "storybook:sub-issues-workflow:list";
 const scopedKey = `${viewStateKey}:${companyId}`;
 
 function hydrateQueries(client: ReturnType<typeof useQueryClient>) {
-  client.setQueryData(queryKeys.companies.all, storybookCompanies);
+  client.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   client.setQueryData(queryKeys.auth.session, storybookAuthSession);
   client.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   client.setQueryData(queryKeys.projects.list(companyId), storybookProjects);

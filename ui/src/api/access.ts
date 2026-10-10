@@ -8,7 +8,6 @@ type InviteSummary = {
   companyId: string | null;
   companyName?: string | null;
   companyLogoUrl?: string | null;
-  companyBrandColor?: string | null;
   inviteType: "company_join" | "bootstrap_ceo";
   allowedJoinTypes: "human" | "agent" | "both";
   humanRole?: HumanCompanyRole | null;
@@ -383,6 +382,9 @@ export const accessApi = {
 
   claimBoard: (token: string, code: string) =>
     api.post<{ claimed: true; userId: string }>(`/board-claim/${token}/claim`, { code }),
+
+  claimBootstrapAdmin: () =>
+    api.post<{ claimed: true; userId: string }>("/bootstrap/claim", {}),
 
   getCliAuthChallenge: (id: string, token: string) =>
     api.get<CliAuthChallengeStatus>(`/cli-auth/challenges/${id}?token=${encodeURIComponent(token)}`),
