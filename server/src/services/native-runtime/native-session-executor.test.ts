@@ -332,6 +332,7 @@ import {
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
   nativeProviderRecoveryEvidence,
+  verifyPriorRunnerdStateForSessionScope,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -13169,6 +13170,27 @@ describe("runnerd provider runtime wiring", () => {
       expect(remoteExecute.mock.calls.some(([call]) => call.command === "npm")).toBe(false);
       expect(remoteExecute.mock.calls.some(([call]) => call.args?.[1]?.includes("paperclip_codex_launcher_tmp"))).toBe(false);
     }
+  });
+
+  it.each([
+    { owner: true, status: "succeeded", expected: "retained_warm_runner" },
+    { owner: false, status: "succeeded", expected: "terminal_state_indeterminate" },
+    { owner: true, status: "running", expected: "active" },
+  ])("requires exact idle ownership for remote computer state ($owner, $status)", async ({ owner, status, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-remote-warm-state-"));
+    const prior = execution;
+    const current = { ...execution, binding: { ...execution.binding, runId: "next-computer-run" } };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [
+      { status, runnerProfileJson: { nativeExecutionInput: prior } },
+    ] }) }) }) } as unknown as Db;
+    try {
+      expect(await verifyPriorRunnerdStateForSessionScope({
+        db, root, execution: current,
+        identity: { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId,
+          runnerInstanceId: "computer-runner", environmentLeaseId: "computer-lease" },
+        allowVerifiedBackup: false, remoteRunnerState: true, allowRetainedWarmRunner: owner,
+      })).toBe(expected);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it.each([

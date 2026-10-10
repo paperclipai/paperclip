@@ -4275,13 +4275,14 @@ export function nativePreProviderRetryAfterCleanupStateIsSafe(input: {
   }
 }
 
-async function verifyPriorRunnerdStateForSessionScope(input: {
+export async function verifyPriorRunnerdStateForSessionScope(input: {
   db: Db;
   root: string;
   identity: RunnerdDurableIdentity;
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
   allowRetainedWarmRunner: boolean;
+  remoteRunnerState?: boolean;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -4335,7 +4336,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
         // there is intentionally no suspended failover backup yet. The exact
         // idle in-memory session owner is the authority for this one case;
         // after a restart that owner is absent and this remains fail-closed.
-        (input.allowVerifiedBackup && directLifecycle === "absent"))
+        ((input.allowVerifiedBackup || input.remoteRunnerState) && directLifecycle === "absent"))
     ) {
       return "retained_warm_runner";
     }
@@ -4881,6 +4882,8 @@ async function migrateRunnerdStateRootForExecution(input: {
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+        remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "computer",
       });
       if (
         verification !== "verified" &&
@@ -4923,6 +4926,8 @@ async function migrateRunnerdStateRootForExecution(input: {
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
         allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+        remoteRunnerState: input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "computer",
       });
       if (
         verification !== "verified" &&
