@@ -604,6 +604,38 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     return companyId;
   }
 
+  it("clears assignee adapter overrides when the assignee changes, unless the same update sets new ones", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const [first, second] = [randomUUID(), randomUUID()];
+    for (const [id, name] of [[first, "First"], [second, "Second"]] as const) {
+      await db.insert(agents).values({
+        id, companyId, name, role: "engineer", status: "idle",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      });
+    }
+    const overrides = { adapterConfig: { model: "model-for-first-agent" } };
+    const issue = await svc.create(companyId, {
+      title: "Reassign me",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: first,
+      assigneeAdapterOverrides: overrides,
+    });
+
+    const sameAssignee = await svc.update(issue.id, { assigneeAgentId: first, title: "Reassign me now" });
+    expect(sameAssignee?.assigneeAdapterOverrides).toEqual(overrides);
+
+    const moved = await svc.update(issue.id, { assigneeAgentId: second });
+    expect(moved?.assigneeAgentId).toBe(second);
+    expect(moved?.assigneeAdapterOverrides).toBeNull();
+
+    const withNew = await svc.update(issue.id, {
+      assigneeAgentId: first,
+      assigneeAdapterOverrides: { adapterConfig: { model: "model-for-second-choice" } },
+    });
+    expect(withNew?.assigneeAdapterOverrides).toEqual({ adapterConfig: { model: "model-for-second-choice" } });
+  });
+
   it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issueId = randomUUID();
