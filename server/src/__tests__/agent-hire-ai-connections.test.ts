@@ -309,6 +309,25 @@ describe("agent-created hires use managed AI connections", () => {
     } finally { unregisterServerAdapter(f.adapterType); }
   });
 
+  it.each([
+    ["the failing environment check", [["claude_cwd_invalid", "error"]], "(claude_cwd_invalid: claude_cwd_invalid failed)"],
+    ["the first check ahead of a rollup code", [["claude_command_unresolvable", "error"], ["ai_connection_validation_incomplete", "error"]], "(claude_command_unresolvable: claude_command_unresolvable failed)"],
+    ["no check when none is an error", [["claude_cwd_invalid", "warn"]], "checks."],
+  ] as const)("save names %s", async (_name, checks, tail) => {
+    const f = await fixture("anthropic");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    registerServerAdapter({ ...getServerAdapter(f.adapterType), testEnvironment: async () => ({
+      adapterType: f.adapterType, status: "fail", testedAt: new Date().toISOString(),
+      checks: checks.map(([code, level]) => ({ code, level, message: `${code} failed` })),
+    }) });
+    try {
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { model: "changed-model" } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details.code).toBe("ai_connection_validation_failed");
+      expect(response.body.error.endsWith(tail), response.body.error).toBe(true);
+    } finally { unregisterServerAdapter(f.adapterType); }
+  });
+
   for (const endpoint of ["agent-hires", "agents"]) {
     it.each([
       ["anthropic", "api_key"], ["anthropic", "subscription"],
