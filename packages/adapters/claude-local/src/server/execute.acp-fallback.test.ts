@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -120,6 +123,45 @@ describe("claude_local ACP startup fallback", () => {
         }),
       }),
     );
+  });
+
+  it("scopes the filesystem sandbox's homeDir and .claude.json bind to the managed per-agent home, not the operator's real home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-local-sandbox-home-"));
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", root);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "test-instance");
+      const ctx = buildContext({ engine: "cli", filesystemScope: "workspace" });
+
+      await execute(ctx as never);
+
+      expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+      const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+      const runOpts = call[4] as {
+        localProcessSandbox?: { homeDir?: string | null; managedPaths?: { path: string }[] };
+      };
+      const sandbox = runOpts.localProcessSandbox;
+      const expectedManagedHomeRoot = path.join(
+        root,
+        "instances",
+        "test-instance",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-1",
+        "claude-home-root",
+      );
+
+      expect(sandbox?.homeDir).toBe(expectedManagedHomeRoot);
+      expect(sandbox?.homeDir).not.toBe(os.homedir());
+      expect(sandbox?.managedPaths).toEqual(
+        expect.arrayContaining([{ path: path.join(expectedManagedHomeRoot, ".claude.json"), access: "rw" }]),
+      );
+      expect(sandbox?.managedPaths?.some((entry) => entry.path === path.join(os.homedir(), ".claude.json"))).toBe(
+        false,
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
   it("keeps explicit ACP strict when startup fails", async () => {
