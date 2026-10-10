@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyExport, resolveExportPreviewImageSrc } from "./CompanyExport";
+import { CompanyExport, resolveExportPreviewImageSrc, encodeExportFilePath, decodeExportFilePath } from "./CompanyExport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   exportPreview: vi.fn(),
@@ -54,9 +54,15 @@ vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
+const mockNavigate = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/PAP/company/export",
+  search: "",
+}));
+
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
-  useLocation: () => ({ pathname: "/PAP/company/export", search: "" }),
+  useNavigate: () => mockNavigate,
+  useLocation: () => ({ pathname: mockLocation.pathname, search: mockLocation.search }),
 }));
 
 vi.mock("../components/MarkdownBody", () => ({
@@ -175,6 +181,9 @@ describe("CompanyExport", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockLocation.pathname = "/PAP/company/export";
+    mockLocation.search = "";
+    mockNavigate.mockReset();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
@@ -504,5 +513,85 @@ describe("CompanyExport", () => {
 
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
     expect(container.textContent).not.toContain("Not included in this export");
+  });
+
+  it("restores file selection from a deep link with #, ?, and %", async () => {
+    const specialPath = "docs/section#1/what?next/100% complete.md";
+    mockLocation.pathname = `/PAP/company/export/files/${encodeExportFilePath(specialPath)}`;
+    mockCompaniesApi.exportPreview.mockResolvedValue({
+      ...buildExportPreviewResult(),
+      files: {
+        "README.md": "# Paperclip\n",
+        [specialPath]: "# Special path contents\n",
+      },
+      counts: { files: 2, agents: 0, skills: 0, projects: 0, issues: 0 },
+    });
+
+    await renderPage();
+
+    expect(
+      container.querySelector(`[data-file-tree-path="${CSS.escape(specialPath)}"]`)?.getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(container.textContent).toContain(specialPath);
+    expect(container.textContent).toContain("Special path contents");
+  });
+
+  it("navigates with per-segment encoding when selecting a file with reserved characters", async () => {
+    // Keep the special file under a top-level dir so it is visible without extra expands.
+    const specialPath = "docs/section#1 overview?.md";
+    mockCompaniesApi.exportPreview.mockResolvedValue({
+      ...buildExportPreviewResult(),
+      files: {
+        "README.md": "# Paperclip\n",
+        [specialPath]: "# Overview\n",
+      },
+      counts: { files: 2, agents: 0, skills: 0, projects: 0, issues: 0 },
+    });
+
+    await renderPage();
+
+    const row = container.querySelector(`[data-file-tree-path="${CSS.escape(specialPath)}"]`);
+    expect(row).not.toBeNull();
+    await clickElement(row as HTMLElement);
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/company/export/files/${encodeExportFilePath(specialPath)}`,
+      { replace: false },
+    );
+  });
+});
+
+describe("export file path URL encoding", () => {
+  it("round-trips paths with %, #, ?, and spaces", () => {
+    const paths = [
+      "README.md",
+      "agents/ceo/AGENT.md",
+      "notes/100% complete.md",
+      "docs/section#1/overview.md",
+      "q/what?next.md",
+      "folder with spaces/file name.md",
+    ];
+
+    for (const path of paths) {
+      expect(decodeExportFilePath(encodeExportFilePath(path))).toBe(path);
+    }
+  });
+
+  it("encodes special characters per path segment", () => {
+    expect(encodeExportFilePath("notes/100% complete.md")).toBe(
+      "notes/100%25%20complete.md",
+    );
+    expect(encodeExportFilePath("docs/section#1/overview.md")).toBe(
+      "docs/section%231/overview.md",
+    );
+  });
+
+  it("still decodes legacy encodeURI-style paths without #", () => {
+    expect(decodeExportFilePath(encodeURI("agents/ceo/AGENT.md"))).toBe(
+      "agents/ceo/AGENT.md",
+    );
+    expect(decodeExportFilePath(encodeURI("folder with spaces/file.md"))).toBe(
+      "folder with spaces/file.md",
+    );
   });
 });
