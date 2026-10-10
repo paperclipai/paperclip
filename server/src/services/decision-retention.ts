@@ -29,6 +29,14 @@ import {
 export const DEFAULT_DECISION_SHELF_DAYS = 30;
 export const DEFAULT_DECISION_ARCHIVE_DAYS = 90;
 const DAY_MS = 86_400_000;
+// Each insert row binds four values. Keep statements well below PostgreSQL's
+// 65,534-parameter limit and keep readback IN lists bounded too.
+const DECISION_RETENTION_INSERT_BATCH_SIZE = 5_000;
+const DECISION_RETENTION_LOOKUP_BATCH_SIZE = 10_000;
+
+type DecisionRetentionSyncItem = Pick<AttentionItem, "sourceKind" | "activityAt"> & {
+  subject: Pick<AttentionItem["subject"], "id">;
+};
 
 export type DecisionRetentionState = typeof decisionRetention.$inferSelect;
 export type ArchiveNotificationBatch = {
@@ -135,21 +143,29 @@ export function decisionRetentionService(
   db: Db,
   options: { notifyOriginAgent?: (batch: ArchiveNotificationBatch) => Promise<unknown> } = {},
 ) {
-  async function syncItems(companyId: string, items: readonly AttentionItem[]) {
+  async function syncItems(companyId: string, items: readonly DecisionRetentionSyncItem[]) {
     if (items.length === 0) return new Map<string, DecisionRetentionState>();
     const unique = [...new Map(items.map((item) => [itemSourceKey(item), item])).values()];
-    await db.insert(decisionRetention).values(unique.map((item) => ({
-      companyId,
-      sourceKind: item.sourceKind,
-      sourceId: item.subject.id,
-      sourceActivityAt: new Date(item.activityAt),
-    }))).onConflictDoNothing({
-      target: [decisionRetention.companyId, decisionRetention.sourceKind, decisionRetention.sourceId],
-    });
-    let rows = await db.select().from(decisionRetention).where(and(
-      eq(decisionRetention.companyId, companyId),
-      inArray(decisionRetention.sourceId, unique.map((item) => item.subject.id)),
-    ));
+    for (let start = 0; start < unique.length; start += DECISION_RETENTION_INSERT_BATCH_SIZE) {
+      const batch = unique.slice(start, start + DECISION_RETENTION_INSERT_BATCH_SIZE);
+      await db.insert(decisionRetention).values(batch.map((item) => ({
+        companyId,
+        sourceKind: item.sourceKind,
+        sourceId: item.subject.id,
+        sourceActivityAt: new Date(item.activityAt),
+      }))).onConflictDoNothing({
+        target: [decisionRetention.companyId, decisionRetention.sourceKind, decisionRetention.sourceId],
+      });
+    }
+
+    const sourceIds = [...new Set(unique.map((item) => item.subject.id))];
+    const rows: DecisionRetentionState[] = [];
+    for (let start = 0; start < sourceIds.length; start += DECISION_RETENTION_LOOKUP_BATCH_SIZE) {
+      rows.push(...await db.select().from(decisionRetention).where(and(
+        eq(decisionRetention.companyId, companyId),
+        inArray(decisionRetention.sourceId, sourceIds.slice(start, start + DECISION_RETENTION_LOOKUP_BATCH_SIZE)),
+      )));
+    }
     const byKey = new Map(rows.map((row) => [sourceKey(row.sourceKind, row.sourceId), row]));
     for (const item of unique) {
       const key = itemSourceKey(item);
@@ -166,11 +182,10 @@ export function decisionRetentionService(
       )).returning().then((values) => values[0] ?? null);
       if (updated) byKey.set(key, updated);
     }
-    rows = [...byKey.values()];
-    return new Map(rows.map((row) => [sourceKey(row.sourceKind, row.sourceId), row]));
+    return new Map([...byKey.values()].map((row) => [sourceKey(row.sourceKind, row.sourceId), row]));
   }
 
-  function itemSourceKey(item: AttentionItem) {
+  function itemSourceKey(item: DecisionRetentionSyncItem) {
     return sourceKey(item.sourceKind, item.subject.id);
   }
 
