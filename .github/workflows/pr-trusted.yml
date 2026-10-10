@@ -312,6 +312,9 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
+      - name: Test disk-pressure guard thresholds and reclaim gate
+        run: pnpm run test:disk-guard
+
       - name: Validate feature module boundaries
         run: pnpm check:module-boundaries
 
