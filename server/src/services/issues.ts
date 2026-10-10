@@ -3800,6 +3800,7 @@ async function listIssueBlockerAttentionMap(
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
+  const readinessUnresolvedBlockerCountByIssueId = new Map<string, number>();
   for (const root of roots) nodesById.set(root.id, { ...root });
 
   let frontier = roots.map((root) => root.id);
@@ -3822,6 +3823,10 @@ async function listIssueBlockerAttentionMap(
         chunk,
       );
       for (const readiness of readinessByIssueId.values()) {
+        readinessUnresolvedBlockerCountByIssueId.set(
+          readiness.issueId,
+          readiness.unresolvedBlockerCount,
+        );
         for (const blockerIssueId of readiness.pendingFinalizeBlockerIssueIds) {
           pendingFinalizeBlockerIssueIds.add(blockerIssueId);
         }
@@ -4381,6 +4386,11 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
+    const unresolvedBlockerCount =
+      readinessUnresolvedBlockerCountByIssueId.get(root.id);
+    if (unresolvedBlockerCount === undefined) {
+      throw new Error(`Missing dependency readiness for blocked issue ${root.id}`);
+    }
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
@@ -4394,6 +4404,7 @@ async function listIssueBlockerAttentionMap(
         createIssueBlockerAttention({
           state: "needs_attention",
           reason: "attention_required",
+          unresolvedBlockerCount,
           terminalBlockerIssueId: root.id,
         }),
       );
@@ -4468,7 +4479,7 @@ async function listIssueBlockerAttentionMap(
       createIssueBlockerAttention({
         state,
         reason,
-        unresolvedBlockerCount: topLevelEdges.length,
+        unresolvedBlockerCount,
         coveredBlockerCount,
         stalledBlockerCount,
         attentionBlockerCount,
