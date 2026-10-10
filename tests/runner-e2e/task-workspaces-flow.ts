@@ -6,6 +6,7 @@ import path from "node:path";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { collectRunEvents } from "./run-observations.js";
+import { restartChatServer } from "./chat-restart.js";
 import { readRegisteredArtifacts } from "./registered-artifact.js";
 import { TASK_WORKSPACES_BUDGET_CENTS, taskWorkspaceFiles, taskWorkspacePrompt } from "./task-workspaces-cases.js";
 import { gradeTaskWorkspaces, isRepositoryPreparationReceipt, type TaskWorkspaceCheckpoint, type TaskWorkspaceObservation } from "./task-workspaces-scoring.js";
@@ -150,8 +151,11 @@ export async function runTaskWorkspacesFlow(input: {
     await save("initial-admission");
     await settled(1); await checkpoint(1);
     // Controller lifecycle only: the original provider turn is already settled.
-    await input.restart(); evidence.restarted = true;
-    await page.reload();
+    const issueUrl = page.url();
+    await restartChatServer(page, async () => { await input.restart(); });
+    evidence.restarted = true;
+    await page.goto(issueUrl);
+    await expect(page.getByTestId("task-chat-thread-header").getByTestId("issue-detail-header")).toBeVisible();
     await submitTaskReply(page, taskWorkspacePrompt(nonce, 2, native));
     await settled(2); await checkpoint(2);
     await submitTaskReply(page, taskWorkspacePrompt(nonce, 3, native));
