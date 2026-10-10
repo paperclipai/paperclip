@@ -501,9 +501,20 @@ function retargetRunAttachPayload(
     // context, never the prior run's now-stale filesystem grant.
     if (runtimeContext !== undefined) {
       if (currentInstructions !== undefined) {
-        provider.instructions = currentInstructions.context
-          ? retargetComposedInstructions(currentInstructions.text, currentInstructions.context, runtimeContext)
+        // Controller guidance is part of the durable provider profile. A
+        // controller upgrade must not inject it into an existing session; new
+        // managed instructions still use this run's authenticated snapshot.
+        const instructions = typeof provider.instructions === "string"
+          && provider.instructions.includes(COMPUTER_PROCESS_INSTRUCTIONS)
+          ? withComputerProcessInstructions(
+              currentInstructions.text,
+              true,
+              currentInstructions.context,
+            )
           : currentInstructions.text;
+        provider.instructions = currentInstructions.context
+          ? retargetComposedInstructions(instructions, currentInstructions.context, runtimeContext)
+          : instructions;
       } else if (typeof provider.instructions === "string" && provider.runtimeContext) {
         provider.instructions = retargetComposedInstructions(
           provider.instructions,
@@ -3443,9 +3454,23 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
-function withComputerProcessInstructions(instructions: string, persistentAgentHome?: string): string {
-  if (!persistentAgentHome) return instructions;
-  return `${instructions}\n\nComputer runtime: files in AGENT_HOME persist across turns. A dev server needed between warm turns must survive the shell tool's process-group cleanup: use a detached session, for example \`nohup setsid <command> </dev/null >dev-server.log 2>&1 &\`, and verify its listener from a separate command after the launching command returns. Detached processes still belong to this runner and stop when its warm timeout expires. Do not create services or change runner ownership to keep them alive.`;
+const COMPUTER_PROCESS_INSTRUCTIONS = `Computer runtime: files in AGENT_HOME persist across turns. A dev server needed between warm turns must survive the shell tool's process-group cleanup: use a detached session, for example \`nohup setsid <command> </dev/null >dev-server.log 2>&1 &\`, and verify its listener from a separate command after the launching command returns. Detached processes still belong to this runner and stop when its warm timeout expires. Do not create services or change runner ownership to keep them alive.`;
+
+function withComputerProcessInstructions(
+  instructions: string,
+  computerRuntime: boolean,
+  context?: NativeRuntimeContextSnapshot | null,
+): string {
+  if (!computerRuntime) return instructions;
+  if (context) {
+    const suffix = composeNativeSystemInstructions(context, "").slice(context.prompt.text.length);
+    if (suffix && instructions.startsWith(context.prompt.text) && instructions.endsWith(suffix)) {
+      // Keep the canonical asset block last: ACPX verifies this framing when
+      // rotating a registered filesystem grant after idle or process recovery.
+      return `${instructions.slice(0, -suffix.length)}\n\n${COMPUTER_PROCESS_INSTRUCTIONS}${suffix}`;
+    }
+  }
+  return `${instructions}\n\n${COMPUTER_PROCESS_INSTRUCTIONS}`;
 }
 
 export function createRunnerdCodexAppServerArgs(input: {
@@ -4833,7 +4858,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       record(params.config).include_collaboration_mode_instructions !== false;
     const unboundBaseInstructions = withComputerProcessInstructions(String(
       params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent.",
-    ), this.options.persistentAgentHome);
+    ), Boolean(this.options.persistentAgentHome), sourceRuntimeContext);
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
         ? unboundBaseInstructions.replaceAll(
@@ -5450,7 +5475,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         runtimeContext,
         this.options.baseInstructions === undefined
           ? undefined
-          : { text: withComputerProcessInstructions(this.options.baseInstructions, this.options.persistentAgentHome), context: sourceRuntimeContext },
+          : { text: this.options.baseInstructions, context: sourceRuntimeContext },
       );
       if (provider === "codex") {
         // These controller-owned, token-free paths belong to the new run.
@@ -7088,6 +7113,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 });
 
 export const runnerdRecoveryInternals = Object.freeze({
+  withComputerProcessInstructions,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   readControlPlaneState,
