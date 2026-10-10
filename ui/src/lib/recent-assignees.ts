@@ -1,30 +1,53 @@
-const STORAGE_KEY = "paperclip:recent-assignees";
-const MAX_RECENT = 10;
+import {
+  RECENT_SELECTION_DISPLAY_LIMIT,
+  readRecentSelectionIds,
+  trackRecentSelectionId,
+} from "./recent-selections";
 
-export function getRecentAssigneeIds(): string[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+const STORAGE_KEY = "paperclip:recent-assignees";
+
+function agentSelectionId(agentId: string): string {
+  return `agent:${agentId}`;
 }
 
-export function trackRecentAssignee(agentId: string): void {
-  if (!agentId) return;
-  const recent = getRecentAssigneeIds().filter((id) => id !== agentId);
-  recent.unshift(agentId);
-  if (recent.length > MAX_RECENT) recent.length = MAX_RECENT;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(recent));
+function userSelectionId(userId: string): string {
+  return `user:${userId}`;
+}
+
+function agentIdFromSelectionId(id: string): string | null {
+  if (id.startsWith("agent:")) return id.slice("agent:".length);
+  if (!id.includes(":")) return id;
+  return null;
+}
+
+export function getRecentAssigneeIds(): string[] {
+  return readRecentSelectionIds(STORAGE_KEY)
+    .map(agentIdFromSelectionId)
+    .filter((id): id is string => Boolean(id));
+}
+
+export function getRecentAssigneeSelectionIds(companyId?: string): string[] {
+  return readRecentSelectionIds(companyId ? `${STORAGE_KEY}:${companyId}` : STORAGE_KEY).map((id) => {
+    if (id.includes(":")) return id;
+    return agentSelectionId(id);
+  });
+}
+
+export function trackRecentAssignee(agentId: string, companyId?: string): void {
+  trackRecentSelectionId(STORAGE_KEY, agentSelectionId(agentId));
+  if (companyId) trackRecentSelectionId(`${STORAGE_KEY}:${companyId}`, agentSelectionId(agentId));
+}
+
+export function trackRecentAssigneeUser(userId: string, companyId?: string): void {
+  trackRecentSelectionId(STORAGE_KEY, userSelectionId(userId));
+  if (companyId) trackRecentSelectionId(`${STORAGE_KEY}:${companyId}`, userSelectionId(userId));
 }
 
 export function sortAgentsByRecency<T extends { id: string; name: string }>(
   agents: T[],
   recentIds: string[],
 ): T[] {
-  const recentIndex = new Map(recentIds.map((id, i) => [id, i]));
+  const recentIndex = new Map(recentIds.slice(0, RECENT_SELECTION_DISPLAY_LIMIT).map((id, i) => [id, i]));
   return [...agents].sort((a, b) => {
     const aRecent = recentIndex.get(a.id);
     const bRecent = recentIndex.get(b.id);

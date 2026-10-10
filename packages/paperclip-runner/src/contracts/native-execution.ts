@@ -1,0 +1,952 @@
+import type { DotBindingSnapshot } from "./external-provider.js";
+import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
+import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
+import { isProviderMode } from "./provider-mode.js";
+import { createHash } from "node:crypto";
+import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
+import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
+
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V4 = "paperclip.native-execution-input.v4" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v5" as const;
+export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.v1" as const;
+export const NATIVE_MODEL_ENVELOPE_SCHEMA_V2 = "paperclip.native-model-envelope.v2" as const;
+export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3" as const;
+export const NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+
+export type NativeExecutionMode = "default" | "plan";
+
+export interface NativePlanningContext {
+  documentId: string | null;
+  baseRevisionId: string | null;
+  baseRevisionNumber: number;
+  markdown: string;
+  sha256: string;
+  reviewContext: Record<string, unknown>;
+}
+
+export interface StrictCompletionContractInput {
+  revision: string;
+  objective: string;
+  criteria: Array<{ id: string; requirement: string }>;
+}
+
+export interface NativeInteractionResponseEnvelope {
+  interactionId: string;
+  kind:
+    | "connection_intent"
+    | "suggest_tasks"
+    | "ask_user_questions"
+    | "request_confirmation"
+    | "request_checkbox_confirmation"
+    | "request_item_verdicts";
+  response: Record<string, unknown>;
+}
+
+export interface NativeCredentialBindingRef {
+  bindingId: string;
+  service: string;
+  destination: string;
+  expiresAt: string | null;
+  displayName: string | null;
+}
+
+export type NativeSessionLifecyclePolicy =
+  | { mode: "per_turn"; idleTimeoutMs: null }
+  | { mode: "warm"; idleTimeoutMs: number };
+
+export interface NativeManagedAgentProfileSnapshot {
+  profileId: string;
+  anthropicAgentId: string;
+  agentVersion: string;
+  environmentId: string;
+  betaVersion: "managed-agents-2026-04-01";
+}
+
+export interface NativeAwsAgentCoreProfileSnapshot {
+  profileId: string;
+  region: string;
+  accountId: string;
+  harnessArn: string;
+  harnessVersion: string;
+  endpointArn: string;
+  endpointQualifier: string;
+  agentRuntimeArn: string;
+  memoryArn: string;
+  memoryId: string;
+  invocationRoleArn: string;
+  contextBucket: string;
+  contextPrefix: string;
+  contextKmsKeyArn: string;
+  qualificationRevision: string;
+  eventExpiryDays: 90;
+}
+
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
+export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
+export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
+export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+export type NativeCursorMode = "agent" | "plan" | "ask";
+
+export interface NativeAcpxProfileSnapshot {
+  driverKind: "acpx_runtime";
+  protocolVersion: 1;
+  acpxVersion: typeof QUALIFIED_ACPX_VERSION;
+  agent: NativeAcpxAgent;
+  agentProfileVersion: AcpxProfileVersion;
+  agentServerPackage: string;
+  agentServerVersion: string;
+  agentRuntimePackage: string | null;
+  agentRuntimeVersion: string | null;
+  commandDigest: string;
+}
+
+export type NativeProviderConfig =
+  | { kind: "codex"; model: string | null; approvalPolicy?: NativeCodexApprovalPolicy }
+  | { kind: "opencode"; model: string; permissionMode?: NativeOpenCodePermissionMode }
+  | {
+      kind: "claude_managed";
+      model: string;
+      managedProfile: NativeManagedAgentProfileSnapshot;
+      maxSessionListCostUsd: number;
+    }
+  | {
+      kind: "aws_agentcore";
+      model: string;
+      agentCoreProfile: NativeAwsAgentCoreProfileSnapshot;
+      maxEstimatedSessionCostUsd: number;
+      invocationLimits: {
+        maxIterations: number;
+        maxOutputTokens: number;
+        timeoutSeconds: number;
+      };
+    }
+  | {
+      kind: "acpx";
+      agent: NativeAcpxAgent;
+      model: string;
+      permissionMode?: NativeAcpxPermissionMode;
+      mode?: string;
+      piThinkingLevel?: "off" | "low" | "high" | "max";
+      /** Present only in persisted v1-v3 inputs. */
+      permissionPolicy?: "interactive";
+      profile: NativeAcpxProfileSnapshot;
+    };
+
+export type NativeProviderConfigV4 =
+  | { kind: "codex"; model: string | null; approvalPolicy: NativeCodexApprovalPolicy }
+  | { kind: "opencode"; model: string; permissionMode: NativeOpenCodePermissionMode }
+  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" }>
+  | {
+      kind: "acpx";
+      agent: NativeAcpxAgent;
+      model: string;
+      permissionMode: NativeAcpxPermissionMode;
+      mode?: string;
+      piThinkingLevel?: "off" | "low" | "high" | "max";
+      profile: NativeAcpxProfileSnapshot;
+    };
+
+export type NativeProviderConfigV5 =
+  | Exclude<NativeProviderConfigV4, { kind: "codex" }>
+  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string });
+
+export interface NativeExecutionInputV1 {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V1;
+  binding: {
+    companyId: string;
+    runId: string;
+    issueId: string;
+    agentId: string;
+    agentKeyId?: string;
+    executionWorkspaceId: string;
+  };
+  task: {
+    identifier: string;
+    title: string;
+    description: string | null;
+    /** Redacted, server-authored task markdown including the current wake comment. */
+    prompt: string;
+    workMode: "standard";
+  };
+  workspace: {
+    cwd: string;
+    repoUrl: string | null;
+    repoRef: string | null;
+    branchName: string | null;
+  };
+  session: {
+    normalizedSessionId: string | null;
+    driverKind: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
+    protocolVersion: 1;
+    lifecyclePolicy: NativeSessionLifecyclePolicy;
+  };
+  provider: NativeProviderConfig;
+  completionContract: {
+    id: string;
+    sha256: string;
+    schemaVersion: string;
+    contract: StrictCompletionContractInput;
+  };
+  interactionResponses: NativeInteractionResponseEnvelope[];
+  credentialBindings: NativeCredentialBindingRef[];
+}
+
+export interface NativeExecutionInputV2 extends Omit<NativeExecutionInputV1, "schema" | "task"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V2;
+  executionMode: NativeExecutionMode;
+  task: Omit<NativeExecutionInputV1["task"], "workMode"> & {
+    workMode: "standard" | "planning" | "ask";
+  };
+  planningContext: NativePlanningContext | null;
+}
+
+export interface NativeExecutionInputV3 extends Omit<NativeExecutionInputV2, "schema"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V3;
+  runtimeContext: NativeRuntimeContextSnapshot;
+}
+
+export interface NativeExecutionInputV4 extends Omit<NativeExecutionInputV3, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V4;
+  provider: NativeProviderConfigV4;
+  /** Used only after the runtime proves provider-session recovery succeeded. */
+  continuationPrompt?: string | null;
+  /** Restored only when starting a fresh provider session, never on a resume. */
+  initialCommunicationGuidance?: string | null;
+}
+
+/** Identity and content revision supplied by the builder that owns the source. */
+export interface NativeCompletionSource {
+  kind: "description" | "comment";
+  id: string;
+  revision: string;
+}
+
+export interface NativeCompletionSources {
+  /** References are valid only for this exact rendered prompt and contract revision. */
+  promptSha256: string;
+  contractRevision: string;
+  criteria: Array<{ id: string; source: NativeCompletionSource }>;
+}
+
+export interface NativeExecutionInputV5 extends Omit<NativeExecutionInputV4, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA;
+  provider: NativeProviderConfigV5;
+  completionSources?: NativeCompletionSources;
+}
+
+export interface NativeExecutionInputV6 extends Omit<NativeExecutionInputV5, "schema" | "provider" | "workspace" | "session"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V6;
+  provider: { kind: "openai_dot"; model: null; binding: DotBindingSnapshot };
+  workspace: { access: "none"; cwd: null; repoUrl: null; repoRef: null; branchName: null };
+  session: Omit<NativeExecutionInputV5["session"], "driverKind"> & { driverKind: "openai_dot_mcp" };
+}
+
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6;
+
+/** The only task data that may enter provider-visible model input. */
+export interface NativeModelEnvelopeV1 {
+  schema: typeof NATIVE_MODEL_ENVELOPE_SCHEMA_V1;
+  task: NativeExecutionInputV1["task"];
+  /** Remote providers have no Paperclip workspace mounted in their service. */
+  workspace: Pick<NativeExecutionInputV1["workspace"], "cwd"> | null;
+  completionContract: StrictCompletionContractInput;
+  interactionResponses: NativeInteractionResponseEnvelope[];
+}
+
+export interface NativeModelEnvelopeV2 {
+  schema: typeof NATIVE_MODEL_ENVELOPE_SCHEMA_V2;
+  task: NativeExecutionInputV2["task"];
+  executionMode: NativeExecutionMode;
+  planningContext: NativePlanningContext | null;
+  workspace: Pick<NativeExecutionInputV2["workspace"], "cwd"> | null;
+  completionContract: StrictCompletionContractInput;
+  interactionResponses: NativeInteractionResponseEnvelope[];
+}
+
+
+/** Explicit model projection; execution-only fields never enter the model task. */
+export interface NativeModelEnvelopeV3 extends Omit<NativeModelEnvelopeV2, "schema" | "task" | "completionContract"> {
+  requestedSkills: string[];
+  constraints?: string[];
+  schema: typeof NATIVE_MODEL_ENVELOPE_SCHEMA;
+  task: Pick<NativeExecutionInputV2["task"], "identifier" | "title" | "prompt" | "workMode">;
+  completionContract: Omit<StrictCompletionContractInput, "criteria"> & {
+    criteria: Array<{ id: string; requirement: string } | { id: string; source: NativeCompletionSource & { location: "task.prompt" } }>;
+  };
+}
+
+export interface NativeSessionExecutionResult {
+  result: PrpStructuredRunResult;
+  terminal: PrpTerminalState;
+  turnId: string | null;
+  normalizedSessionId: string;
+  providerSessionId: string | null;
+  driverKind: string;
+  driverVersion: string;
+  nativeEventCount: number;
+  highestContiguousSourceSeq: number;
+  usage: Record<string, unknown> | null;
+  /** The active durable goal reached a safe turn boundary for run rollover. */
+  goalRolloverRequired?: boolean;
+}
+
+export class NativeExecutionInputError extends Error {
+  readonly code = "native_execution_input_invalid" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "NativeExecutionInputError";
+  }
+}
+
+function record(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new NativeExecutionInputError(`${path} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[], path: string): void {
+  const allowed = new Set(keys);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new NativeExecutionInputError(`${path} contains unknown field ${unknown[0]}`);
+  }
+}
+
+function text(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new NativeExecutionInputError(`${path} must be a non-empty string`);
+  }
+  return value;
+}
+
+function nullableText(value: unknown, path: string): string | null {
+  return value === null ? null : text(value, path);
+}
+
+/**
+ * Strictly validates the closed Paperclip-to-runner launch contract. This is
+ * intentionally not an extensible metadata bag: new fields require a contract
+ * revision and an explicit security review.
+ */
+function parseDotNativeExecutionInput(input: Record<string, unknown>): NativeExecutionInputV6 {
+  const provider = record(input.provider, "input.provider");
+  exactKeys(provider, ["kind", "model", "binding"], "input.provider");
+  const b = record(provider.binding, "input.provider.binding");
+  exactKeys(b, ["bindingId", "bindingGeneration", "companyId", "agentId", "acceptByUnixMs", "expiresAtUnixMs"], "input.provider.binding");
+  const binding = record(input.binding, "input.binding");
+  const workspace = record(input.workspace, "input.workspace");
+  exactKeys(workspace, ["access", "cwd", "repoUrl", "repoRef", "branchName"], "input.workspace");
+  const session = record(input.session, "input.session");
+  if (provider.kind !== "openai_dot" || provider.model !== null || workspace.access !== "none"
+      || [workspace.cwd, workspace.repoUrl, workspace.repoRef, workspace.branchName].some(v => v !== null)
+      || session.driverKind !== "openai_dot_mcp" || record(session.lifecyclePolicy, "input.session.lifecyclePolicy").mode !== "per_turn"
+      || binding.companyId !== b.companyId || binding.agentId !== b.agentId
+      || !Number.isSafeInteger(b.bindingGeneration) || Number(b.bindingGeneration) < 1
+      || !Number.isSafeInteger(b.acceptByUnixMs) || !Number.isSafeInteger(b.expiresAtUnixMs)
+      || Number(b.acceptByUnixMs) < 1 || Number(b.acceptByUnixMs) >= Number(b.expiresAtUnixMs)
+      || Number(b.expiresAtUnixMs) - Number(b.acceptByUnixMs) > 86_400_000
+      || !Array.isArray(input.credentialBindings) || input.credentialBindings.length !== 0) {
+    throw new NativeExecutionInputError("Dot v6 requires a bound per-turn remote service with no filesystem or credential access");
+  }
+  // Reuse the preceding closed contract's task/context validation. The local
+  // validation value never leaves this function or becomes an execution path.
+  const common = parseNativeExecutionInput({ ...input, schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+    provider: { kind: "codex", model: null, approvalPolicy: "never" },
+    session: { ...session, driverKind: "codex_app_server" },
+    workspace: { cwd: "/", repoUrl: null, repoRef: null, branchName: null } }) as NativeExecutionInputV5;
+  return { ...common, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V6,
+    provider: { kind: "openai_dot", model: null, binding: {
+      bindingId: text(b.bindingId, "input.provider.binding.bindingId"), bindingGeneration: Number(b.bindingGeneration),
+      companyId: text(b.companyId, "input.provider.binding.companyId"), agentId: text(b.agentId, "input.provider.binding.agentId"),
+      acceptByUnixMs: Number(b.acceptByUnixMs), expiresAtUnixMs: Number(b.expiresAtUnixMs),
+    } }, workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
+    session: { ...common.session, driverKind: "openai_dot_mcp" } };
+}
+
+export function parseNativeExecutionInput(value: unknown): NativeExecutionInput {
+  const input = record(value, "input");
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseDotNativeExecutionInput(input);
+  const isV5 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
+  const isV4 = isV5 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V4;
+  const isV3 = isV4 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V3;
+  const isV2 = isV3 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V2;
+  exactKeys(input, [
+    "schema",
+    "binding",
+    "task",
+    "workspace",
+    "session",
+    "provider",
+    "completionContract",
+    "interactionResponses",
+    "credentialBindings",
+    ...(isV2 ? ["executionMode", "planningContext"] : []),
+    ...(isV3 ? ["runtimeContext"] : []),
+    ...(isV4 ? ["continuationPrompt", "initialCommunicationGuidance"] : []),
+    ...(isV5 ? ["completionSources"] : []),
+  ], "input");
+  if (!isV2 && input.schema !== NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
+    throw new NativeExecutionInputError(
+      `input.schema must be ${NATIVE_EXECUTION_INPUT_SCHEMA_V1}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V2}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V3}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V4}, or ${NATIVE_EXECUTION_INPUT_SCHEMA}`,
+    );
+  }
+
+  const binding = record(input.binding, "input.binding");
+  exactKeys(binding, ["companyId", "runId", "issueId", "agentId", "agentKeyId", "executionWorkspaceId"], "input.binding");
+  const task = record(input.task, "input.task");
+  exactKeys(task, ["identifier", "title", "description", "prompt", "workMode"], "input.task");
+  const workspace = record(input.workspace, "input.workspace");
+  exactKeys(workspace, ["cwd", "repoUrl", "repoRef", "branchName"], "input.workspace");
+  const session = record(input.session, "input.session");
+  exactKeys(session, ["normalizedSessionId", "driverKind", "protocolVersion", "lifecyclePolicy"], "input.session");
+  const completionContract = record(input.completionContract, "input.completionContract");
+  exactKeys(completionContract, ["id", "sha256", "schemaVersion", "contract"], "input.completionContract");
+  const contract = record(completionContract.contract, "input.completionContract.contract");
+  exactKeys(contract, ["revision", "objective", "criteria"], "input.completionContract.contract");
+
+  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask")) {
+    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, or ask");
+  }
+  const executionMode: NativeExecutionMode = isV2 && input.executionMode === "plan" ? "plan" : "default";
+  if (isV2 && input.executionMode !== "default" && input.executionMode !== "plan") {
+    throw new NativeExecutionInputError("input.executionMode must be default or plan");
+  }
+  if (isV2 && task.workMode !== "planning" && executionMode === "plan") {
+    throw new NativeExecutionInputError("plan execution mode requires planning work mode");
+  }
+  let planningContext: NativePlanningContext | null = null;
+  if (isV2 && input.planningContext !== null) {
+    const context = record(input.planningContext, "input.planningContext");
+    exactKeys(context, [
+      "documentId", "baseRevisionId", "baseRevisionNumber", "markdown", "sha256", "reviewContext",
+    ], "input.planningContext");
+    if (!Number.isSafeInteger(context.baseRevisionNumber) || Number(context.baseRevisionNumber) < 0) {
+      throw new NativeExecutionInputError("input.planningContext.baseRevisionNumber must be a non-negative integer");
+    }
+    planningContext = {
+      documentId: context.documentId === null ? null : text(context.documentId, "input.planningContext.documentId"),
+      baseRevisionId: context.baseRevisionId === null
+        ? null
+        : text(context.baseRevisionId, "input.planningContext.baseRevisionId"),
+      baseRevisionNumber: Number(context.baseRevisionNumber),
+      markdown: typeof context.markdown === "string"
+        ? context.markdown
+        : (() => { throw new NativeExecutionInputError("input.planningContext.markdown must be a string"); })(),
+      sha256: text(context.sha256, "input.planningContext.sha256"),
+      reviewContext: structuredClone(record(context.reviewContext, "input.planningContext.reviewContext")),
+    };
+  }
+  if (isV2 && executionMode === "plan" && planningContext === null) {
+    throw new NativeExecutionInputError("input.planningContext is required in plan execution mode");
+  }
+  if (isV2 && executionMode === "default" && input.planningContext !== null) {
+    throw new NativeExecutionInputError("input.planningContext is only valid in plan execution mode");
+  }
+  if (
+    (
+      session.driverKind !== "codex_app_server"
+      && session.driverKind !== "opencode_server"
+      && session.driverKind !== "claude_managed_agents_api"
+      && session.driverKind !== "aws_agentcore_harness_api"
+      && session.driverKind !== "acpx_runtime"
+    )
+    || session.protocolVersion !== 1
+  ) {
+    throw new NativeExecutionInputError("input.session must select a supported protocol version 1 driver");
+  }
+  const driverKind = session.driverKind as NativeExecutionInputV1["session"]["driverKind"];
+  const lifecyclePolicyValue = session.lifecyclePolicy === undefined
+    ? { mode: "per_turn", idleTimeoutMs: null }
+    : record(session.lifecyclePolicy, "input.session.lifecyclePolicy");
+  exactKeys(lifecyclePolicyValue, ["mode", "idleTimeoutMs"], "input.session.lifecyclePolicy");
+  let lifecyclePolicy: NativeSessionLifecyclePolicy;
+  if (lifecyclePolicyValue.mode === "per_turn") {
+    if (lifecyclePolicyValue.idleTimeoutMs !== null) {
+      throw new NativeExecutionInputError("input.session.lifecyclePolicy.idleTimeoutMs must be null for per_turn");
+    }
+    lifecyclePolicy = { mode: "per_turn", idleTimeoutMs: null };
+  } else if (lifecyclePolicyValue.mode === "warm") {
+    if (
+      !Number.isSafeInteger(lifecyclePolicyValue.idleTimeoutMs)
+      || Number(lifecyclePolicyValue.idleTimeoutMs) <= 0
+      || Number(lifecyclePolicyValue.idleTimeoutMs) > NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS
+    ) {
+      throw new NativeExecutionInputError(
+        `input.session.lifecyclePolicy.idleTimeoutMs must be a positive integer no greater than ${NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS} for warm`,
+      );
+    }
+    lifecyclePolicy = { mode: "warm", idleTimeoutMs: Number(lifecyclePolicyValue.idleTimeoutMs) };
+  } else {
+    throw new NativeExecutionInputError("input.session.lifecyclePolicy.mode must be per_turn or warm");
+  }
+  const provider = input.provider === undefined
+    ? { kind: "codex", model: null }
+    : record(input.provider, "input.provider");
+  if (
+    provider.kind !== "codex"
+    && provider.kind !== "opencode"
+    && provider.kind !== "claude_managed"
+    && provider.kind !== "aws_agentcore"
+    && provider.kind !== "acpx"
+  ) {
+    throw new NativeExecutionInputError("input.provider.kind must be codex, opencode, claude_managed, aws_agentcore, or acpx");
+  }
+  exactKeys(
+    provider,
+    provider.kind === "claude_managed"
+      ? ["kind", "model", "managedProfile", "maxSessionListCostUsd"]
+      : provider.kind === "aws_agentcore"
+        ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
+      : provider.kind === "acpx"
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : [])]
+      : provider.kind === "codex" && isV4
+        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
+        : provider.kind === "opencode" && isV4
+          ? ["kind", "model", "permissionMode"]
+          : ["kind", "model"],
+    "input.provider",
+  );
+  if (
+    (provider.kind === "codex" && session.driverKind !== "codex_app_server")
+    || (provider.kind === "opencode" && session.driverKind !== "opencode_server")
+    || (provider.kind === "claude_managed" && session.driverKind !== "claude_managed_agents_api")
+    || (provider.kind === "aws_agentcore" && session.driverKind !== "aws_agentcore_harness_api")
+    || (provider.kind === "acpx" && session.driverKind !== "acpx_runtime")
+  ) {
+    throw new NativeExecutionInputError("input.provider.kind does not match input.session.driverKind");
+  }
+  const providerModel = provider.model === null || provider.model === undefined
+    ? null
+    : text(provider.model, "input.provider.model");
+  if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
+    throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
+  }
+  let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
+  if (provider.kind === "claude_managed") {
+    if (providerModel === null) {
+      throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
+    }
+    const managedProfile = record(provider.managedProfile, "input.provider.managedProfile");
+    exactKeys(
+      managedProfile,
+      ["profileId", "anthropicAgentId", "agentVersion", "environmentId", "betaVersion"],
+      "input.provider.managedProfile",
+    );
+    if (managedProfile.betaVersion !== "managed-agents-2026-04-01") {
+      throw new NativeExecutionInputError(
+        "input.provider.managedProfile.betaVersion must be managed-agents-2026-04-01",
+      );
+    }
+    if (
+      typeof provider.maxSessionListCostUsd !== "number"
+      || !Number.isFinite(provider.maxSessionListCostUsd)
+      || provider.maxSessionListCostUsd <= 0
+    ) {
+      throw new NativeExecutionInputError("input.provider.maxSessionListCostUsd must be a positive finite number");
+    }
+    parsedProvider = {
+      kind: "claude_managed",
+      model: providerModel,
+      managedProfile: {
+        profileId: text(managedProfile.profileId, "input.provider.managedProfile.profileId"),
+        anthropicAgentId: text(
+          managedProfile.anthropicAgentId,
+          "input.provider.managedProfile.anthropicAgentId",
+        ),
+        agentVersion: text(managedProfile.agentVersion, "input.provider.managedProfile.agentVersion"),
+        environmentId: text(managedProfile.environmentId, "input.provider.managedProfile.environmentId"),
+        betaVersion: "managed-agents-2026-04-01",
+      },
+      maxSessionListCostUsd: provider.maxSessionListCostUsd,
+    };
+  } else if (provider.kind === "aws_agentcore") {
+    if (providerModel === null) {
+      throw new NativeExecutionInputError("input.provider.model is required for aws_agentcore");
+    }
+    const profile = record(provider.agentCoreProfile, "input.provider.agentCoreProfile");
+    exactKeys(profile, [
+      "profileId", "region", "accountId", "harnessArn", "harnessVersion", "endpointArn",
+      "endpointQualifier", "agentRuntimeArn", "memoryArn", "memoryId", "invocationRoleArn",
+      "contextBucket", "contextPrefix", "contextKmsKeyArn", "qualificationRevision", "eventExpiryDays",
+    ], "input.provider.agentCoreProfile");
+    if (profile.eventExpiryDays !== 90) {
+      throw new NativeExecutionInputError("input.provider.agentCoreProfile.eventExpiryDays must be 90");
+    }
+    if (
+      typeof provider.maxEstimatedSessionCostUsd !== "number"
+      || !Number.isFinite(provider.maxEstimatedSessionCostUsd)
+      || provider.maxEstimatedSessionCostUsd <= 0
+    ) {
+      throw new NativeExecutionInputError("input.provider.maxEstimatedSessionCostUsd must be a positive finite number");
+    }
+    const limits = record(provider.invocationLimits, "input.provider.invocationLimits");
+    exactKeys(limits, ["maxIterations", "maxOutputTokens", "timeoutSeconds"], "input.provider.invocationLimits");
+    const positiveInteger = (value: unknown, path: string): number => {
+      if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+        throw new NativeExecutionInputError(`${path} must be a positive integer`);
+      }
+      return Number(value);
+    };
+    const maxIterations = positiveInteger(limits.maxIterations, "input.provider.invocationLimits.maxIterations");
+    const maxOutputTokens = positiveInteger(limits.maxOutputTokens, "input.provider.invocationLimits.maxOutputTokens");
+    const timeoutSeconds = positiveInteger(limits.timeoutSeconds, "input.provider.invocationLimits.timeoutSeconds");
+    if (maxIterations > 8) throw new NativeExecutionInputError("input.provider.invocationLimits.maxIterations exceeds 8");
+    if (maxOutputTokens > 4096) throw new NativeExecutionInputError("input.provider.invocationLimits.maxOutputTokens exceeds 4096");
+    if (timeoutSeconds > 300) throw new NativeExecutionInputError("input.provider.invocationLimits.timeoutSeconds exceeds 300");
+    parsedProvider = {
+      kind: "aws_agentcore",
+      model: providerModel,
+      agentCoreProfile: {
+        profileId: text(profile.profileId, "input.provider.agentCoreProfile.profileId"),
+        region: text(profile.region, "input.provider.agentCoreProfile.region"),
+        accountId: text(profile.accountId, "input.provider.agentCoreProfile.accountId"),
+        harnessArn: text(profile.harnessArn, "input.provider.agentCoreProfile.harnessArn"),
+        harnessVersion: text(profile.harnessVersion, "input.provider.agentCoreProfile.harnessVersion"),
+        endpointArn: text(profile.endpointArn, "input.provider.agentCoreProfile.endpointArn"),
+        endpointQualifier: text(profile.endpointQualifier, "input.provider.agentCoreProfile.endpointQualifier"),
+        agentRuntimeArn: text(profile.agentRuntimeArn, "input.provider.agentCoreProfile.agentRuntimeArn"),
+        memoryArn: text(profile.memoryArn, "input.provider.agentCoreProfile.memoryArn"),
+        memoryId: text(profile.memoryId, "input.provider.agentCoreProfile.memoryId"),
+        invocationRoleArn: text(profile.invocationRoleArn, "input.provider.agentCoreProfile.invocationRoleArn"),
+        contextBucket: text(profile.contextBucket, "input.provider.agentCoreProfile.contextBucket"),
+        contextPrefix: text(profile.contextPrefix, "input.provider.agentCoreProfile.contextPrefix"),
+        contextKmsKeyArn: text(profile.contextKmsKeyArn, "input.provider.agentCoreProfile.contextKmsKeyArn"),
+        qualificationRevision: text(profile.qualificationRevision, "input.provider.agentCoreProfile.qualificationRevision"),
+        eventExpiryDays: 90,
+      },
+      maxEstimatedSessionCostUsd: provider.maxEstimatedSessionCostUsd,
+      invocationLimits: { maxIterations, maxOutputTokens, timeoutSeconds },
+    };
+  } else if (provider.kind === "acpx") {
+    if (provider.piThinkingLevel !== undefined && (provider.agent !== "pi" || (typeof provider.piThinkingLevel !== "string" || !["off", "low", "high", "max"].includes(provider.piThinkingLevel)))) {
+      throw new NativeExecutionInputError("input.provider.piThinkingLevel must be off, low, high, or max and is supported only for Pi");
+    }
+    if (provider.mode !== undefined && !isProviderMode(provider.mode)) {
+      throw new NativeExecutionInputError("input.provider.mode must be a bounded nonempty provider mode identifier");
+    }
+    if (providerModel === null) {
+      throw new NativeExecutionInputError("input.provider.model is required for acpx");
+    }
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
+    }
+    if (isV4) {
+      if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
+        throw new NativeExecutionInputError("input.provider.permissionMode must be approve-all, approve-paperclip, approve-reads, or deny-all");
+      }
+    } else if (provider.permissionPolicy !== "interactive") {
+      throw new NativeExecutionInputError("input.provider.permissionPolicy must be interactive");
+    }
+    const profile = record(provider.profile, "input.provider.profile");
+    exactKeys(profile, [
+      "driverKind",
+      "protocolVersion",
+      "acpxVersion",
+      "agent",
+      "agentProfileVersion",
+      "agentServerPackage",
+      "agentServerVersion",
+      "agentRuntimePackage",
+      "agentRuntimeVersion",
+      "commandDigest",
+    ], "input.provider.profile");
+    if (
+      profile.driverKind !== "acpx_runtime"
+      || profile.protocolVersion !== 1
+      || profile.acpxVersion !== QUALIFIED_ACPX_VERSION
+      || profile.agent !== provider.agent
+      || !isSupportedAcpxProfileVersion(provider.agent, profile.agentProfileVersion)
+    ) {
+      throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
+    }
+    if (provider.agent === "pi" && profile.agentProfileVersion >= 13 && provider.piThinkingLevel === undefined) {
+      throw new NativeExecutionInputError("input.provider.piThinkingLevel is required for Pi profile 13 or later");
+    }
+    const runtimePackage = nullableText(profile.agentRuntimePackage, "input.provider.profile.agentRuntimePackage");
+    const runtimeVersion = nullableText(profile.agentRuntimeVersion, "input.provider.profile.agentRuntimeVersion");
+    if ((runtimePackage === null) !== (runtimeVersion === null)) {
+      throw new NativeExecutionInputError("input.provider.profile agent runtime package and version must both be present or null");
+    }
+    parsedProvider = {
+      kind: "acpx",
+      agent: provider.agent,
+      model: providerModel,
+      ...(isV4
+        ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
+        : { permissionPolicy: "interactive" as const }),
+      ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
+      ...(provider.piThinkingLevel === undefined ? {} : { piThinkingLevel: provider.piThinkingLevel as "off" | "low" | "high" | "max" }),
+      profile: {
+        driverKind: "acpx_runtime",
+        protocolVersion: 1,
+        acpxVersion: QUALIFIED_ACPX_VERSION,
+        agent: provider.agent,
+        agentProfileVersion: profile.agentProfileVersion,
+        agentServerPackage: text(profile.agentServerPackage, "input.provider.profile.agentServerPackage"),
+        agentServerVersion: text(profile.agentServerVersion, "input.provider.profile.agentServerVersion"),
+        agentRuntimePackage: runtimePackage,
+        agentRuntimeVersion: runtimeVersion,
+        commandDigest: text(profile.commandDigest, "input.provider.profile.commandDigest"),
+      },
+    };
+  } else if (provider.kind === "opencode") {
+    if (isV4 && provider.permissionMode !== "allow" && provider.permissionMode !== "ask" && provider.permissionMode !== "deny") {
+      throw new NativeExecutionInputError("input.provider.permissionMode must be allow, ask, or deny");
+    }
+    parsedProvider = {
+      kind: "opencode",
+      model: providerModel!,
+      ...(isV4
+        ? { permissionMode: provider.permissionMode as NativeOpenCodePermissionMode }
+        : {}),
+    };
+  } else {
+    if (isV4 && provider.approvalPolicy !== "never" && provider.approvalPolicy !== "on-request" && provider.approvalPolicy !== "untrusted") {
+      throw new NativeExecutionInputError("input.provider.approvalPolicy must be never, on-request, or untrusted");
+    }
+    if (isV5 && provider.reasoningEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(provider.reasoningEffort))) {
+      throw new NativeExecutionInputError("input.provider.reasoningEffort is unsupported");
+    }
+    parsedProvider = {
+      kind: "codex",
+      model: providerModel,
+      ...(isV4
+        ? { approvalPolicy: provider.approvalPolicy as NativeCodexApprovalPolicy }
+        : {}),
+      ...(isV5 && provider.reasoningEffort !== undefined
+        ? { reasoningEffort: text(provider.reasoningEffort, "input.provider.reasoningEffort") }
+        : {}),
+    };
+  }
+  if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) {
+    throw new NativeExecutionInputError("input.completionContract.contract.criteria must not be empty");
+  }
+  const criteria = contract.criteria.map((entry, index) => {
+    const criterion = record(entry, `input.completionContract.contract.criteria[${index}]`);
+    exactKeys(criterion, ["id", "requirement"], `input.completionContract.contract.criteria[${index}]`);
+    return { id: text(criterion.id, `criteria[${index}].id`), requirement: text(criterion.requirement, `criteria[${index}].requirement`) };
+  });
+
+  if (!Array.isArray(input.interactionResponses) || !Array.isArray(input.credentialBindings)) {
+    throw new NativeExecutionInputError("interactionResponses and credentialBindings must be arrays");
+  }
+  const interactionResponses = input.interactionResponses.map((entry, index) => {
+    const response = record(entry, `input.interactionResponses[${index}]`);
+    exactKeys(response, ["interactionId", "kind", "response"], `input.interactionResponses[${index}]`);
+    if (![
+      "connection_intent",
+      "suggest_tasks",
+      "ask_user_questions",
+      "request_confirmation",
+      "request_checkbox_confirmation",
+      "request_item_verdicts",
+    ].includes(String(response.kind))) {
+      throw new NativeExecutionInputError(`input.interactionResponses[${index}].kind is unsupported`);
+    }
+    const kind = response.kind as NativeInteractionResponseEnvelope["kind"];
+    return {
+      interactionId: text(response.interactionId, `input.interactionResponses[${index}].interactionId`),
+      kind,
+      response: structuredClone(record(response.response, `input.interactionResponses[${index}].response`)),
+    };
+  });
+  const credentialBindings = input.credentialBindings.map((entry, index) => {
+    const bindingRef = record(entry, `input.credentialBindings[${index}]`);
+    exactKeys(bindingRef, ["bindingId", "service", "destination", "expiresAt", "displayName"], `input.credentialBindings[${index}]`);
+    return {
+      bindingId: text(bindingRef.bindingId, `credentialBindings[${index}].bindingId`),
+      service: text(bindingRef.service, `credentialBindings[${index}].service`),
+      destination: text(bindingRef.destination, `credentialBindings[${index}].destination`),
+      expiresAt: nullableText(bindingRef.expiresAt, `credentialBindings[${index}].expiresAt`),
+      displayName: nullableText(bindingRef.displayName, `credentialBindings[${index}].displayName`),
+    };
+  });
+
+  const common = {
+    binding: {
+      companyId: text(binding.companyId, "input.binding.companyId"),
+      runId: text(binding.runId, "input.binding.runId"),
+      issueId: text(binding.issueId, "input.binding.issueId"),
+      agentId: text(binding.agentId, "input.binding.agentId"),
+      ...(binding.agentKeyId === undefined ? {} : { agentKeyId: text(binding.agentKeyId, "input.binding.agentKeyId") }),
+      executionWorkspaceId: text(binding.executionWorkspaceId, "input.binding.executionWorkspaceId"),
+    },
+    task: {
+      identifier: text(task.identifier, "input.task.identifier"),
+      title: text(task.title, "input.task.title"),
+      description: nullableText(task.description, "input.task.description"),
+      // `prompt` was added after native run inputs were already persisted.
+      // Recovery must retain those runs, so derive the same bounded model
+      // prompt from their task fields instead of making them unrecoverable.
+      prompt: text(task.prompt ?? task.description ?? task.title, "input.task.prompt"),
+      workMode: task.workMode as "standard" | "planning" | "ask",
+    },
+    workspace: {
+      cwd: text(workspace.cwd, "input.workspace.cwd"),
+      repoUrl: nullableText(workspace.repoUrl, "input.workspace.repoUrl"),
+      repoRef: nullableText(workspace.repoRef, "input.workspace.repoRef"),
+      branchName: nullableText(workspace.branchName, "input.workspace.branchName"),
+    },
+    session: {
+      normalizedSessionId: nullableText(session.normalizedSessionId, "input.session.normalizedSessionId"),
+      driverKind,
+      protocolVersion: 1 as const,
+      lifecyclePolicy,
+    },
+    provider: parsedProvider,
+    completionContract: {
+      id: text(completionContract.id, "input.completionContract.id"),
+      sha256: text(completionContract.sha256, "input.completionContract.sha256"),
+      schemaVersion: text(completionContract.schemaVersion, "input.completionContract.schemaVersion"),
+      contract: {
+        revision: text(contract.revision, "input.completionContract.contract.revision"),
+        objective: text(contract.objective, "input.completionContract.contract.objective"),
+        criteria,
+      },
+    },
+    interactionResponses,
+    credentialBindings,
+  };
+  if (!isV2) {
+    return {
+      ...common,
+      schema: NATIVE_EXECUTION_INPUT_SCHEMA_V1,
+      task: { ...common.task, workMode: "standard" },
+    };
+  }
+  const current = {
+    ...common,
+    executionMode,
+    planningContext,
+  };
+  if (!isV3) return { ...current, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V2 };
+  const withRuntimeContext = { ...current, runtimeContext: parseNativeRuntimeContext(input.runtimeContext) };
+  if (!isV4) return { ...withRuntimeContext, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V3 };
+  const withPermissions = {
+    ...withRuntimeContext,
+    ...(input.continuationPrompt !== undefined ? { continuationPrompt: nullableText(input.continuationPrompt, "input.continuationPrompt") } : {}),
+    ...(input.initialCommunicationGuidance !== undefined ? { initialCommunicationGuidance: nullableText(input.initialCommunicationGuidance, "input.initialCommunicationGuidance") } : {}),
+    provider: parsedProvider as NativeProviderConfigV4,
+  };
+  if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
+  return {
+    ...withPermissions,
+    schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+    provider: parsedProvider as NativeProviderConfigV5,
+    ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
+  };
+}
+
+function parseCompletionSources(value: unknown): NativeCompletionSources {
+  const sources = record(value, "input.completionSources");
+  exactKeys(sources, ["promptSha256", "contractRevision", "criteria"], "input.completionSources");
+  const digest = (value: unknown, path: string): string => {
+    const result = text(value, path);
+    if (!/^[a-f0-9]{64}$/.test(result)) throw new NativeExecutionInputError(`${path} must be a sha256 digest`);
+    return result;
+  };
+  if (!Array.isArray(sources.criteria)) throw new NativeExecutionInputError("input.completionSources.criteria must be an array");
+  const ids = new Set<string>();
+  return {
+    promptSha256: digest(sources.promptSha256, "input.completionSources.promptSha256"),
+    contractRevision: text(sources.contractRevision, "input.completionSources.contractRevision"),
+    criteria: sources.criteria.map((value) => {
+      const entry = record(value, "completion source criterion");
+      exactKeys(entry, ["id", "source"], "completion source criterion");
+      const id = text(entry.id, "completion source criterion.id");
+      if (ids.has(id)) throw new NativeExecutionInputError("duplicate completion source criterion");
+      ids.add(id);
+      const source = record(entry.source, "completion source");
+      exactKeys(source, ["kind", "id", "revision"], "completion source");
+      if (source.kind !== "description" && source.kind !== "comment") throw new NativeExecutionInputError("invalid completion source kind");
+      return { id, source: { kind: source.kind, id: text(source.id, "completion source.id"), revision: digest(source.revision, "completion source.revision") } };
+    }),
+  };
+}
+
+export interface NativeContinuationEnvelope {
+  schema: "paperclip.native-continuation.v1";
+  events: string;
+  completion: { revision: string; criterionIds: string[]; instruction: string };
+}
+
+export function buildNativeModelEnvelope(input: NativeExecutionInput, options: { resumedSession: true }): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 | NativeModelEnvelopeV3 | NativeContinuationEnvelope;
+export function buildNativeModelEnvelope(input: NativeExecutionInput): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 | NativeModelEnvelopeV3;
+export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: { resumedSession: boolean }): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 | NativeModelEnvelopeV3 | NativeContinuationEnvelope {
+  if (options?.resumedSession && "continuationPrompt" in input && input.continuationPrompt) {
+    return {
+      schema: "paperclip.native-continuation.v1",
+      events: input.continuationPrompt,
+      completion: {
+        revision: input.completionContract.contract.revision,
+        criterionIds: input.completionContract.contract.criteria.map((criterion) => criterion.id),
+        instruction: "Before ending this turn, obtain one accepted paperclip_finish or paperclip_block result. Earlier reports belong to earlier turns; a final message alone does not complete this turn.",
+      },
+    };
+  }
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
+    return {
+      schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V1,
+      task: structuredClone(input.task),
+      workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+        ? null
+        : { cwd: input.workspace.cwd },
+      completionContract: structuredClone(input.completionContract.contract),
+      interactionResponses: structuredClone(input.interactionResponses),
+    };
+  }
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) {
+    const sourceBinding = input.completionSources;
+    const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
+      && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")
+      ? new Map(sourceBinding.criteria.map((criterion) => [criterion.id, criterion.source]))
+      : new Map<string, NativeCompletionSource>();
+    return {
+      schema: NATIVE_MODEL_ENVELOPE_SCHEMA,
+      requestedSkills: explicitTaskSkillNames(input.task.description, input.runtimeContext.skills.map((skill) => skill.runtimeName)),
+      task: {
+        identifier: input.task.identifier,
+        title: input.task.title,
+        prompt: !options?.resumedSession && input.initialCommunicationGuidance
+          ? `${input.initialCommunicationGuidance}\n\n${input.task.prompt}`
+          : input.task.prompt,
+        workMode: input.task.workMode,
+      },
+      executionMode: input.executionMode,
+      planningContext: structuredClone(input.planningContext),
+      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      completionContract: {
+        ...structuredClone(input.completionContract.contract),
+        criteria: input.completionContract.contract.criteria.map((criterion) => {
+          const source = references.get(criterion.id);
+          return source && source.revision === createHash("sha256").update(criterion.requirement.trim()).digest("hex")
+            && (source.kind !== "description" || source.id === input.binding.issueId)
+            ? { id: criterion.id, source: { ...source, location: "task.prompt" as const } } : { ...criterion };
+        }),
+      },
+      interactionResponses: structuredClone(input.interactionResponses),
+    };
+  }
+  return {
+    schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V2,
+    task: {
+      ...structuredClone(input.task),
+      prompt: !options?.resumedSession && "initialCommunicationGuidance" in input && input.initialCommunicationGuidance
+        ? `${input.initialCommunicationGuidance}\n\n${input.task.prompt}`
+        : input.task.prompt,
+    },
+    executionMode: input.executionMode,
+    planningContext: structuredClone(input.planningContext),
+    workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+      ? null
+      : { cwd: input.workspace.cwd },
+    completionContract: structuredClone(input.completionContract.contract),
+    interactionResponses: structuredClone(input.interactionResponses),
+  };
+}

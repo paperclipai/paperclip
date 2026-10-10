@@ -1,0 +1,173 @@
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import { createServer, type Server } from "node:http";
+import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
+
+// Not-connected apps keep their identity on the Permissions page. Reconnecting
+// must revive the same application/connection, not duplicate it.
+
+const SCREENSHOT_DIR = "test-results";
+
+type Seed = { companyId: string; prefix: string };
+
+async function newCompany(request: APIRequestContext, label: string): Promise<Seed> {
+  const res = await request.post("/api/companies", { data: { name: `Apps navigation ${label} ${Date.now()}` } });
+  expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
+  const company = await res.json();
+  return {
+    companyId: company.id,
+    prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",
+  };
+}
+
+type MockMcpServer = { url: string; close: () => Promise<void> };
+
+async function startMockMcp(): Promise<MockMcpServer> {
+  const server: Server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    let payload: { id?: string | number; method?: string } = {};
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      // fall through
+    }
+    if (payload.method === "tools/list") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id ?? null,
+          result: {
+            tools: [
+              {
+                name: "list_widgets",
+                title: "List widgets",
+                description: "Read-only listing of widgets.",
+                inputSchema: { type: "object", properties: {}, additionalProperties: false },
+              },
+            ],
+          },
+        }),
+      );
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id ?? null, result: {} }));
+  });
+  const port = await listenOnFetchAllowedPort(server);
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+test.describe.serial("not-connected app page", () => {
+  test.setTimeout(240_000);
+
+  let mock: MockMcpServer;
+  let seed: Seed;
+  let applicationId: string;
+  let connectionId: string;
+
+  test.beforeAll(async ({ request }) => {
+    mock = await startMockMcp();
+    seed = await newCompany(request, "app-page");
+
+    const connect = await request.post(`/api/companies/${seed.companyId}/tools/apps/connect`, {
+      data: { link: mock.url, name: "Bla", credentialValues: { "credentials.authorization": "qa-token" } },
+    });
+    expect(connect.ok(), `connect failed ${connect.status()}: ${await connect.text()}`).toBe(true);
+    const body = await connect.json();
+    connectionId = body.connectionId as string;
+    applicationId = body.application.id as string;
+
+    // Archive the connection (Remove app), then resurrect the application so
+    // its connector card offers a fresh Connect action.
+    const archive = await request.delete(`/api/tool-connections/${connectionId}`);
+    expect(archive.ok(), `archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
+    const revive = await request.patch(`/api/tool-applications/${applicationId}`, {
+      data: { status: "active" },
+    });
+    expect(revive.ok(), `revive failed ${revive.status()}: ${await revive.text()}`).toBe(true);
+  });
+
+  test.afterAll(async () => {
+    await mock?.close();
+  });
+
+  test("not-connected row opens the app page, not the generic wizard", async ({ page }) => {
+    await page.goto(`/${seed.prefix}/apps/connections`);
+    const row = page
+      .getByRole("list", { name: "Connector list" })
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("heading", { name: "Bla", exact: true }) });
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(row).toHaveAttribute("data-connected", "false");
+    const connectButton = row.getByRole("button", { name: "Connect Bla" });
+    await expect(connectButton).toBeVisible();
+
+    await connectButton.click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/permissions$`), { timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Bla" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reconnect" })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-01-app-not-connected.png`, fullPage: true });
+  });
+
+  test("reconnect prefills the wizard and revives the same application", async ({ page, request }) => {
+    await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
+    await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+    await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
+    await expect(page.getByText("Connect your own MCP server")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(mock.url)).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
+
+    await page.getByRole("button", { name: "Check link" }).click();
+    // Reconnect retains the previous identity and application, so the generic
+    // check can commit the restored connection transactionally.
+    await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 30_000 });
+
+    const apps = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
+    const appsBody = await apps.json();
+    const matching = (appsBody.applications as Array<{ id: string; name: string }>).filter(
+      (app) => app.name === "Bla",
+    );
+    expect(matching).toHaveLength(1);
+    expect(matching[0].id).toBe(applicationId);
+
+    const conns = await request.get(`/api/companies/${seed.companyId}/tools/connections`);
+    const connsBody = await conns.json();
+    const appConns = (connsBody.connections as Array<{ id: string; applicationId: string; status: string }>).filter(
+      (c) => c.applicationId === applicationId,
+    );
+    expect(appConns).toHaveLength(1);
+    expect(appConns[0].id).toBe(connectionId);
+    expect(appConns[0].status).not.toBe("archived");
+  });
+
+  test("archived app connection returns to Permissions with reconnect", async ({ page, request }) => {
+    const archive = await request.delete(`/api/tool-connections/${connectionId}`);
+    expect(archive.ok(), `archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
+    const revive = await request.patch(`/api/tool-applications/${applicationId}`, { data: { status: "active" } });
+    expect(revive.ok(), `revive failed ${revive.status()}: ${await revive.text()}`).toBe(true);
+
+    await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${applicationId}/permissions$`),
+      { timeout: 20_000 },
+    );
+    await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reconnect" })).toBeVisible();
+
+    await page.goto(`/${seed.prefix}/apps/connections`);
+    const row = page
+      .getByRole("list", { name: "Connector list" })
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("heading", { name: "Bla", exact: true }) });
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(row.getByRole("button", { name: "Connect Bla" })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
+  });
+
+});

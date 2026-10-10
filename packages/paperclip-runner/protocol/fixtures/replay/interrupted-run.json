@@ -1,0 +1,90 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Interrupted run",
+  "description": "A pending runtime permission request is followed by an explicit turn interruption.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_replay", "issueId": "issue_replay_interrupted",
+    "runId": "run_replay_interrupted", "environmentLeaseId": "lease_replay_interrupted",
+    "runnerInstanceId": "runner_replay", "normalizedSessionId": "session_replay_interrupted",
+    "driverSessionId": "driver_replay_interrupted"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "reuse_per_issue",
+    "driver": { "kind": "fake", "version": "1.0.0" }, "steer": true, "interrupt": true,
+    "resume": true, "runtimeRequests": true, "structuredResult": true, "typedEvents": true
+  },
+  "commands": [
+    {
+      "schema": "paperclip.prp.command.v1", "commandId": "command_interrupted_prepare", "controllerSeq": 1,
+      "type": "run.prepare", "issuedAt": "2026-08-07T12:20:00.000Z", "payload": {}
+    },
+    {
+      "schema": "paperclip.prp.command.v1", "commandId": "command_interrupted_turn", "controllerSeq": 2,
+      "type": "turn.start", "issuedAt": "2026-08-07T12:20:00.010Z", "payload": { "text": "Wait for interruption" }
+    },
+    {
+      "schema": "paperclip.prp.command.v1", "commandId": "command_interrupted_interrupt", "controllerSeq": 3,
+      "type": "turn.interrupt", "issuedAt": "2026-08-07T12:20:00.050Z", "payload": { "reason": "operator" }
+    }
+  ],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_01", "sourceSeq": 1,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "eventType": "session.started", "schemaVersion": 1,
+      "priority": 0, "emittedAt": "2026-08-07T12:20:00.020Z", "payload": {}
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_02", "sourceSeq": 2,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "turnId": "turn_replay_interrupted",
+      "eventType": "turn.started", "schemaVersion": 1, "priority": 1,
+      "emittedAt": "2026-08-07T12:20:00.030Z", "payload": {}
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_03", "sourceSeq": 3,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "turnId": "turn_replay_interrupted",
+      "eventType": "runtime_request.created", "schemaVersion": 1, "priority": 0,
+      "emittedAt": "2026-08-07T12:20:00.040Z",
+      "payload": { "request": { "schema": "paperclip.runtime_request.v1", "requestKind": "runtime", "requestId": "request_interrupted_permission", "type": "permission", "status": "pending", "prompt": "Allow the fake command?" } }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_04", "sourceSeq": 4,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "turnId": "turn_replay_interrupted",
+      "eventType": "turn.interrupted", "schemaVersion": 1, "priority": 0,
+      "emittedAt": "2026-08-07T12:20:00.060Z", "payload": { "reason": "operator" }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_05", "sourceSeq": 5,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "eventType": "run.result.proposed", "schemaVersion": 1,
+      "priority": 0, "emittedAt": "2026-08-07T12:20:00.070Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "yielded", "summary": "The turn was interrupted.",
+        "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Resume the interrupted turn", "blocksCompletion": true }] },
+        "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [],
+        "continuation": { "kind": "same_agent", "summary": "Resume in the same normalized session", "idempotencyKey": "resume_replay_interrupted" }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_interrupted_06", "sourceSeq": 6,
+      "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_interrupted",
+      "normalizedSessionId": "session_replay_interrupted", "eventType": "run.terminal", "schemaVersion": 1,
+      "priority": 0, "emittedAt": "2026-08-07T12:20:00.080Z",
+      "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "interrupted", "runTerminalState": "cancelled", "reportedWorkDisposition": "yielded" }
+    }
+  ],
+  "requests": [
+    { "schema": "paperclip.runtime_request.v1", "requestKind": "runtime", "requestId": "request_interrupted_permission", "type": "permission", "status": "pending", "prompt": "Allow the fake command?" }
+  ],
+  "result": {
+    "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "yielded", "summary": "The turn was interrupted.",
+    "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Resume the interrupted turn", "blocksCompletion": true }] },
+    "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [],
+    "continuation": { "kind": "same_agent", "summary": "Resume in the same normalized session", "idempotencyKey": "resume_replay_interrupted" }
+  }
+}
