@@ -188,6 +188,42 @@ export async function readIsolatedClaudeKeychainToken(loginHome: string): Promis
   return readClaudeTokenFromKeychain(isolatedKeychainService(loginHome));
 }
 
+function isLiveCredentialToken(token: unknown, expiresAt: unknown, now: number): boolean {
+  if (typeof token !== "string" || token.length === 0) return false;
+  return typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt > now;
+}
+
+/**
+ * Whether the host's own Claude Code login, in the credentials file under
+ * `claudeConfigDir()`, can still authenticate a run. Unlike `readClaudeToken`,
+ * an expired access token does not count as absent while its refresh token is
+ * live: access tokens expire every few hours and the CLI refreshes them on its
+ * next run. Reads files only -- no network, no subprocess, no Keychain -- so a
+ * macOS login held only in the Keychain reports false.
+ */
+export async function hasUsableClaudeHostLogin(now: number = Date.now()): Promise<boolean> {
+  const configDir = claudeConfigDir();
+  for (const filename of [".credentials.json", "credentials.json"]) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await fs.readFile(path.join(configDir, filename), "utf8"));
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null) continue;
+    const oauth = (parsed as Record<string, unknown>)["claudeAiOauth"];
+    if (typeof oauth !== "object" || oauth === null) continue;
+    const fields = oauth as Record<string, unknown>;
+    if (
+      isLiveCredentialToken(fields["accessToken"], fields["expiresAt"], now) ||
+      isLiveCredentialToken(fields["refreshToken"], fields["refreshTokenExpiresAt"], now)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {

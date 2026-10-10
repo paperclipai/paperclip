@@ -60,6 +60,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 // real Codex home on disk.
 const mockEvaluateCodexCredentialReadiness = vi.hoisted(() => vi.fn());
 
+// The host Claude Code login check the claude_local branch calls. The test
+// controls its result, so it stays independent of a real ~/.claude on disk.
+const mockHasUsableClaudeHostLogin = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => ({}),
@@ -112,6 +116,14 @@ vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
   };
 });
 
+vi.mock("@paperclipai/adapter-claude-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-claude-local/server")>();
+  return {
+    ...actual,
+    hasUsableClaudeHostLogin: mockHasUsableClaudeHostLogin,
+  };
+});
+
 let currentActor: Record<string, unknown>;
 
 function boardActor(userId: string, companyIds: string[] = [COMPANY_1, OTHER_COMPANY]): Record<string, unknown> {
@@ -124,7 +136,7 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, OTHER_COM
   };
 }
 
-async function createApp() {
+async function createApp(options: { deploymentMode?: string } = {}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -135,7 +147,7 @@ async function createApp() {
     (req as unknown as { actor: unknown }).actor = currentActor;
     next();
   });
-  app.use("/api", agentRoutes({} as never));
+  app.use("/api", agentRoutes({} as never, options as never));
   app.use(errorHandler);
   return app;
 }
@@ -176,6 +188,7 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
+    mockHasUsableClaudeHostLogin.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -348,12 +361,111 @@ describe("adapter auth-signal route", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ status: "absent" });
+    // A router built without a deployment mode never reports the host login.
+    expect(mockHasUsableClaudeHostLogin).not.toHaveBeenCalled();
+  });
+
+  it("returns present for claude_local in local_trusted mode when the host holds a usable login", async () => {
+    mockHasUsableClaudeHostLogin.mockResolvedValueOnce(true);
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+    expect(mockHasUsableClaudeHostLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns absent for claude_local in local_trusted mode when the host holds no usable login", async () => {
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "absent" });
+    expect(mockHasUsableClaudeHostLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the host login for claude_local on a local-driver environment", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_1,
+      companyId: COMPANY_1,
+      name: "Local host",
+      driver: "local",
+      status: "active",
+      config: {},
+      envVars: {},
+    });
+    mockHasUsableClaudeHostLogin.mockResolvedValueOnce(true);
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present" });
+  });
+
+  it("returns unknown for claude_local on a sandbox environment even when the host holds a usable login", async () => {
+    // The sandbox does not share the host's ~/.claude, so the host login must
+    // not hide the sandbox's own sign-in panel.
+    mockHasUsableClaudeHostLogin.mockResolvedValue(true);
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "unknown" });
+    expect(mockHasUsableClaudeHostLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not report the host login for claude_local in authenticated mode", async () => {
+    mockHasUsableClaudeHostLogin.mockResolvedValue(true);
+    const app = await createApp({ deploymentMode: "authenticated" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "absent" });
+    expect(mockHasUsableClaudeHostLogin).not.toHaveBeenCalled();
+  });
+
+  it("returns unknown for claude_local when the host login check throws", async () => {
+    mockHasUsableClaudeHostLogin.mockRejectedValueOnce(new Error("boom"));
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "unknown" });
+  });
+
+  it("rejects an unregistered adapter type with 422", async () => {
+    const app = await createApp({ deploymentMode: "local_trusted" });
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "not-an-adapter"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockSecretService.readClaudeOAuthUserSecretStatus).not.toHaveBeenCalled();
+    expect(mockHasUsableClaudeHostLogin).not.toHaveBeenCalled();
+  });
+
+  it("checks permission before it validates the adapter type", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_no_grant",
+      explanation: "Not allowed by any grant",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "not-an-adapter"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
   });
 
   it("returns unknown for an adapter type that has no cheap signal", async () => {
     const app = await createApp();
 
-    const res = await request(app).get(authSignalPath(COMPANY_1, "cursor_local"));
+    const res = await request(app).get(authSignalPath(COMPANY_1, "cursor"));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ status: "unknown" });
