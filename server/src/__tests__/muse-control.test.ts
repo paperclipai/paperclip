@@ -138,7 +138,8 @@ describe("personal Muse control plane",()=>{
     expect(await db.select().from(issues).where(eq(issues.companyId,f.company.id))).toHaveLength(1);
   });
   it("atomically reserves a work identity across competing issue locks and replays its original run",async()=>{
-    const f=await active(),heartbeat=heartbeatService(db),wakeup=vi.fn(heartbeat.wakeup);
+    // This fixture exercises ordinary admission independently of a managed worktree env.
+    const f=await active(),heartbeat=heartbeatService(db,{runtimeEnv:{}}),wakeup=vi.fn(heartbeat.wakeup);
     museRunnerBroker(db,{heartbeat:{wakeup,cancelRun:heartbeat.cancelRun}});
     await db.update(companies).set({defaultResponsibleUserId:f.operatorId}).where(eq(companies.id,f.company.id));
     await db.update(agents).set({runtimeConfig:{heartbeat:{maxConcurrentRuns:20,wakeOnDemand:true}}}).where(eq(agents.id,f.agent.id));
@@ -163,7 +164,8 @@ describe("personal Muse control plane",()=>{
     }finally{await db.update(heartbeatRuns).set({status:"cancelled",finishedAt:new Date()}).where(eq(heartbeatRuns.agentId,f.agent.id));await f.detach();}
   },30000);
   it("keeps concurrent turn retries on one assigned intake and one durable wake",async()=>{
-    const f=await active(),heartbeat=heartbeatService(db),wakeup=vi.fn(heartbeat.wakeup);
+    // This fixture exercises ordinary admission independently of a managed worktree env.
+    const f=await active(),heartbeat=heartbeatService(db,{runtimeEnv:{}}),wakeup=vi.fn(heartbeat.wakeup);
     museRunnerBroker(db,{heartbeat:{wakeup,cancelRun:heartbeat.cancelRun}});
     await db.update(companies).set({defaultResponsibleUserId:f.operatorId}).where(eq(companies.id,f.company.id));
     await db.update(agents).set({runtimeConfig:{heartbeat:{maxConcurrentRuns:20,wakeOnDemand:true}}}).where(eq(agents.id,f.agent.id));
