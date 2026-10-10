@@ -1,4 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { remoteProgram } from "../adapters/remote-program.js";
 import { createComputerService } from "./service.js";
 import type { ComputerBackend, ComputerRepository } from "./ports.js";
 import { ComputerError, type ComputerRecord } from "../domain/ledger.js";
@@ -328,6 +339,56 @@ describe("computer ownership", () => {
     f.advance(5001);
     await f.service.reconcile();
     expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("realizes probe cwd before readiness without consuming the initial personal-home seed", async () => {
+    const f = fixture();
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-probe-")));
+    const local = (value: string) =>
+      value.replace("/home/user/paperclip/", `${temp}/`);
+    vi.mocked(f.backend.remote).mockImplementation(async (_record, input) => {
+      const result = spawnSync(
+        "python3",
+        ["-c", remoteProgram.replaceAll("/home/user/paperclip/", `${temp}/`)],
+        {
+          input: JSON.stringify({
+            ...input,
+            root: local(input.root as string),
+          }),
+          encoding: "utf8",
+        },
+      );
+      if (result.status !== 0) throw new Error(result.stderr);
+      return JSON.parse(result.stdout);
+    });
+    try {
+      await f.attach();
+      const probe = await f.service.admitProbe({
+        ...f.scope,
+        agentId: "agent",
+        probeId: "probe",
+        idleTimeoutMs: 60_000,
+      });
+      expect(probe.remoteCwd).not.toBe(probe.agentHome);
+      const ready = spawnSync("sh", ["-c", "pwd"], {
+        cwd: local(probe.remoteCwd),
+        encoding: "utf8",
+      });
+      expect(ready.status).toBe(0);
+      expect(ready.stdout.trim()).toBe(local(probe.remoteCwd));
+      expect(existsSync(local(probe.agentHome))).toBe(false);
+      const run = await f.admit();
+      expect(run.remoteCwd).toBe(probe.agentHome);
+      expect(existsSync(local(run.agentHome))).toBe(false);
+      const files = await f.service.files({ ...f.scope, agentId: "agent" });
+      await expect(
+        files.seed({ "AGENTS.md": "initial managed instructions" }),
+      ).resolves.toEqual({ seeded: true });
+      expect(
+        readFileSync(join(local(run.agentHome), "AGENTS.md"), "utf8"),
+      ).toBe("initial managed instructions");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
   it("gives harness probes a finite owner without fabricating a heartbeat run", async () => {
     const f = fixture();

@@ -372,7 +372,9 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       record.ledger.placements[input.sessionKey] ??= {
         id: randomUUID(),
         root: `${base(record)}/agents/${input.agentId}`,
-        cwd: `${base(record)}/agents/${input.agentId}`,
+        cwd: input.probeId
+          ? `${base(record)}/probes/${input.probeId}`
+          : `${base(record)}/agents/${input.agentId}`,
       };
       return { record: structuredClone(record), owner: structuredClone(owner) };
     });
@@ -380,6 +382,16 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     await backend.claim(result.record);
     await backend.advance(result.record, result.owner);
     await backend.renew(result.record);
+    if (input.probeId) {
+      // Readiness commands run before managed-home preparation. Give them an
+      // existing workspace without creating the personal home: an absent home
+      // must remain eligible for the first atomic managed-file seed.
+      await backend.remote(result.record, {
+        action: "seed",
+        root: result.record.ledger.placements[input.sessionKey]!.cwd,
+        files: {},
+      });
+    }
     const active = await repository.update(input, (record) => {
       const owner = exactOwner(record, ref(result.record, result.owner));
       if (owner.phase !== "starting")
