@@ -1738,7 +1738,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
-        workspaceCwd: workspace.cwd,
+        // The cwd of a shared session is the project workspace directory, where the
+        // services of other sessions also run. Stop only the services of this session.
+        workspaceCwd: workspace.mode === "shared_workspace" ? null : workspace.cwd,
       });
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
@@ -2622,7 +2624,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        // A shared session points at the project workspace directory. Archiving it
+        // changes no file on disk, so it needs no git inspection and no merge proof.
+        const sharedSession = workspace.mode === "shared_workspace";
+        const { git, statusInspectionSucceeded } = sharedSession
+          ? { git: null, statusInspectionSucceeded: true }
+          : await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           continue;
@@ -2647,12 +2654,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        if (!sharedSession && assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          !sharedSession
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           result.skippedUndelivered += 1;

@@ -603,6 +603,9 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- entering a terminal state archives the shared execution workspace sessions of the issue after the active heartbeat finishes; only the session records change, and the project workspace on disk is never deleted
+- a new shared session for an issue archives the shared sessions of earlier runs on that issue, except sessions that a queued or running heartbeat still uses
+- isolated execution workspaces stay with the terminal workspace reaper, which archives and cleans them after the work is merged
 
 V1 non-terminal liveness rule:
 

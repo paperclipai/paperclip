@@ -594,6 +594,7 @@ import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
 } from "./issue-continuation-summary.js";
+import { executionWorkspaceLifecycleService } from "./execution-workspace-lifecycle.js";
 import {
   buildPlanReviewContext,
 } from "./plan-review-context.js";
@@ -1284,6 +1285,7 @@ export function heartbeatService(
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime =
     options.environmentRuntime ??
@@ -4557,6 +4559,23 @@ export function heartbeatService(
         );
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
+      // This run uses a shared session. Archive the shared sessions of earlier runs on the
+      // same issue now. Otherwise each run adds one open session that nothing closes.
+      if (issueId && persistedExecutionWorkspace?.mode === "shared_workspace") {
+        try {
+          await executionWorkspaceLifecycle.archiveSupersededSharedSessionsForIssue({
+            companyId: agent.companyId,
+            issueId,
+            keepWorkspaceId: persistedExecutionWorkspace.id,
+            actor: { actorType: "agent", actorId: agent.id, agentId: agent.id, runId: run.id },
+          });
+        } catch (error) {
+          logger.warn(
+            { err: error, issueId, executionWorkspaceId: persistedExecutionWorkspace.id },
+            "failed to archive superseded shared execution workspace sessions",
+          );
+        }
+      }
       const projectRepositoryPaths: string[] = [];
       if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
         const repositoryRows = await db.select().from(projectWorkspaces).where(and(
@@ -7935,6 +7954,20 @@ export function heartbeatService(
             .catch(err => {
               logger.warn({ err, runId: run.id }, "failed to deliver settled tool reviews after execution cleanup");
             });
+        }
+        // An issue that became terminal during this run deferred the archive of its
+        // shared sessions until the run finished.
+        const terminalIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        if (terminalIssueId) {
+          await executionWorkspaceLifecycle.finishDeferredCleanup({
+            issueId: terminalIssueId,
+            actor: { actorType: "agent", actorId: run.agentId, agentId: run.agentId, runId: run.id },
+          }).catch((err) => {
+            logger.warn(
+              { err, issueId: terminalIssueId, runId: run.id },
+              "failed to archive shared execution workspace sessions of a terminal issue",
+            );
+          });
         }
         await startNextQueuedRunForAgent(run.agentId);
       }

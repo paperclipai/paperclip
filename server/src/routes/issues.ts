@@ -15289,6 +15289,37 @@ export function issueRoutes(
         };
       }
 
+      // The issue became terminal: archive its shared sessions. Wait for the active
+      // heartbeat run to finish first. Isolated worktrees stay with the terminal
+      // workspace reaper, which archives them after the work is merged.
+      const becameTerminal =
+        !isClosedIssueStatus(existing.status) && isClosedIssueStatus(issue.status);
+      if (becameTerminal) {
+        const deferWorkspaceCleanup = Boolean(
+          actor.runId || existing.executionRunId || runToCancelForCancelledStatus,
+        );
+        try {
+          const { executionWorkspaceLifecycleService } = await import(
+            "../services/execution-workspace-lifecycle.js"
+          );
+          await executionWorkspaceLifecycleService(db).reconcileTerminalIssueWorkspace({
+            issueId: issue.id,
+            defer: deferWorkspaceCleanup,
+            actor: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId ?? null,
+              runId: actor.runId ?? null,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to archive shared execution workspace sessions of a terminal issue",
+          );
+        }
+      }
+
       const commentIsFromAssigneeRun = comment
         ? await commentWasCreatedByAssigneeRun(comment, issue.assigneeAgentId)
         : false;
