@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sanitizeAssetNamespace } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { ProfileSettings } from "./ProfileSettings";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -200,5 +202,66 @@ describe("ProfileSettings", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  async function renderPage(queryClient: QueryClient) {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProfileSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("keeps the loaded profile on screen when a session refetch fails transiently", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(queryClient);
+    expect(container.textContent).toContain("Jane Example");
+
+    mockAuthApi.getSession.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    });
+    await flushReact();
+
+    expect(mockAuthApi.getSession).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Jane Example");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows readable copy and a Retry button when the session fails to load", async () => {
+    mockAuthApi.getSession.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(queryClient);
+
+    expect(container.textContent).toContain("Couldn't load your profile");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Jane Example");
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Jane Example");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
   });
 });

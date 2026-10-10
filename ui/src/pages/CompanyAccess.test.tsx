@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 
 const listMembersMock = vi.hoisted(() => vi.fn());
@@ -650,5 +652,128 @@ describe("CompanyAccess invites tab", () => {
     const secondRoot = await renderPage(cloudClient(null));
     expect(container.textContent).not.toContain("Invite people");
     await act(async () => secondRoot.unmount());
+  });
+
+  it("keeps a cached invitation action when the Cloud role refresh fails transiently", async () => {
+    const client = cloudClient();
+    client.setQueryData(["cloud", "stacks"], { stacks: [cloudStack("owner")] });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Invite people");
+    listCloudStacksMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud", "stacks"] }); });
+    await flushReact();
+    expect(listCloudStacksMock).toHaveBeenCalled();
+    expect(container.textContent).toContain("Invite people");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("CompanyAccess read resilience", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
+    listMembersMock.mockResolvedValue({
+      members: [
+        {
+          id: "member-1",
+          companyId: "company-1",
+          principalType: "user",
+          principalId: "user-1",
+          status: "active",
+          membershipRole: "owner",
+          createdAt: "2026-04-10T00:00:00.000Z",
+          updatedAt: "2026-04-10T00:00:00.000Z",
+          user: { id: "user-1", email: "codexcoder@paperclip.local", name: "Codex Coder", image: null },
+          grants: [],
+        },
+      ],
+      access: { currentUserRole: "owner", canManageMembers: true, canInviteUsers: true, canApproveJoinRequests: false },
+    });
+    listAgentsMock.mockResolvedValue([]);
+    listJoinRequestsMock.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(client: QueryClient) {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("keeps loaded members on screen when a refetch fails transiently", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+    expect(container.textContent).toContain("Codex Coder");
+
+    listMembersMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.access.companyMembers("company-1") });
+    });
+    await flushReact();
+
+    expect(listMembersMock).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Codex Coder");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows readable copy and a Retry button when members fail to load", async () => {
+    listMembersMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+
+    expect(container.textContent).toContain("Couldn't load organization members");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Codex Coder");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the permission copy for a forbidden members list", async () => {
+    listMembersMock.mockRejectedValue(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+
+    expect(container.textContent).toContain("You do not have permission to manage organization members.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
   });
 });

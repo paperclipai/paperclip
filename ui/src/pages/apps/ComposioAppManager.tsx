@@ -7,9 +7,11 @@ import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { COMPOSIO_APP_MANAGEMENT_URL } from "@/lib/aggregator-app-setup";
 import { Link } from "@/lib/router";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { describeError } from "@/api/errors";
 
 export function ComposioAppManager({ app, connections, initialConnectionId, onClose }: {
   app: AggregatorAppCatalogEntry; connections: ToolConnection[]; initialConnectionId?: string; onClose: () => void;
@@ -30,6 +32,7 @@ function ComposioAccountObservations({ app, connection, onClose }: { app: Aggreg
   const queries = useQueryClient();
   const key = queryKeys.tools.composioApps(connection.id);
   const accountsQuery = useQuery({ queryKey: key, queryFn: () => toolsApi.listComposioApps(connection.id), staleTime: Infinity, refetchOnWindowFocus: false });
+  const accountsView = useQueryView(accountsQuery);
   const snapshots = accountsQuery.data?.apps.filter(candidate => findComposioCatalogApp(candidate.toolkit)?.slug === app.slug) ?? [];
   const accounts = snapshots.flatMap(snapshot => snapshot.accounts.map(account => ({ account, snapshot })));
   const [busy, setBusy] = useState(false);
@@ -41,13 +44,14 @@ function ComposioAccountObservations({ app, connection, onClose }: { app: Aggreg
       const toolkits = snapshots.length ? snapshots.map(snapshot => snapshot.toolkit) : [app.routes.find(route => route.provider === "composio")!.toolkit];
       queries.setQueryData(key, await toolsApi.refreshComposioApps(connection.id, toolkits));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn’t check Composio. Try again.");
+      setError(describeError(cause).body);
       await queries.invalidateQueries({ queryKey: key });
     } finally { setBusy(false); }
   }
   return <>
-    {error || accountsQuery.isError ? <p role="alert" className="text-sm text-destructive">{error ?? "Couldn’t load Composio accounts. Refresh to try again."}</p> : null}
-    {accountsQuery.isLoading ? <p role="status" className="text-sm text-muted-foreground">Loading accounts…</p> : accounts.length === 0 ? <p className="text-sm text-muted-foreground">No connected {app.name} accounts.</p> : <div className="divide-y divide-border">
+    {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+    {accountsView.kind === "error" ? <QueryErrorState error={accountsQuery.error} action="load Composio accounts" onRetry={accountsView.retry} retrying={accountsView.isFetching} /> : null}
+    {accountsQuery.isLoading || accountsView.kind === "reconnecting" ? <p role="status" className="text-sm text-muted-foreground">Loading accounts…</p> : accounts.length === 0 ? <p className="text-sm text-muted-foreground">No connected {app.name} accounts.</p> : <div className="divide-y divide-border">
       {accounts.map(({ account, snapshot }) => <div key={`${snapshot.toolkit}:${account.id}`} className="py-3">
         <p className="truncate text-sm font-medium">{account.alias || `${app.name} account`}</p>
         <p className="text-xs text-muted-foreground">{snapshot.errorAt || Date.now() - new Date(snapshot.checkedAt).getTime() > 5 * 60_000

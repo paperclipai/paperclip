@@ -5,6 +5,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,8 +26,9 @@ function CredentialSettings({
   const profiles = useQuery({
     queryKey: ["browser-use-cloud-profiles", grantId],
     queryFn: () => browserUseApi.profiles(companyId, grantId),
-    retry: false,
   });
+  const savedView = useQueryView(saved);
+  const profilesView = useQueryView(profiles);
   const [allowed, setAllowed] = useState<string[]>([]);
   const [limit, setLimit] = useState("");
   useEffect(() => {
@@ -98,26 +100,31 @@ function CredentialSettings({
         {profiles.data?.length === 0 && (
           <p className="text-sm text-muted-foreground">No saved profiles.</p>
         )}
-        {profiles.isLoading && (
+        {(profiles.isLoading || profilesView.kind === "reconnecting") && (
           <p className="text-sm text-muted-foreground">Loading profiles…</p>
         )}
-        {profiles.isError && (
-          <p role="alert" className="text-sm text-destructive">
-            Could not load profiles.{" "}
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void profiles.refetch()}
-            >
-              Retry
-            </Button>
-          </p>
+        {profilesView.kind === "error" && (
+          <QueryErrorState
+            size="inline"
+            error={profiles.error}
+            action="load profiles"
+            onRetry={profilesView.retry}
+            retrying={profilesView.isFetching}
+          />
         )}
       </fieldset>
-      {saved.isError || save.isError ? (
+      {savedView.kind === "error" ? (
+        <QueryErrorState
+          error={saved.error}
+          action="load browser settings"
+          onRetry={savedView.retry}
+          retrying={savedView.isFetching}
+        />
+      ) : null}
+      {save.error ? (
         <p role="alert" className="text-sm text-destructive">
-          Could not save or load browser settings. Check your credential access
-          and try again.
+          Could not save browser settings. Check your credential access and try
+          again.
         </p>
       ) : null}
       {save.isSuccess && (

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { RadioCardGroup } from "@/components/ui/radio-card";
@@ -33,13 +35,19 @@ export function EmailConnectionAccess({
       });
     },
   });
-  if (grants.isLoading || installs.isLoading)
+  const grantsView = useQueryView(grants);
+  const installsView = useQueryView(installs);
+  const failedView = [grantsView, installsView].find((view) => view.kind === "error");
+  if (grants.isLoading || installs.isLoading || grantsView.kind === "reconnecting" || installsView.kind === "reconnecting")
     return <p className="text-sm text-muted-foreground">Loading access…</p>;
-  if (grants.error || installs.error)
+  if (failedView)
     return (
-      <p role="alert" className="text-sm text-destructive">
-        Connection access could not be loaded.
-      </p>
+      <QueryErrorState
+        error={failedView.error}
+        action="load connection access"
+        onRetry={failedView.retry}
+        retrying={failedView.isFetching}
+      />
     );
   const active = grants.data?.grants.filter((g) => g.status === "active") ?? [];
   const everyone = active.some((g) => g.kind === "organization");
@@ -111,7 +119,7 @@ export function EmailConnectionAccess({
         </p>
         {save.error && (
           <p role="alert" className="text-sm text-destructive">
-            {save.error.message}
+            {describeError(save.error).body}
           </p>
         )}
       </section>

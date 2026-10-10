@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EmailAddressCheckResult } from "@paperclipai/shared";
 import { emailApi } from "@/api/email";
+import { describeError } from "@/api/errors";
 
 type Check = { key: string; result?: EmailAddressCheckResult; error?: string };
 
@@ -15,7 +16,7 @@ export function useEmailAddressCheck(companyId: string, connectionId: string, us
       void emailApi.checkAddress(companyId, connectionId, { username, domain }, controller.signal)
         .then(result => { if (!controller.signal.aborted) setCheck({ key, result }); })
         .catch(error => {
-          if (!controller.signal.aborted) setCheck({ key, error: error instanceof Error ? error.message : "Could not check this address." });
+          if (!controller.signal.aborted) setCheck({ key, error: describeError(error).body });
         });
     }, 350);
     return () => { clearTimeout(timeout); controller.abort(); };

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -329,5 +330,79 @@ describe("InvitesSection", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  async function renderSection(queryClient: QueryClient) {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <InvitesSection />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("keeps loaded invite history on screen when a refetch fails transiently", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderSection(queryClient);
+    expect(container.textContent).toContain("Board User 25");
+
+    listInvitesMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.invites("company-1", "all", 5) });
+    });
+    await flushReact();
+
+    expect(listInvitesMock).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Board User 25");
+    expect(container.textContent).toContain("Invite a person");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows readable copy and a Retry button when invites fail to load", async () => {
+    listInvitesMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderSection(queryClient);
+
+    expect(container.textContent).toContain("Couldn't load invites");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Board User 25");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the permission copy for a forbidden invite list", async () => {
+    listInvitesMock.mockRejectedValue(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderSection(queryClient);
+
+    expect(container.textContent).toContain("You do not have permission to manage organization invites.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => root.unmount());
   });
 });

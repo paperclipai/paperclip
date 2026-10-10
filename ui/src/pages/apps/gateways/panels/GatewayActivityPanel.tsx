@@ -3,11 +3,12 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ToolMcpGatewayWithTokens, ToolRedactedValueSummary } from "@paperclipai/shared";
 import { toolsApi, type ToolAuditOutcome, type ToolGatewayActivityEvent } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { queryKeys } from "@/lib/queryKeys";
-import { ErrorState, RelativeTime } from "@/pages/tools/shared";
+import { RelativeTime } from "@/pages/tools/shared";
 
 const PAGE_SIZE = 25;
 
@@ -158,12 +159,14 @@ export function GatewayActivityPanel({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 
+  const activityView = useQueryView(activityQuery);
+
   const events = useMemo(
     () => activityQuery.data?.pages.flatMap((page) => page.events) ?? [],
     [activityQuery.data],
   );
 
-  if (activityQuery.isLoading) {
+  if (activityQuery.isLoading || activityView.kind === "reconnecting") {
     return (
       <div className="space-y-2">
         <Skeleton className="h-12 w-full" />
@@ -172,8 +175,15 @@ export function GatewayActivityPanel({
       </div>
     );
   }
-  if (activityQuery.isError) {
-    return <ErrorState error={activityQuery.error} onRetry={() => activityQuery.refetch()} />;
+  if (activityView.kind === "error") {
+    return (
+      <QueryErrorState
+        error={activityQuery.error}
+        action="load gateway activity"
+        onRetry={activityView.retry}
+        retrying={activityView.isFetching}
+      />
+    );
   }
 
   return (

@@ -7,6 +7,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
@@ -74,6 +75,9 @@ export function AppNotConnected() {
     queryFn: () => toolsApi.listConnectionGrants(previousConnection!.id),
     enabled: !!previousConnection && !!activeTab,
   });
+  const applicationsView = useQueryView(applicationsQuery);
+  const connectionsView = useQueryView(connectionsQuery);
+  const grantsView = useQueryView(grantsQuery);
 
   const appName = application?.name ?? "App";
   useEffect(() => {
@@ -98,12 +102,27 @@ export function AppNotConnected() {
   if (!applicationId || !activeTab) {
     return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "permissions") : "/apps"} replace />;
   }
-  if (applicationsQuery.isLoading || connectionsQuery.isLoading) {
+  if (
+    applicationsQuery.isLoading || connectionsQuery.isLoading
+    || applicationsView.kind === "reconnecting" || connectionsView.kind === "reconnecting"
+  ) {
     return (
       <div className="max-w-3xl space-y-3">
         <Skeleton className="h-10 w-64" />
         <Skeleton className="h-40 w-full" />
       </div>
+    );
+  }
+  const loadFailure = [applicationsView, connectionsView].find((view) => view.kind === "error");
+  if (loadFailure) {
+    return (
+      <QueryErrorState
+        size="page"
+        error={loadFailure.error}
+        action="load this app"
+        onRetry={loadFailure.retry}
+        retrying={loadFailure.isFetching}
+      />
     );
   }
   if (!application) {
@@ -147,9 +166,9 @@ export function AppNotConnected() {
         && grantsQuery.data?.capabilities.canConnectAsCurrentUser,
       )
       : grantsQuery.data?.capabilities.canConfigure === true);
-  const reconnectUnavailableMessage = grantsQuery.isLoading
+  const reconnectUnavailableMessage = grantsQuery.isLoading || grantsView.kind === "reconnecting"
     ? "Checking who can reconnect this identity…"
-    : grantsQuery.isError
+    : grantsView.kind === "error"
       ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
       : previousConnection?.credentialPolicy === "per_user"
         && retainedPersonalUserId !== grantsQuery.data?.currentUserId
