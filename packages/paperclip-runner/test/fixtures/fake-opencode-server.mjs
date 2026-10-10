@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 // into stderr or the provider trace.
 process.stderr.write("authorization=synthetic-redaction-sentinel\n");
 const port = Number(args[args.indexOf("--port") + 1]);
+const apiVersion = process.env.FAKE_OPENCODE_API === "v2" ? "v2" : "v1";
 const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const password = process.env.OPENCODE_SERVER_PASSWORD ?? "";
 const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -20,7 +21,7 @@ const runtimeConfig = JSON.parse(
     "utf8",
   ),
 );
-const mcp = runtimeConfig.mcp?.paperclip;
+const mcp = runtimeConfig.mcp?.servers?.paperclip ?? runtimeConfig.mcp?.paperclip;
 let mcpRequestId = 1;
 const mcpEvidence = { tools: [], calls: [] };
 
@@ -90,6 +91,7 @@ let pendingPermission = await readFile(
   .then((value) => JSON.parse(value))
   .catch(() => null);
 let permissionStyle = "v2";
+let pendingForm = null;
 
 await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
 await writeFile(
@@ -134,8 +136,59 @@ function emit(value) {
   for (const response of clients) response.write(frame);
 }
 
+// V2 emits a granular `session.*` event family under an `{id,type,data}`
+// envelope. Scope ids per turn the same way the V1 emitter does.
+function emitV2(type, data, id) {
+  const scopedId =
+    promptTurnSeq > 0 && typeof id === "string" ? `${id}#${promptTurnSeq}` : id;
+  const frame = `data: ${JSON.stringify({ id: scopedId, type, data })}\n\n`;
+  for (const response of clients) response.write(frame);
+}
+
+function nativeForm() {
+  return {
+    id: "form-native-1",
+    sessionID: session.id,
+    title: "OpenCode needs your input",
+    fields: [
+      {
+        key: "environment",
+        type: "string",
+        title: "Where should we deploy?",
+        options: [
+          { value: "staging", label: "Staging" },
+          { value: "production", label: "Production" },
+        ],
+        custom: true,
+      },
+      {
+        key: "regions",
+        type: "multiselect",
+        title: "Which regions?",
+        options: [
+          { value: "US", label: "US" },
+          { value: "EU", label: "EU" },
+        ],
+      },
+    ],
+  };
+}
+
+function nativePermissionV2() {
+  return {
+    id: "permission-native-1",
+    sessionID: session.id,
+    action: "shell",
+    resources: ["echo OK"],
+    save: ["echo *"],
+    metadata: {},
+    source: { type: "tool", messageID: "message-permission", id: "call-permission" },
+    message: "Run validation command",
+  };
+}
+
 function parsedPromptText(promptBody) {
-  const text = promptBody.parts?.[0]?.text ?? "";
+  const text = promptBody.parts?.[0]?.text ?? promptBody.text ?? "";
   try {
     return JSON.parse(text);
   } catch {
@@ -256,9 +309,279 @@ async function callTerminalTool(promptBody) {
   return first;
 }
 
+async function handleV2(request, response) {
+  const url = request.url ?? "";
+  const jsonBody = (callback) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => callback(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+  };
+  if (request.method === "GET" && url === "/api/info")
+    return json(response, 200, {
+      version: "2.0.26",
+      pid: process.pid,
+      urls: [`http://127.0.0.1:${port}`],
+      paths: { tmp: process.env.XDG_CACHE_HOME ?? "." },
+      capabilities: {},
+    });
+  if (url === "/api/event") {
+    eventConnections += 1;
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+    });
+    response.write(
+      `data: ${JSON.stringify({ id: "evt-connected", type: "server.connected", data: {} })}\n\n`,
+    );
+    if (eventConnections === 1) {
+      response.end();
+      return;
+    }
+    clients.add(response);
+    request.on("close", () => clients.delete(response));
+    return;
+  }
+  if (request.method === "POST" && url === "/api/session")
+    return json(response, 200, { data: session });
+  if (request.method === "GET" && url === `/api/session/${session.id}`)
+    return json(response, 200, { data: session });
+  if (request.method === "GET" && url === `/api/session/${session.id}/message`)
+    return json(response, 200, { data: [] });
+  if (request.method === "GET" && url === "/api/session/active")
+    return json(response, 200, { data: {} });
+  if (request.method === "GET" && url === "/api/mcp") {
+    const names = Object.keys(runtimeConfig.mcp?.servers ?? runtimeConfig.mcp ?? {});
+    return json(response, 200, {
+      location: { directory: process.cwd() },
+      data: names.map((name) => ({ name, status: { status: "connected" } })),
+    });
+  }
+  if (request.method === "POST" && url.startsWith("/api/experimental/mcp/")) {
+    response.statusCode = 204;
+    response.end();
+    return;
+  }
+  if (request.method === "GET" && url === "/api/permission/request")
+    return json(response, 200, {
+      location: { directory: process.cwd() },
+      data: pendingPermission ? [pendingPermission] : [],
+    });
+  if (request.method === "GET" && url === `/api/session/${session.id}/form`)
+    return json(response, 200, { data: pendingForm ? [pendingForm] : [] });
+  if (request.method === "POST" && url === "/api/location/reload") {
+    response.statusCode = 204;
+    response.end();
+    return;
+  }
+  if (request.method === "POST" && url === `/api/session/${session.id}/interrupt`) {
+    emitV2("session.execution.interrupted", { sessionID: session.id }, "evt-interrupted");
+    return json(response, 200, { interrupted: true });
+  }
+  if (
+    request.method === "POST" &&
+    url === `/api/session/${session.id}/permission/permission-native-1/reply`
+  ) {
+    jsonBody(async (body) => {
+      await writeFile(
+        join(process.env.XDG_DATA_HOME, "fake-permission-reply.json"),
+        JSON.stringify({ url, body }),
+      );
+      pendingPermission = null;
+      emitV2(
+        "permission.replied",
+        { sessionID: session.id, requestID: "permission-native-1", reply: body.decision },
+        "evt-permission-replied",
+      );
+      setTimeout(() => {
+        json(response, 204, null);
+        emitV2("session.execution.succeeded", { sessionID: session.id }, "evt-permission-idle");
+      }, 10);
+    });
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    url === `/api/session/${session.id}/form/form-native-1/reply`
+  ) {
+    jsonBody(async (body) => {
+      await writeFile(
+        join(process.env.XDG_DATA_HOME, "fake-form-reply.json"),
+        JSON.stringify({ url, body }),
+      );
+      pendingForm = null;
+      emitV2(
+        "form.replied",
+        { id: "form-native-1", sessionID: session.id, answer: body.answer },
+        "evt-form-replied",
+      );
+      setTimeout(() => {
+        json(response, 204, null);
+        emitV2("session.execution.succeeded", { sessionID: session.id }, "evt-form-idle");
+      }, 10);
+    });
+    return;
+  }
+  if (
+    request.method === "DELETE" &&
+    url === `/api/session/${session.id}/form/form-native-1`
+  ) {
+    pendingForm = null;
+    emitV2(
+      "form.cancelled",
+      { id: "form-native-1", sessionID: session.id },
+      "evt-form-cancelled",
+    );
+    setTimeout(() => {
+      json(response, 204, null);
+      emitV2("session.execution.succeeded", { sessionID: session.id }, "evt-form-cancelled-idle");
+    }, 10);
+    return;
+  }
+  if (request.method === "POST" && url === `/api/session/${session.id}/prompt`) {
+    jsonBody(async (promptBody) => {
+      await appendFile(
+        join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"),
+        JSON.stringify(promptBody) + "\n",
+      );
+      promptTurnSeq += 1;
+      json(response, 200, {
+        data: { id: "msg-user", sessionID: session.id, type: "user", text: promptBody.text },
+      });
+      setTimeout(async () => {
+        await callFirstPaperclipTool();
+        const message = String(promptBody.text ?? "");
+        emitV2("session.execution.started", { sessionID: session.id }, "evt-execution-started");
+        if (message.includes("native-question")) {
+          pendingForm = nativeForm();
+          emitV2("form.created", { form: pendingForm }, "evt-form-created");
+          return;
+        }
+        if (message.includes("native-permission")) {
+          pendingPermission = nativePermissionV2();
+          emitV2("permission.asked", { ...pendingPermission }, "evt-permission-asked");
+          return;
+        }
+        if (message.includes("session-aborted")) {
+          emitV2(
+            "session.execution.interrupted",
+            { sessionID: session.id },
+            "evt-session-aborted",
+          );
+          return;
+        }
+        if (message.includes("session-failed")) {
+          emitV2(
+            "session.execution.failed",
+            {
+              sessionID: session.id,
+              error: { type: "provider", message: "The fake provider failed on purpose." },
+            },
+            "evt-session-failed",
+          );
+          return;
+        }
+        emitV2(
+          "session.step.started",
+          { sessionID: session.id, assistantMessageID: "message-assistant" },
+          "evt-step-started",
+        );
+        emitV2(
+          "session.reasoning.started",
+          { sessionID: session.id, assistantMessageID: "message-assistant", ordinal: 0 },
+          "evt-reasoning-started",
+        );
+        emitV2(
+          "session.reasoning.delta",
+          { sessionID: session.id, assistantMessageID: "message-assistant", ordinal: 0, delta: "considering options" },
+          "evt-reasoning-delta",
+        );
+        emitV2(
+          "session.reasoning.ended",
+          { sessionID: session.id, assistantMessageID: "message-assistant", ordinal: 0, text: "considering options" },
+          "evt-reasoning-ended",
+        );
+        emitV2(
+          "session.tool.input.started",
+          { sessionID: session.id, assistantMessageID: "message-assistant", id: "call-read", name: "read" },
+          "evt-tool-input-started",
+        );
+        emitV2(
+          "session.tool.input.ended",
+          { sessionID: session.id, assistantMessageID: "message-assistant", id: "call-read", text: '{"path":"guide.md"}' },
+          "evt-tool-input-ended",
+        );
+        emitV2(
+          "session.tool.called",
+          { sessionID: session.id, assistantMessageID: "message-assistant", id: "call-read", input: { path: "guide.md" }, executed: true },
+          "evt-tool-called",
+        );
+        emitV2(
+          "session.tool.succeeded",
+          { sessionID: session.id, assistantMessageID: "message-assistant", id: "call-read", output: "guide contents", executed: true },
+          "evt-tool-succeeded",
+        );
+        await callTerminalTool(promptBody);
+        emitV2(
+          "session.text.started",
+          { sessionID: session.id, assistantMessageID: "message-assistant", ordinal: 0 },
+          "evt-text-started",
+        );
+        emitV2(
+          "session.text.delta",
+          {
+            sessionID: session.id,
+            assistantMessageID: "message-assistant",
+            ordinal: 0,
+            delta: "done [guide](guide.md)",
+          },
+          "evt-text-delta",
+        );
+        emitV2(
+          "session.text.ended",
+          {
+            sessionID: session.id,
+            assistantMessageID: "message-assistant",
+            ordinal: 0,
+            text: "done [guide](guide.md)",
+          },
+          "evt-text-ended",
+        );
+        emitV2(
+          "session.step.ended",
+          {
+            sessionID: session.id,
+            assistantMessageID: "message-assistant",
+            finish: "stop",
+            cost: 0.001,
+            tokens: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+          "evt-step-ended",
+        );
+        emitV2(
+          "session.usage.updated",
+          {
+            sessionID: session.id,
+            cost: 0.001,
+            tokens: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+          "evt-usage",
+        );
+        emitV2(
+          "session.execution.succeeded",
+          { sessionID: session.id },
+          "evt-execution-succeeded",
+        );
+      }, 100);
+    });
+    return;
+  }
+  json(response, 404, { error: "not found" });
+}
+
 const server = createServer(async (request, response) => {
   if (request.headers.authorization !== expectedAuth)
     return json(response, 401, { error: "unauthorized" });
+  if (apiVersion === "v2") return handleV2(request, response);
   if (request.url === "/global/health")
     return json(response, 200, { healthy: true, version: "1.18.34" });
   if (request.url === "/event") {

@@ -30,6 +30,7 @@ import {
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -64,6 +65,14 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
+import {
+  allowsUnsupportedOpenCodeVersion,
+  probeOpenCodeCliVersion,
+  probeOpenCodeCliVersionOnTarget,
+  unsupportedOpenCodeVersionMessage,
+  usesOpenCodeV2Cli,
+  type OpenCodeCliVersion,
+} from "./version.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -329,15 +338,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
-  const localRuntimeConfigHome =
-    preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
-  try {
-    const runtimeEnv = Object.fromEntries(
+  let openCodeCliVersionNote: string | null = null;
+  let openCodeCliVersion: OpenCodeCliVersion | null = null;
+  // Install and resolve the CLI, then probe its major on the execution target
+  // and prepare the runtime config to match. OpenCode 1.x rejects the V2
+  // `permissions` key and 2.x gives native `permissions` precedence over the V1
+  // `permission` string, and V2 removed `--variant`, so both the config shape
+  // and the CLI flags must follow the installed generation. A remote sandbox or
+  // SSH target runs its own binary, and a fresh install only exists after the
+  // install step below, so the probe runs there rather than before it.
+  let preparedRuntimeConfig: Awaited<ReturnType<typeof prepareOpenCodeRuntimeConfig>> = {
+    env,
+    notes: [],
+    cleanup: async () => {},
+  };
+  const buildRuntimeEnv = () =>
+    Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+  try {
     const adapterExecutionTimeout = resolveAdapterExecutionTargetTimeout(
       executionTarget,
       asNumber(config.timeoutSec, 0),
@@ -348,29 +369,65 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId,
       target: executionTarget,
       installCommand: ctx.runtimeCommandSpec?.installCommand,
-    detectCommand: ctx.runtimeCommandSpec?.detectCommand,
+      detectCommand: ctx.runtimeCommandSpec?.detectCommand,
       cwd,
-      env: runtimeEnv,
+      env: buildRuntimeEnv(),
       timeoutSec,
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
+    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, buildRuntimeEnv(), {
       installCommand: SANDBOX_INSTALL_COMMAND,
       timeoutSec,
     });
-    const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+    const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, buildRuntimeEnv());
+    const cliVersion = executionTargetIsRemote
+      ? await probeOpenCodeCliVersionOnTarget({
+          runId,
+          executionTarget,
+          command,
+          cwd,
+          env: buildRuntimeEnv(),
+          timeoutSec,
+          graceSec,
+        })
+      : await probeOpenCodeCliVersion({ command, cwd, env: buildRuntimeEnv() });
+    preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+      env,
+      config,
+      openCodeV2: usesOpenCodeV2Cli(cliVersion),
+    });
+    let localRuntimeConfigHome =
+      preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+    let runtimeEnv = buildRuntimeEnv();
     let loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
+    if (cliVersion) {
+      openCodeCliVersion = cliVersion;
+      openCodeCliVersionNote = `OpenCode CLI version ${cliVersion.version}`;
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode CLI version ${cliVersion.version}.\n`,
+      );
+      if (!cliVersion.supported) {
+        const message = unsupportedOpenCodeVersionMessage(cliVersion);
+        if (allowsUnsupportedOpenCodeVersion(preparedRuntimeConfig.env)) {
+          await onLog("stdout", `[paperclip] Warning: ${message}\n`);
+        } else {
+          throw new Error(message);
+        }
+      }
+    }
     if (!executionTargetIsRemote) {
       await ensureOpenCodeModelConfiguredAndAvailable({
         model,
         command,
         cwd,
         env: runtimeEnv,
+        openCodeMajor: openCodeCliVersion?.major,
       });
     }
 
@@ -547,6 +604,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (openCodeCliVersionNote) notes.push(openCodeCliVersionNote);
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -615,12 +673,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    const openCodeV2 = usesOpenCodeV2Cli(openCodeCliVersion);
+    // Headless `run` rejects any permission request it cannot answer. Auto
+    // mode approves everything not explicitly denied, which is what an
+    // unattended Paperclip run needs; explicit deny rules and policies still
+    // apply. Only add it when the operator kept skip-permissions enabled.
+    const autoApprovePermissions = asBoolean(
+      config.dangerouslySkipPermissions,
+      true,
+    );
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
       if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
-      if (variant) args.push("--variant", variant);
+      // OpenCode V2 dropped the `--variant` flag: the variant joins the model
+      // reference as `provider/model#variant`. V1 keeps the separate flag.
+      const modelArg = openCodeV2 && variant ? `${model}#${variant}` : model;
+      if (modelArg) args.push("--model", modelArg);
+      if (!openCodeV2 && variant) args.push("--variant", variant);
+      if (autoApprovePermissions) args.push("--auto");
       // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
       // workspace unless the operator already selected a directory explicitly.
       const optionTerminator = extraArgs.indexOf("--");
@@ -656,6 +727,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const consumeAccounting = createOpenCodeJsonlParser();
       let hasAccounting = false;
+      // The returned stdout is capped for display. Capture a bounded raw tail of
+      // the full stream so a late structured error is still recoverable.
+      const maxRawTail = 256 * 1024;
+      let rawStdoutTail = "";
+      // The accounting checkpoint compacts each record and drops `state`/`error`,
+      // so a provider or tool failure that scrolls past both the display cap and
+      // the 256 KiB tail stays invisible to the recovery decision below. Track
+      // those failures on the full stream with a dedicated line-buffered scan.
+      let streamFailure = false;
+      let streamRemainder = "";
+      const noteStreamFailure = (chunk: string) => {
+        streamRemainder += chunk;
+        const lines = streamRemainder.split(/\r?\n/);
+        streamRemainder = lines.pop() ?? "";
+        for (const line of lines) {
+          const probe = parseOpenCodeJsonl(line);
+          if (probe.errorMessage !== null || probe.toolErrors.length > 0) {
+            streamFailure = true;
+            return;
+          }
+        }
+      };
       const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
@@ -664,6 +757,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
           usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(runtimeEnv, provider), billingType: "unknown", model, complete: false };
       });
+      const captureLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        if (stream === "stdout") {
+          if (!streamFailure) noteStreamFailure(chunk);
+          const next = rawStdoutTail + chunk;
+          rawStdoutTail = next.length > maxRawTail ? next.slice(-maxRawTail) : next;
+        }
+        await accountingLog(stream, chunk);
+      };
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -673,10 +774,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog: accountingLog,
+        onLog: captureLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
+      // Flush the final partial line into the full-stream failure scan.
+      if (!streamFailure) noteStreamFailure("\n");
       // Parse any unterminated final record before deciding whether its usage
       // is complete. A clean exit alone cannot turn absent counters into zero.
       await accountingLog.flush();
@@ -686,6 +789,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
       const parsed = parseOpenCodeJsonl(proc.stdout);
+      // The accounting stream saw every record even when the display stream was
+      // capped, so recover a late structured error or tool error from it. Without
+      // this, a long run that exits non-zero after the cap surfaces only
+      // "OpenCode exited with code 1".
+      const tailParsed = parseOpenCodeJsonl(rawStdoutTail);
+      if (parsed.errorMessage === null && tailParsed.errorMessage !== null) {
+        parsed.errorMessage = tailParsed.errorMessage;
+      }
+      if (parsed.toolErrors.length === 0 && tailParsed.toolErrors.length > 0) {
+        parsed.toolErrors = tailParsed.toolErrors;
+      }
+      if (parsed.errorMessage === null && retainedAccounting.errorMessage !== null) {
+        parsed.errorMessage = retainedAccounting.errorMessage;
+      }
+      if (parsed.toolErrors.length === 0 && retainedAccounting.toolErrors.length > 0) {
+        parsed.toolErrors = retainedAccounting.toolErrors;
+      }
       if (hasAccounting) {
         const retained = consumeAccounting("");
         parsed.usage = retained.usage;
@@ -693,7 +813,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed.usageComplete = retained.usageComplete;
         parsed.costUsd = retained.costUsd;
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // OpenCode 2.x can exit non-zero after it already streamed the final
+      // assistant answer. Record the last JSONL record type so the result can
+      // tell a real mid-run failure apart from a spurious terminal exit.
+      const lastRecordLine = rawStdoutTail.split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+      let lastRecordType = "";
+      try {
+        lastRecordType = asString(JSON.parse(lastRecordLine).type, "");
+      } catch {
+        lastRecordType = "";
+      }
+      return { proc, rawStderr: proc.stderr, parsed, lastRecordType, streamFailure };
     };
 
     const toResult = (
@@ -701,6 +831,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        lastRecordType?: string;
+        streamFailure?: boolean;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
@@ -746,11 +878,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
 
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+      const lastToolError = attempt.parsed.toolErrors.at(-1)?.trim() ?? "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
-      const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      // OpenCode 2.x can exit non-zero after it already streamed the final
+      // assistant answer (a transient terminal exit with no provider error and
+      // no failed tool). Recover only that narrow signature so an unattended
+      // task is not marked failed after the work is done. A real failure
+      // carries a provider error, a tool error, a signal, or a timeout and is
+      // never recovered here.
+      const completedFinalAnswer =
+        rawExitCode !== null &&
+        rawExitCode !== 0 &&
+        !attempt.proc.signal &&
+        // A transport-level failure (for example a lost sandbox duplex channel)
+        // is never a successful run, even when the last record is assistant text.
+        !attempt.proc.errorCode &&
+        // A provider or tool error anywhere in the full stream blocks recovery;
+        // the accounting checkpoint can drop it before the tail is inspected.
+        !attempt.streamFailure &&
+        parsedError === "" &&
+        attempt.parsed.toolErrors.length === 0 &&
+        attempt.lastRecordType === "text";
+      const synthesizedExitCode = completedFinalAnswer
+        ? 0
+        : parsedError && (rawExitCode ?? 0) === 0
+          ? 1
+          : rawExitCode;
+      if (completedFinalAnswer) {
+        void onLog(
+          "stderr",
+          "[paperclip] OpenCode exited non-zero after a final answer with no error; treating the run as complete.\n",
+        );
+      }
       const fallbackErrorMessage =
         parsedError ||
+        lastToolError ||
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
@@ -759,7 +922,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+        usageComplete: (attempt.proc.exitCode === 0 || completedFinalAnswer) && !attempt.proc.signal
           && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
         usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,

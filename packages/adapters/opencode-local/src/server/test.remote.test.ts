@@ -108,7 +108,7 @@ describe("opencode remote environment diagnostics", () => {
       expect(discoverOpenCodeModels).not.toHaveBeenCalled();
       expect(ensureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
       expect(runAdapterExecutionTargetProcess).toHaveBeenCalledExactlyOnceWith(
-        expect.any(String), null, "opencode", ["run", "--format", "json", "--model", "openrouter/deepseek/deepseek-v4-flash-0731"],
+        expect.any(String), null, "opencode", ["run", "--format", "json", "--model", "openrouter/deepseek/deepseek-v4-flash-0731", "--auto"],
         expect.objectContaining({ stdin: "Respond with hello." }),
       );
       expect(result.status).toBe(outcome === "passed" ? "pass" : "warn");

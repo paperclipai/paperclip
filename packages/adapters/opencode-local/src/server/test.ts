@@ -27,8 +27,16 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { QUALIFIED_OPENCODE_VERSION, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
+import {
+  allowsUnsupportedOpenCodeVersion,
+  probeOpenCodeCliVersion,
+  probeOpenCodeCliVersionOnTarget,
+  unsupportedOpenCodeVersionMessage,
+  usesOpenCodeV2Cli,
+  type OpenCodeCliVersion,
+} from "./version.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -126,7 +134,25 @@ export async function testEnvironment(
 
   // Prevent OpenCode from writing an opencode.json into the working directory.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  // Pick the runtime permission shape from the installed CLI major before the
+  // config is written: 1.x rejects `permissions`, and 2.x gives native
+  // `permissions` precedence over the V1 `permission` string.
+  const preflightCliVersion = targetIsRemote
+    ? null
+    : await probeOpenCodeCliVersion({
+        command,
+        cwd,
+        env: Object.fromEntries(
+          Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        ),
+      });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    openCodeV2: usesOpenCodeV2Cli(preflightCliVersion),
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   if (asBoolean(config.dangerouslySkipPermissions, true)) {
@@ -142,6 +168,7 @@ export async function testEnvironment(
   // `fs.mkdtemp` directory leaks on the early-throw path.
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let nativeProbeWorkspaceLocalDir: string | null = null;
+  let openCodeCliVersion: OpenCodeCliVersion | null = null;
   try {
     let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
     let runtimeCwd = cwd;
@@ -222,6 +249,39 @@ export async function testEnvironment(
           detail: command,
         });
       }
+      // Surface the installed CLI major for both local and remote targets so the
+      // hello probe below chooses the right flags (`--variant` on 1.x, the
+      // `provider/model#variant` ref on 2.x) and the adoption check catches an
+      // unsupported install with a remediation. Honour the same escape hatch
+      // `execute.ts` does: when the operator opts into an unverified version,
+      // downgrade to a warning instead of failing adoption.
+      const cliVersion = targetIsRemote
+        ? await probeOpenCodeCliVersionOnTarget({
+            runId,
+            executionTarget: runtimeTarget,
+            command,
+            cwd: runtimeCwd,
+            env: runtimeEnv,
+          })
+        : await probeOpenCodeCliVersion({ command, cwd, env: runtimeEnv });
+      if (cliVersion) openCodeCliVersion = cliVersion;
+      if (cliVersion && !cliVersion.supported) {
+        const bypassed = allowsUnsupportedOpenCodeVersion(env);
+        checks.push({
+          code: "opencode_version_unsupported",
+          level: bypassed ? "warn" : "error",
+          message: bypassed
+            ? `${unsupportedOpenCodeVersionMessage(cliVersion)} (Guard bypassed by PAPERCLIP_OPENCODE_ALLOW_UNSUPPORTED_VERSION for this test.)`
+            : unsupportedOpenCodeVersionMessage(cliVersion),
+          hint: `Install OpenCode ${QUALIFIED_OPENCODE_VERSION}, or point the adapter "command" at a supported 1.x binary.`,
+        });
+      } else if (cliVersion) {
+        checks.push({
+          code: "opencode_version",
+          level: "info",
+          message: `OpenCode CLI version: ${cliVersion.version}`,
+        });
+      }
     }
 
     const canRunProbe =
@@ -262,7 +322,7 @@ export async function testEnvironment(
       modelValidationPassed = true;
     } else if (canRunProbe && configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
+        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv, openCodeMajor: openCodeCliVersion?.major });
         if (discovered.length > 0) {
           checks.push({
             code: "opencode_models_discovered",
@@ -298,7 +358,7 @@ export async function testEnvironment(
       }
     } else if (!targetIsRemote && canRunProbe && !configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
+        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv, openCodeMajor: openCodeCliVersion?.major });
         if (discovered.length > 0) {
           checks.push({
             code: "opencode_models_discovered",
@@ -337,6 +397,7 @@ export async function testEnvironment(
           command,
           cwd,
           env: runtimeEnv,
+          openCodeMajor: openCodeCliVersion?.major,
         });
         checks.push({
           code: "opencode_model_configured",
@@ -364,8 +425,15 @@ export async function testEnvironment(
       const probeModel = configuredModel;
 
       const args = ["run", "--format", "json"];
-      args.push("--model", probeModel);
-      if (variant) args.push("--variant", variant);
+      // V2 folds the variant into the model ref and has no `--variant` flag.
+      const openCodeV2 = usesOpenCodeV2Cli(openCodeCliVersion);
+      const probeModelArg =
+        openCodeV2 && variant ? `${probeModel}#${variant}` : probeModel;
+      args.push("--model", probeModelArg);
+      if (!openCodeV2 && variant) args.push("--variant", variant);
+      // Keep the hello probe aligned with the real run: unattended auto mode
+      // approves permission requests that would otherwise block the probe.
+      if (asBoolean(config.dangerouslySkipPermissions, true)) args.push("--auto");
       if (extraArgs.length > 0) args.push(...extraArgs);
 
       // Sandbox bridges still add cold-start and transport overhead, but the

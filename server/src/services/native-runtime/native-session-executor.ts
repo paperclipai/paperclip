@@ -8,6 +8,7 @@ import { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
 import { nativeProviderLifecycle } from "./provider-lifecycle.js";
+import { QUALIFIED_OPENCODE_RUNNER_VERSIONS } from "./provider-profile.js";
 import { NativePermissionDeclinedError, readCompletedNativePermissionDecline } from "./native-permission-decline.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
@@ -11772,7 +11773,9 @@ async function createRunnerdBackendWithinSessionClaim(
     if (
       opencodeVersion.exitCode !== 0 ||
       opencodeVersion.timedOut ||
-      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
+      !(QUALIFIED_OPENCODE_RUNNER_VERSIONS as readonly string[]).includes(
+        opencodeVersion.stdout.trim(),
+      )
     ) {
       throw new Error(
         "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",

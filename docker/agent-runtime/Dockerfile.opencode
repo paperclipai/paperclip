@@ -3,11 +3,17 @@ ARG BASE_TAG=dev
 FROM paperclipai/agent-runtime-base:${BASE_TAG}
 
 USER root
-# opencode-ai npm package; binary on PATH is `opencode`.
-RUN npm install -g opencode-ai@latest \
+# opencode-ai npm package; binary on PATH is `opencode`. Pin the release
+# Paperclip qualifies (1.18.34); OpenCode 2.x is a breaking major and is not
+# supported by the opencode_local adapter's CLI contract.
+ARG OPENCODE_VERSION=1.18.34
+RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 
-# Verify the CLI is on PATH for the shim's exec.LookPath
+# Verify the CLI is on PATH for the shim's exec.LookPath and is the qualified
+# release, not a silently newer one.
 RUN command -v opencode >/dev/null 2>&1 || (echo "opencode not on PATH"; exit 1)
+RUN test "$(opencode --version)" = "${OPENCODE_VERSION}" \
+    || (echo "unexpected opencode version: $(opencode --version)"; exit 1)

@@ -8,11 +8,20 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
 });
 
+// The real probe spawns `opencode --version`; unit tests below control the
+// reported version instead of launching a fake CLI.
+vi.mock("./version.js", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, probeOpenCodeCliVersion: vi.fn(async () => null) };
+});
+
 import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import { probeOpenCodeCliVersion } from "./version.js";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
+const versionProbeMock = vi.mocked(probeOpenCodeCliVersion);
 
 async function createSkillDir(root: string, name: string): Promise<string> {
   const skillDir = path.join(root, name);
@@ -348,5 +357,200 @@ describe("ensureRemoteOpenCodeModelConfiguredAndAvailable — probe is non-fatal
     await expect(
       ensureRemoteOpenCodeModelConfiguredAndAvailable({ ...base, model: "openai/gpt-5" }),
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
+  });
+});
+
+describe("OpenCode version guard", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-version-"));
+    versionProbeMock.mockReset();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  async function callExecute(
+    extraEnv: Record<string, string> = {},
+    extraConfig: Record<string, unknown> = {},
+    runImpl?: (...args: unknown[]) => unknown,
+  ) {
+    const commandPath = path.join(root, "opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    if (runImpl) {
+      runProcessMock.mockImplementation(runImpl as never);
+    } else {
+      runProcessMock.mockResolvedValue(probeResult({
+        stdout: JSON.stringify({ type: "text", sessionID: "version-guard", part: { text: "ok" } }),
+      }));
+    }
+    return execute({
+      runId: "run-version-guard",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath,
+        cwd: root,
+        model: "openai/gpt-5",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "1", ...extraEnv },
+        ...extraConfig,
+      },
+      context: {},
+      onLog: async () => {},
+    });
+  }
+
+  function lastExecutionArgs(): string[] {
+    return (runProcessMock.mock.calls.at(-1)?.[3] ?? []) as string[];
+  }
+
+  it("fails fast with an actionable message when OpenCode's major version is unsupported", async () => {
+    versionProbeMock.mockResolvedValue({ version: "3.0.1", major: 3, minor: 0, patch: 1, supported: false });
+    await expect(callExecute()).rejects.toThrow(/OpenCode 3\.0\.1 is not supported/);
+  });
+
+  it.each(["1.18.34", "2.0.26"])("runs normally on a qualified major (%s)", async (version) => {
+    const [major, minor, patch] = version.split(".").map(Number);
+    versionProbeMock.mockResolvedValue({ version, major, minor, patch, supported: true });
+    const result = await callExecute();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("keeps the separate --variant flag on OpenCode V1", async () => {
+    versionProbeMock.mockResolvedValue({ version: "1.18.34", major: 1, minor: 18, patch: 34, supported: true });
+    await callExecute({}, { model: "paperclip/deepseek-flash", variant: "high" });
+    const args = lastExecutionArgs();
+    expect(args[args.indexOf("--model") + 1]).toBe("paperclip/deepseek-flash");
+    expect(args[args.indexOf("--variant") + 1]).toBe("high");
+  });
+
+  it("folds the variant into the model and omits --variant on OpenCode V2", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    await callExecute({}, { model: "paperclip/deepseek-flash", variant: "high" });
+    const args = lastExecutionArgs();
+    expect(args[args.indexOf("--model") + 1]).toBe("paperclip/deepseek-flash#high");
+    expect(args).not.toContain("--variant");
+  });
+
+  it.each(["1.18.34", "2.0.26"])("auto-approves permissions on the run by default (%s)", async (version) => {
+    const [major, minor, patch] = version.split(".").map(Number);
+    versionProbeMock.mockResolvedValue({ version, major, minor, patch, supported: true });
+    await callExecute();
+    expect(lastExecutionArgs()).toContain("--auto");
+  });
+
+  it("omits --auto when headless skip-permissions is disabled", async () => {
+    versionProbeMock.mockResolvedValue({ version: "1.18.34", major: 1, minor: 18, patch: 34, supported: true });
+    await callExecute({}, { dangerouslySkipPermissions: false });
+    expect(lastExecutionArgs()).not.toContain("--auto");
+  });
+
+  it("surfaces a tool error when OpenCode exits non-zero with capped output", async () => {
+    versionProbeMock.mockResolvedValue({ version: "1.18.34", major: 1, minor: 18, patch: 34, supported: true });
+    const result = await callExecute({}, {}, async (...callArgs: unknown[]) => {
+      const options = callArgs[4] as
+        | { onLog?: (stream: string, chunk: string) => Promise<void> }
+        | undefined;
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({
+          type: "tool_use",
+          sessionID: "ses_x",
+          part: { state: { status: "error", error: "boom: command failed" } },
+        })}\n`,
+      );
+      return probeResult({ exitCode: 1, stdout: "", stderr: "" });
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("boom: command failed");
+  });
+
+  it("treats a non-zero exit after a final answer as complete", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.24", major: 2, minor: 0, patch: 24, supported: true });
+    const result = await callExecute({}, {}, async (...callArgs: unknown[]) => {
+      const options = callArgs[4] as
+        | { onLog?: (stream: string, chunk: string) => Promise<void> }
+        | undefined;
+      for (const record of [
+        { type: "step_start", sessionID: "s" },
+        { type: "step_finish", sessionID: "s", part: { reason: "tool-calls" } },
+        { type: "step_start", sessionID: "s" },
+        { type: "text", sessionID: "s", part: { text: "Готово." } },
+      ]) {
+        await options?.onLog?.("stdout", `${JSON.stringify(record)}\n`);
+      }
+      return probeResult({ exitCode: 1, stdout: "", stderr: "" });
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+  });
+
+  it("does not recover a non-zero exit when the transport reports an error code", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.24", major: 2, minor: 0, patch: 24, supported: true });
+    const result = await callExecute({}, {}, async (...callArgs: unknown[]) => {
+      const options = callArgs[4] as
+        | { onLog?: (stream: string, chunk: string) => Promise<void> }
+        | undefined;
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({ type: "text", sessionID: "s", part: { text: "Готово." } })}\n`,
+      );
+      return probeResult({ exitCode: 1, stdout: "", stderr: "", errorCode: "duplex_channel_lost" });
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+  });
+
+  it("does not recover a non-zero exit when a tool error scrolled past the captured tail", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.24", major: 2, minor: 0, patch: 24, supported: true });
+    const result = await callExecute({}, {}, async (...callArgs: unknown[]) => {
+      const options = callArgs[4] as
+        | { onLog?: (stream: string, chunk: string) => Promise<void> }
+        | undefined;
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({
+          type: "tool_use",
+          sessionID: "s",
+          part: { state: { status: "error", error: "early tool boom" } },
+        })}\n`,
+      );
+      // Push the tool error beyond the 256 KiB raw tail and the display cap.
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({ type: "step_start", sessionID: "s" })}\n`.repeat(20_000),
+      );
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({ type: "text", sessionID: "s", part: { text: "Готово." } })}\n`,
+      );
+      return probeResult({ exitCode: 1, stdout: "", stderr: "" });
+    });
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("does not recover a non-zero exit that did not end on a final answer", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.24", major: 2, minor: 0, patch: 24, supported: true });
+    const result = await callExecute({}, {}, async (...callArgs: unknown[]) => {
+      const options = callArgs[4] as
+        | { onLog?: (stream: string, chunk: string) => Promise<void> }
+        | undefined;
+      await options?.onLog?.(
+        "stdout",
+        `${JSON.stringify({ type: "step_start", sessionID: "s" })}\n`,
+      );
+      return probeResult({ exitCode: 1, stdout: "", stderr: "" });
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("OpenCode exited with code 1");
+  });
+
+  it("allows an unverified major version when the escape hatch is set", async () => {
+    versionProbeMock.mockResolvedValue({ version: "3.0.1", major: 3, minor: 0, patch: 1, supported: false });
+    const result = await callExecute({ PAPERCLIP_OPENCODE_ALLOW_UNSUPPORTED_VERSION: "1" });
+    expect(result.exitCode).toBe(0);
   });
 });

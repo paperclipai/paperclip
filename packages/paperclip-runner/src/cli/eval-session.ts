@@ -17,6 +17,11 @@ import {
 } from "../contracts/runtime-context.js";
 import { projectCapabilityDevtools } from "../devtools/index.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+import {
+  QUALIFIED_OPENCODE_V1_VERSION,
+  isQualifiedOpenCodeVersion,
+  qualifiedOpenCodeWindows,
+} from "../drivers/opencode/api-client.js";
 import { PAPERCLIP_RUNNER_BUILD_METADATA } from "../evals/build-metadata.js";
 import { projectCapabilityIssueThread } from "../issue-thread/live-projection.js";
 import {
@@ -194,9 +199,11 @@ export function evalSessionProviderVersion(
   request: EvalSessionRequest,
 ): string | null {
   if (request.provider === "opencode") {
-    const version = request.opencodeVersion ?? "1.18.34";
-    if (version !== "1.18.34") {
-      throw new Error(`OpenCode evals require exact version 1.18.34; received ${version}`);
+    const version = request.opencodeVersion ?? QUALIFIED_OPENCODE_V1_VERSION;
+    if (!isQualifiedOpenCodeVersion(version)) {
+      throw new Error(
+        `OpenCode evals require a qualified version (${qualifiedOpenCodeWindows()}); received ${version}`,
+      );
     }
     return version;
   }

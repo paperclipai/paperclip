@@ -106,6 +106,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /** True when the resolved CLI is OpenCode 2.x (native `permissions` array). */
+  openCodeV2?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -204,8 +206,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: "allow",
   };
+  if (input.openCodeV2) {
+    // OpenCode 2.x uses one ordered `permissions` array and gives it precedence
+    // over the V1 `permission` key, while 1.x rejects `permissions` outright.
+    // Pick exactly one shape: allow every action, and keep external-directory
+    // access because the agent instructions and file-sync trees live outside
+    // the workspace and would otherwise resolve to an unattended `ask`.
+    delete nextConfig.permission;
+    nextConfig.permissions = [
+      { action: "*", resource: "*", effect: "allow" },
+      { action: "external_directory", resource: "*", effect: "allow" },
+    ];
+    notes.push(
+      "Injected runtime OpenCode V2 permissions allowing all actions and external-directory access.",
+    );
+  } else {
+    nextConfig.permission = "allow";
+  }
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
   }

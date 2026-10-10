@@ -501,12 +501,22 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // requirement stays for subscriptions: a stored login is a file layout
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
-    if (resolvedMethod === "api_key" && !context.config.managedAiRouting) {
-      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
-      const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
+    const apiKeyEnvKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
+    const apiKeyValue = apiKeyEnvKey ? parseObject(context.config.env)[apiKeyEnvKey] : undefined;
+    // Direct API-key accounts carry their key in the provider's canonical env
+    // var, so re-verify it against the provider endpoint here. A projected
+    // account intentionally leaves that var empty and carries its key in a
+    // harness-projected variable instead, so requiring the canonical var would
+    // reject every such adoption. Defer those to the harness hello probe below,
+    // which exercises the real projected credential.
+    if (
+      resolvedMethod === "api_key" &&
+      !context.config.managedAiRouting &&
+      typeof apiKeyValue === "string" &&
+      apiKeyValue.length > 0
+    ) {
       try {
-        if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
+        await validateAiApiKey(binding.provider, apiKeyValue);
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";

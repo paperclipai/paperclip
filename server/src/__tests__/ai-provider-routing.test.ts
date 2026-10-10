@@ -126,6 +126,9 @@ describe("provider routing", () => {
     expect(opencode.config.model).toBe(
       "openrouter/anthropic/claude-sonnet-4.6",
     );
+    // OpenRouter is a built-in provider that can resolve its own default small
+    // model, so it is not pinned like the projected `paperclip` provider.
+    expect(opencode.env.PAPERCLIP_OPENCODE_SMALL_MODEL).toBeUndefined();
   });
   it("projects only a Bedrock API key and rejects general AWS access keys", () => {
     const routing = aiProviderRoutingSchema.parse({
@@ -148,5 +151,22 @@ describe("provider routing", () => {
     });
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
+  });
+  it("skips OpenCode's model-availability pre-flight and pins the projected small model", () => {
+    const gateway = aiProviderRoutingSchema.parse({ kind: "gateway", protocol: "chat", baseUrl: "https://gateway.example/v1" });
+    const openrouter = aiProviderRoutingSchema.parse({ kind: "openrouter", protocol: "chat", auth: "bearer", models: [] });
+    const projected = managedProviderRouting(gateway, "opencode_local", "k", "fixture-model");
+    expect(projected.env.OPENCODE_ALLOW_ALL_MODELS).toBe("1");
+    expect(projected.config.model).toBe("paperclip/fixture-model");
+    // The projected provider owns the only enabled provider, so the auxiliary
+    // title model must be pinned to it or OpenCode aborts the run.
+    expect(projected.env.PAPERCLIP_OPENCODE_SMALL_MODEL).toBe("paperclip/fixture-model");
+    expect(JSON.parse(String(projected.env.OPENCODE_CONFIG_CONTENT))).toMatchObject({
+      enabled_providers: ["paperclip"],
+      small_model: "paperclip/fixture-model",
+    });
+    const openrouterProjected = managedProviderRouting(openrouter, "opencode_local", "k", "openrouter/x/y");
+    expect(openrouterProjected.env.OPENCODE_ALLOW_ALL_MODELS).toBeUndefined();
+    expect(openrouterProjected.env.PAPERCLIP_OPENCODE_SMALL_MODEL).toBeUndefined();
   });
 });

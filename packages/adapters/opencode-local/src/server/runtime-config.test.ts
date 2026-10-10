@@ -64,6 +64,38 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("writes native V2 permissions and drops the V1 permission key for 2.x", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "ask" },
+      permissions: [{ action: "external_directory", resource: "*", effect: "ask" }],
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      openCodeV2: true,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    // V1 rejects the `permissions` key and V2 gives it precedence over
+    // `permission`, so exactly one shape must be written.
+    expect(runtimeConfig).not.toHaveProperty("permission");
+    expect(runtimeConfig.permissions).toEqual([
+      { action: "*", resource: "*", effect: "allow" },
+      { action: "external_directory", resource: "*", effect: "allow" },
+    ]);
+    expect(prepared.notes.some((n) => n.includes("V2 permissions"))).toBe(true);
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {

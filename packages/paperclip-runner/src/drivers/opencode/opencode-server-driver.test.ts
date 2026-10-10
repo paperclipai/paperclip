@@ -2617,4 +2617,274 @@ describe("OpenCodeServerDriver", () => {
     expect(error).toContain("Gateway rejected [REDACTED]");
     expect(error).not.toContain(key);
   });
+
+  const v2Environment = (extra: Record<string, string> = {}) => ({
+    PATH: process.env.PATH,
+    FAKE_OPENCODE_API: "v2",
+    OPENROUTER_API_KEY: "fixture-key",
+    ...extra,
+  });
+
+  it("selects the V2 API, reloads the native config, and streams usage", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-v2-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-v2-workspace-"),
+    );
+    roots.push(root, workspace);
+    const requests: string[] = [];
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: v2Environment(),
+      fetch: async (input, init) => {
+        requests.push(
+          `${init?.method ?? "GET"} ${String(input).replace(/^https?:\/\/127\.0\.0\.1:\d+/, "")}`,
+        );
+        return fetch(input, init);
+      },
+    });
+    const session = await driver.openSession({
+      runId: "v2-run",
+      normalizedSessionId: "v2-run",
+      workingDirectory: workspace,
+    });
+    expect(session.ids()).toMatchObject({ providerSessionId: "ses_fake_1" });
+    expect(requests.some((entry) => entry.startsWith("GET /api/info"))).toBe(true);
+    expect(requests).toContain("POST /api/session");
+
+    const config = JSON.parse(
+      await readFile(
+        join(root, "v2-run", "config", "opencode", "opencode.json"),
+        "utf8",
+      ),
+    );
+    expect(config).toMatchObject({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      agents: {
+        paperclip: { system: expect.any(String) },
+        title: { model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+      },
+      providers: {
+        openrouter: {
+          models: {
+            "deepseek/deepseek-v4-flash-0731": {
+              name: "deepseek/deepseek-v4-flash-0731",
+            },
+          },
+        },
+      },
+      mcp: {
+        servers: {
+          paperclip: {
+            type: "remote",
+            disabled: false,
+            timeout: { catalog: 30_000, execution: 30_000 },
+          },
+        },
+      },
+    });
+    // Native V2 shape: the V1-only keys are gone.
+    expect(config).not.toHaveProperty("provider");
+    expect(config).not.toHaveProperty("small_model");
+    expect(config).not.toHaveProperty("permission");
+    expect(config.permissions).toContainEqual({
+      action: "question",
+      resource: "*",
+      effect: "allow",
+    });
+
+    const turn = await session.startTurn({
+      message: { role: "user", text: "finish" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const types = events.map((event) => event.eventType);
+    expect(types).toContain("turn.completed");
+    const agentDelta = events.find(
+      (event) =>
+        event.eventType === "item.delta" &&
+        event.payload.kind === "agentMessage",
+    );
+    expect(agentDelta?.payload.text).toBe("done [guide](guide.md)");
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "reasoning",
+      ),
+    ).toBe(true);
+    expect(types).toContain("tool.execution.completed");
+    expect(types).toContain("run.result.proposed");
+    expect(
+      events.some(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "dynamicToolCall" &&
+          (event.payload as { item?: { type?: string } }).item?.type ===
+            "tool_result",
+      ),
+    ).toBe(true);
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "agentMessage",
+      )?.payload,
+    ).toMatchObject({ channel: "final", text: "done [guide](guide.md)" });
+    expect(await session.usage()).toMatchObject({
+      input: 3,
+      output: 2,
+      costUsd: 0.001,
+      driverVersion: "2.0.26",
+    });
+    await session.interrupt?.({ turnId: turn.turnId });
+    await session.close({ reason: "test" });
+  });
+
+  it("normalizes a V2 form into a runtime request and replies with a Form.Answer", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-v2-question-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-v2-question-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: v2Environment(),
+    });
+    const session = await driver.openSession({
+      runId: "run-v2-question",
+      normalizedSessionId: "v2-question",
+      workingDirectory: workspace,
+    });
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "native-question" },
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    let requestEvent: PrpEvent | null = null;
+    for (let count = 0; count < 30; count += 1) {
+      const event = await iterator.next();
+      if (event.done) break;
+      if (event.value.eventType === "runtime_request.created") {
+        requestEvent = event.value;
+        break;
+      }
+    }
+    expect(requestEvent?.payload).toMatchObject({
+      request: {
+        schema: "paperclip.runtime_request.v2",
+        type: "input",
+        input: {
+          schema: "paperclip.question_set.v1",
+          questions: [
+            { id: "environment", answerMode: "single_select" },
+            { id: "regions", answerMode: "multi_select" },
+          ],
+        },
+      },
+    });
+    await session.resolveRuntimeRequest?.({
+      requestId: "form-native-1",
+      turnId,
+      resolution: {
+        action: "submit",
+        response: {
+          schema: "paperclip.question_response.v1",
+          answers: {
+            environment: { selectedOptionIds: ["staging"] },
+            regions: { selectedOptionIds: ["US", "EU"] },
+          },
+        },
+      },
+    });
+    const reply = JSON.parse(
+      await readFile(
+        join(root, "v2-question", "data", "fake-form-reply.json"),
+        "utf8",
+      ),
+    );
+    expect(reply.body).toEqual({
+      answer: { environment: "staging", regions: ["US", "EU"] },
+    });
+    await session.close({ reason: "test" });
+  });
+
+  it("normalizes a V2 permission request and replies with a decision", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-v2-permission-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-v2-permission-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: v2Environment(),
+    });
+    const session = await driver.openSession({
+      runId: "run-v2-permission",
+      normalizedSessionId: "v2-permission",
+      workingDirectory: workspace,
+    });
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "native-permission" },
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    let created = false;
+    for (let count = 0; count < 30; count += 1) {
+      const event = await iterator.next();
+      if (event.done) break;
+      if (event.value.eventType === "runtime_request.created") {
+        expect(event.value.payload).toMatchObject({
+          request: { type: "permission", requestId: "permission-native-1" },
+        });
+        created = true;
+        break;
+      }
+    }
+    expect(created).toBe(true);
+    await session.resolveRuntimeRequest?.({
+      requestId: "permission-native-1",
+      turnId,
+      resolution: { action: "accept" },
+    });
+    const reply = JSON.parse(
+      await readFile(
+        join(root, "v2-permission", "data", "fake-permission-reply.json"),
+        "utf8",
+      ),
+    );
+    expect(reply.body).toEqual({ decision: "once" });
+    await session.close({ reason: "test" });
+  });
+
+  it("maps a V2 interruption to a cancelled turn", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-v2-abort-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-v2-abort-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: v2Environment(),
+    });
+    const session = await driver.openSession({
+      runId: "run-v2-abort",
+      normalizedSessionId: "v2-abort",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "session-aborted" },
+    });
+    const events = await collectTurnEvents(session.events());
+    expect(events.map((event) => event.eventType)).toContain("turn.cancelled");
+    await session.close({ reason: "test" });
+  });
 });

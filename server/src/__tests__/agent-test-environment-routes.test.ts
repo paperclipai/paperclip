@@ -127,18 +127,25 @@ vi.mock("../services/ai-connections.js", async (importOriginal) => ({
   aiConnectionService: () => ({ markAuthenticationFailed: mockMarkAuthenticationFailed }),
 }));
 
-function mockManagedRuntime(method: "api_key" | "subscription") {
+function mockManagedRuntime(
+  method: "api_key" | "subscription",
+  overrides?: { provider?: string; env?: Record<string, string> },
+) {
+  const provider = overrides?.provider ?? "anthropic";
+  const env = overrides?.env ?? (method === "api_key" ? { ANTHROPIC_API_KEY: "sk-ant-test-key" } : {});
   mockPrepareManagedAiRuntime.mockImplementation(
     async (_db: unknown, input: { config: Record<string, unknown> }) => ({
       config: {
         ...input.config,
         // The real preparation injects the credential under the provider's
-        // env key; the adoption re-verification reads it from there.
-        env: { ...(method === "api_key" ? { ANTHROPIC_API_KEY: "sk-ant-test-key" } : {}) },
+        // env key; the adoption re-verification reads it from there. Projected
+        // providers (DeepSeek) instead carry it in a harness-specific key, so
+        // the caller supplies the env it expects.
+        env: { ...env },
         managedAiConnection: {
           connectionId: "conn-1",
           grantId: "grant-1",
-          provider: "anthropic",
+          provider,
           method,
           mode: "responsible_user",
           responsibleUserId: "local-board",
@@ -148,7 +155,7 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
       attribution: {
         connectionId: "conn-1",
         grantId: "grant-1",
-        provider: "anthropic",
+        provider,
         method,
         mode: "responsible_user",
         responsibleUserId: "local-board",
@@ -508,6 +515,37 @@ describe("agent test-environment route", () => {
       companyId: "company-1",
       attribution: expect.objectContaining({ connectionId: "conn-1", grantId: "grant-1" }),
     }));
+  });
+
+  it("adopts a projected api_key connection via the harness hello probe, not a canonical env key", async () => {
+    // A projected account carries its key in the harness-projected
+    // `PAPERCLIP_AI_PROVIDER_KEY` and intentionally leaves the provider's
+    // canonical key blank. The adoption check must not demand that canonical
+    // var, or every projected adoption fails with a misleading "key not
+    // available" verdict.
+    mockManagedRuntime("api_key", {
+      provider: "openai",
+      env: { OPENAI_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: "projected-key" },
+    });
+    testEnvironmentSpy.mockResolvedValue({
+      adapterType: "external_test",
+      status: "pass",
+      checks: [{ code: "external_hello_probe_passed", level: "info", message: "The harness verified the projected credential." }],
+      testedAt: new Date(0).toISOString(),
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({
+        adapterConfig: { cwd: "/" },
+        aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("pass");
+    expect(mockValidateAiApiKey).not.toHaveBeenCalled();
+    const codes = res.body.checks.map((check: { code: string }) => check.code);
+    expect(codes).not.toContain("ai_connection_verification_failed");
+    expect(codes).toContain("external_hello_probe_passed");
   });
 
   it("still fails subscription adoption when no hello probe can run", async () => {

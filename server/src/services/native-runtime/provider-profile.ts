@@ -20,6 +20,16 @@ import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acp
 import { compatibleCodexModel } from "./codex-model-fallback.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
+/**
+ * The OpenCode V2 release the runner's server API was qualified against. The
+ * sandbox/provider pack still installs the pinned V1 build; the runtime driver
+ * accepts either qualified release through its version window.
+ */
+export const QUALIFIED_OPENCODE_RUNNER_V2_VERSION = "2.0.26" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSIONS = [
+  QUALIFIED_OPENCODE_RUNNER_VERSION,
+  QUALIFIED_OPENCODE_RUNNER_V2_VERSION,
+] as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;

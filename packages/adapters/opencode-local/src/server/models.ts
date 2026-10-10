@@ -141,6 +141,8 @@ export async function discoverOpenCodeModels(
     cwd?: unknown;
     env?: unknown;
     refresh?: boolean;
+    /** Detected CLI major version; V2 dropped the `models --refresh` flag. */
+    openCodeMajor?: number;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
@@ -175,7 +177,7 @@ export async function discoverOpenCodeModels(
     const result = await runChildProcess(
       `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command,
-      ["models", ...(input.refresh ? ["--refresh"] : [])],
+      ["models", ...(input.refresh && input.openCodeMajor !== 2 ? ["--refresh"] : [])],
       {
         cwd,
         env: runtimeEnv,
@@ -214,6 +216,7 @@ export async function discoverOpenCodeModelsCached(
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
+    openCodeMajor?: number;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
@@ -225,7 +228,7 @@ export async function discoverOpenCodeModelsCached(
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({ command, cwd, env, openCodeMajor: input.openCodeMajor });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
 }
@@ -234,6 +237,7 @@ async function refreshOpenCodeModelsCached(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  openCodeMajor?: number;
 }): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
@@ -242,13 +246,15 @@ async function refreshOpenCodeModelsCached(input: {
   // models.dev cache. Its stdout is a confirmation message, not the refreshed
   // catalog, so enumerate once more after the refresh under the exact same
   // command/cwd/env before deciding whether the configured model exists.
+  // OpenCode V2 dropped the flag; enumerate directly.
   await discoverOpenCodeModels({
     command,
     cwd,
     env,
     refresh: true,
+    openCodeMajor: input.openCodeMajor,
   });
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({ command, cwd, env, openCodeMajor: input.openCodeMajor });
   if (models.length > 0) {
     discoveryCache.set(discoveryCacheKey(command, cwd, env), {
       expiresAt: Date.now() + MODELS_CACHE_TTL_MS,
@@ -269,6 +275,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  openCodeMajor?: number;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
 
@@ -292,6 +299,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
       command: input.command,
       cwd: input.cwd,
       env: input.env,
+      openCodeMajor: input.openCodeMajor,
     });
   } catch (err) {
     // The availability probe is a best-effort pre-flight guard, not a gate. If
@@ -328,6 +336,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
         command: input.command,
         cwd: input.cwd,
         env: input.env,
+        openCodeMajor: input.openCodeMajor,
       });
       if (refreshedModels.some((entry) => entry.id === model)) {
         return refreshedModels;
