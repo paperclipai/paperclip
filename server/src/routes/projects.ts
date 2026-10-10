@@ -435,7 +435,12 @@ export function projectRoutes(db: Db) {
     res.status(result.duplicate ? 200 : 201).json(result.project);
   });
 
-  router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
+  router.patch("/projects/:id", (req, _res, next) => {
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, "budgetMonthlyCents")) {
+      throw unprocessable("Set project budgets through /api/companies/{companyId}/budgets/policies.");
+    }
+    next();
+  }, validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
