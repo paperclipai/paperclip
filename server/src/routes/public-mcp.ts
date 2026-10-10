@@ -157,7 +157,9 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
         let result: Record<string, unknown>;
         switch (method) {
           case "server/discover": result = { supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) } }; break;
-          case "tools/list": result = await listTools(); break;
+          // 2026-07-28 requires cache hints on list results (CacheableResult, SEP-2549). The catalog is
+          // per-principal and has no listChanged notifications, so it must never be shared or reused.
+          case "tools/list": result = { ...await listTools(), ttlMs: 0, cacheScope: "private" }; break;
           case "tools/call": result = await callTool(CallToolRequestSchema.parse(envelope.data)); break;
           case "events/list":
             if (!events) { fail(-32601, "Events are unavailable."); return; }

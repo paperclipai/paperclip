@@ -1195,7 +1195,9 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       .send({ jsonrpc: "2.0", id: 1, method, params: { ...params, ...extra } });
     expect((await rpc("server/discover")).body.result).toMatchObject({ resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {}, events: {} } });
     expect((await rpc("events/list")).body.result.events.map((e: { name: string }) => e.name)).toEqual(publicMcpEventDefinitions.map(e => e.name));
-    expect((await rpc("tools/list")).body.result.tools).toHaveLength(publicMcpCapabilities.length);
+    const toolList = (await rpc("tools/list")).body.result;
+    expect(toolList.tools).toHaveLength(publicMcpCapabilities.length);
+    expect(toolList).toMatchObject({ ttlMs: 0, cacheScope: "private", resultType: "complete" });
     expect((await rpc("tools/call", { name: "paperclip_connection", arguments: {} }, { "Mcp-Name": "=?base64?cGFwZXJjbGlwX2Nvbm5lY3Rpb24=?=" })).body.result.structuredContent.companyId).toBe(f.company.id);
     expect((await rpc("events/list", {}, { "Mcp-Method": "tools/list" })).body.error.code).toBe(-32020);
     expect((await rpc("events/list", { _meta: {} })).body.error.code).toBe(-32602);
