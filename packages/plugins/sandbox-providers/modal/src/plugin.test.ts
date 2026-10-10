@@ -65,31 +65,28 @@ function createFakeSandbox(overrides: FakeSandboxOverrides = {}) {
     execCalls.push({ argv, params });
     return overrides.execImpl ? overrides.execImpl(argv, params) : defaultExec(argv, params);
   });
-  const openedFiles: Array<{ path: string; mode: string; written: Uint8Array | null }> = [];
+  const writtenFiles: Array<{ path: string; text: string }> = [];
   const sandbox = {
     sandboxId: overrides.id ?? "sb-123",
     exec,
     execCalls,
-    openedFiles,
+    writtenFiles,
     setTags: vi.fn().mockResolvedValue(undefined),
     terminate: vi.fn().mockResolvedValue(undefined),
     detach: vi.fn(),
     poll: vi.fn().mockResolvedValue(null),
-    open: vi.fn().mockImplementation(async (path: string, mode: string) => {
-      const entry: { path: string; mode: string; written: Uint8Array | null } = {
-        path,
-        mode,
-        written: null,
-      };
-      openedFiles.push(entry);
-      return {
-        write: vi.fn().mockImplementation(async (data: Uint8Array) => {
-          entry.written = data;
-        }),
-        flush: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-      };
-    }),
+    // Legacy handle-based API, retired by Modal's backend ("The legacy Sandbox filesystem API is no
+    // longer supported"). Kept as a spy so tests can assert the plugin never calls it.
+    open: vi.fn().mockRejectedValue(new Error("legacy Sandbox filesystem API is no longer supported")),
+    // Path-oriented filesystem API (modal SDK >= 0.7.6).
+    filesystem: {
+      writeText: vi.fn().mockImplementation(async (data: string, path: string) => {
+        writtenFiles.push({ path, text: data });
+      }),
+      writeBytes: vi.fn().mockImplementation(async (data: Uint8Array, path: string) => {
+        writtenFiles.push({ path, text: new TextDecoder().decode(data) });
+      }),
+    },
   };
   return sandbox;
 }
@@ -255,13 +252,14 @@ describe("Modal sandbox provider plugin", () => {
       "paperclip-provider": "modal",
       "paperclip-company-id": "c-1",
     }));
-    // First exec is the mkdir for the workspace, second is the probe command.
+    // mkdir for the workspace, then the git safe.directory step, then the probe command.
     expect(sandbox.execCalls[0]?.argv).toEqual([
       "sh",
       "-lc",
       "mkdir -p '/srv/work'",
     ]);
-    expect(sandbox.execCalls[1]?.argv).toEqual([
+    expect(sandbox.execCalls[1]?.argv[2]).toContain("safe.directory '/srv/work'");
+    expect(sandbox.execCalls[2]?.argv).toEqual([
       "sh",
       "-lc",
       "printf paperclip-probe",
@@ -347,6 +345,39 @@ describe("Modal sandbox provider plugin", () => {
       "paperclip-reuse-lease": "true",
     }));
     expect(sandbox.execCalls[0]?.argv).toEqual(["sh", "-lc", "mkdir -p '/srv/work'"]);
+  });
+
+  it("marks the workspace as a git safe.directory so root-owned git commands accept the uploaded repo", async () => {
+    // Registry images (e.g. node:24) run commands as root while the synced workspace keeps the host
+    // uid, so git refuses it ("detected dubious ownership") and the post-run git bundle export fails.
+    const sandbox = createFakeSandbox({ id: "sb-safe" });
+    mockAppFromName.mockResolvedValue({ appId: "ap-1" });
+    mockSandboxesCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      ...baseAcquireParams,
+      config: { ...baseConfig, workdir: "/srv/work" },
+    });
+
+    const gitConfig = sandbox.execCalls.find((call) => call.argv[2]?.includes("safe.directory"));
+    expect(gitConfig?.argv[0]).toBe("sh");
+    expect(gitConfig?.argv[2]).toContain("git config --system --add safe.directory '/srv/work'");
+  });
+
+  it("does not fail workspace setup when git is unavailable for the safe.directory step", async () => {
+    const sandbox = createFakeSandbox({
+      execImpl: async (argv: string[]) =>
+        argv[2]?.includes("safe.directory")
+          ? makeFakeProcess({ exitCode: 127 })
+          : makeFakeProcess({ exitCode: 0 }),
+    });
+    mockAppFromName.mockResolvedValue({ appId: "ap-1" });
+    mockSandboxesCreate.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease?.({ ...baseAcquireParams, config: baseConfig }),
+    ).resolves.toEqual(expect.objectContaining({ providerLeaseId: expect.any(String) }));
+    expect(sandbox.terminate).not.toHaveBeenCalled();
   });
 
   it("terminates the sandbox if acquire workspace setup throws", async () => {
@@ -607,11 +638,10 @@ describe("Modal sandbox provider plugin", () => {
       cwd: "/srv/work",
     });
 
-    expect(sandbox.openedFiles).toHaveLength(1);
-    expect(sandbox.openedFiles[0]?.path).toMatch(/^\/tmp\/paperclip-stdin-/);
-    expect(sandbox.openedFiles[0]?.mode).toBe("w");
-    expect(sandbox.openedFiles[0]?.written).not.toBeNull();
-    expect(new TextDecoder().decode(sandbox.openedFiles[0]!.written!)).toBe("input payload");
+    expect(sandbox.open).not.toHaveBeenCalled();
+    expect(sandbox.writtenFiles).toHaveLength(1);
+    expect(sandbox.writtenFiles[0]?.path).toMatch(/^\/tmp\/paperclip-stdin-/);
+    expect(sandbox.writtenFiles[0]?.text).toBe("input payload");
 
     // First exec is the user command; second is the rm cleanup.
     const userCall = sandbox.execCalls[0]!;

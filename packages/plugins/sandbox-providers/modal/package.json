@@ -50,7 +50,7 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "modal": "^0.7.4"
+    "modal": "^0.7.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
