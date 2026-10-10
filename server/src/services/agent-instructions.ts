@@ -513,6 +513,9 @@ export function agentInstructionsService(db?: Db) {
     const result: Array<{ path: string; size: number }> = [];
     for (const entry of await remote.list(relative || undefined)) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
+      // Only the home-level directory belongs to the runtime; nested names can
+      // be ordinary user content and retain their existing listing behavior.
+      if (!relative && entry.name === ".paperclip-runtime") continue;
       instructionPath(name);
       if (entry.kind === "directory") {
         if (!IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name)) result.push(...await remotePaths(remote, name));

@@ -545,6 +545,32 @@ with open(output,'wb') as out,open(error,'wb') as err:
       rmSync(temp, { recursive: true, force: true });
     }
   });
+  it("bounds initial seed requests and aborts a failed upload without publishing", async () => {
+    const f = fixture();
+    await f.attach();
+    const files = await f.service.files({ ...f.scope, agentId: "agent" });
+    vi.mocked(f.backend.remote).mockImplementation(async (_record, input) => {
+      if (input.action === "seed-begin") return { started: true };
+      if (input.action === "seed-commit") return { seeded: true };
+      return {};
+    });
+    await expect(files.seedBytes({ "large.bin": Buffer.alloc(2 * 1024 * 1024 + 1) })).resolves.toEqual({ seeded: true });
+    const chunks = vi.mocked(f.backend.remote).mock.calls.map(([, input]) => input).filter(input => input.action === "seed-chunk");
+    expect(chunks).toHaveLength(3);
+    expect(chunks.map(input => input.offset)).toEqual([0, 1024 * 1024, 2 * 1024 * 1024]);
+    expect(chunks.every(input => Buffer.from(input.base64 as string, "base64").length <= 1024 * 1024)).toBe(true);
+    vi.mocked(f.backend.remote).mockClear();
+    await expect(files.seedFiles((async function* () {
+      yield { path: "first", offset: 0, bytes: Buffer.from("first") };
+      throw new Error("source disappeared");
+    })())).rejects.toThrow("source disappeared");
+    const actions = vi.mocked(f.backend.remote).mock.calls.map(([, input]) => input.action);
+    expect(actions).toEqual(["seed-begin", "seed-chunk", "seed-abort"]);
+    vi.mocked(f.backend.remote).mockResolvedValue({ started: false });
+    let read = false;
+    await expect(files.seedFiles((async function* () { read = true; yield { path: "unused", offset: 0, bytes: Buffer.alloc(0) }; })())).resolves.toEqual({ seeded: false });
+    expect(read).toBe(false);
+  });
   it("realizes probe cwd before readiness without consuming the initial personal-home seed", async () => {
     const f = fixture();
     const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-probe-")));

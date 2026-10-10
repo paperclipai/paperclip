@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agents, environments, instanceSettings, type Db } from "@paperclipai/db";
@@ -49,7 +50,7 @@ export async function hashPersistentAgentFile(files: NonNullable<Awaited<ReturnT
 export async function seedPersistentAgentHome(files: NonNullable<Awaited<ReturnType<typeof persistentAgentFiles>>>, localRoot: string) {
   try { await files.listPage("", { limit: 1 }); return; }
   catch (error) { if (!isMissingRemoteFile(error)) throw error; }
-  const seed: Record<string, Buffer> = {};
+  const initialFiles: Array<{ name: string; size: number; dev: number; ino: number }> = [];
   let total = 0, count = 0;
   async function walk(relative: string) {
     const entries = await fs.readdir(path.join(localRoot, relative), { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -58,6 +59,7 @@ export async function seedPersistentAgentHome(files: NonNullable<Awaited<ReturnT
     });
     for (const entry of entries) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (!relative && entry.name === ".paperclip-runtime") continue;
       instructionPath(name);
       if (++count > 100_000) throw new Error("Initial agent folder exceeds its entry limit");
       const stat = await fs.lstat(path.join(localRoot, name));
@@ -65,12 +67,28 @@ export async function seedPersistentAgentHome(files: NonNullable<Awaited<ReturnT
       else if (stat.isFile() && stat.nlink === 1) {
         total += stat.size;
         if (stat.size > 256 * 1024 * 1024 || total > 2 * 1024 * 1024 * 1024) throw new Error("Initial agent folder exceeds its storage limit");
-        seed[name] = await fs.readFile(path.join(localRoot, name));
+        initialFiles.push({ name, size: stat.size, dev: stat.dev, ino: stat.ino });
       } else throw new Error("Agent folders cannot contain links or special files");
     }
   }
   await walk("");
-  await files.seedBytes(seed);
+  await files.seedFiles((async function* () {
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (const file of initialFiles) {
+      const handle = await fs.open(path.join(localRoot, file.name), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== file.dev || stat.ino !== file.ino || stat.size !== file.size) throw new Error("Initial agent file changed during setup");
+        let offset = 0;
+        do {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, file.size - offset), offset);
+          if (bytesRead === 0 && offset < file.size) throw new Error("Initial agent file changed during setup");
+          yield { path: file.name, offset, bytes: buffer.subarray(0, bytesRead) };
+          offset += bytesRead;
+        } while (offset < file.size);
+      } finally { await handle.close(); }
+    }
+  })());
 }
 
 /** Translate the domain's transport-neutral errors at the HTTP service edge. */

@@ -1,14 +1,16 @@
 import {
   existsSync,
-  mkdtempSync,
   readFileSync,
+  readdirSync,
+  statSync,
+  mkdtempSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
   mkdirSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -171,6 +173,37 @@ describe("confined computer files", () => {
     expect(f.call({ action: "read", path: "ok", maxBytes: 4 })).toEqual({
       error: "invalid",
     });
+  });
+  it("publishes bounded seed chunks atomically and aborts partial homes", () => {
+    const f = fixture(); const seedId = randomUUID();
+    expect(f.call({ action: "seed-begin", seedId })).toEqual({ started: true });
+    const chunk = Buffer.alloc(1024 * 1024, 19);
+    for (const offset of [0, chunk.length]) expect(f.call({ action: "seed-chunk", seedId, path: "memory/data", offset, base64: chunk.toString("base64") })).toEqual({});
+    expect(existsSync(f.root)).toBe(false);
+    const staging = readdirSync(f.temp).find(name => name.startsWith(".paperclip-seed-"))!;
+    expect(statSync(join(f.temp, staging)).mode & 0o777).toBe(0o700);
+    expect(statSync(join(f.temp, staging, "tree", "memory", "data")).mode & 0o777).toBe(0o600);
+    expect(f.call({ action: "seed-chunk", seedId, path: "memory/data", offset: 0, base64: "" })).toEqual({ error: "conflict" });
+    expect(f.call({ action: "seed-commit", seedId })).toEqual({ seeded: true });
+    expect(readFileSync(join(f.root, "memory", "data"))).toEqual(Buffer.concat([chunk, chunk]));
+    expect(readdirSync(f.temp)).toEqual(["home"]);
+    expect(f.call({ action: "seed-begin", seedId: randomUUID() })).toEqual({ started: false });
+    const g = fixture(); const partial = randomUUID();
+    g.call({ action: "seed-begin", seedId: partial });
+    expect(g.call({ action: "seed-chunk", seedId: partial, path: "../escape", offset: 0, base64: "" })).toEqual({ error: "invalid" });
+    expect(g.call({ action: "seed-chunk", seedId: partial, path: "large", offset: 0, base64: Buffer.alloc(1024 * 1024 + 1).toString("base64") })).toEqual({ error: "invalid" });
+    expect(g.call({ action: "seed-abort", seedId: partial })).toEqual({});
+    expect(existsSync(g.root)).toBe(false);
+    expect(readdirSync(g.temp)).toEqual([]);
+  });
+  it("does not replace a home created while its initial upload was in progress", () => {
+    const f = fixture(); const seedId = randomUUID();
+    f.call({ action: "seed-begin", seedId });
+    f.call({ action: "seed-chunk", seedId, path: "initial", offset: 0, base64: Buffer.from("staged").toString("base64") });
+    mkdirSync(f.root);
+    expect(f.call({ action: "seed-commit", seedId })).toEqual({ seeded: false });
+    expect(readdirSync(f.root)).toEqual([]);
+    expect(readdirSync(f.temp)).toEqual(["home"]);
   });
   it("hashes and deletes files over the read limit while fencing changed bytes", () => {
     const f = fixture();

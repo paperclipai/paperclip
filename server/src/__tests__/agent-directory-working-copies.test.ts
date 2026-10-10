@@ -78,11 +78,15 @@ describe("persistent agent directories", () => {
   it("seeds a persistent execution home before a run or instruction-copy receipt exists", async () => {
     const remoteRoot = "/home/user/paperclip/test/agents/target";
     let exists = false;
-    const seedBytes = vi.fn(async () => { exists = true; });
+    const received: Record<string, Buffer> = {};
+    const seedFiles = vi.fn(async (chunks: AsyncIterable<{ path: string; bytes: Buffer }>) => {
+      for await (const chunk of chunks) received[chunk.path] = Buffer.concat([received[chunk.path] ?? Buffer.alloc(0), chunk.bytes]);
+      exists = true;
+    });
     const remote = { root: remoteRoot, listPage: async () => {
       if (!exists) throw { code: "not_found" };
       return { entries: [], truncated: false };
-    }, seedBytes };
+    }, seedFiles };
     const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
     const environmentId = randomUUID();
     const executionTarget = { kind: "remote", transport: "computer", environmentId,
@@ -91,14 +95,14 @@ describe("persistent agent directories", () => {
       await fs.writeFile(path.join(root, "memory.bin"), Buffer.from([0, 255, 7]));
       expect(await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget })).toBe(remoteRoot);
       expect(lookup).toHaveBeenCalledWith(db, companyId, agentId, environmentId);
-      expect(seedBytes).toHaveBeenCalledOnce();
-      expect(seedBytes).toHaveBeenCalledWith(expect.objectContaining({
+      expect(seedFiles).toHaveBeenCalledOnce();
+      expect(received).toEqual(expect.objectContaining({
         [entryFile]: Buffer.from(initial), "memory.bin": Buffer.from([0, 255, 7]),
       }));
       // Subsequent setup adopts the remote tree, regardless of controller edits.
       await fs.writeFile(path.join(root, "memory.bin"), "stale controller bytes");
       await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget });
-      expect(seedBytes).toHaveBeenCalledOnce();
+      expect(seedFiles).toHaveBeenCalledOnce();
       expect(await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.agentId, agentId))).toEqual([]);
     } finally { lookup.mockRestore(); }
   });

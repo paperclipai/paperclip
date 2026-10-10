@@ -687,9 +687,33 @@ finally:
         base64: bytes.toString("base64"),
         expectedSha256,
       });
+    const seedFiles = async (chunks: AsyncIterable<{ path: string; offset: number; bytes: Buffer }>): Promise<{ seeded: boolean }> => {
+      const seedId = randomUUID();
+      const started = await remote({ action: "seed-begin", seedId });
+      if (!started.started) return { seeded: false };
+      try {
+        for await (const chunk of chunks) {
+          if (chunk.bytes.length > 1024 * 1024) throw new ComputerError("invalid", "Initial home chunk exceeds its size limit");
+          await remote({ action: "seed-chunk", seedId, path: chunk.path, offset: chunk.offset, base64: chunk.bytes.toString("base64") });
+        }
+        return await remote({ action: "seed-commit", seedId });
+      } catch (error) {
+        await remote({ action: "seed-abort", seedId }).catch(() => undefined);
+        throw error;
+      }
+    };
+    const seedBytes = async (files: Record<string, Buffer>): Promise<{ seeded: boolean }> => seedFiles((async function* () {
+      for (const [path, bytes] of Object.entries(files)) {
+        for (let offset = 0; offset < Math.max(1, bytes.length); offset += 1024 * 1024) {
+          yield { path, offset, bytes: bytes.subarray(offset, offset + 1024 * 1024) };
+        }
+      }
+    })());
     return {
       root,
       readBytes,
+      seedFiles,
+      seedBytes,
       writeBytes,
       async read(path: string) {
         const value = await readBytes(path);
@@ -729,29 +753,8 @@ finally:
       ): Promise<{ sha256: string }> {
         return remote({ action: "move", path: from, to, expectedSha256 });
       },
-      async seedBytes(
-        files: Record<string, Buffer>,
-      ): Promise<{ seeded: boolean }> {
-        return remote({
-          action: "seed",
-          files: Object.fromEntries(
-            Object.entries(files).map(([key, value]) => [
-              key,
-              value.toString("base64"),
-            ]),
-          ),
-        });
-      },
       async seed(files: Record<string, string>): Promise<{ seeded: boolean }> {
-        return remote({
-          action: "seed",
-          files: Object.fromEntries(
-            Object.entries(files).map(([key, value]) => [
-              key,
-              Buffer.from(value).toString("base64"),
-            ]),
-          ),
-        });
+        return seedBytes(Object.fromEntries(Object.entries(files).map(([path, content]) => [path, Buffer.from(content)])));
       },
     };
   }
