@@ -36,9 +36,11 @@ import {
   GitHubPolicyEditor,
   GitHubToggle,
 } from "./GitHubBotConfiguration";
+import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 
 export function GitHubRepositoryAccess({
   endpointId,
+  companyId,
   managementUrl,
   pending,
   onRefresh,
@@ -46,12 +48,14 @@ export function GitHubRepositoryAccess({
   onToggleAll,
 }: {
   endpointId: string;
+  companyId: string;
   managementUrl: string;
   pending: boolean;
   onRefresh: () => void;
   onChange: (id: string, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
 }) {
+  const client = useQueryClient();
   const [search, setSearch] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const more = useRef<HTMLDivElement>(null);
@@ -144,6 +148,21 @@ export function GitHubRepositoryAccess({
               }
               onChange={(enabled) => onChange(resource.id, enabled)}
             />
+            <details className="text-sm">
+              <summary className="cursor-pointer text-muted-foreground">Task defaults</summary>
+              <div className="pt-3">
+                <ChatExecutionDefaults
+                  companyId={companyId}
+                  value={resource.executionDefaults}
+                  resource
+                  onSave={async (executionDefaults) => {
+                    await chatEndpointsApi.updateResources(endpointId, [{ id: resource.id, executionDefaults }]);
+                    await client.invalidateQueries({ queryKey: ["github-bot-repositories", endpointId] });
+                    await client.invalidateQueries({ queryKey: ["github-bot-repository-pages", endpointId] });
+                  }}
+                />
+              </div>
+            </details>
           </div>
         ))}
         </div>
@@ -241,6 +260,7 @@ export function GitHubBotManagement({
           <>
             <GitHubRepositoryAccess
               endpointId={endpoint.id}
+              companyId={endpoint.companyId}
               pending={pending}
               managementUrl={
                 endpoint.setup?.github?.managementUrl ??

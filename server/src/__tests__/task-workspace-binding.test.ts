@@ -1,6 +1,6 @@
 import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { createHeartbeatWorkspaceResolver } from "../services/heartbeat/workspaces.js";
+import { assertGitSensitiveAdapterWorkspaceValid, createHeartbeatWorkspaceResolver } from "../services/heartbeat/workspaces.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -91,6 +91,80 @@ const support = await getEmbeddedPostgresTestSupport();
       const explicit = await tasks.create(f.companyId, { ...input, title: "Explicit separate folder", parentId: f.issueId,
         workspaceSelectionSource: "explicit" });
       expect(explicit.executionWorkspaceId).toBeNull();
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+  });
+
+  it.each(["explicit", "channel", "inherited", "legacy"] as const)("keeps a reused task folder's null source authoritative for %s creation", async (source) => {
+    const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+    const settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Organization with unrelated source" }).returning();
+      const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        name: "Unrelated repository", cwd: "/tmp/unrelated-source", isPrimary: true }).returning();
+      let parentId: string | undefined;
+      if (source === "inherited") {
+        const [parent] = await db.insert(issues).values({ companyId: f.companyId, projectId: project.id,
+          title: "Parent sharing task files", executionWorkspaceId: f.workspaceId }).returning();
+        parentId = parent.id;
+      }
+      const created = await tasks.create(f.companyId, {
+        title: "Reuse files under an organizational project", projectId: project.id, parentId,
+        workspaceSelectionActor: f.actor,
+        ...(source === "legacy"
+          ? { executionWorkspaceId: f.workspaceId, projectWorkspaceId: projectWorkspace.id, executionWorkspacePreference: "reuse_existing" }
+          : source === "inherited" ? {}
+            : { workspaceSelection: { kind: "existing" as const, workspaceId: f.workspaceId }, workspaceSelectionSource: source }),
+      });
+      expect(created).toMatchObject({ projectId: project.id, executionWorkspaceId: f.workspaceId, projectWorkspaceId: null });
+      const [original] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(original).toMatchObject({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: f.workspaceId });
+      const { workspace } = await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor);
+      expect(workspace).toMatchObject({ projectId: null, projectWorkspaceId: null, cwd: `/tmp/task-${f.issueId}` });
+      // Both tasks remain eligible for the same local adapter launch; the
+      // organization did not turn the shared task folder into a Git source.
+      for (const task of [created, original]) {
+        await expect(assertGitSensitiveAdapterWorkspaceValid({
+          adapterType: "codex_local", agentId: randomUUID(), issue: task,
+          resolvedWorkspace: { cwd: workspace!.cwd!, source: "task_session", projectId: null, workspaceId: null,
+            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [] },
+          executionWorkspace: { cwd: workspace!.cwd!, baseCwd: workspace!.cwd!, source: "task_session", projectId: null,
+            workspaceId: null, repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null,
+            worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },
+          persistedExecutionWorkspace: workspace, executionTarget: { kind: "local" },
+        })).resolves.toBeUndefined();
+      }
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+  });
+
+  it("replaces an old source with the selected binding's null source on an ordinary update", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db), settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Organizational project" }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        name: "Previous source", cwd: "/tmp/previous-source" }).returning();
+      const [oldWorkspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        projectWorkspaceId: source.id, name: "Previous folder", cwd: source.cwd, mode: "shared_workspace", strategyType: "project_primary" }).returning();
+      const [task] = await db.insert(issues).values({ companyId: f.companyId, projectId: project.id,
+        projectWorkspaceId: source.id, executionWorkspaceId: oldWorkspace.id, title: "Switch to task files" }).returning();
+      await svc.selectTaskWorkspace({ ...f, issueId: task.id, selection: { kind: "task_directory" },
+        expectedBindingRevision: 0, requestKey: "superseded-before-raw-binding" });
+      const updated = await issueService(db).update(task.id, { executionWorkspaceId: f.workspaceId });
+      expect(updated).toMatchObject({ projectId: project.id, executionWorkspaceId: f.workspaceId, projectWorkspaceId: null,
+        workspaceBindingRevision: 1, workspacePendingSelection: null });
+      expect(await svc.applyPendingTaskWorkspaceSelection({ ...f, issueId: task.id, runId: randomUUID() })).toBe(false);
+      expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).workspace)
+        .toMatchObject({ id: f.workspaceId, projectId: null, projectWorkspaceId: null, cwd: `/tmp/task-${f.issueId}` });
+      const [previousWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, oldWorkspace.id));
+      expect(previousWorkspace).toMatchObject({ projectId: project.id, projectWorkspaceId: source.id, cwd: source.cwd });
     } finally {
       await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
     }

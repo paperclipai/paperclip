@@ -7304,6 +7304,7 @@ export function issueService(db: Db) {
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
         projectId: executionWorkspaces.projectId,
+        projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
       })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
@@ -10171,6 +10172,12 @@ export function issueService(db: Db) {
           executionWorkspaceSettings = projection.executionWorkspaceSettings;
           workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
         }
+        if (executionWorkspaceId) {
+          // A durable binding owns its source, including a deliberately absent
+          // source. Organizational defaults and legacy hints cannot replace it.
+          const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
+          projectWorkspaceId = workspace.projectWorkspaceId;
+        }
         const projectGoalId = await getProjectDefaultGoalId(
           tx,
           companyId,
@@ -10217,7 +10224,7 @@ export function issueService(db: Db) {
               ),
             ) as Record<string, unknown> | null;
         }
-        if (!projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
+        if (!executionWorkspaceId && !projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
           const project = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
@@ -10270,14 +10277,6 @@ export function issueService(db: Db) {
             companyId,
             null,
             projectWorkspaceId,
-            tx,
-          );
-        }
-        if (executionWorkspaceId) {
-          await assertValidExecutionWorkspace(
-            companyId,
-            null,
-            executionWorkspaceId,
             tx,
           );
         }

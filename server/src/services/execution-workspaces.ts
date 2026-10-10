@@ -1426,8 +1426,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ne(nativeRunFinalizations.phase, "committed"),
     )).limit(1);
     if (holder || unsettled) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
+    const [selectedWorkspace] = input.patch.executionWorkspaceId
+      ? await tx.select({ projectWorkspaceId: executionWorkspaces.projectWorkspaceId }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.id, input.patch.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId),
+      )).limit(1)
+      : [];
+    if (input.patch.executionWorkspaceId && !selectedWorkspace) throw notFound("Execution workspace not found");
     return { workspaceBindingRevision: task.workspaceBindingRevision + 1,
-      workspacePendingSelection: null, workspaceSelection: null };
+      workspacePendingSelection: null, workspaceSelection: null,
+      ...(selectedWorkspace ? { projectWorkspaceId: selectedWorkspace.projectWorkspaceId } : {}) };
   }
 
   const inspectDisplay = opts.inspectGitCloseReadiness

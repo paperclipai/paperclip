@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildSkillMentionHref, type ChatExecutionDefaults } from "@paperclipai/shared";
 import { EditorAutocompleteProvider } from "@/context/EditorAutocompleteContext";
 import {
   endpoint,
@@ -37,6 +37,8 @@ export function FixtureApi({
       ? { ...endpoint, status: "draft", setup: { github: { stage: "setup" } } } : endpoint);
     client.setQueryData(["github-wizard", endpoint.id], { endpointId: endpoint.id, state: state === "setup" ? "create" : "connected" });
     client.setQueryData(queryKeys.chatEndpoints.list(endpoint.companyId), [endpoint]);
+    client.setQueryData(queryKeys.projects.list(endpoint.companyId), []);
+    client.setQueryData(["channel-workspace-choices", endpoint.companyId], []);
     client.setQueryData(["project-repositories", endpoint.companyId], {
       repositories: [
         { id: "100", fullName: "acme/web", ownerType: "organization", url: "https://github.com/acme/web", connections: ["GitHub"] },
@@ -118,14 +120,16 @@ export function FixtureApi({
       if (path.endsWith("/repositories/refresh")) return Response.json(repos);
       if (path.endsWith("/resources")) {
         if (init?.method === "PUT")
-          repos = repos.map((r) => ({
-            ...r,
-            enabled:
-              body.resources?.find(
-                (change: { id: string; enabled: boolean }) =>
-                  change.id === r.id,
-              )?.enabled ?? r.enabled,
-          }));
+          repos = repos.map((r) => {
+            const change = body.resources?.find(
+              (entry: { id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }) => entry.id === r.id,
+            );
+            return {
+              ...r,
+              enabled: change?.enabled ?? r.enabled,
+              executionDefaults: change?.executionDefaults === undefined ? r.executionDefaults : change.executionDefaults,
+            };
+          });
         const rows =
           state === "empty"
             ? []
