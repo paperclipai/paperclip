@@ -7,6 +7,7 @@ import {
   chatConversations,
   chatDeliveries,
   chatEndpoints,
+  chatExternalPrincipals,
   chatIdentityLinks,
   chatVoiceSessions,
   chatVoiceToolCalls,
@@ -25,7 +26,7 @@ import {
   validateChatQuestionFormSubmission,
 } from "../chat-question-forms.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
-import { currentVoiceCredentialFingerprint } from "../voice/voice-session-store.js";
+import { voiceSessionStore, type VoiceTransaction, currentVoiceCredentialFingerprint } from "../voice/voice-session-store.js";
 import { nativeSha256 } from "./canonical.js";
 
 export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
@@ -443,6 +444,57 @@ async function resolveQuestionResponseChain(
         // Terminal acknowledgment publications use the same interaction ID.
         // Only a question actually delivered before its answer can be proof.
         lte(chatVoiceReplies.deliveredAt, interaction.resolvedAt)));
+    if (proofs.length === 0 && interaction.resolvedByRunId === null) {
+      // The authenticated task-page answer commits the canonical interaction
+      // and response delivery too. Bind it to the original voice requester;
+      // do not require hearing the question or fabricate a signed-tool receipt.
+      const origins = await tx.select({ session: chatVoiceSessions, endpoint: chatEndpoints,
+        connection: toolConnections, conversation: chatConversations, comment: issueComments,
+        inbound: chatDeliveries, link: chatMessageLinks }).from(chatMessageLinks)
+        .innerJoin(issueComments, and(eq(issueComments.id, chatMessageLinks.commentId), eq(issueComments.companyId, binding.companyId), eq(issueComments.issueId, binding.issueId)))
+        .innerJoin(chatDeliveries, and(eq(chatDeliveries.id, chatMessageLinks.deliveryId), eq(chatDeliveries.companyId, binding.companyId), eq(chatDeliveries.endpointId, chatMessageLinks.endpointId), eq(chatDeliveries.conversationId, chatMessageLinks.conversationId)))
+        .innerJoin(chatExternalPrincipals, and(eq(chatExternalPrincipals.id, chatDeliveries.principalId), eq(chatExternalPrincipals.companyId, binding.companyId), eq(chatExternalPrincipals.provider, "speko")))
+        .innerJoin(chatVoiceSessions, and(sql`${chatExternalPrincipals.externalId} = 'voice:' || ${chatVoiceSessions.id}::text`, eq(chatVoiceSessions.companyId, binding.companyId), eq(chatVoiceSessions.endpointId, chatMessageLinks.endpointId), eq(chatVoiceSessions.conversationId, chatMessageLinks.conversationId), eq(chatVoiceSessions.issueId, binding.issueId)))
+        .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, binding.companyId)))
+        .innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, binding.companyId)))
+        .innerJoin(chatConversations, and(eq(chatConversations.id, chatVoiceSessions.conversationId), eq(chatConversations.companyId, binding.companyId), eq(chatConversations.endpointId, chatEndpoints.id)))
+        .where(and(eq(chatMessageLinks.companyId, binding.companyId), eq(chatMessageLinks.commentId, context.sourceCommentId), eq(chatMessageLinks.direction, "inbound")));
+      if (origins.length !== 1) return null;
+      const { session, endpoint, connection, conversation, comment, inbound, link } = origins[0]!;
+      if (comment.deletedAt || inbound.state !== "processed" || comment.authorUserId !== interaction.resolvedByUserId
+        || session.callerId !== interaction.resolvedByUserId || !["member", "instance_admin", "local_board"].includes(session.callerAuthority)
+        || session.assignedAgentId !== binding.agentId || endpoint.assignedAgentId !== binding.agentId
+        || endpoint.provider !== "speko" || !["active", "verifying"].includes(endpoint.status)
+        || !connection.enabled || connection.status !== "active" || connection.transport !== "voice"
+        || session.generation !== record(endpoint.setup).runtimeGeneration
+        || session.credentialFingerprint !== await currentVoiceCredentialFingerprint(tx, binding.companyId, connection.credentialSecretRefs)
+        || !["active", "waiting"].includes(conversation.state) || conversation.issueId !== binding.issueId
+        || (parent && (parent.marker.endpointId !== endpoint.id || parent.marker.conversationId !== conversation.id))) return null;
+      try {
+        const store = voiceSessionStore(tx, { allowLocalBoard: session.callerAuthority === "local_board" });
+        await store.authorizePrincipal(tx as unknown as VoiceTransaction, binding.companyId, endpoint.id, `voice:${session.id}`);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "55P03") throw error;
+        return null;
+      }
+      const marker: Marker = {
+        schema: "paperclip.external_chat_question_response.v1", interactionId: interaction.id,
+        responseDeliveryId: delivery.id, sourceRunId: source.id, sourceCommentId: context.sourceCommentId,
+        endpointId: endpoint.id, conversationId: conversation.id,
+        bindingSha256: nativeSha256({ binding: {companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, agentId: binding.agentId}, responseDeliveryId: delivery.id, payloadSha256: delivery.payloadSha256,
+          sourceRunId: source.id, sourceCommentId: context.sourceCommentId, sourceOrigin: sourceContext.source,
+          ...(parent ? { sourceQuestionResponseSha256: parent.marker.bindingSha256 } : {}),
+          interaction: { id: interaction.id, payload: interaction.payload, result: interaction.result,
+            resolvedAt: interaction.resolvedAt.toISOString(), resolvedByUserId: interaction.resolvedByUserId },
+          boardResponse: { sessionId: session.id, callerId: session.callerId, generation: session.generation,
+            credentialFingerprint: session.credentialFingerprint, inboundId: inbound.id, linkId: link.id },
+          conversationGeneration: conversation.sessionGeneration, wakeId: wake.id }),
+      };
+      if (!mint && nativeSha256(record(context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY])) !== nativeSha256(marker)) return null;
+      return { marker, provider, answeredAtMs: interaction.resolvedAt.getTime(),
+        interactionIds: [...(parent?.interactionIds ?? []), interaction.id],
+        authorizationContext: { ...context, source: "chat:speko", paperclipHarnessCheckedOut: false, paperclipExternalChatExecutionBound: true } };
+    }
     if (proofs.length !== 1) return null;
     const proof = proofs[0]!;
     const { receipt, session, reply, publication, endpoint, connection, conversation } = proof;

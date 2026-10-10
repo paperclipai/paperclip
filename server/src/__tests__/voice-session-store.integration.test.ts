@@ -460,6 +460,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.id)))[0]).toMatchObject({ status: "answered", resolvedByUserId: f.callerId });
     expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId))).toHaveLength(0);
   });
+  it("presents an unanswered question again after reconnect so the caller can answer it", async () => {
+    const f = await questionFixture();
+    await f.store.runTool(f.toolInput("get_updates", {cursor: 0}));
+    await db.update(chatVoiceSessions).set({state: "ended", endedAt: new Date()}).where(eq(chatVoiceSessions.id, f.sessionId));
+    const resumed = await f.store.reserve({...f.request, idempotencyKey: randomUUID()});
+    if (!resumed.created) throw new Error("Expected resumed call");
+    const providerSessionId = randomUUID();
+    await db.update(chatVoiceSessions).set({state: "active", providerSessionId}).where(eq(chatVoiceSessions.id, resumed.session.id));
+    const tool = (name: SpekoToolEnvelope["tool"], args: SpekoToolEnvelope["args"]) => {
+      const toolId = randomUUID();
+      const envelope = {session_id: providerSessionId, tool_call_id: toolId, idempotency_key: `${providerSessionId}:${toolId}`, tool: name, args} as SpekoToolEnvelope;
+      return f.store.runTool({...f.toolInput(name, args), sessionId: resumed.session.id, token: resumed.token,
+        envelope, webhookId: toolId, fingerprint: createHash("sha256").update(JSON.stringify(envelope)).digest("hex")});
+    };
+    expect(await f.store.notification(f.companyId, resumed.session.id, f.callerId)).not.toBeNull();
+    expect(await tool("get_updates", {cursor: 0})).toMatchObject({updates: [{question: {interactionId: f.id}}]});
+    expect(await tool("answer_question", {interactionId: f.id, answers: [{questionId: "color", optionIds: ["cobalt"]}]})).toMatchObject({status: "answered"});
+    expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, f.id))).toHaveLength(1);
+  });
   it("refuses voice answers when the exact question recipient changes", async () => {
     const f = await questionFixture();
     await f.store.runTool(f.toolInput("get_updates", { cursor: 0 }));
@@ -741,6 +760,24 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(agent.defaultEnvironmentId).not.toBe(sandboxId);
     await db.update(issues).set({executionWorkspaceSettings: {mode: "isolated_workspace", environmentId: randomUUID()}}).where(eq(issues.id, task.id));
     await expect(f.tool("get_updates", {cursor: 0})).rejects.toMatchObject({status: 403});
+  });
+  it("keeps accepted guest work in its saved sandbox when line settings change, but rejects an archived sandbox", async () => {
+    const first = randomUUID(), next = randomUUID();
+    await db.insert(environments).values([{id: first, name: first, driver: "sandbox", config: {provider: "daytona"}},
+      {id: next, name: next, driver: "sandbox", config: {provider: "daytona"}}]);
+    const f = await inboundFixture(true, first);
+    await f.tool("submit_request", {text: "Inspect disk space"});
+    await db.update(chatVoicePhoneLines).set({lowTrustEnvironmentId: next}).where(eq(chatVoicePhoneLines.endpointId, f.endpointId));
+    expect(await f.tool("submit_request", {text: "Also check free space"})).toMatchObject({status: "accepted"});
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.call.intakeIssueId!));
+    expect(task.executionWorkspaceSettings?.environmentId).toBe(first);
+    const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.call.sessionId!));
+    await db.update(chatVoiceSessions).set({state: "ended", endedAt: new Date()}).where(eq(chatVoiceSessions.id, session.id));
+    await db.update(chatVoiceInboundCalls).set({state: "ended"}).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    const principal = `voice:${session.id}`;
+    expect(await db.transaction(tx => voiceSessionStore(db, {allowLocalBoard: false}).authorizePrincipal(tx, f.companyId, f.endpointId, principal))).toMatchObject({allowed: true});
+    await db.update(environments).set({status: "archived"}).where(eq(environments.id, first));
+    await expect(db.transaction(tx => voiceSessionStore(db, {allowLocalBoard: false}).authorizePrincipal(tx, f.companyId, f.endpointId, principal))).rejects.toMatchObject({status: 403});
   });
   it("confines explicitly enabled public calls to one new low-trust conversation task", async () => {
     const f = await inboundFixture(true), toolId = randomUUID();
