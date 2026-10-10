@@ -623,6 +623,8 @@ export {
   type IssueThreadInteractionContinuationPolicy,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
+  ISSUE_COMMENT_PAGE_MAX_LIMIT,
+  ISSUE_COMMENT_REORDER_IDS_LIMIT,
   type BuiltInIssueOriginKind,
   type PluginIssueOriginKind,
   type IssueOriginKind,

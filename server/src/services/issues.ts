@@ -104,6 +104,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  ISSUE_COMMENT_PAGE_MAX_LIMIT,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -214,7 +215,6 @@ const ALL_ISSUE_STATUSES = [
   "done",
   "cancelled",
 ];
-const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const MAX_CHAT_PRESENTATION_ATTACHMENTS = 20;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -12285,7 +12285,7 @@ export function issueService(db: Db) {
       const afterCommentId = opts?.afterCommentId?.trim() || null;
       const limit =
         opts?.limit && opts.limit > 0
-          ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
+          ? Math.min(Math.floor(opts.limit), ISSUE_COMMENT_PAGE_MAX_LIMIT)
           : null;
 
       const conditions = [eq(issueComments.issueId, issueId)];
