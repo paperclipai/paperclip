@@ -93,6 +93,7 @@ import {
   notFound,
 } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { providerLoginHoldService } from "../provider-login-hold.js";
 import { publishLiveEvent } from "../live-events.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import {
@@ -340,6 +341,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 /** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
+  const providerLoginHold = providerLoginHoldService(db);
   const {
     setRunStatus,
     setWakeupStatus,
@@ -1010,6 +1012,26 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     if (dailyCapBlock) {
       await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      return null;
+    }
+
+    // Agents in one login lane share a provider login. While that login is
+    // rejected, every run in the lane fails the same way. Keep the run queued
+    // until one probe run proves that the login works again.
+    const loginHold = await providerLoginHold.evaluate(run);
+    if (loginHold.hold) {
+      logger.warn(
+        {
+          runId: run.id,
+          companyId: run.companyId,
+          agentId: run.agentId,
+          errorCode: loginHold.errorCode,
+          failures: loginHold.failures,
+          reason: loginHold.reason,
+          holdUntil: loginHold.holdUntil.toISOString(),
+        },
+        "Queued run held because the provider login of its lane is failing",
+      );
       return null;
     }
 
