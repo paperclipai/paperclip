@@ -268,6 +268,7 @@ const plugin = definePlugin({
         throw error;
       }
     }
+    let commandFailed = false;
     try {
       const command = stdinPath
         ? ["sh", "-c", `exec "$@" < ${shellQuote(stdinPath)}`, "sh", params.command, ...(params.args ?? [])]
@@ -281,16 +282,25 @@ const plugin = definePlugin({
       // byte-exact output in stdoutBytes/stderrBytes when it flags truncation.
       const stdout = result.stdoutTruncated ? Buffer.from(result.stdoutBytes).toString("utf8") : result.stdout;
       const stderr = result.stderrTruncated ? Buffer.from(result.stderrBytes).toString("utf8") : result.stderr;
+      commandFailed = result.exitCode !== 0;
       return { exitCode: result.exitCode, timedOut: false, stdout, stderr };
     } catch (error) {
+      commandFailed = true;
       if (error instanceof SmolError && error.code === "TIMEOUT") {
         return { exitCode: null, timedOut: true, stdout: "", stderr: `${error.message}\n` };
       }
       throw error;
     } finally {
       if (stdinPath) {
-        const removed = await machine.exec(["rm", "-f", "--", stdinPath], { timeout: 15 });
-        if (removed.exitCode !== 0) throw new Error(`Could not remove staged sandbox input: ${removed.stderr}`);
+        try {
+          const removed = await machine.exec(["rm", "-f", "--", stdinPath], { timeout: 15 });
+          if (removed.exitCode !== 0) throw new Error(`Could not remove staged sandbox input: ${removed.stderr}`);
+        } catch (cleanupError) {
+          // Keep the command's original failure or timeout visible. Report the
+          // cleanup failure separately so the operator can retry disposal.
+          if (commandFailed) console.warn("Smol Machines staged input cleanup failed:", cleanupError);
+          else throw cleanupError;
+        }
       }
     }
   },

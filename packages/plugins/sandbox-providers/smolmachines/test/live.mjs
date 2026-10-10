@@ -6,7 +6,7 @@ const handlers = plugin.definition;
 const base = { driverKey: "smolmachines", companyId: "smol-smoke-company", environmentId: "smol-smoke-env" };
 
 async function verify(target) {
-  const config = { target, image: target === "cloud" ? process.env.SMOL_TEST_CLOUD_IMAGE ?? "node:24-alpine" : "node:24-alpine", cpus: 1, memoryMb: 1024, ttlSeconds: 600, reuseLease: target === "cloud" };
+  const config = { target, image: target === "cloud" ? process.env.SMOL_TEST_CLOUD_IMAGE ?? "node:24-alpine" : "node:24-alpine", cpus: 1, memoryMb: 1024, ttlSeconds: 600, reuseLease: true };
   let lease;
   try {
     lease = await handlers.onEnvironmentAcquireLease({ ...base, runId: `smol-smoke-${Date.now()}`, config });

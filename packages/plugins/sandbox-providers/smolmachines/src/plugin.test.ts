@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SmolError } from "smolmachines";
 
 const { create, connect } = vi.hoisted(() => ({ create: vi.fn(), connect: vi.fn() }));
 vi.mock("smolmachines", () => ({
@@ -70,6 +71,57 @@ describe("Smol Machines provider", () => {
     expect(vm.exec.mock.calls[2]?.[0]).toEqual(["rm", "-f", "--", expect.stringMatching(/^\/home\/paperclip\/\.paperclip-stdin-/)]);
   });
 
+  it("reports failed stdin cleanup without hiding a failed command or timeout", async () => {
+    const vm = machine(); connect.mockResolvedValue(vm);
+    const cleanupError = new Error("VM unavailable during cleanup");
+    const commandError = new Error("command disconnected");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      vm.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "/home/paperclip", stderr: "" })
+        .mockRejectedValueOnce(commandError).mockRejectedValueOnce(cleanupError);
+      await expect(plugin.definition.onEnvironmentExecute?.({
+        ...base, config: { target: "cloud" },
+        lease: { providerLeaseId: "mach-123" }, command: "cat", stdin: "input",
+      })).rejects.toBe(commandError);
+      expect(warning).toHaveBeenCalledWith("Smol Machines staged input cleanup failed:", cleanupError);
+
+      warning.mockClear();
+      vm.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "/home/paperclip", stderr: "" })
+        .mockRejectedValueOnce(new SmolError("TIMEOUT", "command timed out"))
+        .mockRejectedValueOnce(cleanupError);
+      const timedOut = await plugin.definition.onEnvironmentExecute?.({
+        ...base, config: { target: "cloud" },
+        lease: { providerLeaseId: "mach-123" }, command: "cat", stdin: "input",
+      });
+      expect(timedOut).toMatchObject({ timedOut: true, exitCode: null, stderr: "command timed out\n" });
+      expect(warning).toHaveBeenCalledWith("Smol Machines staged input cleanup failed:", cleanupError);
+
+      warning.mockClear();
+      vm.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "/home/paperclip", stderr: "" })
+        .mockResolvedValueOnce({ exitCode: 7, stdout: "", stderr: "bad exit" })
+        .mockRejectedValueOnce(cleanupError);
+      const nonzero = await plugin.definition.onEnvironmentExecute?.({
+        ...base, config: { target: "cloud" },
+        lease: { providerLeaseId: "mach-123" }, command: "cat", stdin: "input",
+      });
+      expect(nonzero).toMatchObject({ exitCode: 7, stderr: "bad exit" });
+      expect(warning).toHaveBeenCalledWith("Smol Machines staged input cleanup failed:", cleanupError);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("surfaces cleanup errors when a command succeeds", async () => {
+    const vm = machine(); connect.mockResolvedValue(vm);
+    vm.exec.mockResolvedValueOnce({ exitCode: 0, stdout: "/home/paperclip", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "ok", stderr: "" })
+      .mockRejectedValueOnce(new Error("cleanup failed"));
+    await expect(plugin.definition.onEnvironmentExecute?.({
+      ...base, config: { target: "cloud" },
+      lease: { providerLeaseId: "mach-123" }, command: "cat", stdin: "input",
+    })).rejects.toThrow("cleanup failed");
+  });
+
   it("returns full Cloud output when convenience text is truncated", async () => {
     const vm = machine(); connect.mockResolvedValue(vm);
     vm.exec.mockResolvedValueOnce({
@@ -106,6 +158,18 @@ describe("Smol Machines provider", () => {
     expect(vm.stop).toHaveBeenCalledTimes(1);
     await plugin.definition.onEnvironmentResumeLease?.({ ...base, config, providerLeaseId: lease!.providerLeaseId!, leaseMetadata: lease!.metadata });
     expect(vm.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops and resumes a reusable local lease", async () => {
+    const vm = machine(); create.mockResolvedValue(vm); connect.mockResolvedValue(vm);
+    const config = { target: "local", reuseLease: true };
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({ ...acquireParams, config });
+    await plugin.definition.onEnvironmentReleaseLease?.({ ...base, config, providerLeaseId: lease!.providerLeaseId, leaseMetadata: lease!.metadata });
+    expect(vm.stop).toHaveBeenCalledOnce();
+    expect(vm.delete).not.toHaveBeenCalled();
+    const resumed = await plugin.definition.onEnvironmentResumeLease?.({ ...base, config, providerLeaseId: lease!.providerLeaseId!, leaseMetadata: lease!.metadata });
+    expect(resumed?.providerLeaseId).toBe(lease?.providerLeaseId);
+    expect(vm.start).not.toHaveBeenCalled();
   });
 
   it("keeps Cloud expiry across resume and refuses expired leases", async () => {
