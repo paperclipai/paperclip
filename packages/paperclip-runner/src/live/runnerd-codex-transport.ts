@@ -3443,6 +3443,11 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
+function withComputerProcessInstructions(instructions: string, persistentAgentHome?: string): string {
+  if (!persistentAgentHome) return instructions;
+  return `${instructions}\n\nComputer runtime: files in AGENT_HOME persist across turns. A dev server needed between warm turns must survive the shell tool's process-group cleanup: use a detached session, for example \`nohup setsid <command> </dev/null >dev-server.log 2>&1 &\`, and verify its listener from a separate command after the launching command returns. Detached processes still belong to this runner and stop when its warm timeout expires. Do not create services or change runner ownership to keep them alive.`;
+}
+
 export function createRunnerdCodexAppServerArgs(input: {
   environment: NodeJS.ProcessEnv | undefined;
   codexHome: string;
@@ -4826,9 +4831,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const includeCodexCollaborationInstructions =
       provider === "codex" &&
       record(params.config).include_collaboration_mode_instructions !== false;
-    const unboundBaseInstructions = String(
+    const unboundBaseInstructions = withComputerProcessInstructions(String(
       params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent.",
-    );
+    ), this.options.persistentAgentHome);
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
         ? unboundBaseInstructions.replaceAll(
@@ -5445,7 +5450,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         runtimeContext,
         this.options.baseInstructions === undefined
           ? undefined
-          : { text: this.options.baseInstructions, context: sourceRuntimeContext },
+          : { text: withComputerProcessInstructions(this.options.baseInstructions, this.options.persistentAgentHome), context: sourceRuntimeContext },
       );
       if (provider === "codex") {
         // These controller-owned, token-free paths belong to the new run.
