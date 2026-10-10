@@ -239,6 +239,7 @@ async function spawnText(
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let stdinError: Error | null = null;
 
     const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
       if (settled) return;
@@ -308,21 +309,32 @@ async function spawnText(
       clearTimers();
       if (settled) return;
       settled = true;
-      if (code === 0) {
+      if (code === 0 && !stdinError) {
         resolve({ stdout, stderr });
         return;
       }
-      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+      const inputFailure = stdinError ? "Process closed stdin before command input completed." : "";
+      reject(Object.assign(new Error(stderr.trim() || inputFailure || stdout.trim() || `Process exited with code ${code ?? -1}`), {
         stdout,
-        stderr,
-        code,
+        stderr: stderr || inputFailure,
+        code: code === 0 && stdinError ? null : code,
         signal,
         killed: timedOut,
       }));
     });
 
     if (options.stdin != null && child.stdin) {
-      child.stdin.end(options.stdin);
+      // SSH may exit or close its pipe while a multi-megabyte upload is still
+      // queued. A stream error is independent of the ChildProcess error event.
+      // Observe it before writing, then preserve the remote exit diagnostics
+      // when close arrives instead of letting EPIPE crash the controller.
+      child.stdin.on("error", (error) => { stdinError = error; });
+      try {
+        child.stdin.end(options.stdin);
+      } catch (error) {
+        stdinError = error instanceof Error ? error : new Error(String(error));
+        child.stdin.destroy();
+      }
     }
   });
 }

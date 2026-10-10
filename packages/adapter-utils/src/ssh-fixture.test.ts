@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   buildSshSpawnTarget,
+  createSshCommandManagedRuntimeRunner,
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
@@ -180,6 +181,28 @@ describe("ssh env-lab fixture", () => {
   // Backstop: if a throw inside afterEach ever leaves an entry on the stack,
   // this drains it too instead of stranding a listener until the process exits.
   afterAll(drainFixtureTeardowns);
+
+  it.each([0, 7])("handles a closed SSH input pipe without losing exit diagnostics (exit %i)", async (exitCode) => {
+    const rootDir = await createFixtureRootDir();
+    const previousPath = process.env.PATH;
+    await writeFile(path.join(rootDir, "ssh"), `#!/bin/sh
+exec 0<&-
+printf 'remote rejected upload' >&2
+sleep 0.05
+exit ${exitCode}
+`, { mode: 0o700 });
+    process.env.PATH = `${rootDir}${path.delimiter}${previousPath ?? ""}`;
+    try {
+      const runner = createSshCommandManagedRuntimeRunner({ spec: UNREACHABLE_SSH_SPEC });
+      const result = await runner.execute({ command: "cat", stdin: "x".repeat(8 * 1024 * 1024), timeoutMs: 5000 });
+      expect(result.exitCode).toBe(exitCode === 0 ? null : exitCode);
+      expect(result.stderr).toBe("remote rejected upload");
+      expect(result.timedOut).toBe(false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
 
   it("starts an isolated sshd fixture and executes commands through it", async () => {
     const rootDir = await createFixtureRootDir();
