@@ -74,6 +74,12 @@ function installMockFsWatcher() {
   return { fakeWatcher, handlers };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe("resolvePluginWatchTargets", () => {
   it("watches package metadata plus concrete declared runtime files", () => {
     const pluginDir = makeTempPluginDir();
@@ -143,6 +149,213 @@ describe("createPluginDevWatcher", () => {
 
     expect(lifecycle.restartWorker).toHaveBeenCalledWith("plugin-1");
 
+    devWatcher.close();
+  });
+
+  it("replaces the watcher when a loaded plugin moves to another local path", async () => {
+    vi.useFakeTimers();
+    const firstDir = makeTempPluginDir();
+    const secondDir = makeTempPluginDir();
+    writePluginPackage(firstDir);
+    writePluginPackage(secondDir);
+    const first = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    let packagePath = firstDir;
+    const devWatcher = createPluginDevWatcher(lifecycle as never, async () => packagePath);
+    devWatcher.watch("plugin-1", firstDir);
+    first.handlers.all?.("change", path.join(firstDir, "dist", "worker.js"));
+
+    const second = installMockFsWatcher();
+    packagePath = secondDir;
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+    await Promise.resolve();
+
+    expect(first.fakeWatcher.close).toHaveBeenCalledTimes(1);
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(2);
+    expect(chokidarMock.watch.mock.calls[1]?.[0]).toContain(path.join(secondDir, "dist", "worker.js"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+
+    // Closing a watcher is asynchronous. Late callbacks from the old watcher
+    // must neither restart the worker nor close its replacement.
+    first.handlers.all?.("change", path.join(firstDir, "dist", "worker.js"));
+    first.handlers.error?.(new Error("old directory removed"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+    expect(second.fakeWatcher.close).not.toHaveBeenCalled();
+
+    second.handlers.all?.("change", path.join(secondDir, "dist", "worker.js"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).toHaveBeenCalledTimes(1);
+    expect(lifecycle.restartWorker).toHaveBeenCalledWith("plugin-1");
+    devWatcher.close();
+    expect(second.fakeWatcher.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one watcher for repeated registrations of the same resolved path", () => {
+    const pluginDir = makeTempPluginDir();
+    writePluginPackage(pluginDir);
+    const { fakeWatcher } = installMockFsWatcher();
+    const devWatcher = createPluginDevWatcher(createLifecycle() as never);
+
+    devWatcher.watch("plugin-1", pluginDir);
+    devWatcher.watch("plugin-1", path.join(pluginDir, "dist", ".."));
+
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(1);
+    expect(fakeWatcher.close).not.toHaveBeenCalled();
+    devWatcher.close();
+  });
+
+  it("stops watching the old path when the replacement directory is unavailable", async () => {
+    vi.useFakeTimers();
+    const pluginDir = makeTempPluginDir();
+    writePluginPackage(pluginDir);
+    const { fakeWatcher, handlers } = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const devWatcher = createPluginDevWatcher(lifecycle as never);
+    devWatcher.watch("plugin-1", pluginDir);
+    handlers.all?.("change", path.join(pluginDir, "dist", "worker.js"));
+
+    devWatcher.watch("plugin-1", path.join(pluginDir, "missing"));
+
+    expect(fakeWatcher.close).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(1);
+    devWatcher.close();
+  });
+
+  it("stops watching a loaded plugin that no longer has a local package path", async () => {
+    vi.useFakeTimers();
+    const pluginDir = makeTempPluginDir();
+    writePluginPackage(pluginDir);
+    const { fakeWatcher, handlers } = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const devWatcher = createPluginDevWatcher(lifecycle as never, async () => null);
+    devWatcher.watch("plugin-1", pluginDir);
+    handlers.all?.("change", path.join(pluginDir, "dist", "worker.js"));
+
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+    await Promise.resolve();
+
+    expect(fakeWatcher.close).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+    devWatcher.close();
+  });
+
+  it.each(["new path", "no local path"])("ignores an older path lookup after a newer %s registration", async (replacement) => {
+    const firstDir = makeTempPluginDir();
+    const secondDir = makeTempPluginDir();
+    writePluginPackage(firstDir);
+    writePluginPackage(secondDir);
+    const first = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const oldLookup = deferred<string | null>();
+    const newLookup = deferred<string | null>();
+    const resolver = vi.fn().mockReturnValueOnce(oldLookup.promise).mockReturnValueOnce(newLookup.promise);
+    const devWatcher = createPluginDevWatcher(lifecycle as never, resolver);
+    devWatcher.watch("plugin-1", firstDir);
+
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+    const second = installMockFsWatcher();
+    newLookup.resolve(replacement === "new path" ? secondDir : null);
+    await Promise.resolve();
+    expect(first.fakeWatcher.close).toHaveBeenCalledTimes(1);
+    const expectedWatchCount = replacement === "new path" ? 2 : 1;
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(expectedWatchCount);
+
+    oldLookup.resolve(firstDir);
+    await Promise.resolve();
+
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(expectedWatchCount);
+    expect(second.fakeWatcher.close).not.toHaveBeenCalled();
+    devWatcher.close();
+  });
+
+  it.each(["watch", "unwatch", "close"])("invalidates pending path lookups on a manual %s", async (action) => {
+    const firstDir = makeTempPluginDir();
+    const secondDir = makeTempPluginDir();
+    writePluginPackage(firstDir);
+    writePluginPackage(secondDir);
+    installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const lookup = deferred<string | null>();
+    const devWatcher = createPluginDevWatcher(lifecycle as never, () => lookup.promise);
+    if (action !== "close") devWatcher.watch("plugin-1", firstDir);
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+
+    if (action === "watch") devWatcher.watch("plugin-1", firstDir);
+    if (action === "unwatch") devWatcher.unwatch("plugin-1");
+    if (action === "close") devWatcher.close();
+    lookup.resolve(secondDir);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(action === "close" ? 0 : 1);
+    devWatcher.close();
+  });
+
+  it("does not reuse a pending lookup identity after unwatching", async () => {
+    const pluginDir = makeTempPluginDir();
+    writePluginPackage(pluginDir);
+    installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const oldLookup = deferred<string | null>();
+    const newLookup = deferred<string | null>();
+    const resolver = vi.fn().mockReturnValueOnce(oldLookup.promise).mockReturnValueOnce(newLookup.promise);
+    const devWatcher = createPluginDevWatcher(lifecycle as never, resolver);
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+    devWatcher.unwatch("plugin-1");
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+
+    oldLookup.resolve(pluginDir);
+    await Promise.resolve();
+    expect(chokidarMock.watch).not.toHaveBeenCalled();
+    newLookup.resolve(pluginDir);
+    await Promise.resolve();
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(1);
+    devWatcher.close();
+  });
+
+  it.each(["current", "replaced"])("keeps a pending replacement lookup when the %s watcher reports an error", async (state) => {
+    vi.useFakeTimers();
+    const firstDir = makeTempPluginDir();
+    const secondDir = makeTempPluginDir();
+    const replacementDir = makeTempPluginDir();
+    [firstDir, secondDir, replacementDir].forEach(writePluginPackage);
+    const first = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const lookup = deferred<string | null>();
+    const devWatcher = createPluginDevWatcher(lifecycle as never, () => lookup.promise);
+    devWatcher.watch("plugin-1", firstDir);
+    let active = first;
+    if (state === "replaced") {
+      active = installMockFsWatcher();
+      devWatcher.watch("plugin-1", secondDir);
+    }
+    first.handlers.all?.("change", path.join(firstDir, "dist", "worker.js"));
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+
+    first.handlers.error?.(new Error("previous directory removed"));
+
+    expect(first.fakeWatcher.close).toHaveBeenCalledTimes(1);
+    if (state === "replaced") expect(active.fakeWatcher.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+    const replacement = installMockFsWatcher();
+    lookup.resolve(replacementDir);
+    await Promise.resolve();
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(state === "current" ? 2 : 3);
+    expect(chokidarMock.watch.mock.lastCall?.[0]).toContain(path.join(replacementDir, "dist", "worker.js"));
+
+    first.handlers.error?.(new Error("late old watcher error"));
+    expect(replacement.fakeWatcher.close).not.toHaveBeenCalled();
+    replacement.handlers.all?.("change", path.join(replacementDir, "dist", "worker.js"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).toHaveBeenCalledTimes(1);
+    expect(lifecycle.restartWorker).toHaveBeenCalledWith("plugin-1");
     devWatcher.close();
   });
 });
