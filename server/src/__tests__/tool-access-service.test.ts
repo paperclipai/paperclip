@@ -16244,6 +16244,160 @@ describeEmbeddedPostgres("tool access service", () => {
     ).resolves.toEqual([{ targetType: "agent", targetId: agent.id }]);
   });
 
+  it("serializes simultaneous OAuth callbacks for the same dedicated agent", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_RACE_EXAMPLE_TEST_CLIENT_ID",
+      "agent-race-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_RACE_EXAMPLE_TEST_CLIENT_SECRET",
+      "agent-race-client-secret",
+    );
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
+    const company = await createCompany(db);
+    const firstManagerId = `agent-race-manager-a-${randomUUID()}`;
+    const secondManagerId = `agent-race-manager-b-${randomUUID()}`;
+    await grantBoardUser(db, company.id, firstManagerId, [
+      "tools:manage_connections",
+    ]);
+    await grantBoardUser(db, company.id, secondManagerId, [
+      "tools:manage_connections",
+    ]);
+    const agent = await createAgent(db, company.id);
+    const firstApp = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", firstManagerId),
+    );
+    const secondApp = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", secondManagerId),
+    );
+    let tokenRequestCount = 0;
+    let releaseTokenRequests!: () => void;
+    const bothTokenRequestsStarted = new Promise<void>((resolve) => {
+      releaseTokenRequests = resolve;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://agent-race.example.test/mcp") {
+        const authorization = new Headers(init?.headers).get("authorization");
+        if (authorization) {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: {
+              tools: [
+                { name: "agent_read", annotations: { readOnlyHint: true } },
+              ],
+            },
+          });
+        }
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "www-authenticate"
+                ? 'Bearer resource_metadata="https://agent-race.example.test/.well-known/oauth-protected-resource"'
+                : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (
+        href ===
+        "https://agent-race.example.test/.well-known/oauth-protected-resource"
+      ) {
+        return mcpHttpResponse({
+          authorization_endpoint:
+            "https://agent-race.example.test/oauth/authorize",
+          token_endpoint: "https://agent-race.example.test/oauth/token",
+          scopes_supported: ["tools.read"],
+        });
+      }
+      if (href === "https://agent-race.example.test/oauth/token") {
+        tokenRequestCount += 1;
+        if (tokenRequestCount === 2) releaseTokenRequests();
+        await bothTokenRequestsStarted;
+        return mcpHttpResponse({
+          access_token: `dedicated-agent-access-token-${tokenRequestCount}`,
+          refresh_token: `dedicated-agent-refresh-token-${tokenRequestCount}`,
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "tools.read",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const firstStart = await request(firstApp)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://agent-race.example.test/mcp",
+        name: "Dedicated agent OAuth race MCP",
+        grantKind: "agent",
+        subjectAgentId: agent.id,
+      })
+      .expect(201);
+    const secondStart = await request(secondApp)
+      .post(`/api/tools/oauth/${firstStart.body.connectionId}/start`)
+      .send({ asAgentId: agent.id })
+      .expect(200);
+    const firstState = new URL(firstStart.body.auth.startUrl).searchParams.get(
+      "state",
+    )!;
+    const secondState = new URL(secondStart.body.authorizationUrl).searchParams.get(
+      "state",
+    )!;
+
+    await db.execute(sql`
+      CREATE OR REPLACE FUNCTION test_pause_agent_grant_insert()
+      RETURNS trigger AS $$
+      BEGIN
+        IF NEW.kind = 'agent' THEN
+          PERFORM pg_sleep(0.5);
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await db.execute(sql`
+      CREATE TRIGGER test_pause_agent_grant_insert
+      BEFORE INSERT ON connection_grants
+      FOR EACH ROW EXECUTE FUNCTION test_pause_agent_grant_insert()
+    `);
+
+    try {
+      await Promise.all([
+        request(firstApp)
+          .get("/api/tools/oauth/callback")
+          .query({ state: firstState, code: "race-code-a" })
+          .expect(200),
+        request(secondApp)
+          .get("/api/tools/oauth/callback")
+          .query({ state: secondState, code: "race-code-b" })
+          .expect(200),
+      ]);
+    } finally {
+      await db.execute(sql`DROP TRIGGER IF EXISTS test_pause_agent_grant_insert ON connection_grants`);
+      await db.execute(sql`DROP FUNCTION IF EXISTS test_pause_agent_grant_insert()`);
+    }
+
+    await expect(
+      db
+        .select()
+        .from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, firstStart.body.connectionId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        kind: "agent",
+        subjectAgentId: agent.id,
+        status: "active",
+      }),
+    ]);
+  });
+
   it("rejects a dedicated-agent OAuth callback after its manager loses authority", async () => {
     vi.stubEnv(
       "PAPERCLIP_TOOL_OAUTH_AGENT_REVOKED_EXAMPLE_TEST_CLIENT_ID",

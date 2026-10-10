@@ -16307,6 +16307,20 @@ export function toolAccessService(
             );
           }
         }
+        // Different connection managers lock different membership rows. Lock
+        // the shared connection before reading its subject-scoped grant so two
+        // callbacks for the same agent/user cannot both observe a missing row
+        // and race the scoped-grant uniqueness constraint.
+        await tx
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(
+            and(
+              eq(toolConnections.id, connection.id),
+              eq(toolConnections.companyId, connection.companyId),
+            ),
+          )
+          .for("update");
         const txSecrets = secretService(tx);
         const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 
