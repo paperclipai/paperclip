@@ -33,7 +33,10 @@ Request behavior fields:
 - payloadTemplate (object, optional): additional fields merged into gateway agent params
 - workspaceRuntime (object, optional): reserved workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - timeoutSec (number, optional): adapter timeout in seconds (default 120)
-- waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
+- runBudgetMs (number, optional): total run budget; sent to the gateway as agent.timeout in seconds and bounds the adapter's wait loop (default waitTimeoutMs, else timeoutSec * 1000)
+- waitTimeoutMs (number, optional): legacy alias for runBudgetMs
+- waitWindowMs (number, optional): timeout of a single agent.wait call; observation timeouts are retried on the same run (default 60000, capped at the run budget)
+- maxWaitCalls (number, optional): maximum agent.wait calls per run (default 60)
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
 - claimedApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
