@@ -3366,11 +3366,13 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
-  async function sourceHasNewPathOutsideRecoveryAction(
+  async function sourceHasExecutionPath(
     action: typeof issueRecoveryActions.$inferSelect,
+    queryDb: Db = db,
+    includeRecoveryActionPath = false,
   ) {
     const [run, wake] = await Promise.all([
-      db
+      queryDb
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
         .where(
@@ -3379,13 +3381,15 @@ export function recoveryService(
             inArray(heartbeatRuns.status, [
               ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
             ]),
-            sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${action.sourceIssueId}`,
-            sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId', '') <> ${action.id}`,
+            sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${action.sourceIssueId}`,
+            includeRecoveryActionPath
+              ? undefined
+              : sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId', '') <> ${action.id}`,
           ),
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
-      db
+      queryDb
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(
@@ -3396,14 +3400,162 @@ export function recoveryService(
               "claimed",
               "deferred_issue_execution",
             ]),
-            sql`coalesce(${agentWakeupRequests.payload} ->> 'issueId', ${agentWakeupRequests.payload} ->> 'taskId') = ${action.sourceIssueId}`,
-            sql`coalesce(${agentWakeupRequests.payload} ->> 'recoveryActionId', '') <> ${action.id}`,
+            sql`coalesce(${agentWakeupRequests.payload} ->> 'issueId', ${agentWakeupRequests.payload} ->> 'taskId', ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId', ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId') = ${action.sourceIssueId}`,
+            includeRecoveryActionPath
+              ? undefined
+              : sql`coalesce(${agentWakeupRequests.payload} ->> 'recoveryActionId', ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'recoveryActionId', '') <> ${action.id}`,
           ),
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
     ]);
     return Boolean(run || wake);
+  }
+
+  // Older stranded recovery moved the source issue to a temporary recovery
+  // owner. Repair only that historical takeover shape; current recovery keeps
+  // source ownership separate from the board-owned recovery action.
+  async function restoreLegacyRecoveryReturnOwner(
+    action: typeof issueRecoveryActions.$inferSelect,
+    issue: typeof issues.$inferSelect,
+  ) {
+    if (
+      action.kind !== "stranded_assigned_issue" ||
+      action.ownerType !== "agent" ||
+      !action.ownerAgentId ||
+      !action.returnOwnerAgentId ||
+      action.ownerAgentId === action.returnOwnerAgentId ||
+      issue.status !== "blocked" ||
+      issue.assigneeAgentId !== action.ownerAgentId ||
+      issue.assigneeUserId !== null ||
+      issue.executionRunId !== null ||
+      issue.checkoutRunId !== null
+    ) {
+      return "not_applicable" as const;
+    }
+
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, issue.companyId),
+            eq(issues.id, issue.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const lockedAction = await tx
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, action.companyId),
+            eq(issueRecoveryActions.id, action.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+
+      if (
+        !lockedIssue ||
+        !lockedAction ||
+        !["active", "escalated"].includes(lockedAction.status) ||
+        lockedAction.kind !== "stranded_assigned_issue" ||
+        lockedAction.ownerType !== "agent" ||
+        !lockedAction.ownerAgentId ||
+        !lockedAction.returnOwnerAgentId ||
+        lockedAction.ownerAgentId === lockedAction.returnOwnerAgentId ||
+        lockedIssue.status !== "blocked" ||
+        lockedIssue.assigneeAgentId !== lockedAction.ownerAgentId ||
+        lockedIssue.assigneeUserId !== null ||
+        lockedIssue.executionRunId !== null ||
+        lockedIssue.checkoutRunId !== null
+      ) {
+        // The row changed after the sweep snapshot. Leave the action alone and
+        // let the next sweep re-evaluate fresh state instead of falling through
+        // to generic path-restoration resolution with stale ownership data.
+        return "deferred" as const;
+      }
+
+      // Issue-bound admission takes this same issue row lock before it inserts
+      // a run or wake. Probe only after locking the source and action so an
+      // existing path is visible and a racing admission must revalidate the
+      // assignee after this transaction commits. Action-owned recovery work is
+      // included: restoring the owner must not orphan the very wake or run that
+      // is still repairing this legacy takeover.
+      if (
+        await sourceHasExecutionPath(
+          lockedAction,
+          tx as unknown as Db,
+          true,
+        )
+      ) {
+        return "deferred" as const;
+      }
+
+      const now = new Date();
+      const recoveryOwnerAgentId = lockedAction.ownerAgentId;
+      const returnOwnerAgentId = lockedAction.returnOwnerAgentId;
+      await tx
+        .update(issues)
+        .set({
+          assigneeAgentId: returnOwnerAgentId,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, lockedIssue.id));
+      await tx
+        .update(issueRecoveryActions)
+        .set({
+          status: "active",
+          ownerType: "board",
+          ownerAgentId: null,
+          ownerUserId: null,
+          wakePolicy: {
+            type: "board_escalation",
+            reason: "legacy_takeover_return_owner_restored",
+            preservesSourceAssignee: true,
+          },
+          maxAttempts: null,
+          timeoutAt: null,
+          outcome: null,
+          resolutionNote: null,
+          resolvedAt: null,
+          evidence: {
+            ...lockedAction.evidence,
+            routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
+            legacyTakeoverReturnOwnerRepair: {
+              recoveryOwnerAgentId,
+              returnOwnerAgentId,
+              restoredAt: now.toISOString(),
+            },
+          },
+          updatedAt: now,
+        })
+        .where(eq(issueRecoveryActions.id, lockedAction.id));
+      await logActivity(tx as unknown as Db, {
+        companyId: lockedIssue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: lockedIssue.id,
+        details: {
+          identifier: lockedIssue.identifier,
+          source: "recovery.restore_legacy_return_owner",
+          status: lockedIssue.status,
+          recoveryActionId: lockedAction.id,
+          changes: {
+            assigneeAgentId: {
+              from: recoveryOwnerAgentId,
+              to: returnOwnerAgentId,
+            },
+          },
+        },
+      });
+      return "restored" as const;
+    });
   }
 
   async function reconcileActiveRecoveryActions() {
@@ -3429,6 +3581,21 @@ export function recoveryService(
     for (const { action, issue } of rows) {
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
+      const legacyReturnOwnerResult =
+        await restoreLegacyRecoveryReturnOwner(action, issue);
+      if (legacyReturnOwnerResult === "restored") {
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+      if (legacyReturnOwnerResult === "deferred") {
+        // A live path only postpones restoring the recorded return owner. It
+        // must not flow into the generic reconciliation below, where unrelated
+        // work could be mistaken for a durable replacement path and resolve
+        // the action while the temporary recovery owner is still assigned.
+        result.skipped += 1;
+        continue;
+      }
       if (
         wakePolicyType !== "bounded_recovery_owner" &&
         wakePolicyType !== "bounded_owner_disposition_repair" &&
@@ -3469,7 +3636,7 @@ export function recoveryService(
         await Promise.all([
           collectDispositionRepairSourceState(db, { issue }),
           healthyOpenChildIssues(issue),
-          sourceHasNewPathOutsideRecoveryAction(action),
+          sourceHasExecutionPath(action),
         ]);
       const durablePathRestored =
         action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
