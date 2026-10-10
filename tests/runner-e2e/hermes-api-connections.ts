@@ -576,6 +576,6 @@ export const hermesApiConnectionChoices = [
 ] as const satisfies readonly { provider: string; credential: RunnerProfileFixture["credential"]; model: string }[];
 
 export const hermesApiConnectionDefinitionDigest = createHash("sha256").update(
-  ["hermes-api-connections.ts", "acpx-native-origin.ts", "native-local-fixtures.ts", "user-actions.ts", "live-fixtures.ts", "harness-env.ts", "runner.spec.ts"]
+  ["hermes-api-connections.ts", "hermes-image-glyphs.json", "acpx-native-origin.ts", "native-local-fixtures.ts", "user-actions.ts", "live-fixtures.ts", "harness-env.ts", "runner.spec.ts"]
     .map(file => readFileSync(new URL(`./${file}`, import.meta.url), "utf8")).join("\n"),
 ).digest("hex");
