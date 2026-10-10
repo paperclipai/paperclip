@@ -327,10 +327,11 @@ describe("computer ownership", () => {
       expect(f.backend.stop).toHaveBeenCalledOnce();
     },
   );
-  it("preserves recoverable running owners and gives completed warm owners their idle interval", async () => {
+  it("fences warm work at its deadline and bounds crashed-controller shutdown grace", async () => {
     const f = fixture();
     await f.attach();
     const binding = await f.admit();
+    await binding.launch({ command: "runner" });
     f.advance(180_000);
     await f.service.reconcile();
     expect(f.backend.retire).not.toHaveBeenCalled();
@@ -343,6 +344,13 @@ describe("computer ownership", () => {
     await f.service.reconcile();
     expect(f.backend.retire).not.toHaveBeenCalled();
     f.advance(60_001);
+    await expect(f.admit()).rejects.toMatchObject({ code: "conflict" });
+    await expect(binding.runner.execute({ command: "new work" })).rejects.toMatchObject({ code: "conflict" });
+    await binding.process.runner.execute({ command: "close provider" });
+    await f.service.reconcile();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    f.advance(30_000);
+    await expect(binding.process.ingress()).rejects.toMatchObject({ code: "conflict" });
     await f.service.reconcile();
     expect(f.backend.retire).toHaveBeenCalledOnce();
   });
@@ -696,5 +704,109 @@ describe("computer retirement proof", () => {
     await expect(f.service.isRetired({ ...input, companyId: "other-company" })).rejects.toMatchObject({ code: "not_found" });
     expect(f.backend.retire).not.toHaveBeenCalled();
     expect(f.backend.inspect).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("computer graceful retirement", () => {
+  it("fences admission and ordinary execution while allowing the exact pinned process to close", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    await binding.launch({ command: "runner" });
+    let finish!: () => void;
+    let entered!: () => void;
+    const closing = new Promise<void>((resolve) => { finish = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const beforeStop = vi.fn(async () => { entered(); await closing; });
+    const retiring = f.service.retire({ ...f.scope, owner: binding.owner, beforeStop });
+    await started;
+    expect((await f.repository.get(f.scope)).ledger.owners[0]).toMatchObject({ phase: "retiring" });
+    await expect(f.admit()).rejects.toMatchObject({ code: "conflict" });
+    await expect(binding.runner.execute({ command: "forbidden" })).rejects.toMatchObject({ code: "conflict" });
+    await expect(binding.launch({ command: "forbidden" })).rejects.toMatchObject({ code: "conflict" });
+    await binding.process.runner.execute({ command: "close" });
+    await binding.process.ingress();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    const repeated = f.service.retire({ ...f.scope, owner: binding.owner, beforeStop });
+    finish();
+    expect(await retiring).toEqual({ retired: true });
+    expect(await repeated).toEqual({ retired: true });
+    expect(beforeStop).toHaveBeenCalledOnce();
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+    await expect(binding.process.ingress()).rejects.toMatchObject({ code: "conflict" });
+    expect((await f.admit()).owner.ownerId).not.toBe(binding.owner.ownerId);
+  });
+  it("never invokes a stale generation callback and always stops after callback failure", async () => {
+    const f = fixture();
+    await f.attach();
+    const old = await f.admit();
+    await old.launch({ command: "runner" });
+    await f.service.retainWarm({ ...f.scope, owner: old.owner, idleTimeoutMs: 60_000 });
+    const current = await f.admit();
+    const stale = vi.fn(async () => {});
+    expect(await f.service.retire({ ...f.scope, owner: old.owner, beforeStop: stale })).toEqual({ retired: false });
+    expect(stale).not.toHaveBeenCalled();
+    expect(await f.service.retire({ ...f.scope, owner: current.owner, beforeStop: async () => { throw new Error("provider close failed"); } })).toEqual({ retired: true });
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+  });
+  it("bounds a stalled graceful close and denies late process control", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      await f.attach();
+      const binding = await f.admit();
+      await binding.launch({ command: "runner" });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const retiring = f.service.retire({ ...f.scope, owner: binding.owner, beforeStop: async () => {
+        entered(); await new Promise<void>(() => {});
+      } });
+      await started;
+      f.advance(30_001);
+      await expect(binding.process.runner.execute({ command: "late" })).rejects.toMatchObject({ code: "conflict" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await retiring).toEqual({ retired: true });
+      expect(f.backend.retire).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("does not extend the original warm shutdown deadline when retirement starts late", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      await f.attach();
+      const binding = await f.admit();
+      await binding.launch({ command: "runner" });
+      await f.service.retainWarm({ ...f.scope, owner: binding.owner, idleTimeoutMs: 60_000 });
+      f.advance(80_000);
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const retiring = f.service.retire({ ...f.scope, owner: binding.owner, beforeStop: async () => {
+        entered(); await new Promise<void>(() => {});
+      } });
+      await started;
+      expect((await f.repository.get(f.scope)).ledger.owners[0]!.retirementDeadline).toBe("2026-10-10T12:01:30.000Z");
+      f.advance(10_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await retiring).toEqual({ retired: true });
+      expect(f.backend.retire).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("reconciles a crashed controller reservation only after its durable deadline", async () => {
+    const f = fixture();
+    await f.attach();
+    const binding = await f.admit();
+    await binding.launch({ command: "runner" });
+    await f.repository.update(f.scope, (record) => {
+      record.ledger.owners[0]!.phase = "retiring";
+      record.ledger.owners[0]!.retirementDeadline = "2026-10-10T12:00:30.000Z";
+    });
+    await f.service.reconcile();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    await expect(f.service.retire({ ...f.scope, owner: binding.owner })).rejects.toMatchObject({ code: "conflict" });
+    f.advance(30_001);
+    await f.service.reconcile();
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+    expect((await f.repository.get(f.scope)).ledger.owners[0]!.phase).toBe("retired");
   });
 });

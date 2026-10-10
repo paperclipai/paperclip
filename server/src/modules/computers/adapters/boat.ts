@@ -112,7 +112,7 @@ with os.fdopen(fd,'a') as lock:
 `;
 
 export const processProgram = String.raw`
-import os,sys,json,fcntl,subprocess,shutil,re
+import os,sys,json,fcntl,subprocess,shutil,re,datetime
 p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
 def retire_owner(root,oid):
  open(os.path.join(root,'retired'),'a').close()
@@ -151,6 +151,11 @@ with open(os.path.join(root,'lock'),'a') as lock:
  if owner['generation']<generation:print(json.dumps({'error':'conflict'}));sys.exit(0)
  if p['action']=='advance':
   if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  retirement=os.path.join(root,'retiring.json')
+  if owner.get('phase')=='retiring':
+   deadline=datetime.datetime.fromisoformat(owner['retirementDeadline'].replace('Z','+00:00')).timestamp()*1000
+   with open(retirement,'w') as f:json.dump({'deadline':deadline},f)
+  elif os.path.exists(retirement):print(json.dumps({'error':'conflict'}));sys.exit(0)
   with open(generation_path,'w') as f:f.write(str(owner['generation']))
   print('{}')
  elif p['action']=='retire':
@@ -162,7 +167,7 @@ with open(os.path.join(root,'lock'),'a') as lock:
   state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
   print(json.dumps({'running':bool(valid and state=='active' and not os.path.exists(tombstone)),'claim':actual if valid else claim}))
  else:
-  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  if os.path.exists(tombstone) or os.path.exists(os.path.join(root,'retiring.json')):print(json.dumps({'error':'conflict'}));sys.exit(0)
   claim=owner['process'];claim['bootId']=boot
   marker=os.path.join(root,'claim.json')
   if os.path.exists(marker):

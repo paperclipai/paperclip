@@ -121,8 +121,8 @@ export async function computerExecutionTarget(db: Db, lease: EnvironmentLease, i
     workspaceRealization: { mode: "in_place", authoritativeRoot: binding.remoteCwd, pathAliases: [], outboundRestorePaths: [] },
     launch: binding.launch, inspectProcess: binding.inspectProcess,
     retainWarm: (idleTimeoutMs) => computers.retainWarm({ ...scope, owner, idleTimeoutMs }),
-    retire: async () => {
-      const result = await computers.retire({ ...scope, owner });
+    retire: async (options) => {
+      const result = await computers.retire({ ...scope, owner, beforeStop: options?.beforeStop });
       if (result.retired) await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success",
         remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" }) });
       return result.retired;

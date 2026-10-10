@@ -574,3 +574,29 @@ describe("Boat SSH admission", () => {
     expect(runner.execute).toHaveBeenCalledTimes(12);
   });
 });
+
+
+describe("remote graceful retirement fence", () => {
+  it("records the exact generation deadline and blocks late launch or generation reuse", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "computer-grace-")));
+    roots.push(root);
+    const owners = join(root, "owners");
+    const boot = join(root, "boot");
+    writeFileSync(boot, "boot-id");
+    const code = processProgram.replaceAll("/home/user/.paperclip-owners", owners)
+      .replaceAll("/proc/sys/kernel/random/boot_id", boot);
+    const invoke = (action: string, owner: Record<string, unknown>) => {
+      const result = spawnSync("python3", ["-c", code], { input: JSON.stringify({ action, owner }), encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout);
+    };
+    const owner = { id: "owned", generation: 7, phase: "retiring", retirementDeadline: "2099-01-01T00:00:00Z" };
+    expect(invoke("advance", owner)).toEqual({});
+    const marker = readFileSync(join(owners, "owned", "retiring.json"), "utf8");
+    expect(JSON.parse(marker).deadline).toBe(Date.parse(owner.retirementDeadline));
+    expect(invoke("launch", owner)).toEqual({ error: "conflict" });
+    expect(invoke("advance", { ...owner, phase: "active", generation: 8 })).toEqual({ error: "conflict" });
+    expect(invoke("advance", { ...owner, generation: 6 })).toEqual({ error: "conflict" });
+    expect(readFileSync(join(owners, "owned", "retiring.json"), "utf8")).toBe(marker);
+  });
+});
