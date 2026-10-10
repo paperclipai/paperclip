@@ -93,6 +93,7 @@ describe("createChatReconciliationCoordinator", () => {
   it("wires bounded publication refill to commit workers and isolates periodic maintenance", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     expect(source).toContain("registerChatDeliveryWork(deliveryWork, chatChannels,");
+    expect(source).toContain("registerChatActionWork(deliveryWork, chatChannels,");
     const maintenance = source.slice(
       source.indexOf("const reconcileChatPublicationMaintenance ="),
       source.indexOf("const chatReconciliation ="),

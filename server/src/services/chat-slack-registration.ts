@@ -1,3 +1,4 @@
+import { notifyChatVerificationWork } from "./chat-work-notifications.js";
 import { createAgentAvatarPool } from "./agent-avatar-pool.js";
 import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { removeSlackRegistration } from "./chat-slack-registration-cleanup.js";
@@ -111,6 +112,7 @@ export function slackChatRegistrationService(db: Db, options: {
           ...(ids[key] ? { existingRef: { secretId: ids[key], configPath: `slack_registration.${key}` } } : {}) });
         ids[key] = result.secret.id;
       }
+      await notifyChatVerificationWork(tx);
       await tx.update(chatSlackRegistrations).set({ ...patch, secretIds: ids, updatedAt: new Date() }).where(eq(chatSlackRegistrations.endpointId, row.endpointId));
       if (account) {
         const saved = (await tx.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, row.endpointId), eq(chatEndpoints.companyId, row.companyId))).for("update"))[0];
@@ -334,6 +336,7 @@ export function slackChatRegistrationService(db: Db, options: {
       const saved = (await tx.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, row.endpointId), eq(chatEndpoints.companyId, row.companyId))).for("update"))[0];
       const registrationNow = (await tx.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, row.endpointId)))[0];
       if (!saved || saved.status === "archived" || registrationNow?.status === "removed" || registrationNow?.requestId !== row.requestId) throw conflict("Slack setup changed");
+      await notifyChatVerificationWork(tx);
       await tx.update(chatEndpoints).set({ setup: { ...saved.setup, slackAccount: account }, updatedAt: new Date() }).where(eq(chatEndpoints.id, row.endpointId));
       await lease.assertOwned(tx);
     });
@@ -397,12 +400,26 @@ export function slackChatRegistrationService(db: Db, options: {
       await sendSetupMessage(row, { userId: account.paperclipUserId, sessionId: null, bypassPermissionCheck: false }, lease, "verification");
     });
   }
-  async function processPendingVerificationMessages(limit = 25) {
-    const pending = await db.select({ endpointId: chatEndpoints.id }).from(chatEndpoints)
+  function pendingVerificationMessage() {
+    // A pending verification cannot progress until linking, welcome, and an
+    // authenticated callback finish. Their commits wake this lane.
+    return and(eq(chatSlackRegistrations.status, "configured"),
+      inArray(chatEndpoints.status, ["verifying", "active"]),
+      sql`${chatEndpoints.setup}->'slackAccount'->>'status' = 'linked'`,
+      sql`${chatEndpoints.setup}->>'webhookVerifiedAt' is not null`,
+      sql`coalesce(${chatEndpoints.setup}->'slackAccount'->>'welcomeStatus', '') not in ('pending', 'sending')`,
+      sql`${chatEndpoints.setup}->'slackAccount'->>'verificationStatus' in ('pending', 'sending')`);
+  }
+  function pendingVerificationMessages(limit: number) {
+    return db.select({ endpointId: chatEndpoints.id }).from(chatEndpoints)
       .innerJoin(chatSlackRegistrations, and(eq(chatSlackRegistrations.endpointId, chatEndpoints.id), eq(chatSlackRegistrations.companyId, chatEndpoints.companyId)))
-      .where(and(eq(chatSlackRegistrations.status, "configured"), inArray(chatEndpoints.status, ["verifying", "active"]),
-        sql`${chatEndpoints.setup}->'slackAccount'->>'verificationStatus' in ('pending', 'sending')`)).limit(limit);
-    for (const row of pending) {
+      .where(pendingVerificationMessage()).limit(limit);
+  }
+  async function nextVerificationMessageAt(): Promise<number | null> {
+    return (await pendingVerificationMessages(1)).length ? Date.now() : null;
+  }
+  async function processPendingVerificationMessages(limit = 25) {
+    for (const row of await pendingVerificationMessages(limit)) {
       try { await notifyVerified(row.endpointId); }
       catch { logger.warn({ endpointId: row.endpointId }, "Slack verification message could not be processed"); }
     }
@@ -437,7 +454,10 @@ export function slackChatRegistrationService(db: Db, options: {
       return;
     }
     await lease.assertOwned();
-    await db.update(chatSlackRegistrations).set({ status: "configured", errorCode: null, updatedAt: new Date() }).where(eq(chatSlackRegistrations.endpointId, endpointId));
+    await db.transaction(async tx => {
+      await notifyChatVerificationWork(tx);
+      await tx.update(chatSlackRegistrations).set({ status: "configured", errorCode: null, updatedAt: new Date() }).where(eq(chatSlackRegistrations.endpointId, endpointId));
+    });
     // Runtime now owns a separate vaulted copy. Keep the registration IDs until
     // deletion succeeds so cleanup itself is retryable.
     await cleanupStaged(endpointId, lease);
@@ -505,7 +525,7 @@ export function slackChatRegistrationService(db: Db, options: {
     if (!row) throw notFound("Slack connection not found");
     return `/${encodeURIComponent(row.prefix)}/apps/chat/connect?provider=slack&resume=${encodeURIComponent(endpointId)}`;
   }
-  return { create, install, pending, expiredReturn, complete, cleanup, returnPath, registration, notifyVerified, processPendingVerificationMessages,
+  return { create, install, pending, expiredReturn, complete, cleanup, returnPath, registration, notifyVerified, processPendingVerificationMessages, nextVerificationMessageAt,
     close: async () => { await avatarPool?.close(); },
     resume: (endpointId: string, actor: SlackSetupActor) => options.withLock(endpointId, lease => resumeLocked(endpointId, actor, lease)) };
 }

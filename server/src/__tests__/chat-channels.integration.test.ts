@@ -1,6 +1,7 @@
+import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
-import { notifyChatPublicationWork } from "../services/chat-work-notifications.js";
+import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
 import { buildSlackAppManifest } from "@paperclipai/shared";
@@ -6515,6 +6516,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect(restarted.slackRegistration.install(f.endpoint.id, actor)).resolves.toHaveProperty("authorizationUrl");
       expect((await restarted.get(f.endpoint.id)).setup.webhookVerifiedAt).toBeFalsy();
     });
+    it("wakes verification from a signed callback with no maintenance polling", async () => {
+      const f = await fixture({ scheduleDeferredWork: () => undefined });
+      await f.create(); await f.service.slackRegistration.complete(await f.install(), "code", null, actor);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await registerChatActionWork(coordinator, f.service, () => true).ready;
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+        expect(await f.service.nextVerificationMessageAt()).toBeNull();
+        await f.service.handleWebhook(f.endpoint.publicId, "slack", signedSlackWebhookRequest({
+          url: f.endpoint.setup.webhookUrl!, contentType: "application/json", signingSecret,
+          body: JSON.stringify({ type: "url_verification", challenge: "scheduler" }),
+        }));
+        await vi.waitFor(async () => {
+          expect((await f.service.get(f.endpoint.id)).setup.slackAccount?.verificationStatus).toBe("sent");
+          expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("chat.postMessage"))).toHaveLength(2);
+        expect(onError).not.toHaveBeenCalled();
+      } finally { await coordinator.stop(); }
+    });
     it("acknowledges verification before sending one DM across concurrent callbacks and restart recovery", async () => {
       const f = await fixture({ scheduleDeferredWork: () => undefined });
       await f.create(); await f.service.slackRegistration.complete(await f.install(), "code", null, actor);
@@ -6906,6 +6928,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatBoardMessages, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const channel = makeThread({ channelId: "CBOARD", id: "slack:CBOARD:8000.1", name: "board" });
     await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread,
       message: makeMessage({ id: "8000.1", text: "@maya start here", mentioned: true }), trigger: "mention" });
@@ -6940,6 +6965,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "**Owner User (via Paperclip)**\n\nPlease make the plan", "The plan is ready.",
     ]);
     // The explicit Board composer uses the same mirror and a durable wakeup.
+    workWake.mockClear();
     const key = randomUUID();
     await service.publishBoardMessage(endpoint.id, conversation.id, "Now assign the follow-ups", key, "owner-user");
     await service.publishBoardMessage(endpoint.id, conversation.id, "Now assign the follow-ups", key, "owner-user");
@@ -6952,9 +6978,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     wakeup.mockRejectedValueOnce(new Error("temporary scheduler failure"));
     await service.publishBoardMessage(endpoint.id, conversation.id, "Retry this work", randomUUID(), "owner-user");
     expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(1);
-    await service.processPendingDeliveries();
+    const recovery = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      await registerChatActionWork(recovery, service, () => true).ready;
+      await vi.waitFor(async () => {
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(0);
+      });
+    } finally { await recovery.stop(); }
     await service.processPendingPublications();
-    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received")))).toHaveLength(0);
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("Retry this work"))).toHaveLength(1);
   });
 
@@ -18303,6 +18334,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, { cancelRun });
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatSessionStops, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const externalUserId = "USTOPPER1";
     const channelId = "CSTOPSESSION1";
     const threadTs = `${Math.floor(Date.now() / 1_000) - 5}.100000`;
@@ -18409,6 +18443,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const webhookUrl = `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`;
+    workWake.mockClear();
     const first = await service.handleWebhook(
       endpoint.publicId,
       "slack",
@@ -27591,6 +27626,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatReceiptReactions, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const endpointRuntime = runtime.endpoints.get(endpoint.id);
     if (!endpointRuntime) throw new Error("Expected Slack runtime");
     endpointRuntime.reactionErrors.push(
@@ -32779,6 +32817,101 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
     return { ...fixture, storage, runtime, service, lanes, enqueue, cleanup };
   }
+
+  it("restores action retry and stale-claim deadlines and parks paused or uncertain work", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const at = new Date();
+    const later = new Date(at.getTime() + 120_000);
+    try {
+      for (const kind of Object.keys(CHAT_ACTION_QUEUES) as (keyof typeof CHAT_ACTION_QUEUES)[]) {
+        const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+          kind, providerActionId: randomUUID(), status: "received", updatedAt: at }).returning();
+        const set = (status: string, result: Record<string, unknown> = {}) => db.update(chatActions)
+          .set({ status, result, updatedAt: at }).where(eq(chatActions.id, action!.id));
+        const due = async () => db.select({ id: chatActions.id }).from(chatActions)
+          .leftJoin(chatEndpoints, eq(chatEndpoints.id, chatActions.endpointId))
+          .where(and(eq(chatActions.id, action!.id), dueChatAction(kind))).then(rows => rows.length > 0);
+        if (kind === "slack_board_message") {
+          expect(await due()).toBe(true);
+          await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+          expect(await due()).toBe(false);
+          await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+        } else if (kind === "slash_task_start") {
+          for (const [status, delay] of [["validating", 60_000], ["resolving", 300_000], ["admitting", 60_000]] as const) {
+            await set(status);
+            expect(await f.service.nextChatActionAt(kind)).toBe(at.getTime() + delay);
+            expect(await due()).toBe(false);
+          }
+          for (const status of ["queued", "provider_confirmed"]) {
+            await set(status, { retryAt: later.toISOString() });
+            expect(await f.service.nextChatActionAt(kind)).toBe(later.getTime());
+            expect(await due()).toBe(false);
+            await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+            expect(await f.service.nextChatActionAt(kind)).toBeNull();
+            await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+          }
+          await set("delivery_unknown");
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+          expect(await due()).toBe(false);
+        } else {
+          expect(await due()).toBe(true);
+          await set("processing");
+          expect(await f.service.nextChatActionAt(kind)).toBe(at.getTime() + 60_000);
+          expect(await due()).toBe(false);
+          await set("failed", { retryable: true, retryAt: later.toISOString() });
+          expect(await f.service.nextChatActionAt(kind)).toBe(later.getTime());
+          expect(await due()).toBe(false);
+          await set("failed", { retryable: false });
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
+        }
+        await set("processed");
+        expect(await f.service.nextChatActionAt(kind)).toBeNull();
+      }
+    } finally { await f.cleanup(); }
+  });
+
+  it("recovers action rows on startup, wakes after outer commit, and leaves empty queues quiet", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const action = (kind: "receipt_reaction" | "slack_session_stop") => ({ companyId: f.companyId,
+      endpointId: lane.endpoint.id, kind, providerActionId: randomUUID(), status: "processing",
+      updatedAt: new Date(Date.now() - 120_000), payload: {} });
+    try {
+      const [stale] = await db.insert(chatActions).values(action("receipt_reaction")).returning();
+      await registerChatActionWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, stale!.id)))[0]?.status).toBe("failed");
+      const scans = vi.spyOn(db, "select");
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        expect(scans).not.toHaveBeenCalled();
+      } finally { scans.mockRestore(); }
+      let release!: () => void, inserted!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const staged = new Promise<void>(resolve => { inserted = resolve; });
+      const writing = db.transaction(async tx => {
+        await tx.transaction(async nested => {
+          await notifyChatActionWork(nested, "slack_session_stop");
+          await nested.insert(chatActions).values(action("slack_session_stop"));
+        });
+        inserted(); await gate;
+      });
+      await staged;
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      release(); await writing;
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(chatActions).where(and(eq(chatActions.companyId, f.companyId), eq(chatActions.kind, "slack_session_stop")));
+        expect(rows[0]?.status).toBe("failed");
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(lane.providerRuntime.posts).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
 
   it("restores chat queue deadlines without polling blocked followers or receipt owners", async () => {
     const f = await publicationLaneFixture(1);
@@ -52981,6 +53114,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatTaskStarts, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
     if (!callbacks.onSlashCommand) {
