@@ -844,6 +844,7 @@ export function createGovnaAuthorityHttpClient(input: {
     expected: Record<string, unknown>;
   }) {
     const hostRequestHash = authorityHostEnvelopeHash(args.operation, args.endpoint, args.body);
+    const challenge = randomBytes(32).toString("base64url");
     const proof = createAuthorityHostProof({
       privateKey,
       keyId: input.config.hostKeyId,
@@ -856,7 +857,46 @@ export function createGovnaAuthorityHttpClient(input: {
       endpoint: args.endpoint,
       hostRequestHash,
       now: now(),
+      challenge,
     });
+    const expected: Record<string, unknown> = {
+      ...args.expected,
+      iss: input.config.statementIssuer,
+      aud: input.config.statementAudience,
+      challenge,
+      host_request_hash: hostRequestHash,
+      trust_id: input.config.trustId,
+      trust_revision: input.config.trustRevision,
+      host_key_id: input.config.hostKeyId,
+      resource: input.config.resource,
+      operation_id: args.body.operation_id,
+      ...(args.operation === "prepare"
+        ? {
+            host_context_id: args.body.host_context_id,
+            local_policy_revision: args.body.local_policy_revision,
+            connection_generation: args.body.connection_generation,
+            tool_name: args.body.name,
+            request_hash: authorityRequestHash(
+              String(args.body.name),
+              args.body.arguments as Record<string, unknown> | undefined,
+            ),
+          }
+        : {}),
+    };
+    const mandatory = [
+      "operation_id", "host_context_id", "local_policy_revision",
+      "connection_generation", "resource", "tool_name", "request_hash",
+    ];
+    if (mandatory.some((field) => expected[field] === undefined)) {
+      throw new GovnaAuthorityTransportError(500, "expected_binding_incomplete", "Govna authority expected binding is incomplete");
+    }
+    if (args.type === "status") {
+      const immutable = AUTHORITY_BINDING_FIELDS.filter((field) =>
+        !["iss", "aud", "challenge", "host_request_hash"].includes(field));
+      if (immutable.some((field) => expected[field] === undefined)) {
+        throw new GovnaAuthorityTransportError(500, "expected_binding_incomplete", "Govna status expected binding is incomplete");
+      }
+    }
     const response = await input.request(args.endpoint, {
       method: "POST",
       redirect: "manual",
@@ -875,11 +915,7 @@ export function createGovnaAuthorityHttpClient(input: {
       keyId: input.config.statementKeyId,
       type: args.type,
       now: now(),
-      expected: {
-        ...args.expected,
-        iss: input.config.statementIssuer,
-        aud: input.config.statementAudience,
-      },
+      expected,
       approvalOrigin: input.config.approvalOrigin,
     });
     let ticket: { compact: string; payload: Record<string, unknown> } | undefined;
@@ -895,14 +931,18 @@ export function createGovnaAuthorityHttpClient(input: {
           keyId: input.config.statementKeyId,
           type: "ticket",
           now: now(),
-          expected: {
-            ...args.expected,
-            iss: input.config.statementIssuer,
-            aud: input.config.statementAudience,
-          },
+          expected,
         }).payload,
       };
-      if (!sameJson(authority.payload.ticket_generation, ticket.payload.ticket_generation)) {
+      const coherentFields = [
+        ...AUTHORITY_BINDING_FIELDS,
+        "state",
+        "ticket_generation",
+        "decision_actor_id",
+        "decision_at",
+        "decision_evidence_id",
+      ];
+      if (coherentFields.some((field) => !sameJson(authority.payload[field], ticket!.payload[field]))) {
         throw new GovnaAuthorityTransportError(502, "ticket_mismatch", "Govna status and dispatch ticket do not match");
       }
     } else if (args.type === "status" && authority.payload.state === "approved") {
