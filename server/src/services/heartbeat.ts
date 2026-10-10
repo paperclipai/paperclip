@@ -567,6 +567,11 @@ import {
   type RunSnapshot as WakeQueueRunSnapshot,
 } from "../modules/wake-queue/index.js";
 import {
+  createAgentScheduler,
+  readAgentParallelExecutionAllowed,
+  resolveEffectiveAgentCapacity,
+} from "../modules/agent-scheduler/index.js";
+import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -17192,6 +17197,143 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  const agentScheduler = createAgentScheduler(db, {
+    countRunningRunsForAgent,
+    appendSchedulerEvent: async (input) => {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "agent-scheduler",
+        agentId: input.agentId,
+        action: "agent.scheduler",
+        entityType: "agent",
+        entityId: input.agentId,
+        details: {
+          wakeRequestId: input.wakeRequestId,
+          issueId: input.issueId,
+          kind: input.kind,
+          reason: input.reason,
+          queueDepth: input.queueDepth,
+          effectiveCapacity: input.effectiveCapacity,
+        },
+      });
+    },
+  });
+
+  async function isAgentRunnableSchedulerEnabled() {
+    return (await instanceSettings.getExperimental()).enableAgentRunnableScheduler === true;
+  }
+
+  async function maybeParkWakeAtAgentScheduler(input: {
+    agent: typeof agents.$inferSelect;
+    policy: ReturnType<typeof parseHeartbeatPolicy>;
+    wakeRequestId: string;
+    issueId: string | null;
+    enrichedContextSnapshot: Record<string, unknown>;
+    sessionIdBefore: string | null;
+    continuationAttempt: number;
+  }): Promise<boolean> {
+    if (!(await isAgentRunnableSchedulerEnabled())) return false;
+    const runningRunCount = await countRunningRunsForAgent(input.agent.id);
+    const admission = await agentScheduler.evaluateAdmission({
+      schedulerEnabled: true,
+      allowParallelExecution: readAgentParallelExecutionAllowed(input.agent.runtimeConfig),
+      configuredMaxConcurrentRuns: input.policy.maxConcurrentRuns,
+      runningRunCount,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      wakeRequestId: input.wakeRequestId,
+      issueId: input.issueId,
+    });
+    if (admission.action !== "park") return false;
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({
+          _agentScheduler: {
+            enrichedContextSnapshot: input.enrichedContextSnapshot,
+            sessionIdBefore: input.sessionIdBefore,
+            continuationAttempt: input.continuationAttempt,
+          },
+        })}::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(eq(agentWakeupRequests.id, input.wakeRequestId));
+    return true;
+  }
+
+  async function promoteAgentRunnableWorkForAgent(
+    agent: typeof agents.$inferSelect,
+    policy: ReturnType<typeof parseHeartbeatPolicy>,
+  ) {
+    if (!(await isAgentRunnableSchedulerEnabled())) return;
+    await agentScheduler.promoteRunnableWork({
+      schedulerEnabled: true,
+      allowParallelExecution: readAgentParallelExecutionAllowed(agent.runtimeConfig),
+      configuredMaxConcurrentRuns: policy.maxConcurrentRuns,
+      agentId: agent.id,
+      companyId: agent.companyId,
+      createRunForWake: async (wake) => {
+        const payload = parseObject(wake.payload);
+        const scheduler = parseObject(payload._agentScheduler);
+        const enrichedContextSnapshot =
+          parseObject(scheduler.enrichedContextSnapshot) ?? payload;
+        const sessionIdBefore = readNonEmptyString(scheduler.sessionIdBefore);
+        const continuationAttempt = asNumber(scheduler.continuationAttempt, 0);
+        const issueId = readNonEmptyString(enrichedContextSnapshot.issueId)
+          ?? readNonEmptyString(payload.issueId);
+        const [newRun] = await db
+          .insert(heartbeatRuns)
+          .values({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            scopeKind: issueId ? "issue" : "company",
+            issueId,
+            invocationSource: wake.source as typeof heartbeatRuns.$inferInsert.invocationSource,
+            triggerDetail: wake.triggerDetail,
+            status: "queued",
+            responsibleUserId: await (async () => {
+              const issueContext = issueId
+                ? await getIssueExecutionContext(agent.companyId, issueId)
+                : null;
+              return resolveResponsibleUserIdForRunSeed({
+                companyId: agent.companyId,
+                contextSnapshot: enrichedContextSnapshot,
+                issueContext,
+                routineEnvContext: await getRoutineEnvForExecutionIssue(
+                  agent.companyId,
+                  issueContext,
+                ),
+                requestedByActorType: wake.requestedByActorType as "user" | "agent" | "system" | null,
+                requestedByActorId: wake.requestedByActorId,
+                source: wake.source as WakeupOptions["source"],
+                triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
+                existingRunResponsibleUserId: null,
+              });
+            })(),
+            wakeupRequestId: wake.id,
+            contextSnapshot: enrichedContextSnapshot,
+            sessionIdBefore,
+            continuationAttempt,
+          })
+          .returning();
+        if (!newRun) return null;
+        publishLiveEvent({
+          companyId: newRun.companyId,
+          type: "heartbeat.run.queued",
+          payload: {
+            runId: newRun.id,
+            agentId: newRun.agentId,
+            invocationSource: newRun.invocationSource,
+            triggerDetail: newRun.triggerDetail,
+            wakeupRequestId: newRun.wakeupRequestId,
+          },
+        });
+        return newRun.id;
+      },
+    });
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -20119,10 +20261,20 @@ export function heartbeatService(
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
+      await promoteAgentRunnableWorkForAgent(agent, policy);
       const runningCount = await countRunningRunsForAgent(agentId);
+      const schedulerEnabled = await isAgentRunnableSchedulerEnabled();
+      const effectiveMaxConcurrentRuns = schedulerEnabled
+        ? resolveEffectiveAgentCapacity({
+            schedulerEnabled: true,
+            allowParallelExecution: readAgentParallelExecutionAllowed(agent.runtimeConfig),
+            configuredMaxConcurrentRuns: policy.maxConcurrentRuns,
+            runningRunCount: runningCount,
+          })
+        : policy.maxConcurrentRuns;
       const availableSlots = Math.max(
         0,
-        policy.maxConcurrentRuns - runningCount,
+        effectiveMaxConcurrentRuns - runningCount,
       );
       if (availableSlots <= 0) return [];
 
@@ -28922,6 +29074,25 @@ export function heartbeatService(
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
+          const queuedContextSnapshot = adoptedComments.length
+            ? withQueuedCommentIdsInRunContext(
+                enrichedContextSnapshot,
+                adoptedCommentIds,
+              )
+            : enrichedContextSnapshot;
+          if (
+            await maybeParkWakeAtAgentScheduler({
+              agent,
+              policy,
+              wakeRequestId: wakeupRequest.id,
+              issueId: issue.id,
+              enrichedContextSnapshot: queuedContextSnapshot,
+              sessionIdBefore: explicitContinuation ? null : sessionBefore,
+              continuationAttempt,
+            })
+          ) {
+            return { kind: "agent_runnable_parked" as const };
+          }
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
@@ -28938,12 +29109,7 @@ export function heartbeatService(
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                  )
-                : enrichedContextSnapshot,
+              contextSnapshot: queuedContextSnapshot,
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
@@ -29011,7 +29177,11 @@ export function heartbeatService(
       if (outcome.kind === "durable") {
         return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
       }
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+      if (
+        outcome.kind === "deferred" ||
+        outcome.kind === "skipped" ||
+        outcome.kind === "agent_runnable_parked"
+      ) {
         return null;
       }
       if (outcome.kind === "coalesced") {
@@ -29197,6 +29367,20 @@ export function heartbeatService(
         .returning()
         .then((rows) => rows[0]);
 
+      if (
+        await maybeParkWakeAtAgentScheduler({
+          agent,
+          policy,
+          wakeRequestId: wakeupRequest.id,
+          issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
+          enrichedContextSnapshot,
+          sessionIdBefore,
+          continuationAttempt,
+        })
+      ) {
+        return { kind: "agent_runnable_parked" as const };
+      }
+
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -29227,7 +29411,9 @@ export function heartbeatService(
       return { kind: "queued" as const, run: newRun };
     });
 
-    if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "skipped" || queueOutcome.kind === "agent_runnable_parked") {
+      return null;
+    }
     const newRun = queueOutcome.run;
 
     publishLiveEvent({

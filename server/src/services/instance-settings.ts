@@ -263,6 +263,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
+      enableAgentRunnableScheduler: parsed.data.enableAgentRunnableScheduler ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
         parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
@@ -309,6 +310,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableSandboxDuplexBridge: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
+    enableAgentRunnableScheduler: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
   };

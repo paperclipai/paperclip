@@ -906,6 +906,7 @@ export type WakeupTriggerDetail = (typeof WAKEUP_TRIGGER_DETAILS)[number];
 
 export const WAKEUP_REQUEST_STATUSES = [
   "queued",
+  "agent_runnable",
   "deferred_issue_execution",
   "claimed",
   "coalesced",
