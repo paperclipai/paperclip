@@ -2288,7 +2288,8 @@ function renderPaperclipWakePromptBody(
   const executionStage = normalized.executionStage;
   const recovery = normalized.recovery;
   const recoveryScoped = Boolean(
-    recovery || normalized.reason === "source_scoped_recovery_action",
+    normalized.reason !== "issue_recovery_action_restored" &&
+      (recovery || normalized.reason === "source_scoped_recovery_action"),
   );
   // Ordinary resumed sessions receive compact assignment markdown, so an
   // objective whose source is absent from the delta remains necessary. Fresh,
