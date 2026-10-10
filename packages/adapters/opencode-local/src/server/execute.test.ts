@@ -142,6 +142,53 @@ describe("OpenCode local skill injection", () => {
     expect(result.clearSession).toBe(false);
   });
 
+  it("does not fire the output-inactivity monitor after the process resolved while accounting is slow", async () => {
+    const commandPath = path.join(configHome, "fake-opencode-slow-receipt");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // The process resolves immediately, well inside the 50ms inactivity
+    // window, but saving the usage receipt (final flush -> onUsage) takes
+    // 300ms — longer than the window. The monitors must stop when the
+    // process finishes, before accounting persistence: otherwise a completed
+    // run is reported as opencode_output_inactivity_monitor and may signal a
+    // dead process group. The streamed step_finish gives the checkpoint log a
+    // real receipt; the final complete:true flush is the slow onUsage call.
+    const stdoutLine = JSON.stringify({
+      type: "step_finish",
+      sessionID: "sess_receipt",
+      part: { tokens: { input: 1, output: 2 }, cost: 0.05 },
+    }) + "\n";
+    runProcessMock
+      .mockReset()
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[4] as
+          | { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }
+          | undefined;
+        await options?.onLog?.("stdout", stdoutLine);
+        return probeResult({ exitCode: 0, signal: null, timedOut: false, stdout: stdoutLine });
+      });
+    let usageCalls = 0;
+    const result = await execute({
+      runId: "run-receipt-slow",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "sess_receipt", sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath, cwd: configHome, model: "openai/gpt-5",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+        outputInactivityTimeoutMs: 50,
+      },
+      context: createPromptContextFixture(),
+      onLog: async () => {},
+      onUsage: async () => {
+        usageCalls += 1;
+        if (usageCalls >= 2) await new Promise((resolve) => setTimeout(resolve, 300));
+      },
+    });
+    expect(usageCalls).toBeGreaterThanOrEqual(2);
+    expect(result.errorCode).toBeNull();
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionId).toBe("sess_receipt");
+  });
+
   it("awaits both queued monitor diagnostics before the run resolves", { timeout: 20_000 }, async () => {
     if (process.platform === "win32") return;
     const commandPath = path.join(configHome, "fake-opencode-diagnostic");

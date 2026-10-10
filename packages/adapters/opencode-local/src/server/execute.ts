@@ -909,6 +909,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           runLogTail: paperclipBridge?.runLogTail,
           settleRunDisposition: paperclipBridge?.settleRunDisposition,
         });
+        // The opencode process has finished; both monitors must stop before
+        // accounting persistence below. The usage receipt write can outlast
+        // the inactivity window (slow control plane), and a monitor firing
+        // after the process resolved would report a completed run as
+        // `opencode_output_inactivity_monitor` and could signal a dead
+        // process group. The finally-block stops remain for the throw path;
+        // stop() is idempotent.
+        processActivityMonitor.current?.stop();
+        monitor?.stop();
         // Parse any unterminated final record before deciding whether its usage
         // is complete. A clean exit alone cannot turn absent counters into zero.
         await accountingLog.flush();

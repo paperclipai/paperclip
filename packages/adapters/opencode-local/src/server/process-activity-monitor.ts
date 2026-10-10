@@ -42,34 +42,107 @@ function parseProcIo(io: string): number {
   return bytes;
 }
 
-export async function sampleOpenCodeProcessActivity(
-  pid: number,
-  processGroupId: number | null,
-): Promise<OpenCodeProcessActivitySnapshot | null> {
-  if (process.platform !== "linux") return null;
-  const targetProcessGroupId = processGroupId && processGroupId > 0 ? processGroupId : null;
-  const entries = targetProcessGroupId ? await fs.readdir("/proc") : [String(pid)];
-  const processIds: number[] = [];
-  let cpuTicks = 0;
-  let ioBytes = 0;
+interface OpenCodeProcessActivityProcEntry {
+  processGroupId: number;
+  cpuTicks: number;
+  ioBytes: number;
+}
 
+interface OpenCodeProcessActivityScanDeps {
+  readdir: (path: string) => Promise<string[]>;
+  readFile: (path: string) => Promise<string>;
+}
+
+const defaultScanDeps: OpenCodeProcessActivityScanDeps = {
+  readdir: (path) => fs.readdir(path),
+  readFile: (path) => fs.readFile(path, "utf8"),
+};
+
+// Concurrent runs each poll their own process group on the same host. They
+// can share one full /proc scan: the snapshot is a point-in-time sample, so
+// reusing a fresh one keeps every run's delta semantics while collapsing N
+// concurrent per-run scans into one per TTL window.
+const OPENCODE_PROCESS_ACTIVITY_SCAN_CACHE_TTL_MS = 1_000;
+let scanCache: { at: number; entries: Map<number, OpenCodeProcessActivityProcEntry> } | null = null;
+
+/**
+ * Test hook: drop the shared /proc scan cache so a test starts from a clean
+ * sampling state.
+ */
+export function resetOpenCodeProcessActivityScanCacheForTests(): void {
+  scanCache = null;
+}
+
+async function scanProcProcesses(
+  deps: OpenCodeProcessActivityScanDeps,
+): Promise<Map<number, OpenCodeProcessActivityProcEntry>> {
+  const entries = await deps.readdir("/proc");
+  const sampled = new Map<number, OpenCodeProcessActivityProcEntry>();
   await Promise.all(
     entries.map(async (entry) => {
       if (!/^\d+$/.test(entry)) return;
       try {
-        const parsed = parseProcStat(await fs.readFile(`/proc/${entry}/stat`, "utf8"));
+        const parsed = parseProcStat(await deps.readFile(`/proc/${entry}/stat`));
         if (!parsed) return;
-        if (targetProcessGroupId !== null && parsed.processGroupId !== targetProcessGroupId) return;
-        if (targetProcessGroupId === null && Number(entry) !== pid) return;
-        const io = await fs.readFile(`/proc/${entry}/io`, "utf8").catch(() => "");
-        processIds.push(Number(entry));
-        cpuTicks += parsed.cpuTicks;
-        ioBytes += parseProcIo(io);
+        const io = await deps.readFile(`/proc/${entry}/io`).catch(() => "");
+        sampled.set(Number(entry), {
+          processGroupId: parsed.processGroupId,
+          cpuTicks: parsed.cpuTicks,
+          ioBytes: parseProcIo(io),
+        });
       } catch {
         // Processes can exit between listing /proc and reading their stat file.
       }
     }),
   );
+  return sampled;
+}
+
+export async function sampleOpenCodeProcessActivity(
+  pid: number,
+  processGroupId: number | null,
+  deps: OpenCodeProcessActivityScanDeps = defaultScanDeps,
+): Promise<OpenCodeProcessActivitySnapshot | null> {
+  if (process.platform !== "linux") return null;
+  const targetProcessGroupId = processGroupId && processGroupId > 0 ? processGroupId : null;
+
+  let shared: Map<number, OpenCodeProcessActivityProcEntry> | null = null;
+  if (targetProcessGroupId !== null) {
+    const now = Date.now();
+    if (scanCache && now - scanCache.at < OPENCODE_PROCESS_ACTIVITY_SCAN_CACHE_TTL_MS) {
+      shared = scanCache.entries;
+    } else {
+      shared = await scanProcProcesses(deps);
+      scanCache = { at: now, entries: shared };
+    }
+  }
+
+  const processIds: number[] = [];
+  let cpuTicks = 0;
+  let ioBytes = 0;
+
+  const accumulate = (id: number, entry: OpenCodeProcessActivityProcEntry) => {
+    processIds.push(id);
+    cpuTicks += entry.cpuTicks;
+    ioBytes += entry.ioBytes;
+  };
+
+  if (shared) {
+    for (const [id, entry] of shared) {
+      if (entry.processGroupId !== targetProcessGroupId) continue;
+      accumulate(id, entry);
+    }
+  } else {
+    try {
+      const parsed = parseProcStat(await deps.readFile(`/proc/${pid}/stat`));
+      if (parsed) {
+        const io = await deps.readFile(`/proc/${pid}/io`).catch(() => "");
+        accumulate(pid, { processGroupId: parsed.processGroupId, cpuTicks: parsed.cpuTicks, ioBytes: parseProcIo(io) });
+      }
+    } catch {
+      // The process can exit between the decision to sample and the stat read.
+    }
+  }
 
   if (processIds.length === 0) return null;
   processIds.sort((left, right) => left - right);
