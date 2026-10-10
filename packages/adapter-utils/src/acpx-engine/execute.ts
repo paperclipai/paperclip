@@ -1381,6 +1381,12 @@ async function prepareCodexSkillRuntime(input: {
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
 
   input.env.CODEX_HOME = effectiveCodexHome;
+  // Codex keeps its runtime SQLite state under CODEX_SQLITE_HOME, not CODEX_HOME.
+  // An operator-configured value wins; the Codex home is only the default.
+  input.env.CODEX_SQLITE_HOME =
+    typeof envConfig.CODEX_SQLITE_HOME === "string" && envConfig.CODEX_SQLITE_HOME.trim().length > 0
+      ? path.resolve(envConfig.CODEX_SQLITE_HOME.trim())
+      : effectiveCodexHome;
 
   return {
     identity: {
