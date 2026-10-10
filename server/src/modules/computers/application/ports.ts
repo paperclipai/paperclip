@@ -56,6 +56,7 @@ export interface ComputerBackend {
   computerTool(): { command: string; args: string[] };
   desktop(
     record: ComputerRecord,
+    options?: { checkInput?: boolean },
   ): Promise<{ viewerUrl: string; expiresAt: string }>;
   ingress(
     record: ComputerRecord,

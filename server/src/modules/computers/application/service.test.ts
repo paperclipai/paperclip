@@ -248,6 +248,7 @@ describe("computer ownership", () => {
         })
       ).expiresAt,
     ).toBe(viewer.expiresAt);
+    expect(f.backend.desktop).toHaveBeenLastCalledWith(expect.anything(), { checkInput: false });
     f.advance(1_001);
     await expect(
       f.service.renewViewer({
