@@ -1,4 +1,4 @@
-import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome, isMissingRemoteFile } from "./persistent-agent-files.js";
 import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -509,20 +509,41 @@ export function agentInstructionsService(db?: Db) {
     }
     return remote;
   }
-  async function remotePaths(remote: NonNullable<Awaited<ReturnType<typeof remoteFiles>>>, relative = ""): Promise<Array<{ path: string; size: number }>> {
-    const result: Array<{ path: string; size: number }> = [];
-    for (const entry of await remote.list(relative || undefined)) {
-      const name = relative ? `${relative}/${entry.name}` : entry.name;
-      // Only the home-level directory belongs to the runtime; nested names can
-      // be ordinary user content and retain their existing listing behavior.
-      if (!relative && entry.name === ".paperclip-runtime") continue;
-      instructionPath(name);
-      if (entry.kind === "directory") {
-        if (!IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name)) result.push(...await remotePaths(remote, name));
-      } else if (!IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name)) result.push({ path: name, size: entry.size });
-      if (result.length > 100_000) throw unprocessable("Agent folder exceeds its entry limit");
+  async function remotePaths(remote: NonNullable<Awaited<ReturnType<typeof remoteFiles>>>, entryFile: string) {
+    const files = new Map<string, { path: string; size: number }>();
+    let remaining = 1000;
+    let truncated = false;
+    // Reserve the configured entry before browsing. It can be beyond the first
+    // page, or below a directory whose siblings consume the metadata budget.
+    if (entryFile.split("/")[0] !== ".paperclip-runtime") {
+      try {
+        const entry = await remote.stat(instructionPath(entryFile));
+        if (entry.kind === "file") files.set(entryFile, { path: entryFile, size: entry.size });
+      } catch (error) { if (!isMissingRemoteFile(error)) throw error; }
+      remaining -= 1;
     }
-    return result;
+    const directories = [""];
+    while (directories.length > 0 && remaining > 0) {
+      const relative = directories.shift()!;
+      const page = await remote.listPage(relative, { limit: remaining });
+      remaining -= page.entries.length;
+      truncated ||= page.truncated;
+      for (const entry of page.entries) {
+        const name = relative ? `${relative}/${entry.name}` : entry.name;
+        // Nested names can be user content; only the home-level runtime tree
+        // contains provider packs and mutable session state owned by Paperclip.
+        if (!relative && entry.name === ".paperclip-runtime") continue;
+        instructionPath(name);
+        if (entry.kind === "directory") {
+          if (!IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name)) directories.push(name);
+        } else if (!IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name)) files.set(name, { path: name, size: entry.size });
+      }
+    }
+    truncated ||= directories.length > 0;
+    return {
+      files: [...files.values()],
+      warnings: truncated ? ["The agent folder listing and export are partial because they exceed the 1,000-entry limit. The configured instructions entry is included when available."] : [],
+    };
   }
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");
@@ -535,11 +556,12 @@ export function agentInstructionsService(db?: Db) {
     const remote = await remoteFiles(agent);
     if (remote) {
       const summaries: AgentInstructionsFileSummary[] = [];
-      for (const { path: relative, size } of await remotePaths(remote)) {
+      const listing = await remotePaths(remote, state.entryFile);
+      for (const { path: relative, size } of listing.files) {
         const file = size <= MAX_INSTRUCTION_BYTES ? await readPersistentAgentFile(remote, relative) : null;
         summaries.push(summarizeFile(relative, state.entryFile, size, file?.bytes ?? null, file?.sha256));
       }
-      return toBundle(agent, { ...state, rootPath: remote.root, resolvedEntryPath: `${remote.root}/${state.entryFile}` }, summaries);
+      return toBundle(agent, { ...state, rootPath: remote.root, resolvedEntryPath: `${remote.root}/${state.entryFile}`, warnings: [...state.warnings, ...listing.warnings] }, summaries);
     }
     if (!state.rootPath) return toBundle(agent, state, []);
     await assertInstructionPathSafe(state.rootPath, state.entryFile);
@@ -792,12 +814,13 @@ export function agentInstructionsService(db?: Db) {
     const remote = await remoteFiles(agent);
     if (remote) {
       const files: Record<string, string> = {};
-      for (const { path: relative, size } of await remotePaths(remote)) {
+      const listing = await remotePaths(remote, state.entryFile);
+      for (const { path: relative, size } of listing.files) {
         if (size > MAX_INSTRUCTION_BYTES) continue;
         const file = await readPersistentAgentFile(remote, relative);
         if (file) files[relative] = file.bytes.toString("utf8");
       }
-      return { files, entryFile: state.entryFile, warnings: state.warnings };
+      return { files, entryFile: state.entryFile, warnings: [...state.warnings, ...listing.warnings] };
     }
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);

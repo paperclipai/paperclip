@@ -13,7 +13,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { boatBackend, createBoatTransportAdmission, desktopReadinessProgram, processProgram } from "./boat.js";
@@ -349,6 +349,67 @@ process.stdout.write(result.stdout||"");process.stderr.write(result.stderr||"");
     expect(config).not.toContain("scoped-fixture-token");
     expect(config).not.toContain("credential");
     expect(spawnSync(realGit, ["rev-parse", "HEAD"], { cwd: result.remoteCwd }).status).toBe(0);
+  });
+  it.each(["shared", "worktree"])("serializes concurrent first checkout creation for %s workspaces", async mode => {
+    const f = fixture();
+    const source = join(f.temp, "source"), bin = join(f.temp, "bin");
+    mkdirSync(source); mkdirSync(bin);
+    const git = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+    for (const args of [["init"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base"]]) {
+      expect(spawnSync(git, args, { cwd: source, encoding: "utf8" }).status).toBe(0);
+    }
+    const started = join(f.temp, "clone-started"), release = join(f.temp, "clone-release"), clones = join(f.temp, "clones");
+    // Pause real Git cloning after its destination exists. The second actual
+    // remote program must wait instead of inspecting this unfinished checkout.
+    writeFileSync(join(bin, "git"), `#!${process.execPath}
+const fs=require("node:fs"),{spawnSync}=require("node:child_process");
+const args=process.argv.slice(2),clone=args.indexOf("clone");
+if(clone>=0){
+ fs.appendFileSync(process.env.FIXTURE_CLONES,"clone\\n");
+ fs.mkdirSync(args.at(-1),{recursive:true});fs.writeFileSync(process.env.FIXTURE_STARTED,"ready");
+ const deadline=Date.now()+5000;
+ while(!fs.existsSync(process.env.FIXTURE_RELEASE)){if(Date.now()>deadline)process.exit(90);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}
+ const url=args[clone+2];args[clone+2]=process.env.FIXTURE_SOURCE;
+ const result=spawnSync(process.env.FIXTURE_GIT,args,{encoding:"utf8"});
+ if(result.status!==0){process.stderr.write(result.stderr);process.exit(result.status??1);}
+ process.exit(spawnSync(process.env.FIXTURE_GIT,["-C",args.at(-1),"remote","set-url","origin",url]).status??1);
+}
+const result=spawnSync(process.env.FIXTURE_GIT,args,{encoding:"utf8"});
+process.stdout.write(result.stdout||"");process.stderr.write(result.stderr||"");process.exit(result.status??1);
+`, { mode: 0o700 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FIXTURE_GIT: git, FIXTURE_SOURCE: source,
+      FIXTURE_STARTED: started, FIXTURE_RELEASE: release, FIXTURE_CLONES: clones };
+    const call = (taskId: string) => new Promise<{ remoteCwd: string }>((resolve, reject) => {
+      const child = spawn("python3", ["-c", remoteProgram.replaceAll("/home/user/paperclip/", `${f.temp}/`)], { env });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", value => { stdout += value; }); child.stderr.on("data", value => { stderr += value; });
+      child.on("error", reject); child.on("close", code => {
+        if (code !== 0) reject(new Error(stderr));
+        else { try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); } }
+      });
+      child.stdin.end(JSON.stringify({ root: f.root, action: "workspace", mode, taskId, repositoryUrl: "https://github.com/company/shared.git" }));
+    });
+    const first = call("first");
+    await vi.waitFor(() => expect(existsSync(started)).toBe(true));
+    const second = call("second");
+    let status: unknown;
+    try {
+      status = await Promise.race([second.then(() => "completed"), new Promise(resolve => setTimeout(() => resolve("waiting"), 100))]);
+    } finally { writeFileSync(release, "continue"); }
+    const results = await Promise.all([first, second]);
+    expect(status).toBe("waiting");
+    expect(readFileSync(clones, "utf8").trim().split("\n")).toHaveLength(1);
+    for (const [index, result] of results.entries()) {
+      expect(result.remoteCwd).toBe(mode === "shared" ? join(f.root, "checkout") : join(f.root, "tasks", index === 0 ? "first" : "second"));
+      expect(spawnSync(git, ["rev-parse", "--show-toplevel"], { cwd: result.remoteCwd, encoding: "utf8" }).stdout.trim()).toBe(result.remoteCwd);
+    }
+  });
+  it("rejects substituted project locks without touching their target", () => {
+    const f = fixture(); mkdirSync(f.root);
+    const outside = join(f.temp, "outside"); writeFileSync(outside, "keep");
+    symlinkSync(outside, join(f.root, ".paperclip-workspace.lock"));
+    expect(f.call({ action: "workspace", mode: "shared" })).toEqual({ error: "invalid" });
+    expect(readFileSync(outside, "utf8")).toBe("keep");
   });
   it.each([false, true])("uses the requested worktree branch separately from its start ref (explicit base: %s)", explicitBase => {
     const f = fixture();

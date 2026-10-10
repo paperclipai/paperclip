@@ -259,6 +259,24 @@ describe("computer ownership", () => {
     await f.service.reconcile();
     expect(f.backend.stop).toHaveBeenCalledOnce();
   });
+  it("prunes retired viewers while preserving active viewers and runner stop proof", async () => {
+    const f = fixture();
+    await f.attach();
+    const runner = await f.admit();
+    await f.service.retire({ ...f.scope, owner: runner.owner });
+    const expired = await f.service.connect({ ...f.scope, userId: "alice", idleTimeoutMs: 1000 });
+    const active = await f.service.connect({ ...f.scope, userId: "bob", idleTimeoutMs: 60_000 });
+    const disconnected = await f.service.connect({ ...f.scope, userId: "alice", idleTimeoutMs: 60_000 });
+    await f.service.disconnectViewer({ ...f.scope, owner: disconnected.owner, userId: "alice" });
+    f.advance(1001);
+    await f.service.reconcile();
+    const owners = (await f.repository.get(f.scope)).ledger.owners;
+    expect(owners.map(owner => owner.id).sort()).toEqual([runner.owner.ownerId, active.owner.ownerId].sort());
+    expect(owners.some(owner => [expired.owner.ownerId, disconnected.owner.ownerId].includes(owner.id))).toBe(false);
+    expect(await f.service.isRetired({ ...f.scope, owner: runner.owner, agentId: "agent", runId: "run" })).toBe(true);
+    await expect(f.service.renewViewer({ ...f.scope, owner: active.owner, userId: "bob" })).resolves.toHaveProperty("viewerUrl");
+    expect(f.backend.stop).not.toHaveBeenCalled();
+  });
   it("a failed exact-process retirement keeps the machine held", async () => {
     const f = fixture();
     await f.attach();

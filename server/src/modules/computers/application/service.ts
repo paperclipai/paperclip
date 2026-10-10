@@ -942,7 +942,8 @@ finally:
         await retire({ ...record, owner: ref(record, owner) });
     await repository.update(record, (current) => {
       current.ledger.owners = current.ledger.owners.filter(
-        (owner) => owner.kind !== "file-operation" || owner.phase !== "retired",
+        // Only runner tombstones are needed for durable process-stop proof.
+        (owner) => owner.kind === "runner" || owner.phase !== "retired",
       );
     });
     record = await repository.get(record);
