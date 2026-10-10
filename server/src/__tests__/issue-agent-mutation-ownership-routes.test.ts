@@ -160,6 +160,9 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async () => null) }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockObserveIssueCreate = vi.hoisted(() =>
+  vi.fn(async (): Promise<Record<string, unknown> | null> => null));
+const mockRecordRefusedIssueCreate = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 
@@ -203,9 +206,25 @@ function registerRouteMocks() {
     logActivity: mockLogActivity,
   }));
 
-  vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+  vi.doMock("../services/cross-issue-influence-limit.js", async () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    observeIssueCreate: mockObserveIssueCreate,
+    recordRefusedIssueCreate: mockRecordRefusedIssueCreate,
+    // Real class: the route branches on `instanceof`, so a stub would be a different
+    // identity and the refusal would fall through to a 500 instead of a 429.
+    IssueCreateBudgetExceededError: (
+      await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
+      )
+    ).IssueCreateBudgetExceededError,
     crossIssueInfluenceLimitError: vi.fn(),
+    // Real, so the 429 an agent reads after a refused create is the shipped copy
+    // rather than whatever a stub happens to return.
+    issueCreateLimitError: (
+      await vi.importActual<typeof import("../services/cross-issue-influence-limit.js")>(
+        "../services/cross-issue-influence-limit.js",
+      )
+    ).issueCreateLimitError,
     crossIssueInfluenceRunContextError: () => new HttpError(
       403,
       "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
@@ -608,6 +627,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockLogActivity.mockClear();
     mockObserveCrossIssueInfluence.mockReset();
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
+    mockObserveIssueCreate.mockReset();
+    mockObserveIssueCreate.mockResolvedValue(null);
+    mockRecordRefusedIssueCreate.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockReset();
@@ -1365,6 +1387,85 @@ describe("agent issue mutation checkout ownership", () => {
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );
+  });
+
+  it("hands the create service a per-run budget hook for an agent actor", async () => {
+    const app = await createApp(ownerActor(), createRunContextDb({ issueId }));
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Stage 3 — implement the gate" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    // The charge is the service's to run, inside the transaction that does the
+    // insert — the route only supplies it. Charging here instead billed replays
+    // that minted nothing and could refuse a retry of an already-created task.
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Stage 3 — implement the gate",
+        assertCreateAllowed: expect.any(Function),
+      }),
+    );
+  });
+
+  it("refuses a create past the per-run budget without minting an issue", async () => {
+    // One observed run minted 18 tasks in under six minutes, so the refusal has to
+    // land before the row exists. The stub stands in for `create`'s own ordering:
+    // run the hook first, insert only if it did not throw.
+    let inserted = false;
+    mockIssueService.create.mockImplementation(async (
+      _companyId: string,
+      input: Record<string, unknown>,
+    ) => {
+      await (input.assertCreateAllowed as ((tx: unknown) => Promise<void>) | undefined)?.({});
+      inserted = true;
+      return { id: "never-reached", companyId, title: input.title };
+    });
+    mockObserveIssueCreate.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 41,
+      cap: 40,
+      enforceAt: "2026-10-17T00:00:00.000Z",
+    });
+    const app = await createApp(ownerActor(), createRunContextDb({ issueId }));
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Throwaway probe 18" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(429);
+    expect(res.body.details).toMatchObject({
+      code: "issue_create_cap_exceeded",
+      cap: 40,
+      count: 41,
+      mode: "enforce",
+    });
+    expect(res.body.error).toContain("next heartbeat");
+    expect(inserted).toBe(false);
+    // The refusal still has to leave a trace. It cannot be written inside the create
+    // transaction, because the throw that refuses rolls that transaction back, so the
+    // route records it once `create` has unwound.
+    expect(mockRecordRefusedIssueCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        title: "Throwaway probe 18",
+        decision: expect.objectContaining({ allowed: false, count: 41, cap: 40 }),
+      }),
+    );
+  });
+
+  it("does not charge board creates against any run budget", async () => {
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Board-created task" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveIssueCreate).not.toHaveBeenCalled();
   });
 
   it("authorizes child creation through the shared visible-issue write path", async () => {

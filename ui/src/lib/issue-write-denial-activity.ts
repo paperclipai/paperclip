@@ -10,6 +10,10 @@ import type { IssueWriteDenialCode, IssueWriteDenialContext } from "@paperclipai
  */
 const DENIAL_ACTIVITY_CODES: Record<string, IssueWriteDenialCode> = {
   "issue.cross_issue_influence_cap_rejected": "cross_issue_influence_cap_exceeded",
+  // `issue.issue_create_cap_rejected` is deliberately absent. Those rows are keyed on
+  // the heartbeat run, not an issue, because the charge is taken before the insert and
+  // there is no task id yet — so they never appear in the issue activity this mapping
+  // feeds. Add them here together with a surface that reads run activity.
   "issue.attribution_spoof_rejected": "issue_write_attribution_spoof_rejected",
 };
 
