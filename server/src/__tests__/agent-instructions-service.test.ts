@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 
 type TestAgent = {
@@ -12,7 +12,7 @@ type TestAgent = {
 };
 
 async function makeTempDir(prefix: string) {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 function makeAgent(adapterConfig: Record<string, unknown>): TestAgent {
@@ -29,6 +29,13 @@ describe("agent instructions service", () => {
   const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   const cleanupDirs = new Set<string>();
 
+  beforeEach(async () => {
+    const home = await makeTempDir("agent-instructions-test-home-");
+    cleanupDirs.add(home);
+    process.env.PAPERCLIP_HOME = home;
+    process.env.PAPERCLIP_INSTANCE_ID = "instructions-service-test";
+  });
+
   afterEach(async () => {
     if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = originalPaperclipHome;
@@ -39,6 +46,37 @@ describe("agent instructions service", () => {
       await fs.rm(dir, { recursive: true, force: true });
       cleanupDirs.delete(dir);
     }));
+  });
+
+  it.each(["./AGENTS.md", "notes/../AGENTS.md", "notes\\..\\AGENTS.md", "../invalid"])("reads legacy entry configuration %s without breaking the bundle", async (entry) => {
+    const root = await makeTempDir("legacy-entry-"); cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "legacy instructions");
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root, instructionsEntryFile: entry });
+    const svc = agentInstructionsService();
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.entryFile).toBe("AGENTS.md");
+    expect((await svc.readFile(agent, bundle.entryFile)).content).toBe("legacy instructions");
+    if (entry === "../invalid") expect(bundle.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("lists external bundles containing large binary assets", async () => {
+    const root = await makeTempDir("external-large-assets-"); cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "external instructions");
+    const asset = await fs.open(path.join(root, "large.bin"), "w");
+    try { await asset.truncate(17 * 1024 * 1024); } finally { await asset.close(); }
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root });
+    const svc = agentInstructionsService();
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.files).toContainEqual(expect.objectContaining({ path: "large.bin", binary: true, editable: false }));
+    expect((await svc.readFile(agent, "AGENTS.md")).content).toBe("external instructions");
+  });
+
+  it("rejects reserved paths while initializing an unconfigured managed bundle", async () => {
+    const root = await makeTempDir("unconfigured-reserved-path-"); cleanupDirs.add(root);
+    process.env.PAPERCLIP_HOME = root;
+    const svc = agentInstructionsService();
+    await expect(svc.writeFile(makeAgent({}), ".paperclip-runtime/state", "invalid")).rejects.toMatchObject({ status: 422 });
+    expect(await fs.readdir(root)).toEqual([]);
   });
 
   it("copies the existing bundle into the managed root when switching to managed mode", async () => {
@@ -53,7 +91,7 @@ describe("agent instructions service", () => {
     await fs.mkdir(path.join(externalRoot, "docs"), { recursive: true });
     await fs.writeFile(path.join(externalRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
 
-    const svc = agentInstructionsService();
+    const svc = agentInstructionsService({ select: () => ({ from: () => ({ where: async () => [] }) }) } as never);
     const agent = makeAgent({
       instructionsBundleMode: "external",
       instructionsRootPath: externalRoot,
@@ -162,6 +200,29 @@ describe("agent instructions service", () => {
     ]);
   });
 
+  it.skipIf(process.platform === "win32")("rejects instruction symlinks for immutable runner snapshots without changing legacy exports", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-symlink-");
+    const outsideRoot = await makeTempDir("paperclip-agent-instructions-outside-");
+    cleanupDirs.add(externalRoot);
+    cleanupDirs.add(outsideRoot);
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "Read sibling.md\n", "utf8");
+    await fs.writeFile(path.join(outsideRoot, "secret.md"), "must not enter the bundle\n", "utf8");
+    await fs.symlink(path.join(outsideRoot, "secret.md"), path.join(externalRoot, "sibling.md"));
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+    const svc = agentInstructionsService();
+
+    await expect(svc.exportFiles(agent)).resolves.toMatchObject({
+      files: { "AGENTS.md": "Read sibling.md\n" },
+    });
+    await expect(svc.exportFiles(agent, { rejectSymlinks: true }))
+      .rejects.toThrow("Instructions bundle may not contain symlinks: sibling.md");
+  });
+
   it("recovers a managed bundle from disk when bundle config metadata is missing", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-recover-");
     cleanupDirs.add(paperclipHome);
@@ -227,11 +288,10 @@ describe("agent instructions service", () => {
 
     expect(bundle.mode).toBe("managed");
     expect(bundle.rootPath).toBe(managedRoot);
-    expect(bundle.entryFile).toBe("AGENTS.md");
+    expect(bundle.entryFile).toBe("docs/MISSING.md");
     expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
     expect(bundle.warnings).toEqual([
       `Recovered managed instructions from disk at ${managedRoot}; ignoring stale configured root ${staleRoot}.`,
-      "Recovered managed instructions entry file from disk as AGENTS.md; previous entry docs/MISSING.md was missing.",
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
@@ -270,8 +330,8 @@ describe("agent instructions service", () => {
     expect(result.adapterConfig).toMatchObject({
       instructionsBundleMode: "managed",
       instructionsRootPath: managedRoot,
-      instructionsEntryFile: "AGENTS.md",
-      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+      instructionsEntryFile: "docs/MISSING.md",
+      instructionsFilePath: path.join(managedRoot, "docs/MISSING.md"),
     });
     await expect(fs.readFile(path.join(managedRoot, "docs", "TOOLS.md"), "utf8")).resolves.toBe("## Tools\n");
   });
@@ -311,8 +371,8 @@ describe("agent instructions service", () => {
     expect(result.adapterConfig).toMatchObject({
       instructionsBundleMode: "managed",
       instructionsRootPath: managedRoot,
-      instructionsEntryFile: "AGENTS.md",
-      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+      instructionsEntryFile: "docs/MISSING.md",
+      instructionsFilePath: path.join(managedRoot, "docs/MISSING.md"),
     });
     await expect(fs.stat(path.join(managedRoot, "docs", "TOOLS.md"))).rejects.toThrow();
     expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
@@ -350,11 +410,10 @@ describe("agent instructions service", () => {
 
     expect(bundle.mode).toBe("managed");
     expect(bundle.rootPath).toBe(managedRoot);
-    expect(bundle.entryFile).toBe("AGENTS.md");
+    expect(bundle.entryFile).toBe("docs/MISSING.md");
     expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
     expect(bundle.warnings).toEqual([
       `Recovered managed instructions from disk at ${managedRoot}; ignoring stale configured root ${staleRoot}.`,
-      "Recovered managed instructions entry file from disk as AGENTS.md; previous entry docs/MISSING.md was missing.",
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });

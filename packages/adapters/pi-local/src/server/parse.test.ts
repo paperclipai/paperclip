@@ -209,6 +209,57 @@ describe("parsePiJsonl", () => {
     expect(parsed.usage.cachedInputTokens).toBe(25);
     expect(parsed.usage.costUsd).toBe(0.003);
   });
+
+  it("surfaces failed auto-retry exhaustion as an error", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "auto_retry_end",
+        success: false,
+        attempt: 3,
+        finalError: "Cloud Code Assist API error (429): RESOURCE_EXHAUSTED",
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual(["Cloud Code Assist API error (429): RESOURCE_EXHAUSTED"]);
+  });
+
+  it("does not treat successful auto-retry as an error", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "auto_retry_end",
+        success: true,
+        attempt: 2,
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it("surfaces standalone error events", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "error",
+        message: "Connection to model provider lost",
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual(["Connection to model provider lost"]);
+  });
+
+  it("ignores error events with empty messages", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "error",
+        message: "",
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([]);
+  });
 });
 
 describe("isPiUnknownSessionError", () => {
@@ -218,5 +269,31 @@ describe("isPiUnknownSessionError", () => {
     expect(isPiUnknownSessionError("", "no session available")).toBe(true);
     expect(isPiUnknownSessionError("all good", "")).toBe(false);
     expect(isPiUnknownSessionError("working fine", "no errors")).toBe(false);
+  });
+});
+
+
+describe("terminal provider failures", () => {
+  it("surfaces and deduplicates errors from Pi assistant messages", () => {
+    const message = { role: "assistant", content: [], stopReason: "error", errorMessage: "400 Context limit exceeded" };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message },
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual(["400 Context limit exceeded"]);
+  });
+  it("reports an error even when the provider omitted its message", () => {
+    expect(parsePiJsonl(JSON.stringify({ type: "turn_end", message: { role: "assistant", stopReason: "error" } })).errors)
+      .toEqual(["Pi provider request failed."]);
+  });
+});
+
+describe("Pi price availability", () => {
+  it("retains unpriced usage and counts cache writes without treating a missing price as free", () => {
+    const event = { type: "turn_end", message: { role: "assistant", content: [], usage: { input: 10, output: 3, cacheRead: 100, cacheWrite: 20 } } };
+    expect(parsePiJsonl(JSON.stringify(event)).usage).toEqual({ inputTokens: 30, cachedInputTokens: 100, outputTokens: 3, costUsd: null });
+    event.message.usage = { ...event.message.usage, cost: { total: 0 } } as typeof event.message.usage;
+    expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
   });
 });

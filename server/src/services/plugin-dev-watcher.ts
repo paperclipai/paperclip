@@ -164,6 +164,10 @@ export function createPluginDevWatcher(
   const watchers = new Map<string, FSWatcher>();
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const fileExists = fsDeps?.existsSync ?? existsSync;
+  log.info(
+    { resolvesInstalledPlugins: Boolean(resolvePluginPackagePath) },
+    "plugin-dev-watcher: initialized",
+  );
 
   function watchPlugin(pluginId: string, packagePath: string): void {
     // Don't double-watch
@@ -293,11 +297,23 @@ export function createPluginDevWatcher(
   }
 
   async function watchLocalPluginById(pluginId: string): Promise<void> {
-    if (!resolvePluginPackagePath) return;
+    if (!resolvePluginPackagePath) {
+      log.debug(
+        { pluginId },
+        "plugin-dev-watcher: no package path resolver configured, skipping lifecycle event",
+      );
+      return;
+    }
 
     try {
       const packagePath = await resolvePluginPackagePath(pluginId);
-      if (!packagePath) return;
+      if (!packagePath) {
+        log.debug(
+          { pluginId },
+          "plugin-dev-watcher: plugin is not a local-path install, skipping watch",
+        );
+        return;
+      }
       watchPlugin(pluginId, packagePath);
     } catch (err) {
       log.warn(

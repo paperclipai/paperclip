@@ -1,14 +1,28 @@
+import {
+  buildSandboxNpmInstallCommand,
+} from "@paperclipai/adapter-utils";
+
 export const type = "gemini_local";
-export const label = "Gemini CLI (local)";
+export const label = "Gemini CLI";
+
+export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
+
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration
@@ -30,17 +44,29 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
+- engine (string, optional): defaults to ACP, including legacy unset/"auto" values. Missing prerequisites and execution failures fail the run without changing engines. Set "cli" to explicitly select the CLI engine.
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to gemini --acp
+- mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
+- nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
+- stateDir (string, optional): ACP state directory override when engine="acp"
+- warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use positional prompt arguments, not stdin.
+- Explicit ACP models are set via \`GEMINI_MODEL\` before startup; this avoids unsupported \`session/set_config_option\` calls while preserving the ACP transport. Auto continues to use the installed CLI's model selection.
+- Local turns include the current selected skill root and Paperclip artifact workflow guidance, including after a disposable connection home changes.
+- Local ACP workspaces use their canonical directory so Gemini's resolved file paths match the client boundary. Missing files retain ACP resource-not-found semantics. Gemini CLI 0.58.0 still mishandles the plain error object during native new-file creation; the installed-CLI compatibility smoke documents this remaining limitation.
+- Gemini shell commands may reject command substitution. Build JSON request bodies in workspace files and pass them with \`curl --data-binary @file\`, or use the selected skill's helpers.
+- Gemini ACP is the preferred auto lane when Node >=24.11.0 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
+- Runs use --prompt for non-interactive execution, not stdin.
+- The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.

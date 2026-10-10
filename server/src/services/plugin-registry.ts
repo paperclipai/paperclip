@@ -1,8 +1,9 @@
-import { asc, eq, ne, sql, and } from "drizzle-orm";
+import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
   pluginConfig,
+  pluginCompanySettings,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -15,6 +16,7 @@ import type {
   UpdatePluginStatus,
   UpsertPluginConfig,
   PatchPluginConfig,
+  PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
   PluginJobRecord,
@@ -197,6 +199,8 @@ export function pluginRegistryService(db: Db) {
       id: string,
       data: {
         packageName?: string;
+        packagePath?: string;
+        status?: "upgrade_pending";
         version?: string;
         manifest?: PaperclipPluginManifestV1;
       },
@@ -208,6 +212,11 @@ export function pluginRegistryService(db: Db) {
         updatedAt: new Date(),
       };
       if (data.packageName !== undefined) setClause.packageName = data.packageName;
+      if (data.packagePath !== undefined) setClause.packagePath = data.packagePath;
+      if (data.status !== undefined) {
+        setClause.status = data.status;
+        setClause.lastError = null;
+      }
       if (data.version !== undefined) setClause.version = data.version;
       if (data.manifest !== undefined) {
         setClause.manifestJson = data.manifest;
@@ -278,27 +287,49 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Config ---------------------------------------------------------
 
-    /** Retrieve a plugin's instance configuration. */
-    getConfig: (pluginId: string) =>
+    /** Retrieve a plugin's company-scoped configuration. */
+    getConfig: (pluginId: string, companyId: string) =>
+      db
+        .select()
+        .from(pluginConfig)
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
+        .then((rows) => rows[0] ?? null),
+
+    /**
+     * List every company-scoped configuration row for a plugin.
+     *
+     * Plugin config is company-scoped, but a worker is spawned once per plugin
+     * (not per company). Callers such as the plugin loader use this to replay
+     * each configured company's config to a freshly-started worker, so a
+     * proactive plugin that never runs inside a company-scoped invocation (and
+     * therefore cannot resolve `ctx.config.get(companyId)`) still receives its
+     * configuration at startup.
+     *
+     * Ordered deterministically by companyId: the startup replay delivers these
+     * rows to a single worker via `configChanged`, and a single-tenant worker
+     * binds to the first company it sees. Without a stable order the worker
+     * would bind to a nondeterministic (DB-dependent) company across restarts.
+     */
+    listConfigs: (pluginId: string) =>
       db
         .select()
         .from(pluginConfig)
         .where(eq(pluginConfig.pluginId, pluginId))
-        .then((rows) => rows[0] ?? null),
+        .orderBy(asc(pluginConfig.companyId)),
 
     /**
-     * Create or fully replace a plugin's instance configuration.
-     * If a config row already exists for the plugin it is replaced;
+     * Create or fully replace a plugin's company-scoped configuration.
+     * If a config row already exists for the plugin/company pair it is replaced;
      * otherwise a new row is inserted.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
+    upsertConfig: async (pluginId: string, companyId: string, input: UpsertPluginConfig) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -309,7 +340,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -318,6 +349,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId,
           configJson: input.configJson,
         })
         .returning()
@@ -325,17 +357,17 @@ export function pluginRegistryService(db: Db) {
     },
 
     /**
-     * Partially update a plugin's instance configuration via shallow merge.
+     * Partially update a plugin's company-scoped configuration via shallow merge.
      * If no config row exists yet one is created with the supplied values.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
+    patchConfig: async (pluginId: string, companyId: string, input: PatchPluginConfig) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
       const existing = await db
         .select()
         .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -347,7 +379,7 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(eq(pluginConfig.pluginId, pluginId))
+          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
           .returning()
           .then((rows) => rows[0]);
       }
@@ -356,6 +388,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginConfig)
         .values({
           pluginId,
+          companyId,
           configJson: input.configJson,
         })
         .returning()
@@ -366,11 +399,11 @@ export function pluginRegistryService(db: Db) {
      * Record an error against a plugin's config (e.g. validation failure
      * against the plugin's instanceConfigSchema).
      */
-    setConfigError: async (pluginId: string, lastError: string | null) => {
+    setConfigError: async (pluginId: string, companyId: string, lastError: string | null) => {
       const rows = await db
         .update(pluginConfig)
         .set({ lastError, updatedAt: new Date() })
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       if (rows.length === 0) throw notFound("Plugin config not found");
@@ -378,13 +411,71 @@ export function pluginRegistryService(db: Db) {
     },
 
     /** Delete a plugin's config row. */
-    deleteConfig: async (pluginId: string) => {
+    deleteConfig: async (pluginId: string, companyId: string) => {
       const rows = await db
         .delete(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
+        .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, companyId)))
         .returning();
 
       return rows[0] ?? null;
+    },
+
+    // ----- Company settings ----------------------------------------------
+
+    /** Retrieve company-scoped plugin settings. */
+    getCompanySettings: (pluginId: string, companyId: string): Promise<PluginCompanySettings | null> =>
+      db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null) as Promise<PluginCompanySettings | null>,
+
+    /** Create or replace company-scoped plugin settings. */
+    upsertCompanySettings: async (
+      pluginId: string,
+      companyId: string,
+      input: { enabled?: boolean; settingsJson: Record<string, unknown>; lastError?: string | null },
+    ): Promise<PluginCompanySettings> => {
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
+
+      const existing = await db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        return db
+          .update(pluginCompanySettings)
+          .set({
+            enabled: input.enabled ?? existing.enabled,
+            settingsJson: input.settingsJson,
+            lastError: input.lastError ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(pluginCompanySettings.id, existing.id))
+          .returning()
+          .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+      }
+
+      return db
+        .insert(pluginCompanySettings)
+        .values({
+          pluginId,
+          companyId,
+          enabled: input.enabled ?? true,
+          settingsJson: input.settingsJson,
+          lastError: input.lastError ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
     },
 
     // ----- Entities -------------------------------------------------------
@@ -415,27 +506,41 @@ export function pluginRegistryService(db: Db) {
     /**
      * Look up a plugin-owned entity mapping by its external identifier.
      *
+     * Scope matches `plugin_entities_external_idx` (NULLS NOT DISTINCT):
+     * pass the owning `companyId` (or `null` for instance-scope) to retrieve
+     * the row that belongs to that tenant. Two companies can share the same
+     * `(pluginId, entityType, externalId)` tuple — omitting `companyId` would
+     * return the first matched row regardless of tenant, which is unsafe.
+     *
      * @param pluginId - The UUID of the plugin.
      * @param entityType - The type of entity (e.g., 'project', 'issue').
      * @param externalId - The identifier in the external system.
+     * @param companyId - Tenant scope; `null` for instance-scope entities.
      * @returns The matching `PluginEntityRecord` or null.
      */
     getEntityByExternalId: (
       pluginId: string,
       entityType: string,
       externalId: string,
-    ) =>
-      db
+      companyId: string | null,
+    ) => {
+      const companyIdPredicate =
+        companyId == null
+          ? isNull(pluginEntities.companyId)
+          : eq(pluginEntities.companyId, companyId);
+      return db
         .select()
         .from(pluginEntities)
         .where(
           and(
+            companyIdPredicate,
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, entityType),
             eq(pluginEntities.externalId, externalId),
           ),
         )
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     /**
      * Create or update a persistent mapping between a Paperclip object and an
@@ -451,11 +556,22 @@ export function pluginRegistryService(db: Db) {
     ) => {
       // Drizzle doesn't support pg-specific onConflictDoUpdate easily in the insert() call
       // with complex where clauses, so we do it manually.
+      // Match the per-tenant uniqueness of `plugin_entities_external_idx`
+      // (companyId, pluginId, entityType, externalId) with NULLS NOT DISTINCT
+      // semantics: two companies (and instance-scope NULLs across each other)
+      // may share the same (pluginId, entityType, externalId) tuple, so the
+      // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
+      // otherwise — to avoid returning and overwriting another tenant's row.
+      const companyIdPredicate =
+        input.companyId == null
+          ? isNull(pluginEntities.companyId)
+          : eq(pluginEntities.companyId, input.companyId);
       const existing = await db
         .select()
         .from(pluginEntities)
         .where(
           and(
+            companyIdPredicate,
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, input.entityType),
             eq(pluginEntities.externalId, input.externalId ?? ""),
@@ -575,21 +691,29 @@ export function pluginRegistryService(db: Db) {
     /**
      * Record the start of a specific job execution.
      *
+     * Pass the owning `companyId` so `plugin_job_runs.company_id` is populated
+     * and the row participates in the `ON DELETE CASCADE` from `companies`.
+     * `null` is the explicit instance-scope marker (cron jobs without a tenant);
+     * those rows survive company deletes but are still attributable.
+     *
      * @param pluginId - The UUID of the plugin.
      * @param jobId - The UUID of the parent job record.
      * @param trigger - What triggered this run (e.g., 'schedule', 'manual').
+     * @param companyId - Tenant scope; `null` for instance-scope runs.
      * @returns The newly created `PluginJobRunRecord` in 'pending' status.
      */
     createJobRun: async (
       pluginId: string,
       jobId: string,
       trigger: PluginJobRunTrigger,
+      companyId: string | null,
     ) => {
       return db
         .insert(pluginJobRuns)
         .values({
           pluginId,
           jobId,
+          companyId,
           trigger,
           status: "pending",
         })
@@ -628,14 +752,22 @@ export function pluginRegistryService(db: Db) {
     /**
      * Create a record for an incoming webhook delivery.
      *
+     * Pass the owning `companyId` so `plugin_webhook_deliveries.company_id` is
+     * populated and the row participates in the `ON DELETE CASCADE` from
+     * `companies`. `null` is the explicit instance-scope marker (public
+     * webhooks without a tenant); those rows survive company deletes but are
+     * still attributable.
+     *
      * @param pluginId - The UUID of the receiving plugin.
      * @param webhookKey - The endpoint key defined in the manifest.
+     * @param companyId - Tenant scope; `null` for instance-scope deliveries.
      * @param input - The payload, headers, and optional external ID.
      * @returns The newly created `PluginWebhookDeliveryRecord` in 'pending' status.
      */
     createWebhookDelivery: async (
       pluginId: string,
       webhookKey: string,
+      companyId: string | null,
       input: {
         externalId?: string;
         payload: Record<string, unknown>;
@@ -647,6 +779,7 @@ export function pluginRegistryService(db: Db) {
         .values({
           pluginId,
           webhookKey,
+          companyId,
           externalId: input.externalId,
           payload: input.payload,
           headers: input.headers ?? {},

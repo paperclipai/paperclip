@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -7,6 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { isUuidLike, type EnvSecretRefBinding } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,6 +47,7 @@ export interface JsonSchemaNode {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  examples?: unknown[];
   const?: unknown;
   format?: string;
 
@@ -74,6 +77,19 @@ export interface JsonSchemaNode {
   readOnly?: boolean;
   writeOnly?: boolean;
 
+  // Paperclip extensions
+  /**
+   * When true, the field is hidden behind an "Advanced options" disclosure
+   * in the top-level `JsonSchemaForm`. Defaults to false (essential).
+   */
+  "x-paperclip-advanced"?: boolean;
+  /**
+   * Optional sub-section name used to group advanced fields under headings
+   * inside the disclosure (e.g. "SSH access", "VM resources"). Ignored when
+   * `x-paperclip-advanced` is not true.
+   */
+  "x-paperclip-group"?: string;
+
   // Allow extra keys
   [key: string]: unknown;
 }
@@ -91,6 +107,8 @@ export interface JsonSchemaFormProps {
   disabled?: boolean;
   /** Additional CSS class for the root container. */
   className?: string;
+  /** Label for the disclosure that hides advanced fields. Defaults to "Advanced options". */
+  advancedLabel?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +137,14 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Produce a sensible default value for a schema node. */
+/**
+ * Produce a sensible default value for a schema node.
+ *
+ * Optional scalar fields (string, number, integer, secret-ref) without an
+ * explicit `default` return `undefined` so they stay out of the submitted
+ * payload — otherwise an empty field would round-trip as `""` or `0` and
+ * trip server-side "X must be greater than 0 when provided" style validators.
+ */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   if (schema.default !== undefined) return schema.default;
 
@@ -127,26 +152,38 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   switch (type) {
     case "string":
     case "secret-ref":
-      return "";
     case "number":
     case "integer":
-      return schema.minimum ?? 0;
+      return undefined;
     case "boolean":
       return false;
     case "enum":
-      return schema.enum?.[0] ?? "";
+      return undefined;
     case "array":
       return [];
     case "object": {
       if (!schema.properties) return {};
       const obj: Record<string, unknown> = {};
+      const requiredProperties = new Set(schema.required ?? []);
       for (const [key, propSchema] of Object.entries(schema.properties)) {
-        obj[key] = getDefaultForSchema(propSchema);
+        // An optional object with no explicit default must stay absent until
+        // the user supplies a value. Materializing `{}` here makes recursive
+        // validation require all of its children even when the object was
+        // never touched.
+        if (
+          resolveType(propSchema) === "object" &&
+          !requiredProperties.has(key) &&
+          propSchema.default === undefined
+        ) {
+          continue;
+        }
+        const def = getDefaultForSchema(propSchema);
+        if (def !== undefined) obj[key] = def;
       }
       return obj;
     }
     default:
-      return "";
+      return undefined;
   }
 }
 
@@ -165,6 +202,16 @@ export function validateField(
 
   // Skip further validation if empty and not required
   if (value === undefined || value === null || value === "") return null;
+
+  if (type === "secret-ref" && isSecretRefBinding(value)) {
+    return null;
+  }
+  if (type === "secret-ref" && typeof value === "object") {
+    return "Invalid secret reference";
+  }
+  if (type === "object" && (typeof value !== "object" || Array.isArray(value))) {
+    return "Enter a valid JSON object";
+  }
 
   if (type === "string" || type === "secret-ref") {
     const str = String(value);
@@ -251,7 +298,12 @@ export function validateJsonSchemaForm(
     }
 
     // Recurse into objects
-    if (type === "object" && propSchema.properties && typeof value === "object" && value !== null) {
+    if (
+      type === "object" &&
+      propSchema.properties &&
+      typeof value === "object" &&
+      value !== null
+    ) {
       Object.assign(
         errors,
         validateJsonSchemaForm(propSchema, value as Record<string, unknown>, fieldPath),
@@ -293,8 +345,16 @@ export function validateJsonSchemaForm(
 export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const properties = schema.properties ?? {};
+  const requiredProperties = new Set(schema.required ?? []);
 
   for (const [key, propSchema] of Object.entries(properties)) {
+    if (
+      resolveType(propSchema) === "object" &&
+      !requiredProperties.has(key) &&
+      propSchema.default === undefined
+    ) {
+      continue;
+    }
     const def = getDefaultForSchema(propSchema);
     if (def !== undefined) {
       result[key] = def;
@@ -340,12 +400,12 @@ const FieldWrapper = React.memo(({
       </div>
       {children}
       {description && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
+        <p className="text-xs text-muted-foreground leading-relaxed">
           {description}
         </p>
       )}
       {error && (
-        <p className="text-[12px] font-medium text-destructive">{error}</p>
+        <p className="text-xs font-medium text-destructive">{error}</p>
       )}
     </div>
   );
@@ -417,6 +477,23 @@ const BooleanField = React.memo(({
 BooleanField.displayName = "BooleanField";
 
 /**
+ * Sentinel value for the "not configured" row of an optional enum select.
+ * Radix `Select` forbids an empty-string item value, so we map the unset state
+ * onto this sentinel and translate it back to `undefined` on change.
+ */
+const ENUM_UNSET_VALUE = "__paperclip_unset__";
+
+function isSecretRefBinding(value: unknown): value is EnvSecretRefBinding {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "secret_ref" &&
+    typeof (value as { secretId?: unknown }).secretId === "string"
+  );
+}
+
+/**
  * Specialized field for enum (select) values.
  */
 const EnumField = React.memo(({
@@ -437,37 +514,71 @@ const EnumField = React.memo(({
   description?: string;
   error?: string;
   options: unknown[];
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Select
-      value={String(value ?? "")}
-      onValueChange={onChange}
+}) => {
+  // Optional enums get a leading blank row so the user can express "not
+  // configured"; it is also the selected row when no value is set.
+  const showUnsetOption = !isRequired;
+  // When every option is numeric, coerce the selected string back to a number
+  // so the payload keeps the schema's integer/number type — a stringified "2"
+  // would otherwise fail server-side integer validation.
+  const numericOptions =
+    options.length > 0 && options.every((option) => typeof option === "number");
+
+  const isUnset = value === undefined || value === null || value === "";
+  const selectValue = isUnset
+    ? showUnsetOption
+      ? ENUM_UNSET_VALUE
+      : ""
+    : String(value);
+
+  const handleChange = (next: string) => {
+    if (next === ENUM_UNSET_VALUE) {
+      onChange(undefined);
+      return;
+    }
+    onChange(numericOptions ? Number(next) : next);
+  };
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={String(option)} value={String(option)}>
-            {String(option)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  </FieldWrapper>
-));
+      <Select
+        value={selectValue}
+        onValueChange={handleChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-full" aria-label={label} aria-required={isRequired}>
+          <SelectValue placeholder="Select an option" />
+        </SelectTrigger>
+        <SelectContent>
+          {showUnsetOption && (
+            <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
+              <span className="text-muted-foreground">None</span>
+            </SelectItem>
+          )}
+          {options.map((option) => (
+            <SelectItem key={String(option)} value={String(option)}>
+              {String(option)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
 
 EnumField.displayName = "EnumField";
 
 /**
- * Specialized field for secret-ref values, providing a toggleable password input.
+ * Specialized field for secret-ref values. Renders a picker for existing
+ * company secrets plus a raw-value fallback. A UUID-shaped value is treated
+ * as a bound secret reference; anything else is a raw value that the server
+ * converts to a stored secret on save.
  */
 const SecretField = React.memo(({
   value,
@@ -478,6 +589,7 @@ const SecretField = React.memo(({
   description,
   error,
   defaultValue,
+  maxLength,
 }: {
   value: unknown;
   onChange: (val: unknown) => void;
@@ -487,46 +599,185 @@ const SecretField = React.memo(({
   description?: string;
   error?: string;
   defaultValue?: unknown;
+  maxLength?: number;
 }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
+
+  const secretRefValue = isSecretRefBinding(value) ? value : null;
+  const stringValue = typeof value === "string" ? value : "";
+  const trimmed = stringValue.trim();
+  const legacySecretId = trimmed.length > 0 && isUuidLike(trimmed) ? trimmed : null;
+  const isBoundToSecret = secretRefValue !== null || legacySecretId !== null;
+  const hasRawValue = stringValue.length > 0 && !isBoundToSecret;
+
+  const [showRawInput, setShowRawInput] = useState(hasRawValue);
+
+  // Keep the raw-input panel open when the parent loads a raw value after
+  // mount (e.g. an environment-config form rendering with empty defaults
+  // before its API response arrives). We only promote to `true` here; manual
+  // toggles off are still preserved as long as `hasRawValue` is false.
+  useEffect(() => {
+    if (hasRawValue) setShowRawInput(true);
+  }, [hasRawValue]);
+
+  const bindingValue: SecretBindingValue | null = secretRefValue
+    ? { secretId: secretRefValue.secretId, version: secretRefValue.version }
+    : legacySecretId
+      ? { secretId: legacySecretId }
+      : null;
+
+  const handlePickerChange = useCallback(
+    (next: SecretBindingValue | null) => {
+      if (next) {
+        onChange({
+          type: "secret_ref",
+          secretId: next.secretId,
+          version: next.version ?? "latest",
+        });
+        setShowRawInput(false);
+        setIsVisible(false);
+      } else {
+        onChange("");
+      }
+    },
+    [onChange],
+  );
+
+  const rawInput = isTextArea ? (
+    <div className="relative">
+      {isVisible ? (
+        <Textarea
+          aria-label={label}
+          aria-required={isRequired}
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs"
+          aria-invalid={!!error}
+        />
+      ) : (
+        <Textarea
+          aria-label={label}
+          aria-required={isRequired}
+          // Render a placeholder summary instead of the secret content while
+          // hidden. This avoids exposing multi-line secrets (e.g. SSH
+          // private keys) on screen-shares; clicking the eye toggle reveals
+          // the editable textarea above.
+          value={
+            stringValue.length === 0
+              ? ""
+              : `Sensitive — ${stringValue.length} characters hidden. Click the eye to reveal.`
+          }
+          readOnly
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs italic text-muted-foreground"
+          aria-invalid={!!error}
+        />
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  ) : (
+    <div className="relative">
+      <Input
+        aria-label={label}
+        aria-required={isRequired}
+        type={isVisible ? "text" : "password"}
+        value={stringValue}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        className="pr-10"
+        aria-invalid={!!error}
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  );
+
   return (
     <FieldWrapper
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        "Pick an existing organization secret, or paste a raw value (Paperclip will store it as a secret on save)."
       }
       required={isRequired}
       error={error}
       disabled={disabled}
     >
-      <div className="relative">
-        <Input
-          type={isVisible ? "text" : "password"}
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={String(defaultValue ?? "")}
+      <div className="space-y-2">
+        <SecretBindingPicker
+          value={bindingValue}
+          onChange={handlePickerChange}
+          label=""
+          placeholder="Select an existing secret"
+          allowVersionSelector={false}
+          emptyHint="No active secrets yet. Create one or paste a raw value below."
           disabled={disabled}
-          className="pr-10"
-          aria-invalid={!!error}
         />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-          onClick={() => setIsVisible(!isVisible)}
-          disabled={disabled}
-        >
-          {isVisible ? (
-            <EyeOff className="h-4 w-4 text-muted-foreground" />
+        {!isBoundToSecret ? (
+          showRawInput ? (
+            <div className="space-y-1">
+              {rawInput}
+              {!hasRawValue ? (
+                <button
+                  type="button"
+                  className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setShowRawInput(false);
+                    setIsVisible(false);
+                  }}
+                  disabled={disabled}
+                >
+                  Hide raw value input
+                </button>
+              ) : null}
+            </div>
           ) : (
-            <Eye className="h-4 w-4 text-muted-foreground" />
-          )}
-          <span className="sr-only">
-            {isVisible ? "Hide secret" : "Show secret"}
-          </span>
-        </Button>
+            <button
+              type="button"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
+              onClick={() => setShowRawInput(true)}
+              disabled={disabled}
+            >
+              Or paste a raw value
+            </button>
+          )
+        ) : null}
       </div>
     </FieldWrapper>
   );
@@ -538,6 +789,7 @@ SecretField.displayName = "SecretField";
  * Specialized field for numeric (number/integer) values.
  */
 const NumberField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -547,7 +799,11 @@ const NumberField = React.memo(({
   error,
   defaultValue,
   type,
+  minimum,
+  maximum,
+  suggestions,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -557,28 +813,49 @@ const NumberField = React.memo(({
   error?: string;
   defaultValue?: unknown;
   type: "number" | "integer";
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Input
-      type="number"
-      step={type === "integer" ? "1" : "any"}
-      value={value !== undefined ? String(value) : ""}
-      onChange={(e) => {
-        const val = e.target.value;
-        onChange(val === "" ? undefined : Number(val));
-      }}
-      placeholder={String(defaultValue ?? "")}
+  minimum?: number;
+  maximum?: number;
+  suggestions?: unknown[];
+}) => {
+  const hasSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
+  // Sanitize the path-based id so it is a valid CSS/HTML identifier (paths can contain "/").
+  const listId = hasSuggestions ? `${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-suggestions` : undefined;
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
-      aria-invalid={!!error}
-    />
-  </FieldWrapper>
-));
+    >
+      <Input
+        aria-label={label}
+        aria-required={isRequired}
+        type="number"
+        step={type === "integer" ? "1" : "any"}
+        min={minimum}
+        max={maximum}
+        list={listId}
+        value={value !== undefined ? String(value) : ""}
+        onChange={(e) => {
+          const val = e.target.value;
+          const trimmed = val.trim();
+          onChange(trimmed === "" ? undefined : Number(trimmed));
+        }}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        aria-invalid={!!error}
+      />
+      {listId ? (
+        <datalist id={listId}>
+          {suggestions!.map((suggestion) => (
+            <option key={String(suggestion)} value={String(suggestion)} />
+          ))}
+        </datalist>
+      ) : null}
+    </FieldWrapper>
+  );
+});
 
 NumberField.displayName = "NumberField";
 
@@ -619,15 +896,19 @@ const StringField = React.memo(({
     >
       {isTextArea ? (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[100px]"
+          className="min-h-(--sz-100px)"
           aria-invalid={!!error}
         />
       ) : (
         <Input
+          aria-label={label}
+          aria-required={isRequired}
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -758,6 +1039,34 @@ const ArrayField = React.memo(({
 
 ArrayField.displayName = "ArrayField";
 
+/** MCP execution tools often accept an arbitrary object rather than fixed fields. */
+function JsonObjectField({ value, onChange, disabled, label, error }: {
+  value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string;
+}) {
+  const format = (next: unknown) => typeof next === "string" ? next : JSON.stringify(next ?? {}, null, 2);
+  const [text, setText] = useState(() => format(value));
+  const emitted = useRef(value);
+  useEffect(() => {
+    if (value !== emitted.current) setText(format(value));
+    emitted.current = value;
+  }, [value]);
+  const change = (text: string) => {
+    setText(text);
+    let next: unknown = text.trim() ? text : undefined;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) next = parsed;
+    } catch { /* Preserve invalid input so validation prevents submitting stale arguments. */ }
+    emitted.current = next;
+    onChange(next);
+  };
+  return <div className="space-y-2">
+    <Textarea aria-label={`${label} JSON`} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
+    <p className="text-xs text-muted-foreground">Enter a JSON object using the action's argument names.</p>
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </div>;
+}
+
 /**
  * Specialized field for object values, handling recursive rendering of nested properties.
  */
@@ -809,7 +1118,9 @@ const ObjectField = React.memo(({
 
       {!isCollapsed && (
         <div className="pt-2">
-          <JsonSchemaForm
+          {Object.keys(propSchema.properties ?? {}).length === 0 && propSchema.additionalProperties !== false
+            ? <JsonObjectField value={value} onChange={onChange} disabled={disabled} label={label} error={errors[path]} />
+            : <JsonSchemaForm
             schema={propSchema}
             values={(value as Record<string, unknown>) ?? {}}
             onChange={handleObjectChange}
@@ -819,7 +1130,7 @@ const ObjectField = React.memo(({
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
                 .map(([errPath, err]) => [errPath.replace(path, ""), err]),
             )}
-          />
+          />}
         </div>
       )}
     </div>
@@ -885,6 +1196,7 @@ const FormField = React.memo(({
           description={propSchema.description}
           error={error}
           defaultValue={propSchema.default}
+          maxLength={typeof propSchema.maxLength === "number" ? propSchema.maxLength : undefined}
         />
       );
 
@@ -892,6 +1204,7 @@ const FormField = React.memo(({
     case "integer":
       return (
         <NumberField
+          id={path}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -901,6 +1214,9 @@ const FormField = React.memo(({
           error={error}
           defaultValue={propSchema.default}
           type={type as "number" | "integer"}
+          minimum={typeof propSchema.minimum === "number" ? propSchema.minimum : undefined}
+          maximum={typeof propSchema.maximum === "number" ? propSchema.maximum : undefined}
+          suggestions={Array.isArray(propSchema.examples) ? propSchema.examples : undefined}
         />
       );
 
@@ -967,6 +1283,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
+  advancedLabel = "Advanced options",
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1006,6 +1323,64 @@ export function JsonSchemaForm({
     [onChange, values],
   );
 
+  const { essentials, advancedGroups, advancedKeys } = useMemo(() => {
+    const essentials: Array<[string, JsonSchemaNode]> = [];
+    // Preserve original key order while bucketing into groups.
+    const groupOrder: string[] = [];
+    const groups = new Map<string, Array<[string, JsonSchemaNode]>>();
+    const advancedKeys = new Set<string>();
+    const DEFAULT_GROUP = "More options";
+
+    for (const entry of Object.entries(properties)) {
+      const [key, propSchema] = entry;
+      if (propSchema["x-paperclip-advanced"] === true) {
+        advancedKeys.add(key);
+        const rawGroup = propSchema["x-paperclip-group"];
+        const group = typeof rawGroup === "string" && rawGroup.length > 0
+          ? rawGroup
+          : DEFAULT_GROUP;
+        if (!groups.has(group)) {
+          groups.set(group, []);
+          groupOrder.push(group);
+        }
+        groups.get(group)!.push(entry);
+      } else {
+        essentials.push(entry);
+      }
+    }
+
+    return {
+      essentials,
+      advancedGroups: groupOrder.map((group) => ({
+        group,
+        fields: groups.get(group)!,
+      })),
+      advancedKeys,
+    };
+  }, [properties]);
+
+  const hasAdvanced = advancedGroups.length > 0;
+
+  const hasAdvancedError = useMemo(() => {
+    if (!hasAdvanced) return false;
+    for (const errorKey of Object.keys(errors)) {
+      // Top-level errors arrive as "/<key>" or "/<key>/<...>".
+      const stripped = errorKey.startsWith("/") ? errorKey.slice(1) : errorKey;
+      const topKey = stripped.split("/")[0];
+      if (advancedKeys.has(topKey)) return true;
+    }
+    return false;
+  }, [errors, advancedKeys, hasAdvanced]);
+
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+
+  // Force the disclosure open when a validation error lands on a hidden field
+  // so the user can see and fix it. Never auto-close — once open, the user
+  // controls collapse.
+  useEffect(() => {
+    if (hasAdvancedError) setIsAdvancedOpen(true);
+  }, [hasAdvancedError]);
+
   if (Object.keys(properties).length === 0) {
     return (
       <div
@@ -1019,30 +1394,65 @@ export function JsonSchemaForm({
     );
   }
 
+  const renderField = ([key, propSchema]: [string, JsonSchemaNode]) => {
+    const value = values[key];
+    const isRequired = requiredFields.has(key);
+    const error = errors[`/${key}`];
+    const label = labelFromKey(key, propSchema);
+    const path = `/${key}`;
+
+    return (
+      <FormField
+        key={key}
+        propSchema={propSchema}
+        value={value}
+        onChange={(val) => handleFieldChange(key, val)}
+        error={error}
+        disabled={disabled}
+        label={label}
+        isRequired={isRequired}
+        errors={errors}
+        path={path}
+      />
+    );
+  };
+
   return (
     <div className={cn("space-y-6", className)}>
-      {Object.entries(properties).map(([key, propSchema]) => {
-        const value = values[key];
-        const isRequired = requiredFields.has(key);
-        const error = errors[`/${key}`];
-        const label = labelFromKey(key, propSchema);
-        const path = `/${key}`;
+      {essentials.map(renderField)}
 
-        return (
-          <FormField
-            key={key}
-            propSchema={propSchema}
-            value={value}
-            onChange={(val) => handleFieldChange(key, val)}
-            error={error}
-            disabled={disabled}
-            label={label}
-            isRequired={isRequired}
-            errors={errors}
-            path={path}
-          />
-        );
-      })}
+      {hasAdvanced && (
+        <div className="space-y-3 rounded-lg border border-dashed">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setIsAdvancedOpen((open) => !open)}
+            aria-expanded={isAdvancedOpen}
+          >
+            <span className="text-sm font-medium">{advancedLabel}</span>
+            {isAdvancedOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {isAdvancedOpen && (
+            <div className="space-y-6 px-4 pb-4">
+              {advancedGroups.map(({ group, fields }) => (
+                <div key={group} className="space-y-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group}
+                  </div>
+                  <div className="space-y-6">
+                    {fields.map(renderField)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
