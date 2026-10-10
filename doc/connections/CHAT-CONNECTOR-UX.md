@@ -199,6 +199,12 @@ a way to finish without the optional test. Do not block completion solely becaus
 the event has not arrived or the status poll failed. Conversely, optional testing
 does not waive required credentials, verification, or identity authorization.
 
+When the test is required, show which step the test is waiting for: the first
+message, the follow-up, or the agent reply. Finish setup automatically when the
+agent reply arrives, so the operator does not have to guess when to press the
+manual action. Attempt the automatic finish one time, and keep the manual action
+available if that attempt fails.
+
 ## 9. Make ongoing management compact and contextual
 
 After setup, replace Browse/Review with the connection's Settings, Access,

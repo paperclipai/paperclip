@@ -22,6 +22,7 @@ import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { slackChatRegistrationService, slackRegistrationProjection } from "./chat-slack-registration.js";
 import { chatSlackRegistrations } from "@paperclipai/db";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
+import type { ChatSetupTestWaitingFor } from "@paperclipai/shared";
 import { authorizationService, canActorReadIssuePrivacy, canPublishIssueToChatAudience } from "./authorization.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
@@ -9917,13 +9918,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function setupTestStatus(endpointId: string, userId: string) {
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
+    const roundTrip = await setupTestRoundTrip(record.endpoint);
     const startedAt = record.endpoint.setup.testStartedAt;
-    if (!startedAt) return { messageReceivedAt: null };
+    if (!startedAt) return { messageReceivedAt: null, ...roundTrip };
     const links = await db.select({ principalId: chatIdentityLinks.principalId }).from(chatIdentityLinks).where(and(
       eq(chatIdentityLinks.companyId, record.endpoint.companyId), eq(chatIdentityLinks.endpointId, endpointId),
       eq(chatIdentityLinks.paperclipUserId, userId), eq(chatIdentityLinks.status, "linked"),
     ));
-    if (!links.length) return { messageReceivedAt: null };
+    if (!links.length) return { messageReceivedAt: null, ...roundTrip };
     const principalIds = links.map((link) => link.principalId);
     const [delivery, command] = await Promise.all([
       db.select({ at: chatDeliveries.createdAt }).from(chatDeliveries).where(and(
@@ -9937,7 +9939,173 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )).orderBy(asc(chatActions.createdAt)).limit(1).then((rows) => rows[0]),
     ]);
     const at = [delivery?.at, command?.at].filter((value): value is Date => Boolean(value)).sort((a, b) => a.getTime() - b.getTime())[0];
-    return { messageReceivedAt: at?.toISOString() ?? null };
+    return { messageReceivedAt: at?.toISOString() ?? null, ...roundTrip };
+  }
+
+  // The round trip that `test` requires, as a read-only check. `setupTestStatus`
+  // reports it, so the setup page can finish setup when the agent reply arrives
+  // and the operator does not have to guess when to try again.
+  async function setupTestBlocker(endpoint: EndpointRow): Promise<{ message: string; code: string } | null> {
+    const testStartedAtValue = endpoint.setup.testStartedAt;
+    const testStartedAt = testStartedAtValue
+      ? new Date(testStartedAtValue)
+      : null;
+    if (
+      !endpoint.lastEventAt ||
+      !testStartedAtValue ||
+      !testStartedAt ||
+      Number.isNaN(testStartedAt.getTime()) ||
+      endpoint.lastEventAt < testStartedAt
+    ) {
+      return { message: "Send the test message in the provider before completing setup", code: "chat_test_message_missing" };
+    }
+    const requiredTrigger =
+      ["telegram", "imessage-photon"].includes(endpoint.provider)
+        ? "direct_message"
+        : "subscribed_message";
+    const qualifyingDelivery = await db
+      .select({
+        id: chatDeliveries.id,
+        conversationId: chatDeliveries.conversationId,
+        processedAt: chatDeliveries.processedAt,
+      })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.companyId, endpoint.companyId),
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.state, "processed"),
+          gte(chatDeliveries.processedAt, testStartedAt),
+          sql`${chatDeliveries.normalizedEvent}->>'trigger' = ${requiredTrigger}`,
+        ),
+      )
+      .orderBy(desc(chatDeliveries.processedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (
+      !qualifyingDelivery?.conversationId ||
+      !qualifyingDelivery.processedAt
+    ) {
+      return { message: ["telegram", "imessage-photon"].includes(endpoint.provider) ? "Send the test direct message before completing setup" : "Reply once without mentioning the agent before completing setup", code: "chat_test_follow_up_missing" };
+    }
+    const finalPublication = await db
+      .select({
+        commentId: chatPublications.commentId,
+        payload: chatPublications.payload,
+      })
+      .from(chatPublications)
+      .innerJoin(
+        issueComments,
+        and(
+          eq(issueComments.id, chatPublications.commentId),
+          eq(issueComments.companyId, chatPublications.companyId),
+          eq(issueComments.issueId, chatPublications.issueId),
+          eq(issueComments.authorType, "agent"),
+          eq(issueComments.authorAgentId, endpoint.assignedAgentId),
+        ),
+      )
+      .innerJoin(
+        chatMessageLinks,
+        and(
+          eq(chatMessageLinks.companyId, chatPublications.companyId),
+          eq(chatMessageLinks.endpointId, chatPublications.endpointId),
+          eq(
+            chatMessageLinks.conversationId,
+            chatPublications.conversationId,
+          ),
+          eq(chatMessageLinks.deliveryId, qualifyingDelivery.id),
+          eq(chatMessageLinks.direction, "inbound"),
+          isNotNull(chatMessageLinks.commentId),
+        ),
+      )
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issueComments.createdByRunId),
+          eq(heartbeatRuns.companyId, chatPublications.companyId),
+          eq(heartbeatRuns.agentId, endpoint.assignedAgentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          eq(
+            sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            sql<string>`${chatPublications.issueId}::text`,
+          ),
+          or(
+            sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
+            sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
+            sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(chatPublications.companyId, endpoint.companyId),
+          eq(chatPublications.endpointId, endpoint.id),
+          eq(
+            chatPublications.conversationId,
+            qualifyingDelivery.conversationId,
+          ),
+          eq(chatPublications.state, "published"),
+          gte(chatPublications.publishedAt, qualifyingDelivery.processedAt),
+        ),
+      )
+      .orderBy(desc(chatPublications.publishedAt))
+      .then((rows) =>
+        rows.find(
+          (row) =>
+            row.payload.interactionId === undefined &&
+            row.payload.progressState === undefined &&
+            row.commentId !== null,
+        ),
+      );
+    let githubToolReply = false;
+    if (!finalPublication && endpoint.provider === "github") {
+      const setupRuns = await db.select({ id: heartbeatRuns.id, issueId: chatConversations.issueId })
+        .from(heartbeatRuns)
+        .innerJoin(chatMessageLinks, and(
+          eq(chatMessageLinks.companyId, endpoint.companyId),
+          eq(chatMessageLinks.endpointId, endpoint.id),
+          eq(chatMessageLinks.deliveryId, qualifyingDelivery.id),
+          eq(chatMessageLinks.direction, "inbound"),
+          or(
+            sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
+            sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`,
+          ),
+        ))
+        .innerJoin(chatConversations, and(
+          eq(chatConversations.id, qualifyingDelivery.conversationId),
+          eq(chatConversations.id, chatMessageLinks.conversationId),
+          eq(chatConversations.companyId, endpoint.companyId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${chatConversations.issueId}::text`,
+        ))
+        .where(and(eq(heartbeatRuns.companyId, endpoint.companyId),
+          eq(heartbeatRuns.agentId, endpoint.assignedAgentId), eq(heartbeatRuns.status, "succeeded")))
+        .orderBy(desc(heartbeatRuns.createdAt)).limit(20);
+      for (const run of setupRuns) {
+        if (await githubRunReplyState(db, { companyId: endpoint.companyId, endpointId: endpoint.id,
+          issueId: run.issueId, runId: run.id }) === "confirmed") {
+          githubToolReply = true;
+          break;
+        }
+      }
+    }
+    if (!finalPublication && !githubToolReply) {
+      return { message: "Wait for the Paperclip agent to reply to the setup turn before completing setup", code: "chat_test_round_trip_incomplete" };
+    }
+    return null;
+  }
+
+  // The GitHub setup page has its own verification checks and does not use this result.
+  async function setupTestRoundTrip(endpoint: EndpointRow): Promise<{ ready: boolean; waitingFor: ChatSetupTestWaitingFor | null }> {
+    if (endpoint.status !== "verifying" || endpoint.setup.step !== "test" || endpoint.provider === "github") {
+      return { ready: false, waitingFor: null };
+    }
+    const blocker = await setupTestBlocker(endpoint);
+    if (!blocker) return { ready: true, waitingFor: null };
+    return {
+      ready: false,
+      waitingFor: blocker.code === "chat_test_message_missing" ? "message"
+        : blocker.code === "chat_test_follow_up_missing" ? "follow_up" : "agent_reply",
+    };
   }
 
   async function test(endpointId: string, finishOptions?: { optionalSlackTestForUser: string }) {
@@ -9963,9 +10131,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           if (!verified.ready && !(finishOptions?.optionalSlackTestForUser && verified.connectionReady)) throw conflict("Finish verifying the App, repositories, and assigned agent's tools before activating this bot", { checks: verified.checks });
         }
         const testStartedAtValue = endpoint.setup.testStartedAt;
-        const testStartedAt = testStartedAtValue
-          ? new Date(testStartedAtValue)
-          : null;
         const optionalSlackTest = Boolean(finishOptions?.optionalSlackTestForUser);
         if (optionalSlackTest) {
           if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
@@ -9975,162 +10140,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           if (!linked) throw forbidden("Connect your account before finishing setup");
         }
         if (!optionalSlackTest) {
-          if (
-            !endpoint.lastEventAt ||
-            !testStartedAtValue ||
-            !testStartedAt ||
-            Number.isNaN(testStartedAt.getTime()) ||
-            endpoint.lastEventAt < testStartedAt
-          ) {
-            throw conflict(
-              "Send the test message in the provider before completing setup",
-              {
-                code: "chat_test_message_missing",
-              },
-            );
-          }
-          const requiredTrigger =
-            ["telegram", "imessage-photon"].includes(endpoint.provider)
-              ? "direct_message"
-              : "subscribed_message";
-          const qualifyingDelivery = await db
-            .select({
-              id: chatDeliveries.id,
-              conversationId: chatDeliveries.conversationId,
-              processedAt: chatDeliveries.processedAt,
-            })
-            .from(chatDeliveries)
-            .where(
-              and(
-                eq(chatDeliveries.companyId, endpoint.companyId),
-                eq(chatDeliveries.endpointId, endpoint.id),
-                eq(chatDeliveries.state, "processed"),
-                gte(chatDeliveries.processedAt, testStartedAt),
-                sql`${chatDeliveries.normalizedEvent}->>'trigger' = ${requiredTrigger}`,
-              ),
-            )
-            .orderBy(desc(chatDeliveries.processedAt))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (
-            !qualifyingDelivery?.conversationId ||
-            !qualifyingDelivery.processedAt
-          ) {
-            throw conflict(
-              ["telegram", "imessage-photon"].includes(endpoint.provider)
-                ? "Send the test direct message before completing setup"
-                : "Reply once without mentioning the agent before completing setup",
-              { code: "chat_test_follow_up_missing" },
-            );
-          }
-          const finalPublication = await db
-            .select({
-              commentId: chatPublications.commentId,
-              payload: chatPublications.payload,
-            })
-            .from(chatPublications)
-            .innerJoin(
-              issueComments,
-              and(
-                eq(issueComments.id, chatPublications.commentId),
-                eq(issueComments.companyId, chatPublications.companyId),
-                eq(issueComments.issueId, chatPublications.issueId),
-                eq(issueComments.authorType, "agent"),
-                eq(issueComments.authorAgentId, endpoint.assignedAgentId),
-              ),
-            )
-            .innerJoin(
-              chatMessageLinks,
-              and(
-                eq(chatMessageLinks.companyId, chatPublications.companyId),
-                eq(chatMessageLinks.endpointId, chatPublications.endpointId),
-                eq(
-                  chatMessageLinks.conversationId,
-                  chatPublications.conversationId,
-                ),
-                eq(chatMessageLinks.deliveryId, qualifyingDelivery.id),
-                eq(chatMessageLinks.direction, "inbound"),
-                isNotNull(chatMessageLinks.commentId),
-              ),
-            )
-            .innerJoin(
-              heartbeatRuns,
-              and(
-                eq(heartbeatRuns.id, issueComments.createdByRunId),
-                eq(heartbeatRuns.companyId, chatPublications.companyId),
-                eq(heartbeatRuns.agentId, endpoint.assignedAgentId),
-                eq(heartbeatRuns.status, "succeeded"),
-                eq(
-                  sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-                  sql<string>`${chatPublications.issueId}::text`,
-                ),
-                or(
-                  sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
-                  sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
-                  sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`,
-                ),
-              ),
-            )
-            .where(
-              and(
-                eq(chatPublications.companyId, endpoint.companyId),
-                eq(chatPublications.endpointId, endpoint.id),
-                eq(
-                  chatPublications.conversationId,
-                  qualifyingDelivery.conversationId,
-                ),
-                eq(chatPublications.state, "published"),
-                gte(chatPublications.publishedAt, qualifyingDelivery.processedAt),
-              ),
-            )
-            .orderBy(desc(chatPublications.publishedAt))
-            .then((rows) =>
-              rows.find(
-                (row) =>
-                  row.payload.interactionId === undefined &&
-                  row.payload.progressState === undefined &&
-                  row.commentId !== null,
-              ),
-            );
-          let githubToolReply = false;
-          if (!finalPublication && endpoint.provider === "github") {
-            const setupRuns = await db.select({ id: heartbeatRuns.id, issueId: chatConversations.issueId })
-              .from(heartbeatRuns)
-              .innerJoin(chatMessageLinks, and(
-                eq(chatMessageLinks.companyId, endpoint.companyId),
-                eq(chatMessageLinks.endpointId, endpoint.id),
-                eq(chatMessageLinks.deliveryId, qualifyingDelivery.id),
-                eq(chatMessageLinks.direction, "inbound"),
-                or(
-                  sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
-                  sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`,
-                ),
-              ))
-              .innerJoin(chatConversations, and(
-                eq(chatConversations.id, qualifyingDelivery.conversationId),
-                eq(chatConversations.id, chatMessageLinks.conversationId),
-                eq(chatConversations.companyId, endpoint.companyId),
-                sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${chatConversations.issueId}::text`,
-              ))
-              .where(and(eq(heartbeatRuns.companyId, endpoint.companyId),
-                eq(heartbeatRuns.agentId, endpoint.assignedAgentId), eq(heartbeatRuns.status, "succeeded")))
-              .orderBy(desc(heartbeatRuns.createdAt)).limit(20);
-            for (const run of setupRuns) {
-              if (await githubRunReplyState(db, { companyId: endpoint.companyId, endpointId: endpoint.id,
-                issueId: run.issueId, runId: run.id }) === "confirmed") {
-                githubToolReply = true;
-                break;
-              }
-            }
-          }
-          if (!finalPublication && !githubToolReply) {
-            throw conflict(
-              "Wait for the Paperclip agent to reply to the setup turn before completing setup",
-              {
-                code: "chat_test_round_trip_incomplete",
-              },
-            );
-          }
+          const blocker = await setupTestBlocker(endpoint);
+          if (blocker) throw conflict(blocker.message, { code: blocker.code });
         }
         await options.setupTestActivationBarrier?.();
         const expectedGeneration = runtimeGeneration(endpoint.setup);

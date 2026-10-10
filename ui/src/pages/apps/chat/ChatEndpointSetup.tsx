@@ -43,7 +43,7 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { useCopyAction } from "@/lib/use-copy-action";
-import { isAgentStatusInvokable, slackAppConfigurationSchema, type SlackAppConfiguration } from "@paperclipai/shared";
+import { isAgentStatusInvokable, slackAppConfigurationSchema, type ChatSetupTestStatus, type SlackAppConfiguration } from "@paperclipai/shared";
 import { sanitizedSetupErrorMessage } from "./chat-setup-error";
 import {
   createGitHubPrivateKeyReadGuard,
@@ -73,6 +73,31 @@ function publicOrigin(value: string | null | undefined): string | null {
     return new URL(value).origin;
   } catch {
     return null;
+  }
+}
+
+export function setupTestProgressMessage(
+  provider: ChatProvider,
+  agentName: string,
+  status: ChatSetupTestStatus | undefined,
+): { text: string; busy: boolean } | null {
+  if (!status) return null;
+  if (status.ready) return { text: "Reply received. Finishing setup…", busy: true };
+  const direct = provider === "telegram" || provider === "imessage-photon";
+  switch (status.waitingFor) {
+    case "message":
+      return { text: "Waiting for your test message.", busy: false };
+    case "follow_up":
+      return {
+        text: direct
+          ? "Waiting for your direct message."
+          : `Mention received. Reply one time in the same thread, and do not mention ${agentName}.`,
+        busy: false,
+      };
+    case "agent_reply":
+      return { text: `Message received. Waiting for ${agentName} to reply. Setup finishes automatically.`, busy: true };
+    default:
+      return null;
   }
 }
 
@@ -1753,6 +1778,26 @@ function TryStep({
 }) {
   const [commandCopied, setCommandCopied] = useState(false);
   const [commandCopyError, setCommandCopyError] = useState(false);
+  const testStatusQuery = useQuery({
+    queryKey: ["chat-endpoint-setup-test-status", endpointId],
+    queryFn: () => chatEndpointsApi.setupTestStatus(endpointId),
+    enabled: provider !== "slack" && provider !== "github",
+    refetchInterval: 1_500,
+  });
+  const testReady = testStatusQuery.data?.ready === true;
+  const testProgress = setupTestProgressMessage(provider, agentName, testStatusQuery.data);
+  // Finish setup one time when the agent reply arrives. If that attempt fails,
+  // the button stays available and this does not try again.
+  const autoFinishStarted = useRef(false);
+  useEffect(() => {
+    if (!testReady) {
+      autoFinishStarted.current = false;
+      return;
+    }
+    if (autoFinishStarted.current || pending) return;
+    autoFinishStarted.current = true;
+    onTest();
+  }, [testReady, pending, onTest]);
   const principalsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
@@ -1920,6 +1965,12 @@ function TryStep({
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         {instructions.map((item) => <li key={item}>{item}</li>)}
       </ol>
+      {testProgress && (
+        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          {testProgress.busy && <Loader2 className="size-4 animate-spin" />}
+          {testProgress.text}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {providerUrl && (
           <Button asChild variant="outline">

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   setup: vi.fn(),
   setupTestStatus: vi.fn(),
+  test: vi.fn(),
   finishSlackSetup: vi.fn(),
   generateSetupSecret: vi.fn(),
   listPrincipals: vi.fn(),
@@ -536,6 +537,36 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(mocks.listResources.mock.calls.length).toBeGreaterThan(1);
     expect(container.textContent).toContain("Invite Maya to a channel to add it");
   }, 10_000);
+
+  async function renderDiscordTestStep() {
+    const endpoint = await render("discord");
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], {
+      ...endpoint, status: "verifying", providerAccountId: "guild-a", botUsername: "maya",
+      setup: { ...endpoint.setup, step: "test", testStartedAt: "2026-09-18T20:00:00Z" },
+    }));
+    await settle();
+    return endpoint;
+  }
+
+  it("shows the setup test progress and does not finish before the agent reply", async () => {
+    mocks.setupTestStatus.mockResolvedValue({ messageReceivedAt: null, ready: false, waitingFor: "agent_reply" });
+    await renderDiscordTestStep();
+    expect(container.textContent).toContain("Waiting for Maya to reply. Setup finishes automatically.");
+    expect(mocks.test).not.toHaveBeenCalled();
+  });
+
+  it("finishes the setup test one time when the agent reply arrives", async () => {
+    mocks.test.mockRejectedValue(new Error("The connection changed"));
+    mocks.setupTestStatus.mockResolvedValue({ messageReceivedAt: null, ready: true, waitingFor: null });
+    const endpoint = await renderDiscordTestStep();
+    expect(mocks.test).toHaveBeenCalledTimes(1);
+    expect(mocks.test).toHaveBeenCalledWith(endpoint.id);
+    // A failed attempt does not repeat while the status stays ready.
+    await client.refetchQueries({ queryKey: ["chat-endpoint-setup-test-status", endpoint.id] });
+    await settle();
+    expect(mocks.test).toHaveBeenCalledTimes(1);
+    expect(mocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Test not complete" }));
+  });
 
   it("waits for a fresh connect command and links the selected identity inside the wizard", async () => {
     mocks.listPrincipals.mockResolvedValue([

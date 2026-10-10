@@ -14,6 +14,7 @@ import type {
   ChatPublicationSummary,
   ChatActivityItem,
   ChatFileTransferResolutionPrecondition,
+  ChatSetupTestStatus,
 } from "@paperclipai/shared";
 export type {
   ChatPublicationSummary,
@@ -232,7 +233,7 @@ export const chatEndpointsApi = {
   test: (endpointId: string) =>
     api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/test`, {}),
   finishSlackSetup: (endpointId: string) => api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/finish`, {}),
-  setupTestStatus: (endpointId: string) => api.get<{ messageReceivedAt: string | null }>(`/chat-endpoints/${endpointId}/test-status`),
+  setupTestStatus: (endpointId: string) => api.get<ChatSetupTestStatus>(`/chat-endpoints/${endpointId}/test-status`),
   requestIdentityAccess: (token: string) => api.post<{ status: "member" | "pending_approval" }>("/chat-identity-links/request-access", { token }),
   listResources: async (endpointId: string) =>
     rows(
