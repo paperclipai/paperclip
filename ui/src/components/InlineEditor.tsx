@@ -1,8 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { cn } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
-import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { useDurableAutosave } from "../hooks/useDurableAutosave";
+import { loadStructuredDraft, saveStructuredDraft } from "../lib/composer-draft";
+
+type StoredInlineDraft = { version: 1; draft: string; base: string };
 import { FoldCurtain } from "./FoldCurtain";
 
 interface InlineEditorProps {
@@ -31,6 +34,11 @@ interface InlineEditorProps {
   defaultEditing?: boolean;
   /** Notified when the multiline editor swaps between display and edit mode. */
   onEditingChange?: (editing: boolean) => void;
+  /**
+   * Keep unsaved edits in browser storage under this key, so a reload or an
+   * outage does not lose them. A stored edit is restored and saved on mount.
+   */
+  draftKey?: string;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -70,6 +78,7 @@ export function InlineEditor({
   externalReferences,
   defaultEditing = false,
   onEditingChange,
+  draftKey,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
@@ -83,12 +92,41 @@ export function InlineEditor({
   const pendingFocusFrameRef = useRef<number | null>(null);
   const justEnteredEditRef = useRef(multiline && defaultEditing);
   const hasBeenFocusedRef = useRef(false);
-  const {
-    state: autosaveState,
-    markDirty,
-    reset,
-    runSave,
-  } = useAutosaveIndicator();
+  const autosave = useDurableAutosave<string>({
+    sourceId: `inline-editor:${useId()}`,
+    save: async (next) => {
+      await onSave(next);
+    },
+  });
+  const { markDirty, reset, run: runAutosave } = autosave;
+  const autosaveState = autosave.status;
+
+  // Unsaved edits are stored with the value they were based on, so a restored
+  // edit never silently overwrites a newer server value.
+  const storageKey = draftKey ? `paperclip:inline-draft:${draftKey}` : null;
+  const clearStoredDraft = useCallback(() => {
+    if (!storageKey) return;
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {
+      // Unavailable storage holds nothing to clear.
+    }
+  }, [storageKey]);
+
+  // Any path that lands the edit (blur, autosave, a resend after an outage)
+  // updates `value`; the stored copy is then no longer needed.
+  useEffect(() => {
+    if (!storageKey) return;
+    const stored = loadStructuredDraft<StoredInlineDraft | null>(storageKey, null);
+    if (stored && typeof stored.draft === "string" && stored.draft.trim() === value.trim()) clearStoredDraft();
+  }, [clearStoredDraft, storageKey, value]);
+
+  const changeDraft = useCallback((next: string) => {
+    setDraft(next);
+    if (!storageKey) return;
+    if (next.trim() === value.trim()) clearStoredDraft();
+    else saveStructuredDraft(storageKey, { version: 1, draft: next, base: value } satisfies StoredInlineDraft);
+  }, [clearStoredDraft, storageKey, value]);
 
   useEffect(() => {
     const previousValue = lastPropValueRef.current;
@@ -100,6 +138,30 @@ export function InlineEditor({
       return value;
     });
   }, [value, multiline, multilineFocused]);
+
+  // An edit that never saved (reload, crash, outage) comes back. It saves on
+  // its own only when the server value is still the one it was based on;
+  // otherwise it waits in the editor for the user.
+  const restoredDraftRef = useRef(false);
+  useEffect(() => {
+    if (restoredDraftRef.current || !storageKey) return;
+    restoredDraftRef.current = true;
+    const stored = loadStructuredDraft<StoredInlineDraft | null>(storageKey, null);
+    if (!stored || stored.version !== 1 || typeof stored.draft !== "string" || typeof stored.base !== "string") return;
+    if (stored.draft.trim() === value.trim()) {
+      clearStoredDraft();
+      return;
+    }
+    setDraft(stored.draft);
+    if (multiline) {
+      setMultilineEditing(true);
+      onEditingChange?.(true);
+    } else {
+      setEditing(true);
+    }
+    if (stored.base === value) void runAutosave(stored.draft.trim());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
 
   useEffect(() => {
     return () => {
@@ -162,6 +224,7 @@ export function InlineEditor({
     }
     if (!multiline || !multilineEditing) return;
     if (!hasBeenFocusedRef.current) return;
+    // Waiting or failed saves keep the editor open, so the text stays visible.
     if (autosaveState !== "idle") return;
     hasBeenFocusedRef.current = false;
     setMultilineEditing(false);
@@ -169,37 +232,39 @@ export function InlineEditor({
   }, [multiline, multilineEditing, multilineFocused, autosaveState, onEditingChange]);
 
 
+  // A single-line edit that waited for the connection closes once it saves.
+  useEffect(() => {
+    if (multiline || !editing || autosaveState !== "saved") return;
+    if (document.activeElement === inputRef.current) return;
+    setEditing(false);
+  }, [autosaveState, editing, multiline]);
+
+  /** Save the draft if it changed. Never rejects; a failed save keeps the text. */
   const commit = useCallback(async (nextValue = draft) => {
     const valueToSave = nextValue.trim();
     const valueChanged = valueToSave !== value;
     const shouldSave = nullable
       ? valueChanged
       : Boolean(valueToSave && valueChanged);
-    if (shouldSave) {
-      await Promise.resolve(onSave(valueToSave));
-    } else {
+    if (!shouldSave) {
       setDraft(value);
+      if (draftKey) clearStoredDraft();
+      if (!multiline) setEditing(false);
+      return;
     }
-    if (!multiline) {
-      setEditing(false);
-    }
-  }, [draft, multiline, nullable, onSave, value]);
+    const result = await runAutosave(valueToSave);
+    // A single-line edit stays open until it is saved, so its text is not lost.
+    if (!multiline && result.kind === "saved") setEditing(false);
+  }, [clearStoredDraft, draft, draftKey, multiline, nullable, runAutosave, value]);
 
   /** Multiline blur/submit: show autosave indicator when persisting */
   const finalizeMultilineBlurOrSubmit = useCallback(() => {
     const trimmed = draft.trim();
-    if (trimmed === value) {
+    if (trimmed === value || (!trimmed && !nullable)) {
       reset();
-      void commit();
-      return;
     }
-    if (!trimmed && !nullable) {
-      reset();
-      void commit();
-      return;
-    }
-    void runSave(() => commit());
-  }, [commit, draft, nullable, reset, runSave, value]);
+    void commit();
+  }, [commit, draft, nullable, reset, value]);
 
   const cancelPendingBlurCommit = useCallback(() => {
     if (blurCommitFrameRef.current === null) return;
@@ -230,6 +295,7 @@ export function InlineEditor({
       }
       reset();
       setDraft(value);
+      if (draftKey) clearStoredDraft();
       if (multiline) {
         setMultilineFocused(false);
         setMultilineEditing(false);
@@ -260,7 +326,7 @@ export function InlineEditor({
       clearTimeout(autosaveDebounceRef.current);
     }
     autosaveDebounceRef.current = setTimeout(() => {
-      void runSave(() => commit(trimmed));
+      void commit(trimmed);
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => {
@@ -268,7 +334,7 @@ export function InlineEditor({
         clearTimeout(autosaveDebounceRef.current);
       }
     };
-  }, [autosaveState, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, runSave, value]);
+  }, [autosaveState, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
 
   if (multiline) {
     const previewValue = autosaveState === "saved" || autosaveState === "idle" ? draft : value;
@@ -353,7 +419,7 @@ export function InlineEditor({
         <MarkdownEditor
           ref={markdownRef}
           value={draft}
-          onChange={setDraft}
+          onChange={changeDraft}
           placeholder={placeholder}
           bordered={false}
           className="bg-transparent"
@@ -372,14 +438,9 @@ export function InlineEditor({
               autosaveState === "error" ? "text-destructive" : "text-muted-foreground",
               autosaveState === "idle" ? "opacity-0" : "opacity-100",
             )}
+            role={autosaveState === "error" ? "alert" : "status"}
           >
-            {autosaveState === "saving"
-              ? "Autosaving..."
-              : autosaveState === "saved"
-                ? "Saved"
-                : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+            {autosave.label ?? "Idle"}
           </span>
         </div>
       </div>
@@ -394,7 +455,7 @@ export function InlineEditor({
         value={draft}
         rows={1}
         onChange={(e) => {
-          setDraft(e.target.value);
+          changeDraft(e.target.value);
           autoSize(e.target);
         }}
         onBlur={() => {

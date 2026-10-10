@@ -1516,6 +1516,32 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("keeps a create that hit an outage and resends it with the same key", async () => {
+    const { ApiError } = await import("../api/client");
+    dialogState.newIssueDefaults = { title: "Created during a deploy" };
+    mockIssuesApi.create
+      .mockRejectedValueOnce(new ApiError("Unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockResolvedValue({ id: "issue-created", identifier: "PAP-9", companyId: "company-1", projectId: null });
+    const { root } = renderDialog(container);
+    await flush();
+    const button = (label: string) => Array.from(container.querySelectorAll("button"))
+      .find((item) => item.getAttribute("aria-label") === label || item.textContent === label)!;
+
+    act(() => button("Create task").click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Sending when reconnected…"));
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(localStorage.getItem("paperclip:issue-draft:pending-create")).toContain(
+      mockIssuesApi.create.mock.calls[0][1].idempotencyKey,
+    );
+
+    act(() => button("Resend now").click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).toBe(mockIssuesApi.create.mock.calls[0][1].idempotencyKey);
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalled());
+    expect(localStorage.getItem("paperclip:issue-draft:pending-create")).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [

@@ -244,3 +244,40 @@ describe("issuesApi.list", () => {
     );
   });
 });
+
+describe("interaction resolution replay", () => {
+  const alreadyResolved = () =>
+    new ApiError("Interaction has already been resolved", 409, {
+      error: "Interaction has already been resolved",
+      code: "interaction_already_resolved",
+    });
+  const outage = () => new ApiError("Paperclip is restarting", 503, { error: "tenant_app_unavailable" });
+
+  beforeEach(() => {
+    mockApi.get.mockReset();
+    mockApi.post.mockReset();
+  });
+
+  it("treats already-resolved after a transient failure as success when the resolution matches", async () => {
+    const accepted = { id: "interaction-1", status: "accepted" };
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([accepted]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-1")).rejects.toMatchObject({ status: 503 });
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-1")).resolves.toEqual(accepted);
+    expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/interactions");
+  });
+
+  it("keeps the conflict when the card was resolved differently", async () => {
+    mockApi.post.mockRejectedValueOnce(outage()).mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([{ id: "interaction-2", status: "rejected" }]);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-2")).rejects.toBeInstanceOf(ApiError);
+    await expect(issuesApi.acceptInteraction("issue-1", "interaction-2")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("keeps the conflict when no transient failure came first", async () => {
+    mockApi.post.mockRejectedValueOnce(alreadyResolved());
+    mockApi.get.mockResolvedValue([{ id: "interaction-3", status: "answered" }]);
+    await expect(issuesApi.respondToInteraction("issue-1", "interaction-3", { answers: [] })).rejects.toMatchObject({ status: 409 });
+    expect(mockApi.get).not.toHaveBeenCalled();
+  });
+});

@@ -879,7 +879,12 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           ?.click(),
       );
       await flushReact();
-      expect(container.textContent).toContain("Delivery result not confirmed");
+      // A 5xx may have committed: it waits to resend with the same identity.
+      expect(container.textContent).toContain(
+        kind === "server-error"
+          ? "Sending when reconnected…"
+          : "Delivery result not confirmed",
+      );
       expect(container.textContent).not.toContain("Edit rejected send");
       expect(container.querySelector("textarea")?.disabled).toBe(true);
       expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);

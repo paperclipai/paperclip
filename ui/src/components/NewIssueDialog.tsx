@@ -43,10 +43,27 @@ import { TaskChatPresentationProvider } from "./task-chat/presentation-mode";
 import { mergeComposerRunSettings, type ComposerRunSettings } from "./task-chat/composer-run-settings";
 import { useSidebar } from "../context/SidebarContext";
 import { InlineBanner } from "./InlineBanner";
+import { PendingSendNotice } from "./PendingSendNotice";
+import { useDurableSubmit } from "../hooks/useDurableSubmit";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
+/** A create that is waiting to resend: its request body and idempotency key. */
+const PENDING_CREATE_KEY = "paperclip:issue-draft:pending-create";
+
+/** The create request without staged files (files cannot be stored; they ride in memory). */
+type PendingCreate = { fingerprint: string; data: Record<string, unknown> };
+
+function isPendingCreate(value: unknown): value is PendingCreate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.fingerprint === "string" &&
+    !!row.data && typeof row.data === "object" && !Array.isArray(row.data) &&
+    typeof (row.data as Record<string, unknown>).companyId === "string"
+  );
+}
 const DEBOUNCE_MS = 800;
 
 type VisualViewportLayout = {
@@ -493,6 +510,25 @@ export function NewIssueDialog() {
     },
   });
 
+  // Issue create is keyed: the server replays the original issue for a known
+  // idempotency key, so an outage or a lost response resends safely.
+  const stagedFilesByKey = useRef(new Map<string, StagedIssueFile[]>());
+  const durableCreate = useDurableSubmit<PendingCreate, unknown>({
+    sourceId: "new-issue-dialog",
+    storageKey: PENDING_CREATE_KEY,
+    isPayload: isPendingCreate,
+    action: "create the task",
+    send: async (payload, idempotencyKey) => {
+      const result = await createIssue.mutateAsync({
+        ...(payload.data as { companyId: string }),
+        stagedFiles: stagedFilesByKey.current.get(idempotencyKey) ?? [],
+        idempotencyKey,
+      });
+      stagedFilesByKey.current.delete(idempotencyKey);
+      return result;
+    },
+  });
+
   // Debounced draft saving
   const scheduleSave = useCallback((draft: IssueDraft) => {
     if (draftTimer.current) clearTimeout(draftTimer.current);
@@ -792,7 +828,7 @@ export function NewIssueDialog() {
   async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
     const currentTitle = titleRef.current.trim();
     const currentDescription = body.trim();
-    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
+    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeChrome ? "custom" : assigneeModelLane,
@@ -834,7 +870,6 @@ export function NewIssueDialog() {
       : inheritedOverrides;
     const createData = {
       companyId: effectiveCompanyId,
-      stagedFiles,
       ...(currentTitle ? { title: currentTitle } : {}),
       description: currentDescription || undefined,
       status,
@@ -865,16 +900,26 @@ export function NewIssueDialog() {
     };
     // An explicit board create is a new task even when its title already exists.
     // Reuse the request key only for retries of the same submitted draft.
-    const fingerprint = JSON.stringify(createData);
+    const fingerprint = JSON.stringify({ ...createData, stagedFiles: stagedFiles.map((file) => file.id) });
     if (createRequestRef.current?.fingerprint !== fingerprint) {
       createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
     }
-    await createIssue.mutateAsync({
-      ...createData,
-      allowDuplicate: true,
-      idempotencyKey: createRequestRef.current.idempotencyKey,
-      navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
-    });
+    const { idempotencyKey } = createRequestRef.current;
+    stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
+    const result = await durableCreate.submit(
+      {
+        fingerprint,
+        data: {
+          ...createData,
+          allowDuplicate: true,
+          navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
+        },
+      },
+      { idempotencyKey },
+    );
+    // A transient failure keeps the request and shows the pending notice; a
+    // rejection goes back to the composer with readable copy.
+    if (result.kind === "rejected") throw result.error;
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -1201,8 +1246,21 @@ export function NewIssueDialog() {
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode ? (
+                  hasTitle || isSubIssueMode || durableCreate.pending ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
+                      {durableCreate.pending && durableCreate.status !== "sending" ? (
+                        <PendingSendNotice
+                          noun="task"
+                          resending={durableCreate.resending}
+                          stalled={durableCreate.status === "stalled"}
+                          onResendNow={durableCreate.resendNow}
+                          onCancel={() => {
+                            // The draft (title and description) is still saved; only the send stops.
+                            const cancelled = durableCreate.cancel();
+                            if (cancelled) createRequestRef.current = null;
+                          }}
+                        />
+                      ) : null}
                       {hasTitle ? (
                         <input
                           aria-label="Task title"
@@ -1379,7 +1437,7 @@ export function NewIssueDialog() {
                     ) : null}
                   </>
                 ),
-                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved,
+                submitDisabled: worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(durableCreate.pending),
                 contextBar: (
                   <>
                     <InlineEntitySelector

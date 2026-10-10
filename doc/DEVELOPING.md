@@ -384,6 +384,26 @@ appears, followed briefly by **Back online**. Recovery does not reload the
 browser. Authorization failures still require sign-in or an explicit retry.
 Storybook **App / Connection recovery** shows the startup screens and banner.
 
+Writes keep the user's text through an outage:
+
+- Comments, new tasks, and board sends store the request and its key
+  (`clientRequestId` or `idempotencyKey`) before they send
+  (`ui/src/lib/pending-send.ts`, `ui/src/hooks/useDurableSubmit.ts`). After a
+  transient failure or a lost response, the composer shows **Sending when
+  reconnected…** with **Resend now** and **Cancel**, and resends with the same
+  key on recovery. The server dedupes by that key.
+- Document and inline-editor autosave (`ui/src/hooks/useDurableAutosave.ts`)
+  keeps unsaved edits in browser storage, shows **Will save when reconnected**,
+  and saves the newest draft on recovery. A `409` whose server copy equals the
+  draft counts as saved.
+- Issue field updates go through `useUpdateIssueMutation`: optimistic, rolled
+  back with readable copy on failure, and replayed on reconnect for absolute
+  fields.
+- Uploads and other non-idempotent requests never resend on their own; they
+  keep the input and offer **Retry**.
+
+The banner counts every write that waits for the connection.
+
 To reproduce a deploy blip in a dev or QA build, set the outage simulator in the
 browser console and remove it to end the outage:
 

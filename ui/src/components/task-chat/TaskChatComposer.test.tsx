@@ -361,7 +361,7 @@ describe("TaskChatComposer", () => {
     expect(loadDraftSubmission(key)).toBeNull();
     expect(localStorage.getItem(key)).toBeNull();
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} />);
-    expect(container.textContent).not.toContain("couldn’t confirm");
+    expect(container.textContent).not.toContain("Sending when reconnected…");
     expect(editable().textContent).toBe("");
   });
 
@@ -489,7 +489,7 @@ describe("TaskChatComposer", () => {
     },
   );
 
-  it("fences an unknown save in memory with disabled storage until a successful explicit review and local discard", async () => {
+  it("keeps an unconfirmed send in memory with disabled storage and resends it with the same request ID", async () => {
     const storage = vi
       .spyOn(Storage.prototype, "setItem")
       .mockImplementation(() => {
@@ -497,10 +497,7 @@ describe("TaskChatComposer", () => {
       });
     const onAdd = vi
       .fn()
-      .mockRejectedValue(new CommentSubmissionUnknownError());
-    const review = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Refresh unavailable"))
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
       .mockResolvedValue(undefined);
     try {
       render(
@@ -508,44 +505,77 @@ describe("TaskChatComposer", () => {
           onAdd={onAdd}
           workMode="standard"
           draftKey="storage-disabled"
-          onReviewConversation={review}
         />,
       );
-      typeText("Do not replay this unknown save");
+      typeText("Send this exactly once");
       pressKey("Enter", { metaKey: true });
       await flushAsync();
       await flushAsync();
       expect(sendButton().disabled).toBe(true);
-      expect(container.textContent).toContain(
-        "couldn’t confirm whether this comment was saved",
-      );
+      expect(container.textContent).toContain("Sending when reconnected…");
+      expect(container.textContent).not.toContain("Discard draft");
       pressKey("Enter", { metaKey: true });
       await flushAsync();
       expect(onAdd).toHaveBeenCalledTimes(1);
-      const reviewButton = () =>
-        Array.from(container.querySelectorAll("button")).find(
-          (button) => button.textContent === "Review conversation",
-        )!;
-      flushSync(() => reviewButton().click());
-      await flushAsync();
-      expect(container.textContent).toContain(
-        "Couldn’t refresh the conversation",
-      );
-      expect(container.textContent).not.toContain(
-        "Discard draft and start new",
-      );
-      flushSync(() => reviewButton().click());
-      await flushAsync();
-      expect(review).toHaveBeenCalledTimes(2);
-      const discard = Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Discard draft and start new",
+      const resend = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Resend now",
       )!;
-      flushSync(() => discard.click());
+      flushSync(() => resend.click());
+      await flushAsync();
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledTimes(2);
+      // Same body and same client request ID, so the server dedupes.
+      expect(onAdd.mock.calls[1]?.[0]).toBe(onAdd.mock.calls[0]?.[0]);
+      expect(onAdd.mock.calls[1]?.[4]).toBe(onAdd.mock.calls[0]?.[4]);
+      expect(container.textContent).not.toContain("Sending when reconnected…");
       expect(editable().textContent).toBe("");
-      expect(onAdd).toHaveBeenCalledTimes(1);
     } finally {
       storage.mockRestore();
     }
+  });
+
+  it("gives an unconfirmed send back to the editor on Cancel without resending it", async () => {
+    const onAdd = vi.fn().mockRejectedValue(new CommentSubmissionUnknownError());
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="cancel-pending" />);
+    typeText("Keep my words");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    expect(loadDraftSubmission("cancel-pending")?.request?.body).toBe("Keep my words");
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Cancel",
+    )!;
+    flushSync(() => cancel.click());
+    await flushAsync();
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    expect(editable().textContent).toBe("Keep my words");
+    expect(loadDraftSubmission("cancel-pending")).toBeNull();
+    expect(sendButton().disabled).toBe(false);
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the text back with readable copy when a resend is rejected", async () => {
+    const { ApiError } = await import("../../api/client");
+    const onAdd = vi
+      .fn()
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
+      .mockRejectedValueOnce(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="rejected-resend" />);
+    typeText("Rejected later");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Resend now",
+    )!;
+    flushSync(() => resend.click());
+    await flushAsync();
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    expect(editable().textContent).toBe("Rejected later");
+    expect(container.textContent).toContain("Forbidden");
+    expect(loadDraftSubmission("rejected-resend")).toBeNull();
   });
 
   it("restores an in-flight submission as uncertain only for its exact task key", async () => {
@@ -606,6 +636,29 @@ describe("TaskChatComposer", () => {
     await flushAsync();
     expect(onAdd.mock.calls[1]?.[3]).toEqual([id]);
     expect(onAttachImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed upload and retries it only when asked", async () => {
+    const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const { ApiError } = await import("../../api/client");
+    const onAttachImage = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("Unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockResolvedValue({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: "notes.txt" });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+    pasteFiles([new File(["bytes"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+    expect(container.textContent).toContain("Paperclip is restarting or updating");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(onAttachImage).toHaveBeenCalledTimes(1);
+    const retry = container.querySelector<HTMLButtonElement>('button[aria-label="Retry notes.txt"]')!;
+    flushSync(() => retry.click());
+    await flushAsync();
+    expect(onAttachImage).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('button[aria-label="Retry notes.txt"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting or updating");
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("holds submission while an inline image upload is pending and binds its receipt", async () => {
