@@ -7295,6 +7295,7 @@ export function issueService(db: Db) {
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
         projectId: executionWorkspaces.projectId,
+        projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
       })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
@@ -7308,6 +7309,34 @@ export function issueService(db: Db) {
       );
     }
     return workspace;
+  }
+
+  function assertProjectExecutionWorkspaceConsistency(
+    projectWorkspaceId: string | null | undefined,
+    executionWorkspace: {
+      id: string;
+      projectWorkspaceId: string | null;
+    } | null,
+  ) {
+    if (
+      !projectWorkspaceId ||
+      !executionWorkspace ||
+      executionWorkspace.projectWorkspaceId === projectWorkspaceId
+    ) {
+      return;
+    }
+    throw unprocessable(
+      "Execution workspace must belong to the selected project workspace",
+      {
+        code: "project_execution_workspace_mismatch",
+        projectWorkspaceId,
+        executionWorkspaceId: executionWorkspace.id,
+        executionWorkspaceProjectWorkspaceId:
+          executionWorkspace.projectWorkspaceId,
+        remediation:
+          "Select an execution workspace linked to the selected project workspace, or omit executionWorkspaceId.",
+      },
+    );
   }
 
   async function assertValidLabelIds(
@@ -10081,6 +10110,7 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        let executionWorkspaceWasInherited = false;
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
@@ -10125,6 +10155,7 @@ export function issueService(db: Db) {
               .select({
                 id: executionWorkspaces.id,
                 mode: executionWorkspaces.mode,
+                projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
               })
               .from(executionWorkspaces)
               .where(
@@ -10134,8 +10165,13 @@ export function issueService(db: Db) {
                 ),
               )
               .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
+            if (
+              sourceWorkspace &&
+              (!projectWorkspaceId ||
+                sourceWorkspace.projectWorkspaceId === projectWorkspaceId)
+            ) {
               executionWorkspaceId = sourceWorkspace.id;
+              executionWorkspaceWasInherited = true;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
                 ...((workspaceSource.executionWorkspaceSettings as
@@ -10255,12 +10291,26 @@ export function issueService(db: Db) {
           );
         }
         if (executionWorkspaceId) {
-          await assertValidExecutionWorkspace(
+          const executionWorkspace = await assertValidExecutionWorkspace(
             companyId,
             issueData.projectId,
             executionWorkspaceId,
             tx,
           );
+          if (
+            executionWorkspaceWasInherited &&
+            projectWorkspaceId &&
+            executionWorkspace.projectWorkspaceId !== projectWorkspaceId
+          ) {
+            executionWorkspaceId = null;
+            executionWorkspacePreference = null;
+            executionWorkspaceSettings = null;
+          } else {
+            assertProjectExecutionWorkspaceConsistency(
+              projectWorkspaceId,
+              executionWorkspace,
+            );
+          }
         }
         if (
           isolatedWorkspacesEnabled &&
@@ -11063,15 +11113,15 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined
           ? issueData.projectWorkspaceId
           : existing.projectWorkspaceId;
-      const nextExecutionWorkspaceId =
+      let nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined
           ? issueData.executionWorkspaceId
           : existing.executionWorkspaceId;
-      const nextExecutionWorkspacePreference =
+      let nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
           : existing.executionWorkspacePreference;
-      const nextExecutionWorkspaceSettings =
+      let nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(
               issueData.executionWorkspaceSettings,
@@ -11085,7 +11135,11 @@ export function issueService(db: Db) {
           : null;
       }
       let validatedProjectWorkspace: { projectId: string } | null = null;
-      let validatedExecutionWorkspace: { projectId: string } | null = null;
+      let validatedExecutionWorkspace: {
+        id: string;
+        projectId: string;
+        projectWorkspaceId: string | null;
+      } | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {
         const workspace = await assertValidProjectWorkspace(
           existing.companyId,
@@ -11117,10 +11171,29 @@ export function issueService(db: Db) {
       }
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
-          await assertValidExecutionWorkspace(
+          validatedExecutionWorkspace = await assertValidExecutionWorkspace(
             existing.companyId,
             nextProjectId,
             nextExecutionWorkspaceId,
+            dbOrTx,
+          );
+        }
+        if (
+          issueData.projectWorkspaceId !== undefined &&
+          issueData.executionWorkspaceId === undefined &&
+          validatedExecutionWorkspace.projectWorkspaceId !==
+            nextProjectWorkspaceId
+        ) {
+          nextExecutionWorkspaceId = null;
+          nextExecutionWorkspacePreference = null;
+          nextExecutionWorkspaceSettings = null;
+          patch.executionWorkspaceId = null;
+          patch.executionWorkspacePreference = null;
+          patch.executionWorkspaceSettings = null;
+        } else {
+          assertProjectExecutionWorkspaceConsistency(
+            nextProjectWorkspaceId,
+            validatedExecutionWorkspace,
           );
         }
       }
