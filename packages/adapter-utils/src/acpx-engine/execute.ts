@@ -2051,6 +2051,14 @@ async function buildRuntime(input: {
   if (requestedModel && acpxAgent === "gemini") {
     env.GEMINI_MODEL = requestedModel;
   }
+  // Gemini CLI normally relaunches itself in a child node process. That wrapper
+  // ignores SIGINT/SIGTERM/SIGHUP and does not forward signals, and the ACP
+  // provider has no process group of its own, so a cancel kills only the
+  // wrapper and leaves the real `gemini --acp` child running as an orphan. Keep
+  // the ACP server in the launched process. An explicit adapter env value wins.
+  if (acpxAgent === "gemini" && env.GEMINI_CLI_NO_RELAUNCH === undefined) {
+    env.GEMINI_CLI_NO_RELAUNCH = "1";
+  }
   if (acpxAgent === "codex") {
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,
