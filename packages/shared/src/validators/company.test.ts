@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createCompanySchema,
+  updateCompanyAgentSettingsSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "./company.js";
@@ -52,6 +53,40 @@ describe("company schemas without the retired settings", () => {
 
   it("requires at least one branding field", () => {
     expect(updateCompanyBrandingSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("accepts not_creator governance for CEO-agent company updates", () => {
+    const parsed = updateCompanyAgentSettingsSchema.parse({
+      interactionResolverGovernance: {
+        request_confirmation: {
+          defaultPolicy: "not_creator",
+          cap: "not_creator",
+        },
+      },
+    });
+
+    expect(parsed).toEqual({
+      interactionResolverGovernance: {
+        request_confirmation: {
+          defaultPolicy: "not_creator",
+          cap: "not_creator",
+        },
+      },
+    });
+  });
+
+  it("rejects board-only settings from CEO-agent company updates", () => {
+    const result = updateCompanyAgentSettingsSchema.safeParse({
+      interactionResolverGovernance: {
+        request_confirmation: {
+          defaultPolicy: "not_creator",
+          cap: "not_creator",
+        },
+      },
+      status: "paused",
+    });
+
+    expect(result.success).toBe(false);
   });
 });
 

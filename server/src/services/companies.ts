@@ -302,15 +302,37 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
+        if (data.budgetMonthlyCents !== undefined || data.interactionResolverGovernance !== undefined) {
+          // Lock before reading so read-modify-write patches (budget policy,
+          // governance merge) serialize against concurrent company updates.
+          // NO KEY UPDATE stays compatible with the KEY SHARE that child-row
+          // writers hold on the company row, so it cannot deadlock them.
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        if (data.budgetMonthlyCents !== undefined) {
-          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
-        }
-        const { logoAssetId, ...companyPatch } = data;
+        const { logoAssetId, ...rawCompanyPatch } = data;
+        const governancePatch = rawCompanyPatch.interactionResolverGovernance;
+        const companyPatch = governancePatch === undefined || actor.actorType !== "agent"
+          ? rawCompanyPatch
+          : {
+              ...rawCompanyPatch,
+              interactionResolverGovernance: Object.fromEntries(
+                Object.entries({
+                  ...existing.interactionResolverGovernance,
+                  ...governancePatch,
+                }).map(([kind, governance]) => [
+                  kind,
+                  {
+                    ...existing.interactionResolverGovernance[kind as keyof typeof existing.interactionResolverGovernance],
+                    ...governance,
+                  },
+                ]),
+              ),
+            };
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
