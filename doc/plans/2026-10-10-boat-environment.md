@@ -102,7 +102,15 @@ Boat is authoritative for personal files and project/task bytes. Deterministic
 company/agent roots remain distinct from protected provider HOME/CODEX_HOME and
 runtime assets. First placement seeds an absent personal directory once; an
 existing directory is adopted without replacement. Later turns deliver only
-managed instructions, skills, and controlled credentials/configuration.
+managed instructions, skills, and controlled credentials/configuration. Build-owned provider packs are
+verified and cached by content digest within each agent's runtime directory.
+New task sessions reuse those immutable bytes without repeating compression or
+upload. Publication is atomic and never replaces an existing shared pack;
+corrupt cache entries fail closed. A never-retried interrupted upload may retain
+its private staging directory for operator cleanup. Managed instruction and skill
+bundles use immutable per-attempt snapshots so read-only files from a prior
+attempt cannot block preparation. Prior generated snapshots remain on disk in
+this experimental version; automatic snapshot garbage collection is deferred.
 
 The instruction editor reads and conditionally writes live remote bytes. Path
 confinement and atomic writes run on the remote host. Persistent placements
