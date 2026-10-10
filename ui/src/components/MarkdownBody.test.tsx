@@ -11,10 +11,20 @@ import {
   buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
+  appearanceForPalette,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
+import type { WorkspaceFileAvailabilityTarget } from "../lib/workspace-file-availability";
+
+/** Stands in for a server-confirmed openable reference in the issue's workspace. */
+const OPENABLE_AUTO_TARGET: WorkspaceFileAvailabilityTarget = {
+  workspace: "auto",
+  projectId: null,
+  workspaceId: null,
+  projectName: null,
+};
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -42,7 +52,7 @@ vi.mock("../api/issues", () => ({
 
 // Defaults to null (no provider) so the existing suite exercises the permissive
 // path unchanged. Gating tests override the return value per-case.
-const mockUseOptionalCompany = vi.hoisted(() => vi.fn<() => { companies: Array<{ issuePrefix: string }> } | null>(() => null));
+const mockUseOptionalCompany = vi.hoisted(() => vi.fn<() => { companies: Array<{ issuePrefix: string }>; selectedCompanyId?: string } | null>(() => null));
 
 vi.mock("../context/CompanyContext", () => ({
   useOptionalCompany: mockUseOptionalCompany,
@@ -54,7 +64,7 @@ afterEach(() => {
 
 function renderMarkdown(
   children: string,
-  seededIssues: Array<{ identifier: string; status: string; title?: string }> = [],
+  seededIssues: Array<{ identifier: string; status: string; title?: string; cacheKey?: string }> = [],
   props: Partial<ComponentProps<typeof MarkdownBody>> = {},
 ) {
   const queryClient = new QueryClient({
@@ -66,7 +76,7 @@ function renderMarkdown(
   });
 
   for (const issue of seededIssues) {
-    queryClient.setQueryData(queryKeys.issues.detail(issue.identifier), {
+    queryClient.setQueryData(queryKeys.issues.detail(issue.cacheKey ?? issue.identifier), {
       id: issue.identifier,
       identifier: issue.identifier,
       status: issue.status,
@@ -84,6 +94,17 @@ function renderMarkdown(
 }
 
 describe("MarkdownBody", () => {
+  it("preserves a saved document anchor in an explicit task link", () => {
+    // Hover/focus can resolve the issue to its plain identifier. Both the old
+    // fragment-bearing cache key and the corrected plain key model that load.
+    const html = renderMarkdown("[Saved document](/PAP/issues/PAP-1271#document-output)", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "PAP-1271", status: "done", cacheKey: "PAP-1271#document-output" },
+    ], { linkIssueReferences: true });
+    expect(html).toContain('href="/issues/PAP-1271#document-output"');
+    expect(html).not.toContain("PAP-1271%23document-output");
+  });
+
   it("renders markdown images without a resolver", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
@@ -111,6 +132,33 @@ describe("MarkdownBody", () => {
     expect(html).toContain('alt="Org chart"');
   });
 
+  it("renders decision images as inert references without resolving or preloading them", () => {
+    const resolveImageSrc = vi.fn((src: string) => `https://resolver.invalid/${src}`);
+    const html = renderMarkdown(
+      '# Plan\n\n**Keep this step.**\n\n![Evidence](https://provider.invalid/track.png "Provider image")\n\n![Relative](images/proof.png)\n\n![Protocol relative](//provider.invalid/other.png)',
+      [], { mediaMode: "reference", resolveImageSrc },
+    );
+
+    expect(html).toContain("<h1>Plan</h1>");
+    expect(html).toContain("<strong>Keep this step.</strong>");
+    expect(html).toContain("Image: Evidence (https://provider.invalid/track.png)");
+    expect(html).toContain('title="Provider image"');
+    expect(html).toContain("Image: Relative (images/proof.png)");
+    expect(html).toContain("Image: Protocol relative (//provider.invalid/other.png)");
+    expect(html).not.toMatch(/<(?:img|link|iframe|video|audio)\b/);
+    expect(resolveImageSrc).not.toHaveBeenCalled();
+  });
+
+  it("keeps diagram source inert in decision media mode", () => {
+    const source = 'flowchart LR\n  A@{ img: "https://provider.invalid/diagram.png" }';
+    const html = renderMarkdown(`\`\`\`mermaid\n${source}\n\`\`\``, [], { mediaMode: "reference" });
+
+    expect(html).toContain('class="language-mermaid"');
+    expect(html).toContain("https://provider.invalid/diagram.png");
+    expect(html).not.toContain('class="paperclip-mermaid"');
+    expect(html).not.toContain("Rendering Mermaid diagram");
+  });
+
   it("renders user, agent, project, skill, and routine mentions as chips", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
@@ -126,7 +174,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="user"');
     expect(html).toContain('href="/agents/agent-123"');
     expect(html).toContain('data-mention-kind="agent"');
-    expect(html).toContain("--paperclip-mention-icon-mask");
+    expect(html).toContain("--paperclip-mention-avatar-image");
+    expect(html).not.toContain("--paperclip-mention-icon-mask");
     expect(html).toContain('href="/projects/project-456"');
     expect(html).toContain('data-mention-kind="project"');
     expect(html).toContain("--paperclip-mention-project-color:#336699");
@@ -144,6 +193,23 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("javascript:");
   });
 
+  it("uses the current company agent appearance for an old saved mention", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }], selectedCompanyId: "company-1" });
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.agents.list("company-1"), [
+      { id: "agent-123", appearance: appearanceForPalette("electric-grove") },
+    ]);
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <ThemeProvider>
+          <MarkdownBody>{`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")})`}</MarkdownBody>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+    expect(html).toContain("/cap-v1/electric-grove/rest.png");
+    expect(html).not.toContain("mention-icon-mask");
+  });
+
   it("renders raw HTML tags as escaped text", () => {
     const html = renderMarkdown(
       '<script>fetch("/api/secrets")</script>\n<iframe src="https://example.com"></iframe>\n<p onclick="steal()">Plain text</p>',
@@ -156,6 +222,46 @@ describe("MarkdownBody", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("onclick=&quot;steal()&quot;");
     expect(html).toContain("Plain text");
+  });
+
+  it("hides markdown HTML comments instead of rendering placeholder text", () => {
+    const html = renderMarkdown("Before\n\n<!-- -->\n\nAfter");
+
+    expect(html).toContain("Before");
+    expect(html).toContain("After");
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides escaped HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- --> ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides incomplete streamed HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+  });
+
+  it("hides incomplete encoded HTML comment placeholders", () => {
+    const html = renderMarkdown("&lt;!-- -- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("&amp;lt;!--");
+  });
+
+  it("keeps HTML comment markers when they are literal code content", () => {
+    const inlineHtml = renderMarkdown("Use `<!-- -->` as a literal.");
+    const blockHtml = renderMarkdown("```html\n<!-- keep this example -->\n```");
+
+    expect(inlineHtml).toContain("&lt;!-- --&gt;");
+    expect(blockHtml).toContain("&lt;!-- keep this example --&gt;");
   });
 
   it("uses soft-break styling by default", () => {
@@ -199,6 +305,32 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("holds the quicklook preview until an issue mention is confirmed readable (PAP-16070)", () => {
+    // While the fetch is in flight we don't know if the viewer can read the
+    // issue. The mention stays a clickable link, but the IssueLinkQuicklook
+    // hover preview (a Radix Popover portal) must NOT mount yet: a private
+    // mention 404s straight to the locked chip, and mounting then tearing down
+    // that portal to swap in the chip is the element churn that crashed the
+    // chat transcript renderer.
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.");
+
+    expect(html).toContain('data-mention-pending="true"');
+    expect(html).toContain('data-mention-kind="issue"');
+    expect(html).toContain("paperclip-markdown-issue-ref");
+    // Clickability is preserved through the loading state.
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).toContain(">PAP-1271<");
+  });
+
+  it("drops the pending marker once a seeded (readable) issue mention resolves", () => {
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.", [
+      { identifier: "PAP-1271", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).not.toContain('data-mention-pending="true"');
   });
 
   it("uses concise issue aria labels until a distinct title is available", () => {
@@ -277,7 +409,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown(
       "- **MP4**: [`videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4`](/PAP/issues/PAP-10306 \"Publish handoff\")",
       [{ identifier: "PAP-10306", status: "in_review", title: "Publish handoff" }],
-      { linkWorkspaceFileRefs: true },
+      { resolveWorkspaceFileRef: () => OPENABLE_AUTO_TARGET },
     );
 
     expect(html).toContain('data-workspace-file-link="true"');
@@ -286,6 +418,49 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("max-w-(--sz-38ch)");
     expect(html).not.toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain('href="/issues/PAP-10306"');
+  });
+
+  it("renders auto-detected workspace paths as plain code without an availability resolver", () => {
+    const html = renderMarkdown("Check `ui/src/pages/IssueDetail.tsx:42` please.");
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).not.toContain("paperclip-workspace-file-link");
+    expect(html).toContain("ui/src/pages/IssueDetail.tsx:42");
+  });
+
+  it("keeps a non-openable auto-detected path as plain code with no chip affordances", () => {
+    const html = renderMarkdown(
+      "Check `ui/src/pages/IssueDetail.tsx:42` please.",
+      [],
+      { resolveWorkspaceFileRef: () => null },
+    );
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).not.toContain('role="button"');
+    expect(html).not.toContain("paperclip-workspace-file-link");
+    expect(html).toContain("<code");
+  });
+
+  it("keeps an explicit markdown link ordinary when its path is not openable", () => {
+    const html = renderMarkdown(
+      "See [`ui/src/a.ts:1`](/PAP/issues/PAP-10306)",
+      [{ identifier: "PAP-10306", status: "todo" }],
+      { resolveWorkspaceFileRef: () => null },
+    );
+
+    expect(html).not.toContain("data-workspace-file-link");
+    expect(html).toContain('href="/issues/PAP-10306"');
+  });
+
+  it("promotes an openable auto-detected path to a workspace file chip", () => {
+    const html = renderMarkdown(
+      "Check `ui/src/pages/IssueDetail.tsx:42` please.",
+      [],
+      { resolveWorkspaceFileRef: () => OPENABLE_AUTO_TARGET },
+    );
+
+    expect(html).toContain('data-workspace-file-link="true"');
+    expect(html).toContain('data-workspace-file-path="ui/src/pages/IssueDetail.tsx"');
   });
 
   it("keeps trailing punctuation outside auto-linked issue references", () => {
@@ -588,19 +763,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/JIRA-2"');
   });
 
-  it("renders the inline mention status glyph at lg (20px / h-5 w-5)", () => {
+  it("renders the inline mention status glyph at md (16px / h-4 w-4)", () => {
     const html = renderMarkdown("See PAP-1271 for context.", [
       { identifier: "PAP-1271", status: "in_progress" },
     ]);
 
-    // Unified glyph at 20px, with the h-5 w-5 class override so the Tailwind
-    // sizing matches the intrinsic SVG size.
+    // Unified glyph at 16px (PAP-349 round 4: stepped down from lg), with the
+    // h-4 w-4 class override so the Tailwind sizing matches the intrinsic SVG
+    // size.
     expect(html).toContain('viewBox="0 0 24 24"');
-    expect(html).toContain('width="20"');
-    expect(html).toContain('height="20"');
-    expect(html).toContain("h-5");
-    expect(html).toContain("w-5");
-    // PAP-243b: the lg glyph is optically centered to the body text
+    expect(html).toContain('width="16"');
+    expect(html).toContain('height="16"');
+    expect(html).toContain("h-4");
+    expect(html).toContain("w-4");
+    // PAP-243b: the glyph is optically centered to the body text
     // (vertical-align: middle + a 1px lift), not floating off the baseline.
     expect(html).toContain("align-middle");
     expect(html).not.toContain("align-(--va-0_125em)");

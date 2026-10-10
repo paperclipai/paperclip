@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "@paperclipai/shared";
 import {
   createContext,
   useCallback,
@@ -13,8 +14,19 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export interface ToastAction {
   label: string;
-  href: string;
+  /** Navigate on click (mutually exclusive with `onClick`). */
+  href?: string;
+  /** Run a callback on click, e.g. an undo (mutually exclusive with `href`). */
+  onClick?: () => void;
 }
+
+export type ToastActor = {
+  type: "user" | "agent";
+  id: string;
+  name: string;
+  image?: string | null;
+  appearance?: AgentAppearance | null;
+};
 
 export interface ToastInput {
   id?: string;
@@ -24,6 +36,7 @@ export interface ToastInput {
   tone?: ToastTone;
   ttlMs?: number;
   action?: ToastAction;
+  actor?: ToastActor;
 }
 
 export interface ToastItem {
@@ -33,6 +46,7 @@ export interface ToastItem {
   tone: ToastTone;
   ttlMs: number;
   action?: ToastAction;
+  actor?: ToastActor;
   createdAt: number;
 }
 
@@ -131,6 +145,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           tone,
           ttlMs,
           action: input.action,
+          actor: input.actor,
           createdAt: now,
         };
 
@@ -188,6 +203,10 @@ export function useToastActions() {
 
 export function useOptionalToastActions() {
   return useContext(ToastActionsContext);
+}
+
+export function useOptionalToastState() {
+  return useContext(ToastStateContext);
 }
 
 export function useToast() {

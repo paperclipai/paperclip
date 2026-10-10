@@ -166,12 +166,12 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { routineRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-  ]);
+  // Load the route after its mocks are installed. Concurrent importActual
+  // calls through the middleware barrel can cache unmocked dependencies.
+  const { errorHandler } = await import("../middleware/error-handler.js");
+  const { routineRoutes } = await import("../routes/routines.js");
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
@@ -182,6 +182,18 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("routine routes", () => {
+  it("forwards the Fireflies signature and exact raw JSON to the public handler", async () => {
+    const app = await createApp({ type: "none" });
+    const raw = '{ "event": "meeting.summarized", "meeting_id": "meeting-1", "timestamp": 1780000000000 }';
+    mockRoutineService.firePublicTrigger.mockResolvedValue({ status: "ignored", routineStarted: false });
+    const res = await request(app).post("/api/routine-triggers/public/fireflies-public/fire")
+      .set("Content-Type", "application/json").set("X-Hub-Signature", "sha256=fixture").send(raw);
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.firePublicTrigger).toHaveBeenCalledWith("fireflies-public", expect.objectContaining({
+      firefliesSignatureHeader: "sha256=fixture", rawBody: Buffer.from(raw), payload: JSON.parse(raw),
+    }));
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
@@ -432,8 +444,31 @@ describe("routine routes", () => {
 
     const res = await request(app).get(`/api/routines/${routineId}/revisions`);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockRoutineService.listRevisions).not.toHaveBeenCalled();
+  });
+
+  it("returns an identical 404 body for missing and cross-tenant routine triggers", async () => {
+    const crossTenantApp = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["99999999-9999-4999-8999-999999999999"],
+    });
+    const crossTenant = await request(crossTenantApp)
+      .patch(`/api/routine-triggers/${trigger.id}`)
+      .send({ kind: "cron", config: { expression: "0 9 * * *" } });
+
+    mockRoutineService.getTrigger.mockResolvedValue(null);
+    const missing = await request(crossTenantApp)
+      .patch(`/api/routine-triggers/${trigger.id}`)
+      .send({ kind: "cron", config: { expression: "0 9 * * *" } });
+
+    expect(crossTenant.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(crossTenant.body).toEqual(missing.body);
+    expect(mockRoutineService.updateTrigger).not.toHaveBeenCalled();
   });
 
   it("requires an assigned agent for routine revision history access", async () => {
@@ -646,6 +681,21 @@ describe("routine routes", () => {
       userId: "board-user",
       runId: null,
     });
-    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    try {
+      expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    } catch (error) {
+      // Report mock wiring without importing modules again or changing timing.
+      console.error("Routine creation telemetry mock diagnostic", {
+        clientGetterCalls: mockGetTelemetryClient.mock.calls.length,
+        clientGetterResults: mockGetTelemetryClient.mock.results.slice(-4).map(result => ({
+          type: result.type,
+          truthy: Boolean(result.value),
+        })),
+        trackingCalls: mockTrackRoutineCreated.mock.calls.length,
+        createCalls: mockRoutineService.create.mock.calls.length,
+        activityCalls: mockLogActivity.mock.calls.length,
+      });
+      throw error;
+    }
   });
 });

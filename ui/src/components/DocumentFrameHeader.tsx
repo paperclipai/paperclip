@@ -1,8 +1,10 @@
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,12 +14,21 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { deriveInitials } from "./Identity";
+
+export type DocumentFrameHeaderRevisionActor = {
+  kind: "agent" | "user" | "system";
+  name: string;
+  agentIcon?: string | null;
+  agent?: AvatarAgent;
+  imageUrl?: string | null;
+};
 
 export type DocumentFrameHeaderRevision = {
   id: string;
   revisionNumber: number;
   createdAt: string | Date;
-  actorLabel: string;
+  actor: DocumentFrameHeaderRevisionActor;
 };
 
 export type DocumentFrameHeaderRevisionMenu = {
@@ -44,6 +55,16 @@ export interface DocumentFrameHeaderProps {
   annotationSlot?: ReactNode;
   titleSlot?: ReactNode;
   actionsSlot?: ReactNode;
+}
+
+function RevisionActorAvatar({ actor }: { actor: DocumentFrameHeaderRevisionActor }) {
+  if (actor.kind === "agent") return <AgentAvatar agent={actor.agent} name={actor.name} size={20} />;
+  return (
+    <Avatar size="xs" className="shrink-0">
+      {actor.imageUrl ? <AvatarImage src={actor.imageUrl} alt={actor.name} /> : null}
+      <AvatarFallback>{deriveInitials(actor.name)}</AvatarFallback>
+    </Avatar>
+  );
 }
 
 export function DocumentFrameHeader({
@@ -124,9 +145,12 @@ export function DocumentFrameHeader({
                                 </Badge>
                               ) : null}
                             </div>
-                            <span className="text-xs text-muted-foreground">
-                              {relativeTime(revision.createdAt)} • {revision.actorLabel}
-                            </span>
+                            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
+                              <RevisionActorAvatar actor={revision.actor} />
+                              <span className="truncate">
+                                {relativeTime(revision.createdAt)} • {revision.actor.name}
+                              </span>
+                            </div>
                           </div>
                         </DropdownMenuRadioItem>
                       );

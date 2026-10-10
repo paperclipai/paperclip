@@ -1,3 +1,4 @@
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -16,6 +17,7 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -40,6 +42,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
     db = createDb(tempDb.connectionString);
+    configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
   }, 20_000);
 
   afterEach(async () => {
@@ -53,6 +56,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(companySkills);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(routines);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -144,6 +148,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       createdByRunId: runId,
     });
 
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, agentId));
     const removed = await agentService(db).remove(agentId);
 
     expect(removed?.id).toBe(agentId);
@@ -257,5 +262,24 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
+  });
+
+  it("removes routines before deleting company agents", async () => {
+    const { agentId, companyId } = await seedFixture();
+    const routineId = randomUUID();
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily cleanup",
+      assigneeAgentId: agentId,
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(routines).where(eq(routines.id, routineId))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 });

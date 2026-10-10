@@ -1,5 +1,8 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -17,6 +20,7 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -43,12 +47,14 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
   IssueColumnPicker,
   issueActivityText,
+  issueActivityTimestamp,
   issueTrailingColumns,
 } from "./IssueColumns";
 import { StatusIcon } from "./StatusIcon";
@@ -56,7 +62,10 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
-import { IssueRow } from "./IssueRow";
+import { IssueRow, type IssueRowPresentation } from "./IssueRow";
+import { CollectionToolbar, type CollectionToolbarProps } from "./CollectionToolbar";
+import { IssuesList as LegacyIssuesList } from "./LegacyIssuesList";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -76,16 +85,36 @@ import {
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
-import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
+import {
+  loadTaskCollectionPreferences,
+  saveTaskCollectionPreferences,
+  type TaskCollectionPreferenceLocation,
+} from "../lib/task-collection-preferences";
+import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../lib/task-date-groups";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
+type IssuesListNavEntry =
+  | { type: "group"; key: string; collapsed: boolean }
+  | { type: "issue"; issue: Issue; hasChildren: boolean; expanded: boolean; budgetOrdinal: number };
+
+function issuesListNavEntryKey(entry: IssuesListNavEntry): string {
+  return entry.type === "group" ? `group:${entry.key}` : `issue:${entry.issue.id}`;
+}
+
+// CSS.escape is missing in some non-browser environments (jsdom tests).
+function escapeAttrValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
+}
+
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
@@ -135,6 +164,7 @@ export type IssueViewState = IssueFilterState & {
   groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
+  showDateGroupSeparators: boolean;
   collapsedGroups: string[];
   collapsedParents: string[];
   boardCardDensity: BoardCardDensity;
@@ -149,6 +179,7 @@ const defaultViewState: IssueViewState = {
   groupBy: "none",
   viewMode: "list",
   nestingEnabled: true,
+  showDateGroupSeparators: true,
   collapsedGroups: [],
   collapsedParents: [],
   boardCardDensity: "auto",
@@ -170,38 +201,45 @@ function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
     : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
-function getViewState(key: string): IssueViewState {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...defaultViewState,
-        ...parsed,
-        ...normalizeIssueFilterState(parsed),
-        boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
-        boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
-        boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
-      };
-    }
-  } catch { /* ignore */ }
-  return { ...defaultViewState };
-}
-
-function saveViewState(key: string, state: IssueViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
+function normalizeIssueViewState(value: unknown): IssueViewState {
+  const parsed = value && typeof value === "object" ? value as Partial<IssueViewState> : {};
+  return {
+    ...defaultViewState,
+    ...parsed,
+    ...normalizeIssueFilterState(parsed),
+    // A saved workspace selection has no filter control. Drop it on load.
+    // `initialWorkspaces` from the page address is applied after this.
+    workspaces: [],
+    sortField: ["status", "priority", "title", "created", "updated", "workflow"].includes(parsed.sortField ?? "")
+      ? parsed.sortField as IssueSortField
+      : defaultViewState.sortField,
+    sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
+    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "none"].includes(parsed.groupBy ?? "")
+      ? parsed.groupBy as IssueViewState["groupBy"]
+      : defaultViewState.groupBy,
+    viewMode: parsed.viewMode === "board" ? "board" : "list",
+    nestingEnabled: parsed.nestingEnabled !== false,
+    showDateGroupSeparators: parsed.showDateGroupSeparators !== false,
+    collapsedGroups: Array.isArray(parsed.collapsedGroups)
+      ? parsed.collapsedGroups.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    collapsedParents: Array.isArray(parsed.collapsedParents)
+      ? parsed.collapsedParents.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
+    boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
+    boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
+  };
 }
 
 function getInitialViewState(
-  key: string,
+  stored: { viewState: IssueViewState; source: "current" | "legacy" | "default" },
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
 ): IssueViewState {
-  const hasStored = hasStoredViewState(key);
-  const stored = getViewState(key);
-  const base = !hasStored && defaultSortField
-    ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
-    : stored;
+  const base = stored.source === "default" && defaultSortField
+    ? { ...stored.viewState, sortField: defaultSortField, sortDir: "asc" as const }
+    : stored.viewState;
   if (!initialAssignees) return base;
   return {
     ...base,
@@ -211,53 +249,36 @@ function getInitialViewState(
 }
 
 function getInitialWorkspaceViewState(
-  key: string,
+  stored: { viewState: IssueViewState; source: "current" | "legacy" | "default" },
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  initialStatuses?: string[],
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
-  if (!initialWorkspaces) return stored;
-  return {
-    ...stored,
-    workspaces: initialWorkspaces,
-    statuses: [],
-  };
-}
-
-function hasStoredViewState(key: string): boolean {
-  try {
-    return localStorage.getItem(key) !== null;
-  } catch {
-    return false;
-  }
+  const initial = getInitialViewState(stored, initialAssignees, defaultSortField);
+  const scoped = initialWorkspaces
+    ? { ...initial, workspaces: initialWorkspaces, statuses: [] }
+    : initial;
+  // A status preset (Active / Backlog / Done, and All as the empty set) is the
+  // view's definition, so it wins over whatever the last session persisted.
+  // `undefined` means "no preset" and leaves the stored statuses alone.
+  return initialStatuses ? { ...scoped, statuses: initialStatuses } : scoped;
 }
 
 function getIssueColumnsStorageKey(key: string): string {
   return `${key}:issue-columns`;
 }
 
-function loadIssueColumns(key: string): InboxIssueColumn[] {
-  try {
-    const raw = localStorage.getItem(getIssueColumnsStorageKey(key));
-    if (raw === null) return DEFAULT_INBOX_ISSUE_COLUMNS;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_INBOX_ISSUE_COLUMNS;
-    return normalizeInboxIssueColumns(parsed);
-  } catch {
-    return DEFAULT_INBOX_ISSUE_COLUMNS;
-  }
-}
-
-function saveIssueColumns(key: string, columns: InboxIssueColumn[]) {
-  try {
-    localStorage.setItem(
-      getIssueColumnsStorageKey(key),
-      JSON.stringify(normalizeInboxIssueColumns(columns)),
-    );
-  } catch {
-    // Ignore localStorage failures.
-  }
+function loadIssueCollectionPreferences(
+  location: TaskCollectionPreferenceLocation,
+) {
+  return loadTaskCollectionPreferences<IssueViewState, InboxIssueColumn>({
+    ...location,
+    defaultViewState: defaultViewState,
+    defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
+    normalizeViewState: normalizeIssueViewState,
+    normalizeColumns: (value) => normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
+  });
 }
 
 function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
@@ -284,6 +305,59 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
     }
   });
   return sorted;
+}
+
+// Only recency sorts (newest first) get date separators — for any other
+// sort/direction the boundaries would be meaningless.
+function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
+  if (state.sortDir !== "desc") return null;
+  if (state.sortField === "created") return "createdAt";
+  if (state.sortField === "updated") return "updatedAt";
+  return null;
+}
+
+const AGE_BUCKET_DAY_MS = 24 * 60 * 60 * 1000;
+const AGE_BUCKET_WEEK_MS = 7 * AGE_BUCKET_DAY_MS;
+
+export function issueAgeBucket(date: Date | string, now: number = Date.now()): 0 | 1 | 2 {
+  const age = now - new Date(date).getTime();
+  if (age < AGE_BUCKET_DAY_MS) return 0;
+  if (age < AGE_BUCKET_WEEK_MS) return 1;
+  return 2;
+}
+
+export function issueAgeSeparatorLabel(bucket: 1 | 2): string {
+  return bucket === 1 ? "Older than a day" : "Older than a week";
+}
+
+export function issueAgeBucketsCrossed(
+  previousBucket: 0 | 1 | 2,
+  currentBucket: 0 | 1 | 2,
+): Array<1 | 2> {
+  const crossedBuckets: Array<1 | 2> = [];
+  if (previousBucket < 1 && currentBucket >= 1) crossedBuckets.push(1);
+  if (previousBucket < 2 && currentBucket >= 2) crossedBuckets.push(2);
+  return crossedBuckets;
+}
+
+function IssueDateSeparator({ label }: { label: string }) {
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-1.5 sm:pl-0 sm:pr-4"
+      role="separator"
+      aria-label={label}
+      data-issues-date-separator=""
+    >
+      <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
+      <span
+        className="shrink-0 text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70"
+        data-date-group-label=""
+      >
+        {label}
+      </span>
+      <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
+    </div>
+  );
 }
 
 function issueMatchesLocalSearch(issue: Issue, normalizedSearch: string): boolean {
@@ -402,6 +476,12 @@ interface IssuesListProps {
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialWorkspaces?: string[];
+  /**
+   * Status preset applied on entry and whenever it changes, overriding the
+   * persisted status filter. `[]` clears it; `undefined` leaves it alone.
+   * Used by the Tasks view presets (PAP-670).
+   */
+  initialStatuses?: string[];
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -422,7 +502,30 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  /** Opt in per surface while the canonical task row rolls out across collections. */
+  rowPresentation?: IssueRowPresentation;
+  /** Opt in per surface while the shared collection toolbar rolls out. */
+  toolbarPresentation?: "legacy" | "collection";
+  /**
+   * Rendered before the create button in the toolbar's context slot — the hook
+   * the merged Tasks surface uses to put its Views control there (PAP-670).
+   */
+  toolbarContext?: ReactNode;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+}
+
+function LegacyIssuesToolbar({ context, search, controls }: CollectionToolbarProps) {
+  return (
+    <div className="flex items-center justify-between gap-2 sm:gap-3">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        {context}
+        {search}
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+        {controls}
+      </div>
+    </div>
+  );
 }
 
 function IssueSearchInput({
@@ -454,7 +557,7 @@ function IssueSearchInput({
   }, [draftValue, onDebouncedChange]);
 
   return (
-    <div className="relative w-48 sm:w-64 md:w-80">
+    <div className="relative w-full sm:w-64 md:w-80">
       <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
       <Input
         value={draftValue}
@@ -507,11 +610,12 @@ function SubIssueProgressSummaryStrip({
   // Refresh fast enough that the runtime ticks up while a sub-issue is still
   // running, but slow enough not to hammer the recursive CTE on idle trees.
   const hasInProgress = summary.inProgressCount > 0;
+  const costRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5_000 });
   const { data: costSummary } = useQuery({
     queryKey: queryKeys.issues.costSummary(parentIssueIdForCostSummary ?? "pending", { excludeRoot: true }),
     queryFn: () => issuesApi.getCostSummary(parentIssueIdForCostSummary!, { excludeRoot: true }),
     enabled: !!parentIssueIdForCostSummary,
-    refetchInterval: hasInProgress ? 5_000 : false,
+    refetchInterval: hasInProgress ? costRefetchInterval : false,
   });
 
   const totalTokens = costSummary
@@ -605,7 +709,12 @@ function SubIssueProgressSummaryStrip({
 // Mobile-only indent for nested task rows (desktop uses IssueRow treeGuides).
 const MOBILE_TREE_INDENT = ["", "pl-4 sm:pl-0", "pl-8 sm:pl-0", "pl-12 sm:pl-0", "pl-16 sm:pl-0"];
 
-export function IssuesList({
+export function IssuesList(props: IssuesListProps) {
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  return streamlinedUiEnabled ? <StreamlinedIssuesList {...props} /> : <LegacyIssuesList {...props} />;
+}
+
+function StreamlinedIssuesList({
   issues,
   isLoading,
   error,
@@ -617,6 +726,7 @@ export function IssuesList({
   issueLinkState,
   initialAssignees,
   initialWorkspaces,
+  initialStatuses,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -632,15 +742,18 @@ export function IssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  rowPresentation = "legacy",
+  toolbarContext,
+  toolbarPresentation = "legacy",
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
-  const { keyboardShortcutsEnabled } = useGeneralSettings();
+  const queryClient = useQueryClient();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
   // doesn't hand the selection to whatever row lands under the cursor.
-  const [selectedNavIssueId, setSelectedNavIssueId] = useState<string | null>(null);
+  const [selectedNavKey, setSelectedNavKey] = useState<string | null>(null);
   const pointerMovedSinceKeyNavRef = useRef(true);
   useEffect(() => {
     const handlePointerMove = () => {
@@ -649,9 +762,18 @@ export function IssuesList({
     window.addEventListener("mousemove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("mousemove", handlePointerMove);
   }, []);
-  const setNavSelectionFromPointer = useCallback((issueId: string) => {
+  // Which entry the cursor is over, tracked WITHOUT React state so scrubbing the
+  // list costs zero re-renders (hover paints via CSS `:hover`). Keyboard nav
+  // reads this to continue from the hovered row. Key-based, so it self-heals if
+  // the entry disappears (findIndex → -1).
+  const hoveredNavKeyRef = useRef<string | null>(null);
+  const setNavSelectionFromPointer = useCallback((navKey: string) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
-    setSelectedNavIssueId(issueId);
+    hoveredNavKeyRef.current = navKey;
+    // Drop any keyboard selection band the moment the mouse takes over, so we
+    // never show two identical highlights at once. React bails when already
+    // null, so continuous hovering triggers no re-render.
+    setSelectedNavKey((prev) => (prev === null ? prev : null));
   }, []);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -676,17 +798,35 @@ export function IssuesList({
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
+  const preferenceLocation: TaskCollectionPreferenceLocation = {
+    companyId: selectedCompanyId ?? "__unscoped__",
+    collectionKey: viewStateKey,
+    legacyViewStorageKey: scopedKey,
+    legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
+  };
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const initialStatusesKey = initialStatuses ? `set:${initialStatuses.join("|")}` : "";
+  const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
+  if (initialPreferencesRef.current === null) {
+    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
+  }
+  const initialPreferences = initialPreferencesRef.current;
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(
+      initialPreferences,
+      initialAssignees,
+      initialWorkspaces,
+      defaultSortField,
+      initialStatuses,
+    ),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
-  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
+  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
@@ -697,30 +837,54 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(
+    `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`,
+  );
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
+    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      const preferences = loadIssueCollectionPreferences(preferenceLocation);
+      setViewState(getInitialWorkspaceViewState(
+        preferences,
+        initialAssignees,
+        initialWorkspaces,
+        defaultSortField,
+        initialStatuses,
+      ));
+      setVisibleIssueColumns(preferences.columns);
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
-
-  const prevColumnsScopedKey = useRef(scopedKey);
-  useEffect(() => {
-    if (prevColumnsScopedKey.current !== scopedKey) {
-      prevColumnsScopedKey.current = scopedKey;
-      setVisibleIssueColumns(loadIssueColumns(scopedKey));
-    }
-  }, [scopedKey]);
+  }, [
+    scopedKey,
+    initialAssignees,
+    initialAssigneesKey,
+    initialWorkspaces,
+    initialWorkspacesKey,
+    initialStatuses,
+    initialStatusesKey,
+    defaultSortField,
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyViewStorageKey,
+    preferenceLocation.legacyColumnsStorageKey,
+  ]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
       const next = { ...prev, ...patch };
-      saveViewState(scopedKey, next);
+      saveTaskCollectionPreferences(preferenceLocation, {
+        viewState: next,
+        columns: visibleIssueColumns,
+      });
       return next;
     });
-  }, [scopedKey]);
+  }, [
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyColumnsStorageKey,
+    preferenceLocation.legacyViewStorageKey,
+    visibleIssueColumns,
+  ]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -743,17 +907,18 @@ export function IssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
+      "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
-    queryFn: () =>
-      issuesApi.list(selectedCompanyId!, {
+    queryFn: ({ signal }) =>
+      issuesApi.listCompact(selectedCompanyId!, {
         q: normalizedIssueSearch,
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
-      }),
+      }, { signal }).then((rows) => rows as Issue[]),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
   });
@@ -766,18 +931,19 @@ export function IssuesList({
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
         searchFilters ?? {},
+        "compact",
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
-      queryFn: () =>
-        issuesApi.list(selectedCompanyId!, {
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        issuesApi.listCompact(selectedCompanyId!, {
           ...searchFilters,
           ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
-        }),
+        }, { signal }).then((rows) => rows as Issue[]),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
@@ -880,16 +1046,6 @@ export function IssuesList({
     return map;
   }, [defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
 
-  const workspaceOptions = useMemo(() => {
-    const options = new Map<string, string>();
-    for (const [workspaceId, workspaceName] of workspaceNameMap) {
-      options.set(workspaceId, workspaceName);
-    }
-    return [...options.entries()]
-      .sort((a, b) => a[1].localeCompare(b[1]))
-      .map(([id, name]) => ({ id, name }));
-  }, [workspaceNameMap]);
-
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
     const knownAgentIds = new Set<string>();
@@ -961,8 +1117,12 @@ export function IssuesList({
     [issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
-    () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
-    [availableIssueColumnSet, visibleIssueColumnSet],
+    () => issueTrailingColumns.filter((column) =>
+      visibleIssueColumnSet.has(column)
+      && availableIssueColumnSet.has(column)
+      && (rowPresentation === "legacy" || column !== "updated"),
+    ),
+    [availableIssueColumnSet, rowPresentation, visibleIssueColumnSet],
   );
 
   const issueById = useMemo(() => {
@@ -1220,21 +1380,35 @@ export function IssuesList({
     projectById,
   ]);
 
-  // Flattened visible row order (groups -> tree DFS, skipping collapsed
-  // groups/parents) — must match render order below for keyboard traversal.
-  const flatNavIssues = useMemo(() => {
-    if (viewState.viewMode !== "list") return [] as Issue[];
-    const out: Issue[] = [];
+  // Flattened visible order (group headers, then tree DFS per group —
+  // collapsed groups keep their header entry but skip their rows) — must
+  // match render order below for keyboard traversal. `budgetOrdinal` counts
+  // rows the way the progressive renderer consumes its budget (collapsed
+  // groups still consume rows; collapsed parents' subtrees do not).
+  const flatNavEntries = useMemo(() => {
+    if (viewState.viewMode !== "list") return [] as IssuesListNavEntry[];
+    const out: IssuesListNavEntry[] = [];
+    let budgetCount = 0;
     for (const group of groupedContent) {
-      if (group.label && viewState.collapsedGroups.includes(group.key)) continue;
+      const collapsed = Boolean(group.label) && viewState.collapsedGroups.includes(group.key);
+      if (group.label) out.push({ type: "group", key: group.key, collapsed });
       const { roots, childMap } = viewState.nestingEnabled
         ? buildIssueTree(group.items)
         : { roots: group.items, childMap: new Map<string, Issue[]>() };
       const walk = (issue: Issue) => {
-        out.push(issue);
-        if (!viewState.collapsedParents.includes(issue.id)) {
-          for (const child of childMap.get(issue.id) ?? []) walk(child);
+        budgetCount += 1;
+        const children = childMap.get(issue.id) ?? [];
+        const expanded = !viewState.collapsedParents.includes(issue.id);
+        if (!collapsed) {
+          out.push({
+            type: "issue",
+            issue,
+            hasChildren: children.length > 0,
+            expanded,
+            budgetOrdinal: budgetCount,
+          });
         }
+        if (expanded) for (const child of children) walk(child);
       };
       for (const root of roots) walk(root);
     }
@@ -1247,17 +1421,40 @@ export function IssuesList({
     viewState.nestingEnabled,
   ]);
 
-  const listNavStateRef = useRef({ flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState });
-  listNavStateRef.current = { flatNavIssues, selectedNavIssueId, viewMode: viewState.viewMode, issueLinkState };
+  const listNavStateRef = useRef({
+    flatNavEntries,
+    selectedNavKey,
+    viewMode: viewState.viewMode,
+    issueLinkState,
+    collapsedGroups: viewState.collapsedGroups,
+    collapsedParents: viewState.collapsedParents,
+    updateView,
+  });
+  listNavStateRef.current = {
+    flatNavEntries,
+    selectedNavKey,
+    viewMode: viewState.viewMode,
+    issueLinkState,
+    collapsedGroups: viewState.collapsedGroups,
+    collapsedParents: viewState.collapsedParents,
+    updateView,
+  };
 
-  const findSelectedNavRowLink = useCallback((issueId: string) => {
-    const row = rootRef.current?.querySelector(`[data-issue-row-id="${CSS.escape(issueId)}"]`);
-    const link = row?.querySelector(":scope > [data-inbox-issue-link]");
+  const findSelectedNavElement = useCallback((navKey: string) => {
+    if (navKey.startsWith("group:")) {
+      const header = rootRef.current?.querySelector(
+        `[data-issues-group-key="${escapeAttrValue(navKey.slice("group:".length))}"]`,
+      );
+      return header instanceof HTMLElement ? header : null;
+    }
+    const row = rootRef.current?.querySelector(
+      `[data-issue-row-id="${escapeAttrValue(navKey.slice("issue:".length))}"]`,
+    );
+    const link = row?.querySelector("[data-inbox-issue-link]");
     return link instanceof HTMLElement ? link : null;
   }, []);
 
   useEffect(() => {
-    if (!keyboardShortcutsEnabled) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const target = e.target;
@@ -1272,10 +1469,16 @@ export function IssuesList({
         return;
       }
       const st = listNavStateRef.current;
-      if (st.viewMode !== "list" || st.flatNavIssues.length === 0) return;
-      const currentIndex = st.selectedNavIssueId
-        ? st.flatNavIssues.findIndex((issue) => issue.id === st.selectedNavIssueId)
-        : -1;
+      if (st.viewMode !== "list" || st.flatNavEntries.length === 0) return;
+      // The row a keystroke acts on: the hovered row when the mouse moved since
+      // the last key nav (so "hover a row → press Arrow/Enter" acts on it),
+      // otherwise the keyboard selection. Hover no longer writes selection
+      // state, so this threads the pointer position into every handler.
+      const indexOfKey = (key: string | null) =>
+        key ? st.flatNavEntries.findIndex((entry) => issuesListNavEntryKey(entry) === key) : -1;
+      const hoveredIndex = indexOfKey(hoveredNavKeyRef.current);
+      const fromHover = pointerMovedSinceKeyNavRef.current && hoveredIndex >= 0;
+      const currentIndex = fromHover ? hoveredIndex : indexOfKey(st.selectedNavKey);
       switch (e.key) {
         case "j":
         case "ArrowDown":
@@ -1284,26 +1487,62 @@ export function IssuesList({
           e.preventDefault();
           pointerMovedSinceKeyNavRef.current = false;
           const direction = e.key === "j" || e.key === "ArrowDown" ? "next" : "previous";
-          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavIssues.length, direction);
-          const nextIssue = st.flatNavIssues[nextIndex];
-          if (!nextIssue) break;
-          setSelectedNavIssueId(nextIssue.id);
+          const nextIndex = getInboxKeyboardSelectionIndex(currentIndex, st.flatNavEntries.length, direction);
+          const nextEntry = st.flatNavEntries[nextIndex];
+          if (!nextEntry) break;
+          setSelectedNavKey(issuesListNavEntryKey(nextEntry));
           // The list renders progressively; make sure the selected row is
           // within the render budget so the band mounts and can scroll into
           // view (the +1 keeps the next row visible as a scroll cue).
-          setRenderedIssueRowLimit((current) => Math.max(current, nextIndex + 2));
+          if (nextEntry.type === "issue") {
+            setRenderedIssueRowLimit((current) => Math.max(current, nextEntry.budgetOrdinal + 1));
+          }
+          break;
+        }
+        case "ArrowLeft":
+        case "ArrowRight": {
+          // Groups and parent tasks collapse/expand with the same keys as the
+          // inbox.
+          const entry = st.flatNavEntries[currentIndex];
+          if (!entry) return;
+          const collapse = e.key === "ArrowLeft";
+          if (entry.type === "group") {
+            e.preventDefault();
+            pointerMovedSinceKeyNavRef.current = false;
+            setSelectedNavKey(issuesListNavEntryKey(entry));
+            st.updateView({
+              collapsedGroups: collapse
+                ? (st.collapsedGroups.includes(entry.key) ? st.collapsedGroups : [...st.collapsedGroups, entry.key])
+                : st.collapsedGroups.filter((k) => k !== entry.key),
+            });
+            break;
+          }
+          if (!entry.hasChildren) return;
+          e.preventDefault();
+          pointerMovedSinceKeyNavRef.current = false;
+          setSelectedNavKey(issuesListNavEntryKey(entry));
+          st.updateView({
+            collapsedParents: collapse
+              ? (st.collapsedParents.includes(entry.issue.id) ? st.collapsedParents : [...st.collapsedParents, entry.issue.id])
+              : st.collapsedParents.filter((id) => id !== entry.issue.id),
+          });
           break;
         }
         case "Enter": {
-          if (currentIndex < 0) return;
-          const issue = st.flatNavIssues[currentIndex];
-          if (!issue) return;
+          const entry = st.flatNavEntries[currentIndex];
+          if (!entry || entry.type !== "issue") return;
           e.preventDefault();
           // Navigate from the entry data (like the inbox) rather than the DOM
           // row — the selected row may sit past the mounted render batch.
+          const issue = entry.issue;
           const pathId = issue.identifier ?? issue.id;
           const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
           rememberIssueDetailLocationState(pathId, detailState);
+          // Seed the full list-row snapshot + first comments page before we
+          // navigate so keyboard-driven opens paint from cache instantly, the
+          // same way pointer hover/click does through the issue link. Mirrors
+          // the inbox Enter handler.
+          void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
           navigate(createIssueDetailPath(pathId), { state: detailState });
           break;
         }
@@ -1313,15 +1552,15 @@ export function IssuesList({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardShortcutsEnabled, navigate]);
+  }, [navigate, queryClient]);
 
   // Keep the keyboard selection visible while navigating. Depends on the
   // render budget too: a selection past the mounted batch scrolls once its
   // row mounts.
   useEffect(() => {
-    if (!selectedNavIssueId) return;
-    findSelectedNavRowLink(selectedNavIssueId)?.scrollIntoView({ block: "nearest" });
-  }, [findSelectedNavRowLink, renderedIssueRowLimit, selectedNavIssueId]);
+    if (!selectedNavKey) return;
+    findSelectedNavElement(selectedNavKey)?.scrollIntoView({ block: "nearest" });
+  }, [findSelectedNavElement, renderedIssueRowLimit, selectedNavKey]);
 
   useEffect(() => {
     if (viewState.viewMode !== "list") return;
@@ -1344,9 +1583,7 @@ export function IssuesList({
   const loadMoreIssueRows = useCallback(() => {
     if (viewState.viewMode !== "list") return;
     if (hasMoreRenderedRows) {
-      startTransition(() => {
-        setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
-      });
+      setRenderedIssueRowLimit((current) => Math.min(filtered.length, current + ISSUE_ROW_RENDER_BATCH_SIZE));
       return;
     }
     if (hasMoreIssues && !isLoadingMoreIssues) {
@@ -1471,8 +1708,17 @@ export function IssuesList({
   const setIssueColumns = useCallback((next: InboxIssueColumn[]) => {
     const normalized = normalizeInboxIssueColumns(next);
     setVisibleIssueColumns(normalized);
-    saveIssueColumns(scopedKey, normalized);
-  }, [scopedKey]);
+    saveTaskCollectionPreferences(preferenceLocation, {
+      viewState,
+      columns: normalized,
+    });
+  }, [
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyColumnsStorageKey,
+    preferenceLocation.legacyViewStorageKey,
+    viewState,
+  ]);
 
   const toggleIssueColumn = useCallback((column: InboxIssueColumn, enabled: boolean) => {
     if (enabled) {
@@ -1489,6 +1735,7 @@ export function IssuesList({
   }, [onUpdateIssue]);
 
   let remainingRowsToRender = viewState.viewMode === "list" ? renderedIssueRowLimit : Number.POSITIVE_INFINITY;
+  const IssuesToolbar = toolbarPresentation === "collection" ? CollectionToolbar : LegacyIssuesToolbar;
 
   return (
     <div ref={rootRef} className="space-y-4">
@@ -1501,12 +1748,24 @@ export function IssuesList({
       ) : null}
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 sm:gap-3">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <Button size="sm" variant="outline" onClick={() => openCreateIssueDialog()}>
+      <IssuesToolbar
+        className="paperclip-task-list-toolbar"
+        ariaLabel={toolbarPresentation === "collection" ? "Task controls" : undefined}
+        context={toolbarContext ? (
+          <div className="flex min-w-0 items-center gap-2">
+            {toolbarContext}
+            <Button size="sm" variant="outline" aria-label={createButtonLabel} onClick={() => openCreateIssueDialog()}>
+              <Plus className="h-4 w-4 sm:mr-1" />
+              <span className="hidden sm:inline">{createButtonLabel}</span>
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" aria-label={createButtonLabel} onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">{createButtonLabel}</span>
           </Button>
+        )}
+        search={(
           <IssueSearchInput
             value={issueSearch}
             onDebouncedChange={(nextSearch) => {
@@ -1514,9 +1773,9 @@ export function IssuesList({
               onSearchChange?.(nextSearch);
             }}
           />
-        </div>
-
-        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+        )}
+        controls={(
+          <>
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
@@ -1633,9 +1892,12 @@ export function IssuesList({
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
+            showDateGroupSeparators={viewState.showDateGroupSeparators}
+            onToggleDateGroupSeparators={(enabled) => updateView({ showDateGroupSeparators: enabled })}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
             title="Choose which task columns stay visible"
             iconOnly
+            rowPresentation={rowPresentation}
           />
 
           <IssueFiltersPopover
@@ -1651,7 +1913,7 @@ export function IssuesList({
             enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
-            workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
+            presentation={rowPresentation === "task" ? "streamlined" : "legacy"}
           />
 
           {/* Sort (list view only) */}
@@ -1664,6 +1926,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
                     ["workflow", "Workflow"],
                     ["status", "Status"],
@@ -1671,7 +1934,9 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  ] as const)
+                    .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
+                    .map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -1708,6 +1973,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -1716,7 +1982,9 @@ export function IssuesList({
                     ["workspace", "Workspace"],
                     ["parent", "Parent Task"],
                     ["none", "None"],
-                  ] as const).map(([value, label]) => (
+                  ] as const)
+                    .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
+                    .map(([value, label]) => (
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -1732,8 +2000,9 @@ export function IssuesList({
               </PopoverContent>
             </Popover>
           )}
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -1768,7 +2037,7 @@ export function IssuesList({
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
-        <>
+        <div className="-mx-2 sm:mx-0">
           {groupedContent.map((group) => {
           if (remainingRowsToRender <= 0) return null;
           return (
@@ -1784,6 +2053,15 @@ export function IssuesList({
             }}
           >
             {group.label && (
+              // Left inset aligns the header chevron with the nested task
+              // chevrons: tasks-list rows sit at pl-1 before their chevron
+              // (no unread column), so the band adds no extra left inset.
+              <div
+                data-issues-group-key={group.key}
+                className={cn("rounded-lg px-3 sm:pl-0 sm:pr-4", selectedNavKey === `group:${group.key}` ? "bg-accent/50" : "hover:bg-accent/50")}
+                onClick={() => setSelectedNavKey(`group:${group.key}`)}
+                onMouseEnter={() => setNavSelectionFromPointer(`group:${group.key}`)}
+              >
               <IssueGroupHeader
                 label={group.label}
                 collapsible
@@ -1808,6 +2086,7 @@ export function IssuesList({
                   </Button>
                 )}
               />
+              </div>
             )}
             <CollapsibleContent>
               {(() => {
@@ -1906,10 +2185,8 @@ export function IssuesList({
                     <div
                       key={issue.id}
                       data-issue-row-id={issue.id}
-                      // Desktop indentation comes from IssueRow's treeGuides
-                      // (vertical connector slots); mobile keeps a plain
-                      // padding indent (guides are sm-only).
-                      className={depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
+                      // Canonical rows use the same tree-guide slots at every width.
+                      className={rowPresentation === "legacy" && depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
                       style={useDeferredRowRendering
                         ? {
                           contentVisibility: "auto",
@@ -1919,11 +2196,12 @@ export function IssuesList({
                     >
                       <IssueRow
                         issue={issue}
+                        presentation={rowPresentation}
                         issueLinkState={issueLinkState}
-                        selected={selectedNavIssueId === issue.id}
-                        onMouseEnter={() => setNavSelectionFromPointer(issue.id)}
+                        selected={selectedNavKey === `issue:${issue.id}`}
+                        onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
-                        hideDivider={hasChildren && isExpanded}
+                        chevronInGuide={depth > 0 && hasChildren}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
@@ -1965,7 +2243,41 @@ export function IssuesList({
                             ) : null}
                           </>
                         )}
-                        className={cn(isMutedIssue && "opacity-70", selectedNavIssueId === issue.id && "bg-accent/50")}
+                        className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
+                        leadingControl={rowPresentation === "task" ? (
+                          hasChildren ? (
+                            <button
+                              type="button"
+                              data-slot="icon-button"
+                              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                              aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                              onClick={toggleCollapse}
+                            >
+                              <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                            </button>
+                          ) : (
+                            <span data-slot="task-row-disclosure-spacer" className="h-4 w-4 shrink-0" aria-hidden="true" />
+                          )
+                        ) : undefined}
+                        statusSlot={rowPresentation === "task" ? (
+                          <span className="relative inline-flex items-start self-stretch sm:items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                            <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                            {hasChildren && isExpanded ? (
+                              <span aria-hidden="true" className="pointer-events-none absolute top-5 -bottom-2.5 left-1/2 w-px bg-border sm:hidden" />
+                            ) : null}
+                          </span>
+                        ) : undefined}
+                        metadata={rowPresentation === "task" ? (
+                          <InboxIssueMetaLeading
+                            issue={issue}
+                            isLive={liveIssueIds?.has(issue.id) === true}
+                            subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
+                            showStatus={false}
+                            showIdentifier={false}
+                            checklistStepNumber={checklistStepNumber}
+                          />
+                        ) : undefined}
+                        showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
@@ -1973,23 +2285,23 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
-                        desktopMetaLeading={(
+                        desktopMetaLeading={rowPresentation === "legacy" ? (
                           <>
                             {hasChildren ? (
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden shrink-0 items-center sm:inline-flex"
+                                className="relative z-10 hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                               </button>
                             ) : (
-                              <span className="hidden w-3.5 shrink-0 sm:block" />
+                              <span className="hidden w-4 shrink-0 sm:block" />
                             )}
                             <InboxIssueMetaLeading
                               issue={issue}
@@ -2000,13 +2312,19 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />
                           </>
-                        )}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
+                        ) : undefined}
+                        mobileTitleMeta={rowPresentation === "task" ? issueActivityTimestamp(issue) : undefined}
+                        mobileMeta={rowPresentation === "legacy" ? issueActivityText(issue).toLowerCase() : undefined}
+                        trailingMeta={rowPresentation === "task"
+                          && visibleIssueColumnSet.has("updated")
+                          && availableIssueColumnSet.has("updated")
+                          ? issueActivityTimestamp(issue)
+                          : undefined}
                         desktopTrailing={(
                           visibleTrailingIssueColumns.length > 0 ? (
                             <InboxIssueTrailingColumns
@@ -2022,6 +2340,8 @@ export function IssuesList({
                               })}
                               onFilterWorkspace={filterToWorkspace}
                               assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                               assigneeUserName={assigneeUserLabel}
                               assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
                               creatorAgentName={agentName(issue.createdByAgentId)}
@@ -2045,7 +2365,7 @@ export function IssuesList({
                                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                     >
                                       {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
+                                        <AgentIdentity agent={agents!.find((agent) => agent.id === issue.assigneeAgentId)!} size="sm" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
                                           name={assigneeUserLabel ?? "User"}
@@ -2124,7 +2444,7 @@ export function IssuesList({
                                               assignIssue(issue.id, agent.id, null);
                                             }}
                                           >
-                                            <Identity name={agent.name} size="sm" className="min-w-0" />
+                                            <AgentIdentity agent={agent} size="sm" className="min-w-0" />
                                           </button>
                                         ))}
                                     </div>
@@ -2135,12 +2455,59 @@ export function IssuesList({
                           ) : undefined
                         )}
                       />
-                      {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>
                   );
                 };
 
-                return roots.map((issue) => renderIssueRow(issue, 0)).filter((node) => node !== null);
+                const separatorField = viewState.showDateGroupSeparators
+                  ? issueDateSeparatorField(viewState)
+                  : null;
+                const separatorNow = new Date();
+                const nodes: ReactNode[] = [];
+                let previousDateGroup: TaskDateGroup | null = null;
+                let previousAgeBucket: 0 | 1 | 2 | null = null;
+                const appendIssueRow = (issue: Issue, depth: number) => {
+                  const node = renderIssueRow(issue, depth);
+                  // Skip rows the render budget dropped so separators never
+                  // dangle above an unrendered (or absent) row.
+                  if (node === null) return;
+                  if (separatorField && rowPresentation === "task") {
+                    const currentDateGroup = taskDateGroup(issue[separatorField], separatorNow);
+                    const separatorLabel = taskDateGroupSeparator(previousDateGroup, currentDateGroup);
+                    if (separatorLabel) {
+                      nodes.push(
+                        <IssueDateSeparator
+                          key={`date-sep-${issue.id}-${currentDateGroup}`}
+                          label={separatorLabel}
+                        />,
+                      );
+                    }
+                    previousDateGroup = currentDateGroup;
+                  } else if (separatorField) {
+                    const currentAgeBucket = issueAgeBucket(issue[separatorField], separatorNow.getTime());
+                    for (const crossedBucket of previousAgeBucket === null
+                      ? []
+                      : issueAgeBucketsCrossed(previousAgeBucket, currentAgeBucket)) {
+                      nodes.push(
+                        <IssueDateSeparator
+                          key={`date-sep-${issue.id}-${crossedBucket}`}
+                          label={issueAgeSeparatorLabel(crossedBucket)}
+                        />,
+                      );
+                    }
+                    previousAgeBucket = currentAgeBucket;
+                  }
+                  nodes.push(node);
+                  if (!viewState.collapsedParents.includes(issue.id)) {
+                    for (const child of childMap.get(issue.id) ?? []) {
+                      appendIssueRow(child, depth + 1);
+                    }
+                  }
+                };
+                for (const issue of roots) {
+                  appendIssueRow(issue, 0);
+                }
+                return nodes;
               })()}
             </CollapsibleContent>
           </Collapsible>
@@ -2157,7 +2524,7 @@ export function IssuesList({
               </p>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );

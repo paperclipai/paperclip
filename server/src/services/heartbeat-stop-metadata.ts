@@ -9,13 +9,14 @@ export type HeartbeatRunStopReason =
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "unmanaged_background_task_stopped"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
   effectiveTimeoutSec: number | null;
   effectiveTimeoutMs?: number | null;
   timeoutConfigured: boolean;
-  timeoutSource: "config" | "default" | "unknown";
+  timeoutSource: "config" | "default" | "unknown" | "configured" | "sandbox_default" | "unlimited";
 }
 
 export interface HeartbeatRunStopMetadata extends HeartbeatRunTimeoutPolicy {
@@ -88,6 +89,7 @@ export function inferHeartbeatRunStopReason(input: {
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
+  if (input.outcome === "failed" && input.errorCode === "unmanaged_background_task_stopped") return "unmanaged_background_task_stopped";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
@@ -119,12 +121,28 @@ export function mergeHeartbeatRunStopMetadata(
   metadata: HeartbeatRunStopMetadata,
 ): Record<string, unknown> {
   const existingMaxTurnStopReason = normalizeMaxTurnStopReason(resultJson?.stopReason);
+  // Only a complete, valid adapter resolution overrides the config fallback.
+  // Older adapters and persisted rows retain their existing interpretation.
+  const resolution = resultJson?.adapterExecutionTimeout;
+  let timeoutPolicy: HeartbeatRunTimeoutPolicy = metadata;
+  if (metadata.effectiveTimeoutMs == null && resolution && typeof resolution === "object" && !Array.isArray(resolution)) {
+    const { timeoutSec, source } = resolution as Record<string, unknown>;
+    if (typeof timeoutSec === "number" && Number.isFinite(timeoutSec) && timeoutSec >= 0 &&
+        (source === "configured" || (source === "sandbox_default" && timeoutSec > 0) ||
+         (source === "unlimited" && timeoutSec === 0))) {
+      timeoutPolicy = {
+        effectiveTimeoutSec: timeoutSec,
+        timeoutConfigured: source === "configured",
+        timeoutSource: source,
+      };
+    }
+  }
   return {
     ...(resultJson ?? {}),
     stopReason: existingMaxTurnStopReason ?? metadata.stopReason,
-    effectiveTimeoutSec: metadata.effectiveTimeoutSec,
-    timeoutConfigured: metadata.timeoutConfigured,
-    timeoutSource: metadata.timeoutSource,
+    effectiveTimeoutSec: timeoutPolicy.effectiveTimeoutSec,
+    timeoutConfigured: timeoutPolicy.timeoutConfigured,
+    timeoutSource: timeoutPolicy.timeoutSource,
     timeoutFired: metadata.timeoutFired,
     ...(metadata.effectiveTimeoutMs != null ? { effectiveTimeoutMs: metadata.effectiveTimeoutMs } : {}),
   };

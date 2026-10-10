@@ -1,3 +1,5 @@
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
@@ -28,8 +30,10 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
+  IssueAttachment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
+  Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -45,15 +49,18 @@ import type {
   ExternalObjectLivenessState,
   ExternalObjectMentionConfidence,
   ExternalObjectMentionSourceKind,
+  EnvSecretRefBinding,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  ResourceLifecycleEvent,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
   PluginIssueSubtree,
+  PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
   PluginJobContext,
@@ -253,6 +260,14 @@ export const PLUGIN_RPC_ERROR_CODES = {
   METHOD_NOT_IMPLEMENTED: -32004,
   /** The worker→host call attempted to escape the current invocation company scope. */
   INVOCATION_SCOPE_DENIED: -32005,
+  /**
+   * A `configChanged` delivery would have collapsed a single-tenant worker onto
+   * a second, distinct company's configuration. The worker fails closed instead
+   * of silently overwriting the already-applied tenant's config. A plugin that
+   * genuinely serves multiple companies from one worker must opt in via
+   * `multiCompanyConfig: true` on its definition.
+   */
+  CROSS_TENANT_CONFIG: -32006,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
@@ -279,6 +294,14 @@ export interface PluginInvocationScope {
 export interface PluginInvocationContext {
   id: string;
   scope: PluginInvocationScope;
+  /**
+   * An optional W3C `traceparent` for the active host span. The host mints it
+   * per call from the active startup span. The worker treats it as opaque: it
+   * tags its provider span with it and never derives parentage from it. The host
+   * mints the parentage from its own invocation record, so a worker can never
+   * forge a parent.
+   */
+  traceparent?: string;
 }
 
 /**
@@ -288,6 +311,12 @@ export interface PluginInvocationContext {
 export interface WorkerHostCallContext {
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
+  /**
+   * The W3C `traceparent` the host minted for the echoed invocation. The host
+   * recovers it from its own invocation record, not from the worker, so a worker
+   * can never forge a span parent. The span host handler validates and uses it.
+   */
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +331,7 @@ export interface WorkerHostCallContext {
 export interface InitializeParams {
   /** Full plugin manifest snapshot. */
   manifest: PaperclipPluginManifestV1;
-  /** Resolved operator configuration (validated against `instanceConfigSchema`). */
+  /** Bootstrap configuration. Company-scoped config is read via `ctx.config.get(companyId)`. */
   config: Record<string, unknown>;
   /** Instance-level metadata. */
   instanceInfo: {
@@ -333,8 +362,10 @@ export interface InitializeResult {
  * @see PLUGIN_SPEC.md §13.4 — `configChanged`
  */
 export interface ConfigChangedParams {
-  /** The newly resolved configuration. */
+  /** The newly resolved company-scoped configuration. */
   config: Record<string, unknown>;
+  /** Company whose plugin config changed. */
+  companyId?: string | null;
 }
 
 /**
@@ -586,6 +617,21 @@ export interface PluginEnvironmentLease {
   expiresAt?: string | null;
 }
 
+/** Serializable provider result. The host adds refresh/close lifecycle methods. */
+export interface PluginEnvironmentRunnerIngressEndpoint {
+  kind: "authenticated_websocket";
+  websocketUrl: string;
+  secretHeaders: Array<{ name: string; value: string }>;
+  generation: string;
+}
+
+export interface PluginEnvironmentRunnerIngressEndpointParams
+  extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  port: number;
+  path: string;
+}
+
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
   workspaceMode?: string;
@@ -599,6 +645,18 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    * per-run sandbox should use this to select the runtime image and per-run env.
    */
   adapterType?: string;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
+  /**
+   * The absolute latest time the acquired lease may stay active, as an ISO 8601
+   * timestamp. A caller with an independent deadline (for example the setup-token
+   * login session) sets it. A provider that materializes a sandbox must configure
+   * a provider-side expiry at or before this time, and return the real provider
+   * expiry in `PluginEnvironmentLease.expiresAt`. When the provider cannot bound
+   * the sandbox at or before this time, it returns no expiry, so the server fails
+   * closed and releases the lease. When omitted, the provider keeps its default
+   * lifetime.
+   */
+  requestedExpiresAt?: string | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -607,8 +665,21 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Stop the exact allocation while preserving its files, regardless of its
+   * ordinary release policy. A failed stop must throw, never fall back to delete. */
+  resourceDisposition?: "stop_and_retain";
+  /** Explicit operator cancellation: terminate active work instead of waiting
+   * for command/sync activity to drain. Still requires a provider receipt. */
+  cancelActiveWork?: boolean;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
+}
+
+/** Returned only after the provider confirms that execution has ended. A queued
+ * stop request or successful local cleanup is not a termination receipt. */
+export interface PluginEnvironmentTerminationReceipt {
+  providerLeaseId: string;
+  state: "stopped" | "destroyed";
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
@@ -623,6 +694,12 @@ export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironme
   };
 }
 
+/**
+ * A plugin `environmentRealizeWorkspace` handler returns only the realized cwd and provider
+ * metadata. The server, not the plugin, builds the full workspace-realization record from the run
+ * request and merges this cwd and metadata into it. Do not return a `workspaceRealization` record
+ * here; the server owns that record, so the referenced (mentioned) project sources reach the adapter.
+ */
 export interface PluginEnvironmentRealizeWorkspaceResult {
   cwd: string;
   metadata?: Record<string, unknown>;
@@ -636,6 +713,20 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session.
+   *
+   * The host sets this flag on a command that runs before the run's agent work,
+   * for example the workspace provision command. A provider that opens a
+   * persistent session on the first command must NOT open the session for such a
+   * command; it runs the command one-shot and leaves the session closed. The
+   * session then opens on the first in-run command instead. A provider that does
+   * not use a persistent session ignores this flag.
+   *
+   * The default (absent or `false`) keeps the session path, so a normal in-run
+   * command opens and reuses the session as before.
+   */
+  bypassSession?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -645,6 +736,141 @@ export interface PluginEnvironmentExecuteResult {
   stdout: string;
   stderr: string;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * A single source→target file or directory transfer within a sync operation.
+ *
+ * For `environmentSyncIn`, `sourcePath` is a host path and `targetPath` is a
+ * sandbox path; for `environmentSyncOut` the direction is reversed. All sandbox
+ * paths are POSIX. The contract is provider-agnostic: a provider may transfer a
+ * directory by whatever native mechanism it prefers (bulk upload, internal tar,
+ * per-file enumeration) as long as the observable result matches this mapping.
+ */
+export interface PluginSyncFileMapping {
+  /** Absolute path of the transfer source (host for syncIn, sandbox for syncOut). */
+  sourcePath: string;
+  /** Absolute path of the transfer target (sandbox for syncIn, host for syncOut). */
+  targetPath: string;
+  /** Whether the mapping transfers a single regular file or a directory tree. */
+  kind: "file" | "directory";
+  /**
+   * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
+   * The target MUST carry this mode when the transfer completes.
+   *
+   * For a transfer to a host target, providers MUST apply the mode with no
+   * world-readable window: create the target with the mode, or apply the mode
+   * before the bytes arrive at the target path. A host file sits outside the
+   * sandbox boundary, so an open window shows the bytes to other host
+   * processes.
+   *
+   * For a transfer to a sandbox target, providers MAY apply the mode after
+   * they write the bytes. The sandbox is the trust boundary, so a short window
+   * shows the bytes only to code that already runs in that sandbox.
+   */
+  mode?: number;
+  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  exclude?: string[];
+  /**
+   * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
+   * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
+   */
+  followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` means the author
+   * expects the agent to change the bytes at the target and keep the change.
+   * `"ro"` means the target is a read-only tree. An absent value defaults to
+   * `"ro"` (read-only is the safe default for an advisory signal).
+   *
+   * This field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security. A provider may read it to
+   * bind the read-write targets read-write under the wrapper, but the ephemeral
+   * sandbox stays the only security boundary.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A
+   * workspace, git-history, or asset mapping uploads a tar archive, so its
+   * `targetPath` is the staging archive under the runtime root, not the directory
+   * that the extract command fills. This field names that final destination
+   * directory, so a consumer records the real read-write destination, not the
+   * staging parent. When absent, the read-write destination is the parent
+   * directory of `targetPath`. This field is advisory and ignored when `access`
+   * is not `"rw"`.
+   */
+  writablePath?: string;
+}
+
+/**
+ * A single control command run against the sandbox after a sync operation's
+ * files have landed. Ordered within {@link PluginSyncOperation.postUploadCommands}
+ * and executed in array order, fail-fast (the first non-zero exit or timeout
+ * aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string, and any path embedded in it MUST be built by
+ * adapter/core helpers from already-confined paths and shell-quoted (C3). A
+ * provider MUST treat the command as **opaque**: it may execute or reject it, but
+ * MUST NOT rewrite, concatenate, or append provider-decided shell fragments to
+ * it.
+ */
+export interface PluginPostUploadCommand {
+  /**
+   * The opaque, adapter-authored shell command to run after upload. Executed
+   * verbatim by the provider (never rewritten/concatenated). See the security
+   * note above.
+   */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (condition
+   * C2); providers re-validate it before exec. When absent, the provider
+   * defaults to the resolved sync remote/runtime root — never a process default
+   * cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
+}
+
+/**
+ * An ordered, opaque unit of work handed to a sync hook. The `operationId` is an
+ * opaque, non-sensitive token authored by the orchestrator; a provider MUST NOT
+ * interpret it. Operations are applied in array order.
+ */
+export interface PluginSyncOperation {
+  operationId: string;
+  files: PluginSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link PluginPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: PluginPostUploadCommand[];
+}
+
+export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  operations: PluginSyncOperation[];
+}
+
+export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  operations: PluginSyncOperation[];
+}
+
+/** Per-operation transfer accounting returned by a sync hook, for observability. */
+export interface PluginEnvironmentSyncResult {
+  operations: {
+    operationId: string;
+    filesTransferred: number;
+    bytesTransferred: number;
+  }[];
 }
 
 export type PluginEnvironmentInteractiveSetupStatus =
@@ -785,6 +1011,312 @@ export interface PluginRenderCloseEvent {
   nativeEvent?: unknown;
 }
 
+// ---------------------------------------------------------------------------
+// Login pseudo-terminal (PTY) worker methods.
+// ---------------------------------------------------------------------------
+// The host drives one live Claude `setup-token` login pseudo-terminal inside a
+// sandbox provider worker. The host owns the route. It mints an opaque host
+// route identifier, carries that identifier in the open request, and keys the
+// close on that identifier. The worker registers the terminal under the host
+// route identifier and returns a worker session identifier for the output
+// notification binding only. The worker never keys a close on the worker
+// session identifier, so the host closes a worker-created terminal even when the
+// open reply was lost and no worker session identifier arrived. The worker sends
+// output and exit as notifications, never as a reply, so the host binds them by
+// the worker session identifier while the route is open.
+
+/**
+ * The closed set of login command identities. The host resolves the key from the
+ * trusted adapter type and carries it in the open request. The worker maps the
+ * key to a compile-time command. The open request carries no command string, so a
+ * caller cannot select or override the command.
+ */
+export type PluginLoginCommandKey = "claude" | "codex" | "grok";
+
+/** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
+export interface PluginLoginPtyOpenParams {
+  /** The host-owned opaque route identifier. The worker registers the terminal by it. */
+  hostRouteId: string;
+  /** The environment driver key, for the worker sandbox scope. It routes the worker; it confers no command authority. */
+  driverKey: string;
+  /** The company that owns the login session. */
+  companyId: string;
+  /** The environment the login session runs in. */
+  environmentId: string;
+  /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
+  providerLeaseId: string;
+  /**
+   * The host-resolved fixed command identity. The worker maps it to a
+   * compile-time command. The open request carries no command string.
+   */
+  loginCommandKey: PluginLoginCommandKey;
+  /**
+   * The server-controlled, validated session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`. The worker revalidates the shape
+   * before it touches the filesystem.
+   */
+  sessionHome: string;
+}
+
+/** The open reply. It returns the worker session identifier for output binding only. */
+export interface PluginLoginPtyOpenResult {
+  /** The worker session identifier. It binds the output and the exit notification only. */
+  workerSessionId: string;
+}
+
+/** The input request. It carries the worker session identifier and the raw input bytes. */
+export interface PluginLoginPtyInputParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw input bytes to write to the terminal. */
+  data: string;
+}
+
+/** The stop request. It carries the worker session identifier. */
+export interface PluginLoginPtyStopParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+}
+
+/** The close request. The host route identifier is the authoritative key. */
+export interface PluginLoginPtyCloseParams {
+  /**
+   * The host-owned opaque route identifier. This is the authoritative close key,
+   * so the host closes the terminal even when no worker session identifier
+   * arrived after a lost open reply.
+   */
+  hostRouteId: string;
+  /**
+   * A non-authoritative worker session identifier. The worker never keys the
+   * close on it. The field is optional, so a close with only the host route
+   * identifier is a valid request for this lifecycle.
+   */
+  workerSessionId?: string;
+}
+
+/** The close reply. It acknowledges the close and carries the same host route identifier. */
+export interface PluginLoginPtyCloseResult {
+  /** The close acknowledgement. It carries the same host route identifier the close sent. */
+  hostRouteId: string;
+}
+
+/** The worker→host pseudo-terminal output notification parameters. Modeled on `execute.log`. */
+export interface PluginLoginPtyOutputParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and route each chunk to its own route.
+   */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw terminal output bytes. */
+  chunk: string;
+}
+
+/** The worker→host pseudo-terminal exit notification parameters. */
+export interface PluginLoginPtyExitParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and resolve the exit against its own route.
+   */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The child exit code, or null when the child ended with no code. */
+  exitCode: number | null;
+}
+
+/**
+ * One live login pseudo-terminal session in the worker. The worker opener returns
+ * it. The shape matches the sandbox provider login pseudo-terminal session,
+ * so a provider passes its session with no adapter.
+ */
+export interface PluginLoginPtyWorkerSession {
+  /** Registers the one output listener. The session streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Writes raw input bytes to the pseudo-terminal. */
+  write(data: string): void;
+  /** Resolves with the child exit code when the command ends. */
+  wait(): Promise<{ exitCode: number | null }>;
+  /** Stops the child process. Safe to call more than one time. */
+  kill(): void;
+  /** Releases the session resources. Safe to call more than one time. */
+  close(): Promise<void>;
+}
+
+/** The worker→host notification method for one pseudo-terminal output chunk. */
+export const LOGIN_PTY_OUTPUT_NOTIFICATION = "loginPty.output";
+/** The worker→host notification method for one pseudo-terminal exit. */
+export const LOGIN_PTY_EXIT_NOTIFICATION = "loginPty.exit";
+
+// ---------------------------------------------------------------------------
+// Byte-safe duplex channel wire representation.
+// ---------------------------------------------------------------------------
+// A JSON-RPC message travels as one line of JSON text (see `serializeMessage`
+// below). JSON has no binary type, so a raw byte chunk cannot cross this hop
+// unchanged. `ChannelBytesWireValue` is the one JSON-safe encoding this
+// protocol uses for a duplex channel chunk: a base64 string.
+//
+// Every layer above this hop carries the chunk as `Uint8Array`. This includes
+// the plugin context, the worker RPC host's public duplex methods, and the
+// host-side plugin worker manager. Only the JSON-RPC message itself holds the
+// base64 form, and only for the one hop between the host process and the
+// worker process.
+//
+// This base64 form is not the sandbox provider channel's wire format. That
+// channel carries raw bytes with no base64 armor: a live measurement of the
+// provider transport proved that every byte value survives it unchanged.
+//
+// HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+
+/** The wire-safe JSON-RPC form of one duplex channel byte chunk: a base64 string. */
+export type ChannelBytesWireValue = string;
+
+/** Encodes raw channel bytes into the wire-safe JSON-RPC representation. */
+export function encodeChannelBytes(bytes: Uint8Array): ChannelBytesWireValue {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+}
+
+/**
+ * Decodes the wire-safe JSON-RPC representation back to raw channel bytes.
+ * Returns `null` for a value that is not a well-formed base64 string, so a
+ * caller on the trust boundary treats a malformed frame as a protocol error
+ * instead of silently substituting the empty byte array.
+ */
+export function decodeChannelBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  // `Buffer.from(str, "base64")` silently drops an invalid character instead
+  // of throwing, so re-encode the decoded bytes and compare. A well-formed
+  // base64 string round-trips to itself; a malformed one does not.
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
+
+// ---------------------------------------------------------------------------
+// Generic duplex channel worker methods.
+// ---------------------------------------------------------------------------
+// The host drives one persistent duplex channel inside a sandbox provider
+// worker. The channel replaces the file transport of the sandbox callback bridge
+// with one live bidirectional stream. These messages are generic. They model the
+// login pseudo-terminal contract above, but they carry no login command
+// allowlist. The host owns the route. It mints an opaque host route identifier,
+// carries that identifier in the open request, and keys the close on that
+// identifier. The worker registers the channel under the host route identifier
+// and returns a worker session identifier for the data and the exit notification
+// binding only. The worker never keys a close on the worker session identifier,
+// so the host closes a worker-created channel even when the open reply was lost
+// and no worker session identifier arrived. The worker sends data and exit as
+// notifications, never as a reply, so the host binds them by the worker session
+// identifier while the route is open.
+
+/** The open request for one persistent duplex channel. The worker registers the channel by `hostRouteId`. */
+export interface PluginDuplexChannelOpenParams {
+  /** The host-owned opaque route identifier. The worker registers the channel by it. */
+  hostRouteId: string;
+  /** The environment driver key, for the worker sandbox scope. */
+  driverKey: string;
+  /** The company that owns the channel. */
+  companyId: string;
+  /** The environment the channel runs in. */
+  environmentId: string;
+  /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
+  providerLeaseId: string;
+  /**
+   * The command argument vector the worker runs on the channel. Element 0 is the
+   * program and the rest are its arguments. The worker quotes each element for the
+   * shell, so a shell metacharacter in an element cannot inject a shell command.
+   */
+  command: readonly string[];
+}
+
+/** The open reply. It echoes the host route identifier and returns the worker session identifier. */
+export interface PluginDuplexChannelOpenResult {
+  /** The host route identifier the open request carried. The worker echoes it, so the host binds the exact pair. */
+  hostRouteId: string;
+  /** The worker session identifier. It binds the data and the exit notification only. */
+  workerSessionId: string;
+}
+
+/** The write request. It carries the exact route pair and the raw input bytes. */
+export interface PluginDuplexChannelWriteParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw input bytes to write to the channel, in the {@link ChannelBytesWireValue} wire form. */
+  data: ChannelBytesWireValue;
+}
+
+/** The stop request. It carries the exact route pair. */
+export interface PluginDuplexChannelStopParams {
+  /** The host route identifier the open request carried. The worker acts only on the exact live pair. */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+}
+
+/** The close request. The host route identifier is the authoritative key. */
+export interface PluginDuplexChannelCloseParams {
+  /**
+   * The host-owned opaque route identifier. This is the authoritative close key,
+   * so the host closes the channel even when no worker session identifier arrived
+   * after a lost open reply.
+   */
+  hostRouteId: string;
+  /**
+   * A non-authoritative worker session identifier. The worker never keys the
+   * close on it. The field is optional, so a close with only the host route
+   * identifier is a valid request for this lifecycle.
+   */
+  workerSessionId?: string;
+}
+
+/** The close reply. It acknowledges the close and echoes the route identifiers. */
+export interface PluginDuplexChannelCloseResult {
+  /** The close acknowledgement. It carries the same host route identifier the close sent. */
+  hostRouteId: string;
+  /**
+   * The bound worker session identifier. The worker echoes it on a bound close,
+   * so the host verifies the exact pair. It is absent on a pre-bind route-only
+   * close, where no session bound yet.
+   */
+  workerSessionId?: string;
+}
+
+/** The worker→host duplex channel data notification parameters. */
+export interface PluginDuplexChannelDataParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw channel output bytes, in the {@link ChannelBytesWireValue} wire form. */
+  chunk: ChannelBytesWireValue;
+}
+
+/** The worker→host duplex channel exit notification parameters. */
+export interface PluginDuplexChannelExitParams {
+  /** The host route identifier the open request carried. The worker echoes it, so the host routes the exact pair. */
+  hostRouteId: string;
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The child exit code, or null when the child ended with no code. */
+  exitCode: number | null;
+  /**
+   * True when the provider transport closed with no exit data, so the exit is a
+   * reason-less transport close, not a process exit. Absent or false marks a real
+   * process exit. The host maps a transport close to a distinct loss reason.
+   */
+  transportClosed?: boolean;
+}
+
+/** The worker→host notification method for one duplex channel data chunk. */
+export const DUPLEX_CHANNEL_DATA_NOTIFICATION = "duplexChannel.data";
+/** The worker→host notification method for one duplex channel exit. */
+export const DUPLEX_CHANNEL_EXIT_NOTIFICATION = "duplexChannel.exit";
+
 /**
  * Map of host→worker RPC method names to their `[params, result]` types.
  *
@@ -799,6 +1331,8 @@ export interface HostToWorkerMethods {
   health: [params: Record<string, never>, result: PluginHealthDiagnostics];
   /** @see PLUGIN_SPEC.md §12.5 */
   shutdown: [params: Record<string, never>, result: void];
+  prepareIdleSleep: [params: { ownerId: string; expiresAt: number }, result: { ownerId: string; expiresAt: number; backgroundWork: "none" | "present" | "unknown" }];
+  releaseIdleSleep: [params: { ownerId: string }, result: void];
   /** @see PLUGIN_SPEC.md §13.3 */
   validateConfig: [params: ValidateConfigParams, result: PluginConfigValidationResult];
   /** @see PLUGIN_SPEC.md §13.4 */
@@ -812,6 +1346,7 @@ export interface HostToWorkerMethods {
   /** Scoped plugin API route dispatch. */
   handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
+  agentLifecycle: [params: AgentLifecycleRequest, result: AgentLifecycleResult];
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
@@ -821,6 +1356,7 @@ export interface HostToWorkerMethods {
     params: DetectExternalObjectsParams,
     result: DetectExternalObjectsResult,
   ];
+  routeAiConnection: [params: AiConnectionRouterRequest, result: AiConnectionRouterResult];
   resolveExternalObject: [
     params: ResolveExternalObjectParams,
     result: PluginExternalObjectResolveResult,
@@ -847,11 +1383,15 @@ export interface HostToWorkerMethods {
   ];
   environmentReleaseLease: [
     params: PluginEnvironmentReleaseLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
+  ];
+  environmentStopLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: PluginEnvironmentTerminationReceipt,
   ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,
@@ -860,6 +1400,18 @@ export interface HostToWorkerMethods {
   environmentExecute: [
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
+  ];
+  environmentRunnerIngressEndpoint: [
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+    result: PluginEnvironmentRunnerIngressEndpoint,
+  ];
+  environmentSyncIn: [
+    params: PluginEnvironmentSyncInParams,
+    result: PluginEnvironmentSyncResult,
+  ];
+  environmentSyncOut: [
+    params: PluginEnvironmentSyncOutParams,
+    result: PluginEnvironmentSyncResult,
   ];
   environmentStartInteractiveSetup: [
     params: PluginEnvironmentStartInteractiveSetupParams,
@@ -881,6 +1433,34 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentDeleteTemplateParams,
     result: PluginEnvironmentDeleteTemplateResult,
   ];
+  /** Open one live login pseudo-terminal keyed by a host-owned route identifier. */
+  loginPtyOpen: [
+    params: PluginLoginPtyOpenParams,
+    result: PluginLoginPtyOpenResult,
+  ];
+  /** Write delayed input to a live login pseudo-terminal, keyed by the worker session identifier. */
+  loginPtyInput: [params: PluginLoginPtyInputParams, result: void];
+  /** Stop a live login pseudo-terminal child, keyed by the worker session identifier. */
+  loginPtyStop: [params: PluginLoginPtyStopParams, result: void];
+  /** Close a live login pseudo-terminal by the host route identifier and return a bound acknowledgement. */
+  loginPtyClose: [
+    params: PluginLoginPtyCloseParams,
+    result: PluginLoginPtyCloseResult,
+  ];
+  /** Open one persistent duplex channel keyed by a host-owned route identifier. */
+  duplexChannelOpen: [
+    params: PluginDuplexChannelOpenParams,
+    result: PluginDuplexChannelOpenResult,
+  ];
+  /** Write raw input to a persistent duplex channel, keyed by the worker session identifier. */
+  duplexChannelWrite: [params: PluginDuplexChannelWriteParams, result: void];
+  /** Stop a persistent duplex channel child, keyed by the worker session identifier. */
+  duplexChannelStop: [params: PluginDuplexChannelStopParams, result: void];
+  /** Close a persistent duplex channel by the host route identifier and return a bound acknowledgement. */
+  duplexChannelClose: [
+    params: PluginDuplexChannelCloseParams,
+    result: PluginDuplexChannelCloseResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -895,16 +1475,20 @@ export const HOST_TO_WORKER_REQUIRED_METHODS: readonly HostToWorkerMethodName[] 
 
 /** Optional methods the worker MAY implement. */
 export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] = [
+  "prepareIdleSleep",
+  "releaseIdleSleep",
   "validateConfig",
   "configChanged",
   "onEvent",
   "runJob",
   "handleWebhook",
   "handleApiRequest",
+  "agentLifecycle",
   "getData",
   "performAction",
   "executeTool",
   "detectExternalObjects",
+  "routeAiConnection",
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
@@ -912,14 +1496,26 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
+  "environmentStopLease",
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentRunnerIngressEndpoint",
+  "environmentSyncIn",
+  "environmentSyncOut",
   "environmentStartInteractiveSetup",
   "environmentGetInteractiveSetup",
   "environmentCaptureTemplate",
   "environmentCancelInteractiveSetup",
   "environmentDeleteTemplate",
+  "loginPtyOpen",
+  "loginPtyInput",
+  "loginPtyStop",
+  "loginPtyClose",
+  "duplexChannelOpen",
+  "duplexChannelWrite",
+  "duplexChannelStop",
+  "duplexChannelClose",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -934,7 +1530,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  */
 export interface WorkerToHostMethods {
   // Config
-  "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+  "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
 
   // Trusted local folders
   "localFolders.declarations": [
@@ -1054,6 +1650,8 @@ export interface WorkerToHostMethods {
   ];
 
   // Events
+  "events.listLifecycle": [params: { companyId: string; limit?: number; afterId?: string }, result: ResourceLifecycleEvent[]];
+  "events.acknowledgeLifecycle": [params: { companyId: string; eventId: string }, result: void];
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },
     result: void,
@@ -1071,7 +1669,7 @@ export interface WorkerToHostMethods {
 
   // Secrets
   "secrets.resolve": [
-    params: { secretRef: string },
+    params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
     result: string,
   ];
 
@@ -1113,6 +1711,34 @@ export interface WorkerToHostMethods {
       meta?: Record<string, unknown>;
       /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
       companyId?: string | null;
+    },
+    result: void,
+  ];
+
+  // Provider span sink. The worker sends a finished provider span; the host
+  // re-clamps the label and the attributes at its trust boundary, mints the
+  // parentage from its own invocation record, and records the span through the
+  // real tracer. The worker never sends the parent `traceparent`; the host
+  // recovers it from the echoed invocation id. The RPC is capability-gated.
+  "span.record": [
+    params: {
+      /** The bounded span name (for example `pack` or `transfer`). The host
+       * clamps it to a closed set, so a name never carries free-form data. */
+      name: string;
+      /** The span attributes. The host drops every key that is not on the closed
+       * plugin-span allowlist and re-clamps each remaining value. */
+      attributes?: Record<string, string | number | boolean>;
+      /** The optional span status. */
+      status?: { code: number; message?: string };
+      /** The optional span start time as epoch milliseconds (`Date.now()`).
+       * The worker captures it when it opens the span. The host validates the
+       * pair and records the span with its true native width. An omitted value
+       * makes the host fall back to a synchronous open-and-end. */
+      startTimeMs?: number;
+      /** The optional span end time as epoch milliseconds (`Date.now()`). The
+       * worker captures it when it ends the span. The host uses it as the span
+       * end time when the pair passes the clock-safety check. */
+      endTimeMs?: number;
     },
     result: void,
   ];
@@ -1376,17 +2002,52 @@ export interface WorkerToHostMethods {
     result: IssueComment[],
   ];
   "issues.createComment": [
-    params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
+    params: {
+      issueId: string;
+      body: string;
+      companyId: string;
+      authorAgentId?: string;
+      /** Active human company member the comment is attributed to. Requires `issue.comments.create_human_attributed`. */
+      actorUserId?: string;
+    },
     result: IssueComment,
   ];
   "issues.createInteraction": [
     params: {
       issueId: string;
       companyId: string;
-      interaction: CreateIssueThreadInteraction;
+      interaction: CreateIssueThreadInteractionInput;
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,
+  ];
+  "issues.listInteractions": [
+    params: { issueId: string; companyId: string },
+    result: IssueThreadInteraction[],
+  ];
+  "issues.respondInteraction": [
+    params: {
+      issueId: string;
+      interactionId: string;
+      companyId: string;
+      action: "accept" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * resolving an interaction is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      reason?: string | null;
+    },
+    result: { interaction: IssueThreadInteraction; applied: boolean },
+  ];
+  "issues.listAttachments": [
+    params: { issueId: string; companyId: string },
+    result: IssueAttachment[],
+  ];
+  "issues.getAttachmentContent": [
+    params: { attachmentId: string; companyId: string; maxBytes?: number | null },
+    result: PluginIssueAttachmentContent | null,
   ];
 
   // Issue Documents
@@ -1413,6 +2074,31 @@ export interface WorkerToHostMethods {
   "issues.documents.delete": [
     params: { issueId: string; key: string; companyId: string },
     result: void,
+  ];
+
+  // Approvals
+  "approvals.list": [
+    params: { companyId: string; status?: string | null },
+    result: Approval[],
+  ];
+  "approvals.get": [
+    params: { approvalId: string; companyId: string },
+    result: Approval | null,
+  ];
+  "approvals.decide": [
+    params: {
+      approvalId: string;
+      companyId: string;
+      action: "approve" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * deciding an approval is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      decisionNote?: string | null;
+    },
+    result: { approval: Approval; applied: boolean },
   ];
 
   // Agents (read)
@@ -1653,6 +2339,29 @@ export interface WorkerToHostNotifications {
   "streams.close": {
     channel: string;
     companyId: string;
+  };
+
+  /**
+   * Deliver one incremental output chunk of the active `environmentExecute`
+   * call to the host runner log sink.
+   *
+   * The worker emits this notification for each new `stdout` or `stderr` chunk
+   * while one execute call runs. The host reads the active invocation id from
+   * the envelope field `paperclipInvocationId`, which the worker RPC host stamps
+   * from the active invocation context. The host correlates the chunk to the
+   * host-owned execute route for that id and delivers it to that route's
+   * `onLog` callback.
+   *
+   * Security: the notification carries no company id on purpose. The
+   * invocation-to-company binding on the host execute route is authoritative.
+   * The host never reads a company id from this payload to select the route or
+   * to grant access. The `chunk` is a text string, because JSON-RPC cannot
+   * carry raw bytes; the host drops a chunk that is not a bounded non-empty
+   * string or whose stream name is not exactly `stdout` or `stderr`.
+   */
+  "execute.log": {
+    stream: "stdout" | "stderr";
+    chunk: string;
   };
 }
 

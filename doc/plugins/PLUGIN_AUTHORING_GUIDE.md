@@ -25,6 +25,138 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
   building custom versions.
 - `ctx.assets` is not supported in the current runtime.
 
+## Idle sleep
+
+An enabled worker blocks automatic idle sleep unless it implements
+`onIdleDrain(signal): Promise<"none" | "present" | "unknown">`. This is a live
+runtime handshake, not a manifest or version exemption. Older SDKs remain
+blockers. Manual shutdown keeps its existing behavior.
+
+The host checks the exact owned, expiring task-drain hold. It closes new worker
+admission and checks outstanding RPCs in both directions and live terminal
+routes. The SDK also counts accepted handlers and notifications until they
+actually finish. Caller timeouts do not count as completion. An unconfirmed
+write, missing worker, crash, invalid reply, or expired hold prevents sleep.
+
+The hook must return `none` only when plugin-owned timers, sockets, detached
+operations, and cleanup are settled and cannot start work until `signal`
+aborts. Do not cancel useful work to make a worker idle. Return `present` while
+work remains and `unknown` when completion cannot be proved. The SDK closes
+ordinary RPC admission while the hook runs and until the matching hold releases
+or expires. Release aborts the signal; expiry does so without another request.
+Hooks that suspend autonomous work must arrange its safe resumption on abort.
+
+The handshake does not exempt database work. Enabled jobs, deliveries,
+schedules, external ingress, and other persisted work still block sleep until
+they have their own safe wake contract. An installed plugin without a matching
+live worker receipt also blocks sleep.
+
+Daytona currently opts in only before its worker has contacted the provider.
+After provider access it remains a blocker for that process lifetime, even if
+the visible operation finishes. Its timeout and terminal cleanup paths need
+stronger completion receipts before that restriction can be relaxed. Restarting
+does not bypass the separate persisted lease and recovery checks.
+
+## Required agent lifecycle work
+
+Use `onAgentLifecycle` for resources that must be ready before an agent works or
+removed before termination completes. Declare both `agentLifecycle: true` and
+`agents.lifecycle.manage` in the manifest. The host calls the plugin after the
+lifecycle command commits. The lifecycle module owns admission, progress, and
+retries; a plugin does not need a readiness data handler or a polling job.
+
+```ts
+import { definePlugin } from "@paperclipai/plugin-sdk";
+import { reconcileResources } from "./resources.js";
+
+export default definePlugin({
+  async setup() {},
+  async onAgentLifecycle(request) {
+    // Provider code must persist revision fences and tolerate repeated calls.
+    const complete = await reconcileResources(request);
+    return {
+      operationId: request.operationId,
+      version: request.version,
+      status: complete ? "complete" : "pending",
+    };
+  },
+});
+```
+
+`reconcileResources` above is plugin-owned provider code, not an SDK function.
+Use `companyId` and `agentId` from the request to scope resources.
+Request `agents.read` separately if the handler needs `ctx.agents.get`.
+Lifecycle authority does not grant agent configuration writes or secret access.
+
+| Phase | Resource action |
+| --- | --- |
+| `preparing` | Create or reconcile the agent's resources and wait for readiness. |
+| `verifying` | Complete any remaining checks after the host tests the saved harness. |
+| `pausing` | Stop resources after the host confirms execution has stopped. |
+| `resuming` | Start resources and wait for readiness. |
+| `terminating` | Stop resources after the host revokes keys and confirms execution has stopped. |
+| `cleaning_up` | Remove owned resources and wait until removal completes. |
+
+Return `pending` while an external operation continues. Return `complete` only
+when its effect is confirmed; accepting a deletion request is not completion.
+Throw on failure. The host records a fixed error without provider error text.
+The agent page shows the phase and offers Retry for failed work.
+
+Calls can repeat, including after a timeout or restart. Retain the highest
+version per company and agent, reject older requests, and serialize external
+effects or clean up late results. The host's revision fence protects its state;
+it cannot cancel a provider request that has already left the process.
+
+The host saves required plugin IDs at first selection. Company-disabled plugins
+are excluded then. Disabling or removing a selected plugin blocks progress;
+restore it to complete the step. Later installations do not backfill existing
+agents. The durable event inbox below is separate: acknowledging an event does
+not complete required lifecycle work. See [Agent lifecycle](../AGENT-LIFECYCLE.md)
+for phase ordering, recovery, and existing-installation limits.
+
+## Durable resource lifecycle inbox
+
+Plugins with `events.subscribe` can read durable, company-scoped resource hooks
+through `ctx.events.listLifecycle(companyId, limit?, afterId?)` and acknowledge successful
+work with `ctx.events.acknowledgeLifecycle(companyId, eventId)`. Use an existing
+plugin job to poll each configured company; the host checks invocation scope and whether
+the plugin is ready and enabled for that company. These methods are separate
+from the fire-and-forget `ctx.events.on()` bus.
+Proactive jobs and timers may read only companies authorized by the plugin's
+company configuration. Calls inside a host-issued invocation must match its company.
+
+An event has `id`, `companyId`, `resourceType`, `resourceId`, `action`, and
+`createdAt`. Agent actions are `create`, `pause`, `resume`, and `terminate`;
+project actions are `create`, `update`, and `archive`. Pending hires produce creation
+after approval. Project updates include repository/workspace mutations and restoring
+an archived project. Provider cleanup and retention policy belong to the plugin.
+
+Reads return at most one pending event per resource (default 50, maximum 100).
+Creation is delivered before other events for that resource, even when its
+backfilled ID is newer. Remaining events follow ID order. After acknowledging
+an event, a later read exposes its successor. A failed
+resource remains pending without blocking other resources; process the rest of
+the batch independently. Progress is stored per plugin, survives worker restarts,
+and is not a global sequence cursor. The delivery migration seeds existing hired
+agents and all projects once, including archived projects. Pending hires require
+approval; paused and terminated agents retain their current status intents.
+This baseline represents current desired state, not reconstructed history.
+The baseline includes archive for existing archived projects and update for restored projects whose
+journal still ends at archive. Archiving does not authorize provider cleanup.
+After that migration, capture stays forward-only; no later journal backfill runs.
+
+Delivery is at least once: concurrent reads or a crash after a provider operation
+can repeat an event. Serialize polling and use stable company/event idempotency
+keys, then acknowledge only after successful completion. Load current authorized
+agent/project/workspace data before acting; the journal contains no configuration
+snapshots, repository credentials, or deletion authority. For offline plugin tests,
+seed `lifecycleEvents` with `createTestHarness().seed()`.
+
+Lifecycle polls can page past failed resources using the last returned event id as
+`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
+cursor, never a persisted high-water mark. This retries failures and includes
+transactions that commit later with lower ids.
+
 ## External object reference providers
 
 Plugins can contribute provider-neutral object reference detection and status
@@ -83,6 +215,17 @@ pnpm build
 ```
 
 ## Supported alpha surface
+
+### CreateOS sandbox provider
+
+The in-repo [`@paperclipai/plugin-createos`](../../packages/plugins/sandbox-providers/createos/README.md)
+package implements environment lifecycle hooks and incremental managed-process
+output and binary workspace transfers using CreateOS's public HTTP API. It does
+not advertise interactive login or template capture. Install
+the built package by local path; its optional managed-image catalog key is
+`createos`. The package README describes configuration and the opt-in live smoke.
+
+### Worker APIs
 
 Worker:
 
@@ -357,6 +500,8 @@ Mount surfaces currently wired in the host include:
 - `taskDetailView`
 - `projectSidebarItem`
 - `globalToolbarButton`
+- `appShellOverlay` (persistent, signed-in application shell)
+- `organizationSwitcher` (one React contribution replacing the organization menu)
 - `toolbarButton`
 - `contextMenuItem`
 - `commentAnnotation`
@@ -602,3 +747,24 @@ pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+For image-supplied plugins and the persistent shell lifecycle, see
+[Distribution plugins](DISTRIBUTION-PLUGINS.md).
+
+### Organization switcher
+
+Declare one `organizationSwitcher` slot with `ui.sidebar.register`. The host
+passes `PluginOrganizationSwitcherProps`: current company display data, collapsed
+and open state, navigation/logout callbacks, and an icon renderer. Use the host
+logout callback; authenticate remote account requests at their owning service.
+`currentCompany` describes the host-local company. A distribution plugin must
+resolve its external account/organization label itself; the host does not fetch
+that portfolio on the plugin's behalf.
+The slot props and `useHostContext()` are display context, not proof of identity.
+The host reserves the trigger with a neutral placeholder while account, company,
+and plugin discovery load. Plugins should reserve the same space while their
+external label loads and retain resolved labels during same-account refreshes.
+The host resets plugin state on account/company changes and keeps its built-in
+menu when no unique contribution exists, discovery fails, the module is missing,
+or rendering throws. The slot is a React-only contract; do not use a custom
+element export. This replaces only the menu, not company policy or authorization.

@@ -1,0 +1,124 @@
+{
+  "schema": "paperclip.copilot-live-denial-proof/v1",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "qualificationStatus": "pending",
+  "scenario": "deny-write",
+  "probeSourceRevision": "47eed960b380e8c8054eb19985aaefeabc6336c3",
+  "providerSourceRevision": "8aa867b64d5fc2fd62cff110bd000addf5dc54de",
+  "providerPackDigest": "sha256:627992ea80e8be7154d07cbc9925b781519199e25690b02d4a044f44342e6bd8",
+  "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+  "privateEvidenceSha256": "sha256:f5cd355cbed796e3ed1564f6201e55e9e90e0419197912a6bb89948c4d0eb340",
+  "promptRequestsSent": 1,
+  "upstreamModelRequestCount": null,
+  "activeTurnDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 180,
+  "automaticRetries": 0,
+  "reservationUsd": 2,
+  "stopReason": "end_turn",
+  "terminalElapsedMs": 7187,
+  "permissions": [
+    {
+      "elapsedMs": 7177,
+      "requestId": 0,
+      "offeredOptions": [
+        {
+          "optionId": "allow_once",
+          "kind": "allow_once",
+          "name": "Allow once"
+        },
+        {
+          "optionId": "allow_always",
+          "kind": "allow_always",
+          "name": "Always allow"
+        },
+        {
+          "optionId": "reject_once",
+          "kind": "reject_once",
+          "name": "Deny"
+        }
+      ],
+      "outcome": {
+        "outcome": "selected",
+        "optionId": "reject_once"
+      },
+      "kind": "reject_once",
+      "exactSession": true,
+      "exactCommand": false,
+      "writeAttempt": true
+    }
+  ],
+  "nativeToolCall": {
+    "title": "Create file",
+    "kind": "edit",
+    "rawInput": {
+      "fileName": "/fixture/workspace/qualification-marker.txt",
+      "diff": "\ndiff --git a/fixture/workspace/qualification-marker.txt b/fixture/workspace/qualification-marker.txt\ncreate file mode 100644\nindex 0000000..0000000\n--- a/dev/null\n+++ b/fixture/workspace/qualification-marker.txt\n@@ -1,0 +1,2 @@\n+MUST_NOT_EXIST\n+\n\n"
+    },
+    "locations": [
+      {
+        "path": "/fixture/workspace/qualification-marker.txt"
+      }
+    ]
+  },
+  "markerOracle": {
+    "sampleCount": 79,
+    "anySampleExisted": false,
+    "terminal": {
+      "elapsedMs": 7187,
+      "phase": "terminal",
+      "exists": false,
+      "matches": false
+    },
+    "afterCleanup": {
+      "elapsedMs": 12837,
+      "phase": "after_process_cleanup",
+      "exists": false,
+      "matches": false
+    }
+  },
+  "providerExit": {
+    "code": 0,
+    "signal": null
+  },
+  "cleanupComplete": true,
+  "result": {
+    "passed": true,
+    "failures": []
+  },
+  "nativeUsage": {
+    "inputTokens": 10989,
+    "outputTokens": 65,
+    "totalTokens": 11054,
+    "thoughtTokens": 30,
+    "cachedReadTokens": 0,
+    "cachedWriteTokens": 10986
+  },
+  "providerReportedCostUsd": null,
+  "externalBilling": {
+    "baselineDisplayedIncludedAiCreditsUsed": 3,
+    "displayedIncludedAiCreditsTotal": 1500,
+    "postProbeReconciliation": "parent refreshed GitHub dashboard",
+    "exactCreditConsumption": null,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "postProbeDisplayedIncludedAiCreditsUsed": 3,
+    "additionalCashChargesUsd": 0,
+    "note": "Unchanged display can reflect granularity or delay; it is not a zero-credit per-run receipt."
+  },
+  "scope": "One real GitHub inference request through the verified native ACP command lease. This proves this denied file edit only, not every tool or full Product/Daytona qualification.",
+  "offlineExactTargetRevalidation": {
+    "originalPrivateEvidenceSha256": "sha256:f5cd355cbed796e3ed1564f6201e55e9e90e0419197912a6bb89948c4d0eb340",
+    "oracleScriptSha256": "sha256:0dc70ffd88abf502a68f8b4974b799d105c928bf250be615532e71cd919a765f",
+    "method": "Offline replay of retained permission rawInput.fileName and original marker observations through tightened exact-target oracle",
+    "requestIds": [
+      0
+    ],
+    "allDeniedWriteTargetsMatchMarker": true,
+    "result": {
+      "passed": true,
+      "failures": []
+    },
+    "newProviderPrompts": 0
+  }
+}

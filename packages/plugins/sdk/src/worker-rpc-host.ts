@@ -1,3 +1,8 @@
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
+import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
+import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -88,6 +93,9 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
@@ -98,11 +106,23 @@ import type {
   PluginEnvironmentCaptureTemplateParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentDeleteTemplateParams,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginDuplexChannelOpenParams,
+  PluginDuplexChannelWriteParams,
+  PluginDuplexChannelStopParams,
+  PluginDuplexChannelCloseParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
 import {
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
@@ -119,6 +139,7 @@ import {
   isJsonRpcErrorResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  encodeChannelBytes,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +218,32 @@ function realpathOrResolvedPath(filePath: string): string {
   } catch {
     return resolvedPath;
   }
+}
+
+/**
+ * Order-independent structural equality for two plugin config objects.
+ *
+ * Config arrives as parsed JSON, so plain `JSON.stringify` comparison is
+ * sensitive to key ordering across independent saves. Canonicalizing with
+ * recursively sorted object keys makes an idempotent replay of the same config
+ * compare equal regardless of serialization order.
+ */
+function configsEqual(a: unknown, b: unknown): boolean {
+  return canonicalize(a) === canonicalize(b);
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, v]) => `${JSON.stringify(key)}:${canonicalize(v)}`);
+  return `{${entries.join(",")}}`;
 }
 
 export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
@@ -290,8 +337,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   let running = true;
   let initialized = false;
+  const idleDrain = createPluginIdleDrain();
+  const unsettledHostCalls = new Map<string | number, () => void>();
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
+  // The company whose config was last applied via configChanged. Used to fail
+  // closed when a single-tenant plugin would be collapsed onto a second,
+  // distinct company's config. `null` until the first company-scoped delivery.
+  let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
 
@@ -348,6 +401,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         nextOutboundId = 1;
       }
       const id = nextOutboundId++;
+      // Keep the token after an RPC timeout. Only an actual host response
+      // proves that a host-side write has finished.
+      unsettledHostCalls.set(id, idleDrain.begin());
       const timeout = timeoutMs ?? rpcTimeoutMs;
       let settled = false;
 
@@ -390,6 +446,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
         sendMessage(request);
       } catch (err) {
+        unsettledHostCalls.get(id)?.();
+        unsettledHostCalls.delete(id);
         settle(reject, err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -422,8 +480,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       config: {
-        async get() {
-          return callHost("config.get", {} as Record<string, never>);
+        async get(companyId?: string) {
+          return callHost("config.get", companyId ? { companyId } : {});
         },
       },
 
@@ -477,6 +535,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       events: {
+        async listLifecycle(companyId: string, limit?: number, afterId?: string) {
+          return callHost("events.listLifecycle", { companyId, limit, afterId });
+        },
+        async acknowledgeLifecycle(companyId: string, eventId: string) {
+          await callHost("events.acknowledgeLifecycle", { companyId, eventId });
+        },
         on(
           name: string,
           filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>),
@@ -573,8 +637,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       secrets: {
-        async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+        async resolve(secretRef, options = {}): Promise<string> {
+          return callHost("secrets.resolve", {
+            secretRef,
+            companyId: options.companyId,
+            configPath: options.configPath,
+          });
         },
       },
 
@@ -858,8 +926,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
-          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
+        async createComment(
+          issueId: string,
+          body: string,
+          companyId: string,
+          options?: { authorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.createComment", {
+            issueId,
+            body,
+            companyId,
+            authorAgentId: options?.authorAgentId,
+            actorUserId: options?.actorUserId,
+          });
         },
 
         async createInteraction(issueId: string, interaction, companyId: string, options?: { authorAgentId?: string }) {
@@ -939,6 +1018,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           }) as Promise<RequestCheckboxConfirmationInteraction>;
         },
 
+        async listInteractions(issueId: string, companyId: string) {
+          return callHost("issues.listInteractions", { issueId, companyId });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          companyId: string,
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            interactionId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+          });
+        },
+
+        async listAttachments(issueId: string, companyId: string) {
+          return callHost("issues.listAttachments", { issueId, companyId });
+        },
+
+        async getAttachmentContent(
+          attachmentId: string,
+          companyId: string,
+          options?: { maxBytes?: number | null },
+        ) {
+          return callHost("issues.getAttachmentContent", {
+            attachmentId,
+            companyId,
+            maxBytes: options?.maxBytes ?? null,
+          });
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1008,6 +1123,33 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async getOrchestration(input) {
             return callHost("issues.summaries.getOrchestration", input);
           },
+        },
+      },
+
+      approvals: {
+        async list(input: { companyId: string; status?: string | null }) {
+          return callHost("approvals.list", {
+            companyId: input.companyId,
+            status: input.status,
+          });
+        },
+
+        async get(approvalId: string, companyId: string) {
+          return callHost("approvals.get", { approvalId, companyId });
+        },
+
+        async decide(
+          approvalId: string,
+          input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+          companyId: string,
+        ) {
+          return callHost("approvals.decide", {
+            approvalId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            decisionNote: input.decisionNote,
+          });
         },
       },
 
@@ -1243,6 +1385,90 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
       })(),
 
+      execution: {
+        log(stream: "stdout" | "stderr", chunk: string): void {
+          // Emit one incremental output chunk of the active execute call.
+          // `notifyHost` stamps the active invocation id from the invocation
+          // context, so the host correlates the chunk to the host-owned execute
+          // route for that call. The notification carries no company id; the
+          // host binds the company from its own execute route. A chunk sent with
+          // no active invocation carries no id and the host drops it.
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost("execute.log", { stream, chunk });
+        },
+      },
+
+      loginPty: {
+        output(hostRouteId: string, workerSessionId: string, chunk: string): void {
+          // Forward one raw output chunk of a live login pseudo-terminal. The
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host can hold more than one concurrent login
+          // pseudo-terminal per worker and binds the chunk to its own route
+          // while that route is open. The host drops an unknown, a stale, or a
+          // mismatched identifier and never logs the raw bytes. This
+          // notification carries no invocation id, because it fires after the
+          // open reply returns.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
+        },
+        exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a live login pseudo-terminal. The host
+          // resolves its own route's wait promise by the host route identifier
+          // and the bound worker session identifier while that route is open.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(LOGIN_PTY_EXIT_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
+      duplexChannel: {
+        data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void {
+          // Forward one raw data chunk of a persistent duplex channel. The
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host routes the chunk to the exact live pair while
+          // the route is open. The host drops an unknown or a mismatched pair and
+          // never logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          //
+          // JSON-RPC travels as JSON text, which carries no binary type, so this
+          // is the one point where the chunk crosses from `Uint8Array` to the
+          // wire-safe base64 form. See `ChannelBytesWireValue` in protocol.ts.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            chunk: encodeChannelBytes(chunk),
+          });
+        },
+        exit(
+          hostRouteId: string,
+          workerSessionId: string,
+          exitCode: number | null,
+          transportClosed?: boolean,
+        ): void {
+          // Forward the child exit of a persistent duplex channel. The host
+          // resolves the open route's wait promise by the exact live pair while
+          // the route is open. `transportClosed` carries the exit discriminator, so
+          // the host tells a real process exit from a reason-less transport close.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(DUPLEX_CHANNEL_EXIT_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+            transportClosed: transportClosed === true,
+          });
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1282,6 +1508,54 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           notifyHost("log", { level: "debug", message, meta });
         },
       },
+
+      tracer: {
+        startSpan(
+          name: string,
+          options?: { attributes?: Record<string, string | number | boolean> },
+        ) {
+          // Read the active host trace context from the per-call invocation
+          // channel. A `traceparent` means a host span is active, so this span
+          // may record. No `traceparent` means tracing is off: the span is a
+          // no-op, so a lifecycle hook can always wrap work in a span.
+          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          const attributes: Record<string, string | number | boolean> = {
+            ...(options?.attributes ?? {}),
+          };
+          // Capture the real start time once when the span opens. The host uses
+          // it as the span start time, so the span shows its true native width.
+          const startTimeMs = Date.now();
+          let status: { code: number; message?: string } | undefined;
+          let ended = false;
+          return {
+            setAttribute(key: string, value: string | number | boolean): void {
+              attributes[key] = value;
+            },
+            setStatus(next: { code: number; message?: string }): void {
+              status = next;
+            },
+            end(): void {
+              if (ended) return;
+              ended = true;
+              if (!hasTraceContext) return;
+              // Capture the real end time once at the first end call. The host
+              // uses the pair to record the span with its true wall-clock width.
+              const endTimeMs = Date.now();
+              // Send the finished span to the host once. The host re-clamps the
+              // name and the attributes, mints the parentage from its own
+              // invocation record, and records the span through the real tracer.
+              // Fire-and-forget: a span must never block or fail plugin work.
+              void callHost("span.record", {
+                name,
+                attributes,
+                ...(status ? { status } : {}),
+                startTimeMs,
+                endTimeMs,
+              }).catch(() => undefined);
+            },
+          };
+        },
+      },
     };
   }
 
@@ -1297,9 +1571,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    * Dispatches to the correct handler based on the method name.
    */
   async function handleHostRequest(request: JsonRpcRequest): Promise<void> {
-    const { id, method, params } = request;
+    if (request.method === "environmentSyncOut") {
+      return withEnvironmentSyncErrorCapture(() => handleHostRequestInScope(request));
+    }
+    return handleHostRequestInScope(request);
+  }
 
+  async function handleHostRequestInScope(request: JsonRpcRequest): Promise<void> {
+    const { id, method, params } = request;
+    let done: (() => void) | undefined;
     try {
+      if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
+        done = idleDrain.begin();
+      }
       const invoke = () => dispatchMethod(method, params);
       const result = request.paperclipInvocation
         ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
@@ -1315,7 +1599,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
-      sendMessage(createErrorResponse(id, errorCode, errorMessage));
+      sendMessage(createErrorResponse(id, errorCode, errorMessage,
+        method === "environmentAcquireLease" || method === "environmentDestroyLease"
+          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+    } finally {
+      done?.();
     }
   }
 
@@ -1324,6 +1613,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   async function dispatchMethod(method: string, params: unknown): Promise<unknown> {
     switch (method) {
+      case "prepareIdleSleep": {
+        const hold = params as { ownerId: string; expiresAt: number };
+        const backgroundWork = !initialized || sessionEventCallbacks.size > 0
+          ? "present"
+          : await idleDrain.prepare(hold, plugin.definition.onIdleDrain?.bind(plugin.definition));
+        return { ...hold, backgroundWork };
+      }
+      case "releaseIdleSleep":
+        idleDrain.release((params as { ownerId: string }).ownerId);
+        return;
       case "initialize":
         return handleInitialize(params as InitializeParams);
 
@@ -1361,6 +1660,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return handleExecuteTool(params as ExecuteToolParams);
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "agentLifecycle":
+        if (!plugin.definition.onAgentLifecycle) throw methodNotImplemented("agentLifecycle");
+        return plugin.definition.onAgentLifecycle(params as AgentLifecycleRequest);
+      case "routeAiConnection":
+        if (!plugin.definition.onRouteAiConnection) throw methodNotImplemented("routeAiConnection");
+        return plugin.definition.onRouteAiConnection(params as AiConnectionRouterRequest);
       case "resolveExternalObject":
         return handleResolveExternalObject(params as ResolveExternalObjectParams);
       case "refreshExternalObjects":
@@ -1380,6 +1685,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentReleaseLease":
         return handleEnvironmentReleaseLease(params as PluginEnvironmentReleaseLeaseParams);
+      case "environmentStopLease":
+        if (!plugin.definition.onEnvironmentStopLease) throw methodNotImplemented("environmentStopLease");
+        return plugin.definition.onEnvironmentStopLease(params as PluginEnvironmentReleaseLeaseParams);
 
       case "environmentDestroyLease":
         return handleEnvironmentDestroyLease(params as PluginEnvironmentDestroyLeaseParams);
@@ -1389,6 +1697,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+
+      case "environmentRunnerIngressEndpoint":
+        return handleEnvironmentRunnerIngressEndpoint(
+          params as PluginEnvironmentRunnerIngressEndpointParams,
+        );
+
+      case "environmentSyncIn":
+        return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
+
+      case "environmentSyncOut":
+        return handleEnvironmentSyncOut(params as PluginEnvironmentSyncOutParams);
 
       case "environmentStartInteractiveSetup":
         return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
@@ -1404,6 +1723,30 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentDeleteTemplate":
         return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
+
+      case "loginPtyOpen":
+        return handleLoginPtyOpen(params as PluginLoginPtyOpenParams);
+
+      case "loginPtyInput":
+        return handleLoginPtyInput(params as PluginLoginPtyInputParams);
+
+      case "loginPtyStop":
+        return handleLoginPtyStop(params as PluginLoginPtyStopParams);
+
+      case "loginPtyClose":
+        return handleLoginPtyClose(params as PluginLoginPtyCloseParams);
+
+      case "duplexChannelOpen":
+        return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
+
+      case "duplexChannelWrite":
+        return handleDuplexChannelWrite(params as PluginDuplexChannelWriteParams);
+
+      case "duplexChannelStop":
+        return handleDuplexChannelStop(params as PluginDuplexChannelStopParams);
+
+      case "duplexChannelClose":
+        return handleDuplexChannelClose(params as PluginDuplexChannelCloseParams);
 
       default:
         throw Object.assign(
@@ -1437,8 +1780,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onConfigChanged) supportedMethods.push("configChanged");
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
+    if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");
+    if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");
     if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
     if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
@@ -1446,14 +1792,28 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
     if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
     if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
+    if (plugin.definition.onEnvironmentStopLease) supportedMethods.push("environmentStopLease");
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      supportedMethods.push("environmentRunnerIngressEndpoint");
+    }
+    if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
+    if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
     if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
     if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
+    if (plugin.definition.onLoginPtyOpen) supportedMethods.push("loginPtyOpen");
+    if (plugin.definition.onLoginPtyInput) supportedMethods.push("loginPtyInput");
+    if (plugin.definition.onLoginPtyStop) supportedMethods.push("loginPtyStop");
+    if (plugin.definition.onLoginPtyClose) supportedMethods.push("loginPtyClose");
+    if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
+    if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
+    if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
+    if (plugin.definition.onDuplexChannelClose) supportedMethods.push("duplexChannelClose");
 
     return { ok: true, supportedMethods };
   }
@@ -1496,10 +1856,52 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   }
 
   async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {
+    const incomingCompanyId = params.companyId ?? null;
+
+    // Fail-closed cross-tenant guard.
+    //
+    // A worker is spawned once per plugin (not per company), so a proactive
+    // plugin that keeps a single worker-global config would silently collapse
+    // onto whichever company's config was delivered last if configChanged is
+    // called for more than one distinct company — for example the startup
+    // config replay fanning out every stored company's config, or two operators
+    // saving configs for different companies. That is a cross-tenant identity /
+    // secret confusion bug (one company's bot token applied to another's work).
+    //
+    // Reject the second, distinct company unless the plugin explicitly declares
+    // it handles multiple companies in one worker (multiCompanyConfig). An
+    // idempotent replay of the *same* config for a different company id is
+    // harmless (single-tenant plugins commonly have duplicate scope rows that
+    // all embed the same config), so it is allowed.
+    if (
+      !plugin.definition.multiCompanyConfig &&
+      incomingCompanyId !== null &&
+      configCompanyId !== null &&
+      configCompanyId !== incomingCompanyId &&
+      !configsEqual(params.config, currentConfig)
+    ) {
+      throw Object.assign(
+        new Error(
+          `configChanged: refusing to overwrite configuration for company ` +
+            `"${configCompanyId}" with a different configuration for company ` +
+            `"${incomingCompanyId}". This plugin is single-tenant and cannot ` +
+            `safely serve multiple companies from one worker. If multi-company ` +
+            `support is intended, set multiCompanyConfig: true on the plugin ` +
+            `definition and key per-company state on context.companyId.`,
+        ),
+        { code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG },
+      );
+    }
+
     currentConfig = params.config;
+    if (incomingCompanyId !== null) {
+      configCompanyId = incomingCompanyId;
+    }
 
     if (plugin.definition.onConfigChanged) {
-      await plugin.definition.onConfigChanged(params.config);
+      await plugin.definition.onConfigChanged(params.config, {
+        companyId: incomingCompanyId,
+      });
     }
   }
 
@@ -1711,6 +2113,29 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return plugin.definition.onEnvironmentExecute(params);
   }
 
+  async function handleEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ) {
+    if (!plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      throw methodNotImplemented("environmentRunnerIngressEndpoint");
+    }
+    return plugin.definition.onEnvironmentRunnerIngressEndpoint(params);
+  }
+
+  async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {
+    if (!plugin.definition.onEnvironmentSyncIn) {
+      throw methodNotImplemented("environmentSyncIn");
+    }
+    return plugin.definition.onEnvironmentSyncIn(params);
+  }
+
+  async function handleEnvironmentSyncOut(params: PluginEnvironmentSyncOutParams) {
+    if (!plugin.definition.onEnvironmentSyncOut) {
+      throw methodNotImplemented("environmentSyncOut");
+    }
+    return plugin.definition.onEnvironmentSyncOut(params);
+  }
+
   async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {
     if (!plugin.definition.onEnvironmentStartInteractiveSetup) {
       throw methodNotImplemented("environmentStartInteractiveSetup");
@@ -1744,6 +2169,62 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentDeleteTemplate");
     }
     return plugin.definition.onEnvironmentDeleteTemplate(params);
+  }
+
+  async function handleLoginPtyOpen(params: PluginLoginPtyOpenParams) {
+    if (!plugin.definition.onLoginPtyOpen) {
+      throw methodNotImplemented("loginPtyOpen");
+    }
+    return plugin.definition.onLoginPtyOpen(params);
+  }
+
+  async function handleLoginPtyInput(params: PluginLoginPtyInputParams) {
+    if (!plugin.definition.onLoginPtyInput) {
+      throw methodNotImplemented("loginPtyInput");
+    }
+    return plugin.definition.onLoginPtyInput(params);
+  }
+
+  async function handleLoginPtyStop(params: PluginLoginPtyStopParams) {
+    if (!plugin.definition.onLoginPtyStop) {
+      throw methodNotImplemented("loginPtyStop");
+    }
+    return plugin.definition.onLoginPtyStop(params);
+  }
+
+  async function handleLoginPtyClose(params: PluginLoginPtyCloseParams) {
+    if (!plugin.definition.onLoginPtyClose) {
+      throw methodNotImplemented("loginPtyClose");
+    }
+    return plugin.definition.onLoginPtyClose(params);
+  }
+
+  async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {
+    if (!plugin.definition.onDuplexChannelOpen) {
+      throw methodNotImplemented("duplexChannelOpen");
+    }
+    return plugin.definition.onDuplexChannelOpen(params);
+  }
+
+  async function handleDuplexChannelWrite(params: PluginDuplexChannelWriteParams) {
+    if (!plugin.definition.onDuplexChannelWrite) {
+      throw methodNotImplemented("duplexChannelWrite");
+    }
+    return plugin.definition.onDuplexChannelWrite(params);
+  }
+
+  async function handleDuplexChannelStop(params: PluginDuplexChannelStopParams) {
+    if (!plugin.definition.onDuplexChannelStop) {
+      throw methodNotImplemented("duplexChannelStop");
+    }
+    return plugin.definition.onDuplexChannelStop(params);
+  }
+
+  async function handleDuplexChannelClose(params: PluginDuplexChannelCloseParams) {
+    if (!plugin.definition.onDuplexChannelClose) {
+      throw methodNotImplemented("duplexChannelClose");
+    }
+    return plugin.definition.onDuplexChannelClose(params);
   }
 
   // -----------------------------------------------------------------------
@@ -1782,6 +2263,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   function handleHostResponse(response: JsonRpcResponse): void {
     const id = response.id;
     if (id === null || id === undefined) return;
+
+    unsettledHostCalls.get(id)?.();
+    unsettledHostCalls.delete(id);
 
     const pending = pendingRequests.get(id);
     if (!pending) return;
@@ -1839,16 +2323,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     } else if (isJsonRpcNotification(message)) {
       // Dispatch host→worker push notifications
       const notif = message as JsonRpcNotification & { method: string; params?: unknown };
-      const runNotification = (fn: () => void | Promise<void>) => {
-        if (notif.paperclipInvocation) {
-          return invocationContextStorage.run(notif.paperclipInvocation, fn);
-        }
-        return fn();
+      const runNotification = async (fn: () => void | Promise<void>) => {
+        const done = idleDrain.begin();
+        try {
+          await (notif.paperclipInvocation ? invocationContextStorage.run(notif.paperclipInvocation, fn) : fn());
+        } finally { done(); }
       };
-      if (notif.method === "agents.sessions.event" && notif.params) {
+      if (notif.method === "releaseIdleSleep" && notif.params) {
+        idleDrain.release((notif.params as { ownerId: string }).ownerId);
+      } else if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
-        if (cb) cb(event);
+        if (cb) void runNotification(() => cb(event)).catch((err) => {
+          notifyHost("log", {
+            level: "error",
+            message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        });
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
         Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
@@ -1867,6 +2358,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function cleanup(): void {
     running = false;
+    idleDrain.close();
 
     // Close readline
     if (readline) {

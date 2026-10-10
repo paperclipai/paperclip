@@ -1,5 +1,7 @@
 import type {
   Project,
+  ProjectAccessMember,
+  ProjectRepositoryOptions,
   ProjectWorkspace,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
@@ -18,12 +20,30 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
-  list: (companyId: string) => api.get<Project[]>(`/companies/${companyId}/projects`),
+  repositoryOptions: (companyId: string) => api.get<ProjectRepositoryOptions>(`/companies/${companyId}/project-repositories`),
+  setRepositories: (id: string, repositoryIds: string[]) => api.put<Project>(projectPath(id, undefined, "/repositories"), { repositoryIds }),
+  list: (companyId: string, opts: { includeArchived?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.includeArchived) params.set("includeArchived", "true");
+    const query = params.toString();
+    return api.get<Project[]>("/companies/" + encodeURIComponent(companyId) + "/projects" + (query ? "?" + query : ""));
+  },
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
+  listAccessMembers: (id: string, companyId?: string) =>
+    api.get<ProjectAccessMember[]>(projectPath(id, companyId, "/access-members")),
+  addAccessMember: (
+    id: string,
+    data: { subjectType: "user" | "agent"; subjectId: string },
+    companyId?: string,
+  ) => api.post<ProjectAccessMember>(projectPath(id, companyId, "/access-members"), data),
+  removeAccessMember: (id: string, memberId: string, companyId?: string) =>
+    api.delete<ProjectAccessMember>(
+      projectPath(id, companyId, `/access-members/${encodeURIComponent(memberId)}`),
+    ),
   listWorkspaces: (projectId: string, companyId?: string) =>
     api.get<ProjectWorkspace[]>(projectPath(projectId, companyId, "/workspaces")),
   createWorkspace: (projectId: string, data: Record<string, unknown>, companyId?: string) =>

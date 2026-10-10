@@ -1,17 +1,37 @@
 import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { Link } from "@/lib/router";
+import { GithubIcon } from "@/components/icons/github-icon";
+import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
+import { ApiError } from "../api/client";
+import { LockedIssueChip } from "./LockedIssueChip";
+import { agentsApi } from "../api/agents";
+import { getCachedIssueDetail } from "../lib/issueDetailCache";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
-import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
+import { remarkLinkCaseReferences } from "../lib/case-reference";
+
+const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
+
+/** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
+function caseIdentifierFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
+  return match ? match[1]!.toUpperCase() : null;
+}
+import {
+  createRemarkWorkspaceFileRefs,
+  parseWorkspaceFileHref,
+  WORKSPACE_FILE_HREF_PREFIX,
+  type WorkspaceFileRefResolver,
+} from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
@@ -22,10 +42,38 @@ import {
   externalObjectProviderLabel,
 } from "../lib/external-objects";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import { copyTextToClipboard } from "../lib/clipboard";
 import type {
+  Agent,
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
 } from "@paperclipai/shared";
+
+function MarkdownAgentMention({ agentId, children, style }: {
+  agentId: string;
+  children: ReactNode;
+  style?: React.CSSProperties;
+}) {
+  const companyId = useOptionalCompany()?.selectedCompanyId;
+  // All mentions share the company list cache; never fetch one agent per chip.
+  const { data: agents } = useQuery<Agent[]>({
+    queryKey: queryKeys.agents.list(companyId ?? "__none__"),
+    queryFn: () => agentsApi.list(companyId!),
+    enabled: Boolean(companyId),
+    staleTime: 60_000,
+  });
+  const appearance = agents?.find((agent) => agent.id === agentId)?.appearance;
+  return (
+    <a
+      href={`/agents/${agentId}`}
+      className="paperclip-mention-chip paperclip-mention-chip--agent"
+      data-mention-kind="agent"
+      style={{ ...mergeWrapStyle(style), ...mentionChipInlineStyle({ kind: "agent", agentId, icon: null, appearance }) }}
+    >
+      {children}
+    </a>
+  );
+}
 
 /**
  * Host-resolved external-object metadata for inline markdown decoration.
@@ -52,6 +100,11 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /**
+   * Linkify bare case identifiers (`PAP-C7`) to the case detail page. Off by
+   * default; enabled on surfaces behind the experimental Cases flag (PAP-12969).
+   */
+  linkCaseReferences?: boolean;
   /** Opt into Obsidian-style [[target]] / [[target|label]] wikilinks. */
   enableWikiLinks?: boolean;
   /** Base href used for wikilinks when no resolver is supplied. */
@@ -68,34 +121,78 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
-  /** Link inline-code workspace file paths to the issue file viewer. */
-  linkWorkspaceFileRefs?: boolean;
+  /** Keep untrusted decision media inert: image references and diagram source only. */
+  mediaMode?: "render" | "reference";
+  /**
+   * Resolver that decides which inline-code workspace file paths may be linked
+   * to the issue file viewer. Omitting it (or returning null) leaves every
+   * path-shaped code span as ordinary inline code — the fail-closed default.
+   *
+   * Its identity must change when previously-pending references become
+   * openable, so the markdown re-parses with the new answers.
+   */
+  resolveWorkspaceFileRef?: WorkspaceFileRefResolver;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
 
 function MarkdownIssueLink({
   issuePathId,
+  href,
   children,
 }: {
   issuePathId: string;
+  href: string;
   children: ReactNode;
 }) {
-  const { data } = useQuery({
+  const queryClient = useQueryClient();
+  const [engaged, setEngaged] = useState(false);
+  const { data, error } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
+    // A transcript can mention dozens of tasks. Their full detail projections
+    // are hover information, not prerequisites for reading this conversation.
+    enabled: engaged,
+    placeholderData: getCachedIssueDetail(queryClient, issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
+    // A private issue 404s on direct fetch (indistinguishable from deleted, by
+    // design). Don't burn retries on it — settle straight to the locked chip.
+    retry: (failureCount, err) =>
+      !(err instanceof ApiError && err.status === 404) && failureCount < 3,
   });
+
+  // Mention of an issue this viewer can't read → existence-only locked chip
+  // (never a title or a link), matching the locked-stub treatment on edges.
+  if (error instanceof ApiError && error.status === 404) {
+    return <LockedIssueChip identifier={issuePathId} unavailable />;
+  }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
+  // Until the fetch settles we don't yet know whether this viewer can read the
+  // issue. Keep the mention a plain link (clickable, styled as today) but hold
+  // off mounting the IssueLinkQuicklook hover preview — a Radix Popover portal —
+  // until `data` confirms the issue is readable.
+  //   - Correctness (PAP-16070): a private mention 404s straight to the locked
+  //     chip. Mounting the quicklook popover during the loading `<Link>` only to
+  //     tear the portal down and swap in a plain `<span>` chip on the 404 is the
+  //     element churn that crashed the chat transcript's primary renderer (it
+  //     fell through to the safe fallback). Loading link → chip stays portal-free.
+  //   - Privacy: don't prefetch / hover-preview an issue of unconfirmed
+  //     readability. `data-mention-pending` marks the transient state for tests.
+  const pending = !data;
+
   return (
     <Link
-      to={`/issues/${identifier}`}
+      to={href}
       data-mention-kind="issue"
+      disableIssueQuicklook={pending}
+      data-mention-pending={pending ? "true" : undefined}
+      onPointerEnter={() => setEngaged(true)}
+      onFocus={() => setEngaged(true)}
       // Boxless inline mention: the unified status glyph + a regular-weight
       // underlined link, optically centered with the body text.
       className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
@@ -103,8 +200,30 @@ function MarkdownIssueLink({
       aria-label={issueLabel}
     >
       {status ? (
-        <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
+        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
+      {children}
+    </Link>
+  );
+}
+
+function MarkdownCaseLink({
+  identifier,
+  children,
+}: {
+  identifier: string;
+  children: ReactNode;
+}) {
+  // Cases resolve via the get-by-identifier route; navigate there on click.
+  // Kept boxless/underlined to match the issue mention treatment.
+  const caseHref = useCaseHref();
+  return (
+    <Link
+      to={caseHref(identifier)}
+      data-mention-kind="case"
+      className={cn("paperclip-markdown-case-ref", "font-normal underline")}
+      aria-label={`Case ${identifier}`}
+    >
       {children}
     </Link>
   );
@@ -181,7 +300,7 @@ const codeBlockActionsStyle: React.CSSProperties = {
   gap: "0.25rem",
 };
 
-const codeBlockActionStyle: React.CSSProperties = {
+export const codeBlockActionStyle: React.CSSProperties = {
   position: "static",
   opacity: 1,
   display: "inline-flex",
@@ -192,7 +311,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   padding: "0.2rem 0.4rem",
   borderRadius: "calc(var(--radius) - 4px)",
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
-  backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
+  backgroundColor: "var(--background)",
   color: "var(--muted-foreground)",
   fontSize: "var(--text-micro)",
   lineHeight: 1,
@@ -209,6 +328,30 @@ const tableCellWrapStyle: React.CSSProperties = {
   overflowWrap: "anywhere",
   wordBreak: "normal",
 };
+
+function isHtmlCommentNode(node: MarkdownAstNode) {
+  return node.type === "html" && typeof node.value === "string" && /^<!--[\s\S]*-->$/.test(node.value.trim());
+}
+
+function isEscapedHtmlCommentPlaceholder(node: MarkdownAstNode) {
+  if (node.type !== "text" || typeof node.value !== "string") return false;
+  const value = node.value.trim();
+  return /^\\?<!--(?:\s*-{0,2}>?)?$/.test(value) || /^&lt;!--(?:\s*-{0,2}(?:&gt;)?)?$/.test(value);
+}
+
+function remarkDropHtmlComments() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const children = node.children;
+      if (!children) return;
+      node.children = children.filter((child) => !isHtmlCommentNode(child) && !isEscapedHtmlCommentPlaceholder(child));
+      for (const child of node.children) {
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
 
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
@@ -495,22 +638,7 @@ function CodeBlock({
   const handleCopy = useCallback(async () => {
     const text = preRef.current?.innerText ?? flattenText(children);
     try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.style.position = "fixed";
-        textarea.style.left = "-9999px";
-        document.body.appendChild(textarea);
-        try {
-          textarea.select();
-          const success = document.execCommand("copy");
-          if (!success) throw new Error("execCommand copy failed");
-        } finally {
-          document.body.removeChild(textarea);
-        }
-      }
+      await copyTextToClipboard(text);
       setFailed(false);
       setCopied(true);
     } catch {
@@ -652,13 +780,15 @@ function MarkdownBodyImpl({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  linkCaseReferences = false,
   enableWikiLinks = false,
   wikiLinkRoot,
   resolveWikiLinkHref,
   externalReferences,
   resolveImageSrc,
   onImageClick,
-  linkWorkspaceFileRefs = false,
+  mediaMode = "render",
+  resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
@@ -688,21 +818,24 @@ function MarkdownBodyImpl({
   // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
   // that don't change the inputs are cheap and non-destructive.
   const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
-    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
     if (enableWikiLinks) {
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }
-    if (linkWorkspaceFileRefs) {
-      plugins.push(remarkWorkspaceFileRefs);
+    if (resolveWorkspaceFileRef) {
+      plugins.push(createRemarkWorkspaceFileRefs(resolveWorkspaceFileRef));
     }
     if (linkIssueReferences) {
       plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
+    }
+    if (linkCaseReferences) {
+      plugins.push([remarkLinkCaseReferences, { knownPrefixes }]);
     }
     if (softBreaks) {
       plugins.push(remarkSoftBreaks);
     }
     return plugins;
-  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, knownPrefixes, softBreaks]);
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, resolveWorkspaceFileRef, linkIssueReferences, linkCaseReferences, knownPrefixes, softBreaks]);
   const components = useMemo<Components>(() => {
     const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
@@ -739,7 +872,7 @@ function MarkdownBodyImpl({
     ),
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
-      if (mermaidSource) {
+      if (mermaidSource && mediaMode === "render") {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
       return <CodeBlock preProps={preProps}>{preChildren}</CodeBlock>;
@@ -779,14 +912,26 @@ function MarkdownBodyImpl({
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
             {linkChildren}
           </MarkdownIssueLink>
         );
       }
 
+      const caseIdentifier = linkCaseReferences ? caseIdentifierFromHref(href) : null;
+      if (caseIdentifier) {
+        return <MarkdownCaseLink identifier={caseIdentifier}>{linkChildren}</MarkdownCaseLink>;
+      }
+
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
+        if (parsed.kind === "agent") {
+          return (
+            <MarkdownAgentMention agentId={parsed.agentId} style={linkStyle as React.CSSProperties | undefined}>
+              {linkChildren}
+            </MarkdownAgentMention>
+          );
+        }
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
           : parsed.kind === "issue"
@@ -795,9 +940,7 @@ function MarkdownBodyImpl({
               ? `/skills/${parsed.skillId}`
               : parsed.kind === "routine"
                 ? `/routines/${parsed.routineId}`
-                : parsed.kind === "user"
-                  ? "/company/settings/access"
-                  : `/agents/${parsed.agentId}`;
+                : "/company/settings/access";
         return (
           <a
             href={targetHref}
@@ -827,7 +970,7 @@ function MarkdownBodyImpl({
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
-        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
+        <GithubIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
       const trailingIcon = isExternal && !isGitHubLink ? (
         <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
@@ -845,7 +988,13 @@ function MarkdownBodyImpl({
       );
     },
     };
-    if (resolveImageSrc || onImageClick) {
+    if (mediaMode === "reference") {
+      map.img = ({ src, alt, title }) => (
+        <span data-markdown-image-reference title={title}>
+          Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
+        </span>
+      );
+    } else if (resolveImageSrc || onImageClick) {
       map.img = ({ node: _node, src, alt, ...imgProps }) => {
         const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
         const finalSrc = resolved ?? src;
@@ -861,7 +1010,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, linkIssueReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
+  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick, mediaMode]);
 
   return (
     <div

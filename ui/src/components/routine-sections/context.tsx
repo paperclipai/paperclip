@@ -45,7 +45,7 @@ export const SECTION_FIELD_KEYS: Record<string, string[]> = {
   overview: ["title", "description", "projectId", "assigneeAgentId", "priority"],
   variables: ["variables"],
   secrets: ["env"],
-  delivery: ["concurrencyPolicy", "catchUpPolicy"],
+  delivery: ["concurrencyPolicy", "catchUpPolicy", "activityGatePolicy", "activityGateScope"],
 };
 
 export type RoutineEditDraft = {
@@ -56,6 +56,8 @@ export type RoutineEditDraft = {
   priority: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  activityGatePolicy: string;
+  activityGateScope: string;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
 };

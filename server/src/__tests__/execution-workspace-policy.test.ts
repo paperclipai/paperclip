@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  issueExecutionWorkspaceSettingsSchema,
+  projectExecutionWorkspacePolicySchema,
+} from "@paperclipai/shared";
+import {
+  applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -7,9 +12,13 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  ManagedSandboxUnavailableError,
+  resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  resolveSharedWorkspaceConcurrency,
+  selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
@@ -37,6 +46,90 @@ describe("execution workspace policy helpers", () => {
         legacyUseProjectWorkspace: false,
       }),
     ).toBe("isolated_workspace");
+  });
+
+  it("resolves shared-workspace concurrency from issue override, project policy, then auto", () => {
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: { sharedWorkspaceConcurrency: "allow" },
+      }),
+    ).toBe("allow");
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: null,
+      }),
+    ).toBe("serialize");
+    expect(
+      resolveSharedWorkspaceConcurrency({
+        projectPolicy: { enabled: false, sharedWorkspaceConcurrency: "serialize" },
+        issueSettings: null,
+      }),
+    ).toBe("auto");
+    expect(resolveSharedWorkspaceConcurrency({ projectPolicy: null, issueSettings: null })).toBe("auto");
+  });
+
+  it("validates the shared-workspace concurrency enum on project and issue settings", () => {
+    expect(projectExecutionWorkspacePolicySchema.parse({
+      enabled: true,
+      sharedWorkspaceConcurrency: "auto",
+    }).sharedWorkspaceConcurrency).toBe("auto");
+    expect(issueExecutionWorkspaceSettingsSchema.parse({
+      sharedWorkspaceConcurrency: "allow",
+    }).sharedWorkspaceConcurrency).toBe("allow");
+    expect(projectExecutionWorkspacePolicySchema.safeParse({
+      enabled: true,
+      sharedWorkspaceConcurrency: "parallel",
+    }).success).toBe(false);
+  });
+
+  it("accepts an existing-branch pin only with isolated mode and a git_worktree strategy", () => {
+    expect(issueExecutionWorkspaceSettingsSchema.parse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "PAP-14380-salvage-pap-9514",
+      },
+    }).workspaceStrategy?.existingBranch).toBe("PAP-14380-salvage-pap-9514");
+
+    // Fail closed at the contract layer: an exact-branch pin outside an
+    // isolated git worktree could silently land in the shared checkout.
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "shared_workspace",
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "project_primary", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "some-branch",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    }).success).toBe(false);
+
+    for (const invalidBranch of ["-leading-dash", "a..b", "has space", "ends/", "back\\slash", "a.lock", "../escape"]) {
+      expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: invalidBranch },
+      }).success).toBe(false);
+    }
+  });
+
+  it("carries the existing-branch pin through issue settings parsing", () => {
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: " PAP-14754-run-redaction " },
+      })?.workspaceStrategy,
+    ).toEqual({ type: "git_worktree", existingBranch: "PAP-14754-run-redaction" });
   });
 
   it("centralizes unrunnable isolated worktree detection", () => {
@@ -185,6 +278,7 @@ describe("execution workspace policy helpers", () => {
           type: "git_worktree",
           baseRef: "origin/main",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
+          runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
         },
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
@@ -199,9 +293,111 @@ describe("execution workspace policy helpers", () => {
       type: "git_worktree",
       baseRef: "origin/main",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
+      runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
     });
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "web", command: "pnpm dev" }],
+    });
+  });
+
+  describe("partial issue workspace strategies", () => {
+    const projectStrategy = {
+      type: "git_worktree" as const,
+      baseRef: "origin/main",
+      branchTemplate: "{{issue.identifier}}-{{slug}}",
+      worktreeParentDir: ".paperclip/worktrees",
+      provisionCommand: "true",
+      runtimeProvisionCommand: "npm run setup:runtime",
+      teardownCommand: "npm run teardown",
+    };
+
+    function resolveStrategy(
+      strategy: Record<string, unknown>,
+      enabled = true,
+    ) {
+      return buildExecutionWorkspaceAdapterConfig({
+        agentConfig: { workspaceStrategy: { type: "git_worktree", provisionCommand: "agent-setup" } },
+        projectPolicy: parseProjectExecutionWorkspacePolicy({
+          enabled,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: projectStrategy,
+        }),
+        issueSettings: parseIssueExecutionWorkspaceSettings({
+          mode: "isolated_workspace",
+          workspaceStrategy: strategy,
+        }),
+        mode: "isolated_workspace",
+        legacyUseProjectWorkspace: null,
+      }).workspaceStrategy;
+    }
+
+    it("retains project hooks when an issue changes only its base branch", () => {
+      expect(resolveStrategy({ type: "git_worktree", baseRef: "origin/release" })).toEqual({
+        ...projectStrategy,
+        baseRef: "origin/release",
+      });
+    });
+
+    it.each(["npm run issue-setup", "", null])("honors an explicit provisioning override of %j", (provisionCommand) => {
+      expect(resolveStrategy({ type: "git_worktree", provisionCommand })).toEqual({
+        ...projectStrategy,
+        provisionCommand,
+      });
+    });
+
+    it("preserves explicit null clears through persisted JSON parsing", () => {
+      const strategy = {
+        type: "git_worktree",
+        baseRef: null,
+        branchTemplate: null,
+        worktreeParentDir: null,
+        provisionCommand: null,
+        runtimeProvisionCommand: null,
+        teardownCommand: null,
+      };
+      expect(resolveStrategy(strategy)).toEqual(strategy);
+    });
+
+    it.each(["cloud_sandbox", "adapter_managed", "project_primary"])("does not carry project hooks into %s", (type) => {
+      expect(resolveStrategy({ type })).toEqual({ type });
+    });
+
+    it("does not inherit a disabled project strategy", () => {
+      expect(resolveStrategy({ type: "git_worktree", baseRef: "origin/release" }, false)).toEqual({
+        type: "git_worktree",
+        baseRef: "origin/release",
+      });
+      expect(resolveStrategy({}, false)).toEqual({
+        type: "git_worktree",
+        provisionCommand: "agent-setup",
+      });
+    });
+
+    it("keeps project hooks for an exact branch pin without inheriting a branch template", () => {
+      const resolved = resolveStrategy({ type: "git_worktree", existingBranch: "fix/existing" });
+      expect(resolved).toEqual({
+        ...projectStrategy,
+        branchTemplate: undefined,
+        existingBranch: "fix/existing",
+      });
+      expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+        mode: "isolated_workspace",
+        workspaceStrategy: resolved,
+      }).success).toBe(true);
+    });
+
+    it("does not mutate the project or issue strategy", () => {
+      const issueStrategy = { type: "git_worktree" as const, baseRef: "origin/release" };
+      const result = buildExecutionWorkspaceAdapterConfig({
+        agentConfig: {},
+        projectPolicy: { enabled: true, workspaceStrategy: Object.freeze({ ...projectStrategy }) },
+        issueSettings: { workspaceStrategy: Object.freeze(issueStrategy) },
+        mode: "isolated_workspace",
+        legacyUseProjectWorkspace: null,
+      });
+      expect(result.workspaceStrategy).not.toBe(issueStrategy);
+      expect(issueStrategy).toEqual({ type: "git_worktree", baseRef: "origin/release" });
+      expect(projectStrategy.baseRef).toBe("origin/main");
     });
   });
 
@@ -253,21 +449,25 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseProjectExecutionWorkspacePolicy({
         enabled: true,
+        sharedWorkspaceConcurrency: "serialize",
         defaultMode: "isolated",
         workspaceStrategy: {
           type: "git_worktree",
           worktreeParentDir: ".paperclip/worktrees",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
+          runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
           teardownCommand: "bash ./scripts/teardown-worktree.sh",
         },
       }),
     ).toEqual({
       enabled: true,
+      sharedWorkspaceConcurrency: "serialize",
       defaultMode: "isolated_workspace",
       workspaceStrategy: {
         type: "git_worktree",
         worktreeParentDir: ".paperclip/worktrees",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
+        runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
       },
     });
@@ -291,6 +491,40 @@ describe("execution workspace policy helpers", () => {
       mode: "shared_workspace",
       environmentId: "11111111-1111-4111-8111-111111111111",
     });
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        sharedWorkspaceConcurrency: "allow",
+        networkEgress: {
+          allowFqdns: ["github.com", "pypi.org"],
+          allowCidrs: ["203.0.113.0/24"],
+        },
+      }),
+    ).toEqual({
+      mode: "isolated_workspace",
+      sharedWorkspaceConcurrency: "allow",
+      networkEgress: {
+        allowFqdns: ["github.com", "pypi.org"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    });
+  });
+
+  it("keeps egress grants independent from isolated workspace mode", () => {
+    const parsedSettings = {
+      mode: "isolated_workspace" as const,
+      workspaceRuntime: { image: "example/image" },
+      networkEgress: {
+        allowFqdns: ["github.com"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    };
+
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, false)).toEqual({
+      networkEgress: parsedSettings.networkEgress,
+    });
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
+    expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
   });
 
   it("prefers the agent default environment", () => {
@@ -332,6 +566,50 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("redirects local-landing selections to the managed sandbox under managed-sandbox-only", () => {
+    // The default fallback and an explicit local selection both land on the
+    // managed environment; a non-local selection stays untouched.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "local-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "ssh-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "ssh-env", source: "agent" });
+  });
+
+  it("fails closed — never local — when managed-sandbox-only has no managed environment", () => {
+    expect(() =>
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: null,
+      }),
+    ).toThrow(ManagedSandboxUnavailableError);
+  });
+
   it("maps persisted execution workspace modes back to issue settings", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace("isolated_workspace")).toBe("isolated_workspace");
     expect(issueExecutionWorkspaceModeForPersistedWorkspace("operator_branch")).toBe("operator_branch");
@@ -355,5 +633,135 @@ describe("execution workspace policy helpers", () => {
         true,
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+});
+
+describe("operator default isolated execution workspaces", () => {
+  const withDefault = (
+    projectPolicy: Parameters<
+      typeof applyDefaultIsolatedExecutionWorkspacePolicy
+    >[0]["projectPolicy"],
+    hasProjectWorkspace = true,
+    defaultIsolatedWorkspacesEnabled = true,
+  ) =>
+    applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy,
+      defaultIsolatedWorkspacesEnabled,
+      hasProjectWorkspace,
+    });
+
+  it("substitutes an isolated policy for a project that stores none", () => {
+    expect(withDefault(null)).toEqual({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+    });
+  });
+
+  it("leaves everything alone while the operator default is off", () => {
+    expect(withDefault(null, true, false)).toBeNull();
+  });
+
+  it("keeps a task that has no project on its existing behavior", () => {
+    // Isolation needs a repository to cut a worktree from. A project-less task
+    // (agent chat, for example) must not be pulled into worktree mode.
+    expect(withDefault(null, false)).toBeNull();
+  });
+
+  it("keeps a project without a configured workspace on its existing behavior", () => {
+    const projectPolicy = withDefault(null, false);
+    expect(projectPolicy).toBeNull();
+    expect(resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    })).toBe("shared_workspace");
+    expect(withDefault({ enabled: true, defaultMode: "isolated_workspace" }, false))
+      .toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+
+  it("never overrides a policy the project already stores", () => {
+    expect(withDefault({ enabled: true, defaultMode: "shared_workspace" })).toEqual({
+      enabled: true,
+      defaultMode: "shared_workspace",
+    });
+    // `enabled: false` is a tenant decision to stay on the shared checkout,
+    // not an absent policy to fill in.
+    expect(withDefault({ enabled: false })).toEqual({ enabled: false });
+  });
+
+  it("resolves an unpolicied project's tasks to an isolated workspace", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: withDefault(null),
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("still lets an explicit issue setting win over the operator default", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: withDefault(null),
+        issueSettings: { mode: "shared_workspace" },
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("shared_workspace");
+  });
+
+  it("keeps mode and strategy coherent for the substituted policy", () => {
+    // Substituting a policy (rather than moving the terminal fallback) is what
+    // makes `hasWorkspaceControl` true, so the default git_worktree strategy is
+    // supplied instead of leaving isolated mode on a project_primary strategy.
+    const projectPolicy = withDefault(null);
+    const mode = resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    });
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy,
+      issueSettings: null,
+      mode,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("git_worktree");
+  });
+
+  it("does not strand a project-less task as an unrunnable worktree", () => {
+    const projectPolicy = withDefault(null, false);
+    const mode = resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    });
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy,
+      issueSettings: null,
+      mode,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: mode,
+        resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
+      }),
+    ).toBe(false);
+  });
+});
+
+ describe("task-scoped low-trust environment", () => {
+  it("uses the explicit phone-task sandbox while preserving ordinary agent defaults", () => {
+    const defaults = {agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env"};
+    expect(resolveExecutionWorkspaceEnvironmentId({...defaults, lowTrustIssueEnvironmentId: "phone-sandbox"})).toEqual({environmentId: "phone-sandbox", source: "issue"});
+    expect(resolveExecutionWorkspaceEnvironmentId(defaults)).toEqual({environmentId: "agent-env", source: "agent"});
   });
 });

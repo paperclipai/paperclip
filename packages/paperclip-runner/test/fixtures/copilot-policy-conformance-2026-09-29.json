@@ -1,0 +1,257 @@
+{
+  "schema": "paperclip.copilot-policy-conformance.v1",
+  "providerVersion": "1.0.88",
+  "platform": "darwin-arm64",
+  "executableSha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "sourceBaseRevision": "9f4476feb87df5574edf121b86a1093efb006ac3",
+  "authentication": "none; explicit fresh environment contains no credential values",
+  "modelTransport": "COPILOT_OFFLINE=true; COPILOT_PROVIDER_TYPE=openai; COPILOT_PROVIDER_BASE_URL points only to ephemeral 127.0.0.1 Python HTTPServer; fixture model gpt-4.1 is synthetic",
+  "paidProviderCalls": 0,
+  "modelSpendUsd": 0,
+  "qualification": "offline protocol evidence only; no GitHub model, final pack, or Daytona qualification",
+  "attempts": [
+    {
+      "evidenceFile": "agent-inputs.json",
+      "sha256": "3def3bcf95db103611722d5e04f803bed555c7c8274a1833c661ef9d87a4b757",
+      "scenario": "discover-inputs",
+      "mode": "agent",
+      "resumed": false,
+      "loopbackModelRequests": 1,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": false,
+      "permissionRequestCount": 0,
+      "permissionRequestIds": [],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "plan-inputs.json",
+      "sha256": "446ee3a2b9e5e4ac3249a8ae18a09f1c33fadc75f94a98d8c6f5fb50a8a73b61",
+      "scenario": "discover-inputs",
+      "mode": "plan",
+      "resumed": false,
+      "loopbackModelRequests": 1,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": false,
+      "permissionRequestCount": 0,
+      "permissionRequestIds": [],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "native-question.json",
+      "sha256": "1cdff42aa31e27a796ecceb4d4fea89c271737a0094982956bb228f03752e21d",
+      "scenario": "native-question",
+      "mode": "agent",
+      "resumed": false,
+      "loopbackModelRequests": 2,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": true,
+      "permissionRequestCount": 0,
+      "permissionRequestIds": [],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "native-plan.json",
+      "sha256": "fecfca013ea072e4e880c77b244b42843f25486206c2e8f64411216ad5c738ea",
+      "scenario": "native-plan",
+      "mode": "plan",
+      "resumed": false,
+      "loopbackModelRequests": 2,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": true,
+      "permissionRequestCount": 0,
+      "permissionRequestIds": [],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "deny-read.json",
+      "sha256": "88d1ad8865b3252963ce12178d6a3a3819f50a2c20ddf95ab557f1cacd127975",
+      "scenario": "deny-read",
+      "mode": "agent",
+      "resumed": false,
+      "loopbackModelRequests": 1,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": false,
+      "permissionRequestCount": 1,
+      "permissionRequestIds": [
+        0
+      ],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "resumed-deny-shell.json",
+      "sha256": "3826ca1247b99c3000bff1e8e0e53d0244c0c22f8ec3089b6ca83bfba80ae3bb",
+      "scenario": "deny-shell",
+      "mode": "agent",
+      "resumed": true,
+      "loopbackModelRequests": 0,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": false,
+      "permissionRequestCount": 0,
+      "permissionRequestIds": [],
+      "markerPresent": false,
+      "rpcErrorCodes": [
+        -32002
+      ],
+      "disposition": "probe_setup_failure"
+    },
+    {
+      "evidenceFile": "resumed-deny-shell-attempt-2.json",
+      "sha256": "14bdd262303d9273c3612d502fefb4b6f887ce903af590a58bbaea3e00297ff6",
+      "scenario": "deny-shell",
+      "mode": "agent",
+      "resumed": true,
+      "loopbackModelRequests": 2,
+      "nativeInputToolsAdvertised": [],
+      "forcedToolRejectedAsUnavailable": false,
+      "permissionRequestCount": 1,
+      "permissionRequestIds": [
+        0
+      ],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "restart-deny-shell.json",
+      "sha256": "c9a22087f343d8d399044bd05d159e457531d3c735a765df2c6bdce85878b2be",
+      "scenario": "deny-shell",
+      "mode": "agent",
+      "resumed": true,
+      "providerKilledAndReplaced": true,
+      "replayMutationCount": 1,
+      "loopbackModelRequests": 3,
+      "nativeInputToolsAdvertised": [],
+      "permissionRequestCount": 2,
+      "permissionDecisions": [
+        "allow_once",
+        "reject_once"
+      ],
+      "permissionRequestIds": [
+        0,
+        0
+      ],
+      "markerPresent": false,
+      "rpcErrorCodes": [],
+      "disposition": "passed"
+    },
+    {
+      "evidenceFile": "detached-shell.json",
+      "sha256": "8b99a6e010e085aad37d39419e3159743f74bb013b731e7856d572f70cce9c89",
+      "scenario": "detached-shell",
+      "mode": "agent",
+      "loopbackModelRequests": 2,
+      "permissionRequestCount": 1,
+      "markerAtPromptResult": false,
+      "markerAfterObservation": false,
+      "postTerminalObservationMs": 300,
+      "disposition": "provider_behavior_failure",
+      "failedAssertion": "Detached shell must finish before prompt terminal result"
+    },
+    {
+      "evidenceFile": "detached-shell-observe-late.json",
+      "sha256": "095b0aed787575bbc22f5e80ea8eff74152a696dccdf850201f3aba629ebc978",
+      "scenario": "detached-shell",
+      "mode": "agent",
+      "loopbackModelRequests": 2,
+      "permissionRequestCount": 1,
+      "markerAtPromptResult": false,
+      "markerAfterObservation": true,
+      "postTerminalObservationMs": 3000,
+      "disposition": "provider_behavior_failure",
+      "failedAssertion": "Detached shell must finish before prompt terminal result"
+    },
+    {
+      "evidenceFile": "detached-shell-policy-denied.json",
+      "sha256": "a941e02818297025866b76f541a23d078515dcfd4a43bf26421ffd46025ed720",
+      "providerVersion": "1.0.88",
+      "scenario": "detached-shell",
+      "loopbackModelRequests": 1,
+      "permissionResponseCount": 0,
+      "markerAtPromptResult": false,
+      "markerAfterObservation": false,
+      "policyRejection": "COPILOT_DETACHED_WORK_UNSUPPORTED",
+      "disposition": "policy_denied_before_effect",
+      "scope": "exact repository tool-update policy source, not full production admission"
+    },
+    {
+      "evidenceFile": "detached-shell-policy-denied-final.json",
+      "sha256": "4a2e91b561300ec6e2bad7ebb9d599ca502692883ffaa3a30d24d606f3c0284b",
+      "providerVersion": "1.0.88",
+      "scenario": "detached-shell",
+      "loopbackModelRequests": 1,
+      "permissionResponseCount": 0,
+      "markerAtPromptResult": false,
+      "markerAfterObservation": false,
+      "policyRejection": "COPILOT_DETACHED_WORK_UNSUPPORTED",
+      "disposition": "policy_denied_before_effect",
+      "scope": "exact repository tool-update policy source, not full production admission"
+    },
+    {
+      "evidenceFile": "comparison-1.0.89-attached.json",
+      "sha256": "95c87df86e91483ac67d7f02ffd76cf2c968e4be5c0f79679c0a1e8f289d6b20",
+      "providerVersion": "1.0.89",
+      "scenario": "attached-shell",
+      "loopbackModelRequests": 3,
+      "permissionResponseCount": 1,
+      "markerAtPromptResult": true,
+      "markerAfterObservation": true,
+      "policyRejection": null,
+      "disposition": "passed",
+      "scope": "unguarded native protocol"
+    },
+    {
+      "evidenceFile": "comparison-1.0.89-detached.json",
+      "sha256": "0dd99fa9fe72c831f09bebfa99d9effae16fe895964f9ef726462b92ca1cf0f3",
+      "providerVersion": "1.0.89",
+      "scenario": "detached-shell",
+      "loopbackModelRequests": 2,
+      "permissionResponseCount": 1,
+      "markerAtPromptResult": false,
+      "markerAfterObservation": true,
+      "policyRejection": null,
+      "disposition": "unsupported_native_lifetime",
+      "scope": "unguarded native protocol"
+    }
+  ],
+  "emptySessionLoadDiagnosis": "Copilot does not retain an empty conversation for load. Initial resource-not-found retained; second attempt seeds one loopback-only text turn before close/load. It then requests shell permission and rejects the write.",
+  "providerDeathDiagnosis": "One allowed seed mutation appends X. The exact provider is SIGKILLed and replaced against the same private state, then session/load succeeds. X occurs once after load and the next denied write remains absent. Request ID 0 is reused by the new process and requires fresh permission authority.",
+  "detachedSettlementDiagnosis": "Explicit native detach returns end_turn before command completion in both 1.0.88 and isolated 1.0.89. Original failed settlement assertions are retained. This intentional native lifetime is unsupported by the runner, not proof that attached-shell upstream issue #4743 remains open. The production guard denies rawInput.detach:true before permission dispatch; native no-side-effect probe passes. Native Rust schemas/platform/feature variants and shell escape lifetimes remain outside comprehensive qualification.",
+  "comparisonRelease": {
+    "package": "@github/copilot-darwin-arm64",
+    "version": "1.0.89",
+    "tarball": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.89.tgz",
+    "integrity": "sha512-CaBNRZ1gRgatEdlgL2l/Ykw+79sOOYhBWFh3ohifYL7XgPBLf4xnXf59WlOTRT3Ojm4RSbbu/qVwBAa/elIdPQ==",
+    "tarballSha256": "7292cd2b3f0275e90bed9306bee23c5b7b1e22d604d8ea121f67c24f7192ad49",
+    "executableSha256": "97c12874d9adb9738374a9fb8a52cd724b81132ff815140f7e017bac706feba7"
+  },
+  "toolSchemaEvidence": {
+    "evidenceFile": "native-tool-schemas.json",
+    "sha256": "68463a6afc5cf6b247998d76d4094fdc44789909197b2cd7a380b1649c8b4062",
+    "detachParameterTools": [
+      "bash"
+    ],
+    "noDetachParameterTools": [
+      "read_bash",
+      "stop_bash",
+      "task"
+    ],
+    "notAdvertised": [
+      "write_bash",
+      "powershell",
+      "write_powershell",
+      "read_powershell"
+    ],
+    "comprehensiveAcrossPlatformsAndFlags": false
+  },
+  "detachedPolicySourceSha256": "a4be69be43db84052560420a3ca546a665c9165573c24d543eb33d144ba138a3"
+}

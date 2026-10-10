@@ -32,7 +32,6 @@ import {
 import type { IssueExternalObjectGroup } from "@/hooks/useIssueExternalObjects";
 import {
   storybookAgents,
-  storybookExecutionWorkspaces,
   storybookIssueLabels,
   storybookIssues,
   storybookProjects,
@@ -71,6 +70,7 @@ function makeObject(args: {
     lastChangedAt: "2026-04-24T22:45:00.000Z",
     lastErrorAt: args.liveness === "unreachable" ? "2026-04-24T22:50:00.000Z" : null,
     nextRefreshAt: null,
+    refreshStartedAt: null,
     lastErrorCode: null,
     lastErrorMessage: null,
     createdAt: "2026-04-24T20:00:00.000Z",
@@ -649,7 +649,6 @@ function FilterPopoverWithExternalChecked() {
           currentUserId="user-board"
           enableRoutineVisibilityFilter
           buttonVariant="outline"
-          workspaces={storybookExecutionWorkspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
           creators={[
             { id: "user:user-board", label: "Riley Board", kind: "user", searchText: "board user human" },
           ]}

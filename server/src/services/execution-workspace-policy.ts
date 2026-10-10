@@ -4,6 +4,7 @@ import type {
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
+  SharedWorkspaceConcurrency,
 } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
@@ -37,11 +38,17 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   }
   return {
     type,
-    ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
-    ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
-    ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
-    ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
-    ...(typeof parsed.teardownCommand === "string" ? { teardownCommand: parsed.teardownCommand } : {}),
+    ...(typeof parsed.baseRef === "string" || parsed.baseRef === null ? { baseRef: parsed.baseRef } : {}),
+    ...(typeof parsed.branchTemplate === "string" || parsed.branchTemplate === null ? { branchTemplate: parsed.branchTemplate } : {}),
+    ...(typeof parsed.existingBranch === "string" && parsed.existingBranch.trim().length > 0
+      ? { existingBranch: parsed.existingBranch.trim() }
+      : {}),
+    ...(typeof parsed.worktreeParentDir === "string" || parsed.worktreeParentDir === null ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
+    ...(typeof parsed.provisionCommand === "string" || parsed.provisionCommand === null ? { provisionCommand: parsed.provisionCommand } : {}),
+    ...(typeof parsed.runtimeProvisionCommand === "string" || parsed.runtimeProvisionCommand === null
+      ? { runtimeProvisionCommand: parsed.runtimeProvisionCommand }
+      : {}),
+    ...(typeof parsed.teardownCommand === "string" || parsed.teardownCommand === null ? { teardownCommand: parsed.teardownCommand } : {}),
   };
 }
 
@@ -107,6 +114,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     typeof parsed.defaultProjectWorkspaceId === "string" ? parsed.defaultProjectWorkspaceId : undefined;
   const allowIssueOverride =
     typeof parsed.allowIssueOverride === "boolean" ? parsed.allowIssueOverride : undefined;
+  const sharedWorkspaceConcurrency = parseSharedWorkspaceConcurrency(parsed.sharedWorkspaceConcurrency);
   const normalizedDefaultMode = (() => {
     if (
       defaultMode === "shared_workspace" ||
@@ -122,6 +130,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
+    ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
@@ -155,6 +164,45 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
+/**
+ * Operator default: a project with a configured workspace and no policy of its
+ * own runs its tasks in an isolated per-task worktree.
+ *
+ * This substitutes a policy rather than moving the terminal fallback in
+ * `resolveExecutionWorkspaceMode`, and the distinction is load-bearing:
+ *
+ * - A task with no project must keep its existing behavior. Isolation needs a
+ *   repository to cut a worktree from, and `isUnrunnableWorktreeCombo` blocks
+ *   an isolated + `git_worktree` task that has neither `projectId` nor
+ *   `projectWorkspaceId`. Moving the terminal fallback would resolve isolated
+ *   for project-less tasks (agent chat, for example) and strand them before
+ *   dispatch. A project without a configured workspace also uses a plain
+ *   managed directory, not a Git checkout. `hasProjectWorkspace` keeps both
+ *   cases on their existing path; configured checkouts are still validated
+ *   before a worktree is created.
+ * - `buildExecutionWorkspaceAdapterConfig` only supplies the default
+ *   `git_worktree` strategy when some layer actually asserts workspace
+ *   control. A moved fallback would leave `hasWorkspaceControl` false and
+ *   produce isolated mode carrying a `project_primary` strategy — a
+ *   combination no caller expects. Substituting a real policy makes
+ *   `projectHasPolicy` true, so mode and strategy stay coherent.
+ *
+ * A stored project policy always wins, including one that is explicitly
+ * disabled: `parseProjectExecutionWorkspacePolicy` returns `enabled: false`
+ * for a blob that never opted in, and that is a tenant decision to stay on the
+ * shared checkout, not an absent one to fill in.
+ */
+export function applyDefaultIsolatedExecutionWorkspacePolicy(input: {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  defaultIsolatedWorkspacesEnabled: boolean;
+  hasProjectWorkspace: boolean;
+}): ProjectExecutionWorkspacePolicy | null {
+  if (!input.defaultIsolatedWorkspacesEnabled) return input.projectPolicy;
+  if (!input.hasProjectWorkspace) return input.projectPolicy;
+  if (input.projectPolicy) return input.projectPolicy;
+  return { enabled: true, defaultMode: "isolated_workspace" };
+}
+
 type ParseIssueExecutionWorkspaceSettingsOptions = {
   includeEnvironmentId?: boolean;
 };
@@ -166,6 +214,7 @@ export function parseIssueExecutionWorkspaceSettings(
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
   const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
+  const sharedWorkspaceConcurrency = parseSharedWorkspaceConcurrency(parsed.sharedWorkspaceConcurrency);
   const mode = asString(parsed.mode, "");
   const normalizedMode = (() => {
     if (
@@ -182,10 +231,22 @@ export function parseIssueExecutionWorkspaceSettings(
     if (mode === "isolated") return "isolated_workspace";
     return "";
   })();
+  const networkEgress = parseObject(parsed.networkEgress);
+  const allowFqdns = Array.isArray(networkEgress.allowFqdns)
+    ? networkEgress.allowFqdns
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim().toLowerCase())
+    : [];
+  const allowCidrs = Array.isArray(networkEgress.allowCidrs)
+    ? networkEgress.allowCidrs
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim())
+    : [];
   return {
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
+    ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
       ? { environmentId: parsed.environmentId }
       : {}),
@@ -193,40 +254,91 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
+    ...(allowFqdns.length > 0 || allowCidrs.length > 0
+      ? { networkEgress: { allowFqdns, allowCidrs } }
+      : {}),
   };
 }
 
+export function selectEnvironmentExecutionWorkspaceSettings(
+  parsedSettings: IssueExecutionWorkspaceSettings | null,
+  isolatedWorkspacesEnabled: boolean,
+): IssueExecutionWorkspaceSettings | null {
+  if (!parsedSettings) return null;
+  if (isolatedWorkspacesEnabled) return parsedSettings;
+  return parsedSettings.networkEgress
+    ? { networkEgress: parsedSettings.networkEgress }
+    : null;
+}
+
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
   | "agent"
   | "instance"
-  | "default";
+  | "default"
+  | "managed";
 
 export type ExecutionWorkspaceEnvironmentResolution = {
   environmentId: string;
   source: ExecutionWorkspaceEnvironmentSource;
 };
 
+export class ManagedSandboxUnavailableError extends Error {
+  constructor() {
+    super(
+      "This instance runs agents only in its platform-managed sandbox environment " +
+        "(managed sandbox only), but no active managed sandbox environment exists — " +
+        "its provider plugin may be unavailable. Refusing to fall back to local execution.",
+    );
+    this.name = "ManagedSandboxUnavailableError";
+  }
+}
+
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
+  lowTrustIssueEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
+  /**
+   * Managed-sandbox-only policy (`enableManagedSandboxOnly`): any selection
+   * that lands on the local environment is redirected to the managed
+   * sandbox environment instead, and with no managed environment available
+   * the resolution fails closed — never local. Non-local selections (ssh,
+   * user-created sandboxes) are untouched: the policy hides local, it does
+   * not forbid other environments.
+   */
+  managedSandboxOnly?: boolean;
+  managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
-  if (input.agentDefaultEnvironmentId) {
+  const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.lowTrustIssueEnvironmentId) {
+      return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
+    }
+    if (input.agentDefaultEnvironmentId) {
+      return {
+        environmentId: input.agentDefaultEnvironmentId,
+        source: "agent",
+      };
+    }
+    if (input.instanceDefaultEnvironmentId) {
+      return {
+        environmentId: input.instanceDefaultEnvironmentId,
+        source: "instance",
+      };
+    }
     return {
-      environmentId: input.agentDefaultEnvironmentId,
-      source: "agent",
+      environmentId: input.localDefaultEnvironmentId,
+      source: "default",
     };
+  })();
+  if (input.managedSandboxOnly !== true || resolved.environmentId !== input.localDefaultEnvironmentId) {
+    return resolved;
   }
-  if (input.instanceDefaultEnvironmentId) {
-    return {
-      environmentId: input.instanceDefaultEnvironmentId,
-      source: "instance",
-    };
+  if (!input.managedSandboxEnvironmentId) {
+    throw new ManagedSandboxUnavailableError();
   }
-  return {
-    environmentId: input.localDefaultEnvironmentId,
-    source: "default",
-  };
+  return { environmentId: input.managedSandboxEnvironmentId, source: "managed" };
 }
 
 export function defaultIssueExecutionWorkspaceSettingsForProject(
@@ -281,6 +393,19 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+function parseSharedWorkspaceConcurrency(raw: unknown): SharedWorkspaceConcurrency | undefined {
+  return raw === "auto" || raw === "serialize" || raw === "allow" ? raw : undefined;
+}
+
+export function resolveSharedWorkspaceConcurrency(input: {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+}): SharedWorkspaceConcurrency {
+  return input.issueSettings?.sharedWorkspaceConcurrency
+    ?? (input.projectPolicy?.enabled ? input.projectPolicy.sharedWorkspaceConcurrency : undefined)
+    ?? "auto";
+}
+
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
@@ -299,11 +424,18 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
-        input.issueSettings?.workspaceStrategy ??
-        input.projectPolicy?.workspaceStrategy ??
+      const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
+      const issueStrategy = input.issueSettings?.workspaceStrategy;
+      // An issue that changes its branch still needs the project's setup hooks.
+      // Do not carry those defaults into a different execution strategy.
+      const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
+        ? { ...projectStrategy, ...issueStrategy }
+        : issueStrategy ?? projectStrategy ??
         parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
         ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+      if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
+        delete strategy.branchTemplate;
+      }
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;

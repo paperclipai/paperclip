@@ -1,3 +1,6 @@
+import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
 import type {
   Agent,
@@ -6,16 +9,19 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
+  IssueScheduledRetry,
 } from "@paperclipai/shared";
 import {
   Eye,
   GitBranch,
   GitBranchPlus,
   Loader2,
+  Lock,
   OctagonAlert,
   RefreshCw,
   Sparkles,
   TriangleAlert,
+  Wrench,
 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -33,6 +39,12 @@ import {
   deriveRecoveryDisplayState,
   type RecoveryDisplayState,
 } from "@/lib/recovery-display";
+import {
+  formatRecoveryAttemptLabel,
+  formatRecoveryRetryOffset,
+  readRecoveryRetryLineage,
+  type RecoveryRetryLineage,
+} from "@/lib/recovery-lineage";
 
 export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
@@ -59,6 +71,12 @@ export interface RecoveryReissueRequest {
 export interface IssueRecoveryActionCardProps {
   action: IssueRecoveryAction;
   agentMap?: ReadonlyMap<string, Agent>;
+  /**
+   * The source issue's scheduled retry. It is the only signal that can confirm the run the
+   * wake policy parked is genuinely in flight, which is what separates a retry the scheduler
+   * is running from one whose due time quietly passed.
+   */
+  scheduledRetry?: IssueScheduledRetry | null;
   /** Preferred state hint (e.g. observe_only when watchdog tone is requested). Falls back to derived state. */
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
@@ -90,26 +108,45 @@ export interface IssueRecoveryActionCardProps {
    * not rendered at all — a non-permitted user never sees the "reconcile anyway" affordance.
    */
   canBreakGlass?: boolean;
-  /** Whether a reconcile (forward or override) is currently in flight (disables both actions). */
+  /**
+   * Handler for the lossless repair — "Repair workspace — quarantine changes & restore branch"
+   * (workspace_validation only). Rendered only for a *dirty* divergence; the caller invokes the S4
+   * reconcile op in `quarantine_restore` mode, which quarantines the dirty worktree onto a rescue
+   * branch and restores the recorded branch. If omitted, the repair action is not shown.
+   */
+  onQuarantineRestore?: () => void;
+  /** Whether a quarantine-restore repair is currently in flight (shares the reconcile spinner). */
+  quarantineRestorePending?: boolean;
+  /** Whether a reconcile (forward, override, or quarantine-restore) is currently in flight. */
   reconcilePending?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
+  /**
+   * Rendering density. `full` (default) shows the complete metadata table; `compact` drops the
+   * metadata rows for embedding beside a run on the agent run page, keeping the header, divergence
+   * diagnosis, and action footer.
+   */
+  variant?: "full" | "compact";
   className?: string;
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "Missing Disposition",
+  deliberate_wait_without_target: "Wait Without A Target",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
   configuration_validation: "Configuration Validation",
   active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Graph Liveness",
+  issue_graph_liveness: "Task Needs Next Step",
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "This task's run finished, but no next step was chosen.",
+  missing_disposition:
+    "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
+  deliberate_wait_without_target:
+    "This task's last run stopped to wait, but there is no reviewer, blocker, monitor, or approval to wait for. Paperclip is repairing the next step; the task stays with its owner.",
   stranded_assigned_issue:
-    "Paperclip retried this task's last run and it still has no live execution path.",
+    "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
   workspace_validation:
     "Paperclip stopped this run because the task's git workspace could not be validated.",
   configuration_validation:
@@ -117,8 +154,12 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
-    "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
+    "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
 };
+
+/** Shared shell for the retry-timing pill so every timing state reads as the same control. */
+const RETRY_PILL_CLASS =
+  "rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground";
 
 const STATE_TONE: Record<RecoveryCardCardState, {
   label: string;
@@ -183,6 +224,8 @@ const STATE_TONE: Record<RecoveryCardCardState, {
 
 const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   restored: "restored",
+  handed_back: "handed back to original owner",
+  owner_completed: "completed by recovery owner",
   delegated: "delegated to follow-up",
   false_positive: "false positive",
   blocked: "blocked",
@@ -197,20 +240,20 @@ function readEvidenceString(value: unknown): string | null {
   return trimmed.length > 240 ? `${trimmed.slice(0, 237)}…` : trimmed;
 }
 
-function pickEvidenceSummary(action: IssueRecoveryAction): string | null {
+// Human-sentence evidence sources render as prose; code-shaped sources
+// (error codes, statuses) stay in the mono treatment used for run ids.
+const PROSE_EVIDENCE_KEYS = ["summary", "detectedProgressSummary", "missingDisposition", "retryReason"] as const;
+const CODE_EVIDENCE_KEYS = ["latestRunErrorCode", "latestRunStatus", "latestIssueStatus"] as const;
+
+function pickEvidenceSummary(action: IssueRecoveryAction): { text: string; isCode: boolean } | null {
   const evidence = action.evidence ?? {};
-  const candidates = [
-    "summary",
-    "detectedProgressSummary",
-    "missingDisposition",
-    "retryReason",
-    "latestRunErrorCode",
-    "latestRunStatus",
-    "latestIssueStatus",
-  ] as const;
-  for (const key of candidates) {
+  for (const key of PROSE_EVIDENCE_KEYS) {
     const next = readEvidenceString(evidence[key]);
-    if (next) return next;
+    if (next) return { text: next, isCode: false };
+  }
+  for (const key of CODE_EVIDENCE_KEYS) {
+    const next = readEvidenceString(evidence[key]);
+    if (next) return { text: next, isCode: true };
   }
   return null;
 }
@@ -248,6 +291,13 @@ function formatShortSha(sha: string | null): string | null {
  * live ("actual"/checked-out) branch, both HEAD shas, and a server-computed ancestry verdict +
  * plain-language explanation of why the run was declined.
  */
+interface WorkspaceContention {
+  claimedByIssueId: string | null;
+  claimedByIssueIdentifier: string | null;
+  /** True when the claiming workspace has a queued/running run (not just a stale claim). */
+  hasActiveRun: boolean;
+}
+
 interface WorkspaceDivergence {
   expectedBranch: string | null;
   liveBranch: string | null;
@@ -256,8 +306,58 @@ interface WorkspaceDivergence {
   ancestryVerdict: GitWorktreeBranchAncestryVerdict | null;
   plainLanguageReason: string | null;
   cleanliness: "clean" | "dirty" | "unknown" | null;
+  /** Number of dirty (uncommitted) status entries in the live worktree, when known. */
+  dirtyFileCount: number | null;
+  /** Sample of dirty paths (already truncated server-side) for the confirm step. */
+  dirtyPathSample: string[];
+  /**
+   * Another workspace is holding the live branch. When present, the lossless quarantine repair is
+   * refused server-side — re-issuing on an isolated workspace is the recommended path instead.
+   */
+  contention: WorkspaceContention | null;
+  /**
+   * Preview of the rescue branch the quarantine repair will create. The server appends a UTC
+   * timestamp at repair time, so this is the stable prefix only (rendered with a trailing marker).
+   */
+  rescueBranchPreview: string;
   /** Ref a re-issue should base off — the live branch when known, else the live HEAD sha. */
   reissueBaseRef: string | null;
+}
+
+/** Mirrors the server's `sanitizeBranchName` for a faithful rescue-branch preview. */
+function sanitizeBranchComponent(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9._/-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[-/.]+|[-/.]+$/g, "")
+      .slice(0, 120) || "issue"
+  );
+}
+
+function buildRescueBranchPreview(sourceIdentifier: string | null): string {
+  return `paperclip/rescue/${sanitizeBranchComponent(sourceIdentifier ?? "issue")}/`;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function asNonNegativeInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+function readContention(value: unknown): WorkspaceContention | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const activeRun = asRecord(record.activeRun);
+  return {
+    claimedByIssueId: asNonEmptyString(record.claimedByIssueId),
+    claimedByIssueIdentifier: asNonEmptyString(record.claimedByIssueIdentifier),
+    hasActiveRun: activeRun !== null,
+  };
 }
 
 function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergence | null {
@@ -275,6 +375,7 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     cleanlinessRaw === "clean" || cleanlinessRaw === "dirty" || cleanlinessRaw === "unknown"
       ? cleanlinessRaw
       : null;
+  const sourceIdentifier = asNonEmptyString(workspaceValidation.sourceIdentifier);
   return {
     expectedBranch,
     liveBranch,
@@ -283,6 +384,10 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
     ancestryVerdict: asAncestryVerdict(provenance.ancestryVerdict),
     plainLanguageReason: asNonEmptyString(provenance.plainLanguageReason),
     cleanliness,
+    dirtyFileCount: asNonNegativeInt(workspaceValidation.statusEntryCount),
+    dirtyPathSample: asStringArray(workspaceValidation.dirtyPathSample),
+    contention: readContention(workspaceValidation.contention),
+    rescueBranchPreview: buildRescueBranchPreview(sourceIdentifier),
     reissueBaseRef: liveBranch ?? liveHeadSha,
   };
 }
@@ -380,7 +485,28 @@ function DivergenceDiagnosis({
       {divergence.plainLanguageReason ? (
         <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
       ) : null}
+      {divergence.contention ? (
+        <p
+          data-testid="recovery-contention-notice"
+          className="flex items-start gap-1.5 rounded-md border border-amber-400/40 bg-amber-500/5 px-2.5 py-1.5 text-xs leading-5 text-amber-900 dark:text-amber-200"
+        >
+          <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Worktree claimed by{" "}
+            <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
+            {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
+            can&apos;t run while another workspace holds the live branch.
+          </span>
+        </p>
+      ) : null}
     </div>
+  );
+}
+
+function contentionLabel(contention: WorkspaceContention): string {
+  return (
+    contention.claimedByIssueIdentifier ??
+    (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
   );
 }
 
@@ -498,18 +624,154 @@ function BreakGlassOverride({
   );
 }
 
+/**
+ * The lossless repair — quarantine the dirty worktree onto a rescue branch, then restore the
+ * recorded branch. Unlike break-glass, this is *non-destructive* (no work is lost, so no reason is
+ * required): the confirm popover simply restates what will happen — the dirty file count, that the
+ * live branch is left untouched, the rescue branch that will hold the changes, and the recorded
+ * branch to be restored. Disabled (with an inline explanation, no popover) when the live branch is
+ * contended by another workspace, since the server refuses the repair in that case.
+ */
+function RepairWorkspace({
+  divergence,
+  onConfirm,
+  pending,
+  disabled,
+  disabledReason,
+}: {
+  divergence: WorkspaceDivergence;
+  onConfirm: () => void;
+  pending: boolean;
+  disabled: boolean;
+  disabledReason: string | null;
+}) {
+  const dirtyCount = divergence.dirtyFileCount;
+  const dirtyLabel =
+    dirtyCount === null
+      ? "Uncommitted changes"
+      : `${dirtyCount} uncommitted ${dirtyCount === 1 ? "change" : "changes"}`;
+  const trigger = (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      disabled={pending || disabled}
+      data-testid="recovery-action-repair-trigger"
+      className="border-sky-400/50 text-sky-700 hover:bg-sky-500/10 dark:border-sky-500/40 dark:text-sky-300"
+    >
+      {pending ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      ) : (
+        <Wrench className="h-3.5 w-3.5" aria-hidden />
+      )}
+      Repair workspace — quarantine changes &amp; restore branch
+    </Button>
+  );
+  if (disabled) {
+    // Contended: the server refuses the repair, so render a plainly disabled control with the reason
+    // inline rather than a popover the operator can't act on.
+    return (
+      <div className="flex flex-col gap-1" data-testid="recovery-action-repair-disabled">
+        {trigger}
+        {disabledReason ? (
+          <span className="text-(length:--text-nano) leading-4 text-muted-foreground">
+            {disabledReason}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        aria-labelledby="recovery-repair-title"
+        className="w-96 max-w-(--sz-calc-4) space-y-3 p-3"
+      >
+        <div className="space-y-1">
+          <div
+            id="recovery-repair-title"
+            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
+          >
+            <Wrench className="h-3.5 w-3.5" aria-hidden />
+            Repair workspace
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
+            rescue branch, then the recorded branch is restored so the task can resume. The live branch
+            is left exactly as it is.
+          </p>
+        </div>
+        <dl
+          data-testid="recovery-repair-restated"
+          className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
+              {dirtyLabel}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.liveBranch ?? "detached"}
+              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dd
+              data-testid="recovery-repair-rescue-branch"
+              className="min-w-0 truncate font-mono text-foreground/90"
+            >
+              {divergence.rescueBranchPreview}
+              <span className="text-muted-foreground">&lt;timestamp&gt;</span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dd className="min-w-0 truncate font-mono text-foreground/90">
+              {divergence.expectedBranch ?? "recorded branch"}
+            </dd>
+          </div>
+        </dl>
+        <Button
+          type="button"
+          size="sm"
+          className="w-full"
+          disabled={pending}
+          data-testid="recovery-action-repair-confirm"
+          onClick={() => {
+            if (pending) return;
+            onConfirm();
+          }}
+        >
+          {pending ? "Repairing…" : "Quarantine changes & restore branch"}
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   const policy = action.wakePolicy;
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "Corrective wake queued";
-  if (type === "board_escalation") return "Escalated to board";
-  if (type === "manual") return "Manual";
-  if (type === "manual_repair_required") return "Manual repair required";
+  if (type === "wake_owner") return "An agent will be asked to choose the next step";
+  if (type === "bounded_owner_disposition_repair") {
+    return "Paperclip is retrying the original owner";
+  }
+  if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
+  if (type === "board_escalation") return "Board decision required";
+  if (type === "manual") return "Manual follow-up needed";
+  if (type === "manual_repair_required") return "Repair needed before retry";
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Monitor scheduled · ${interval}` : "Monitor scheduled";
+    return interval ? `Check scheduled · ${interval}` : "Check scheduled";
   }
   return type.replaceAll("_", " ");
 }
@@ -624,6 +886,65 @@ function RunChip({
   return <span className="inline-flex items-center gap-2">{inner}</span>;
 }
 
+function formatTimeAbsolute(value: string | Date | null | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * Headline for an action carrying a bounded retry lineage. It describes the recovery
+ * state and next step without implying that a repair owner owns the deliverable.
+ */
+function lineageHeadline(lineage: RecoveryRetryLineage): string {
+  if (lineage.lane === "native_run") {
+    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
+    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
+    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
+    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
+    return "The existing run still needs recovery. Review the recorded failure before retrying.";
+  }
+  // An attempt that came due and never ran leaves nobody working on this task, even though
+  // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
+  if (lineage.retryExpired) {
+    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
+  }
+  if (lineage.lane === "source_owner") {
+    return lineage.exhausted
+      ? "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner."
+      : "This task's last run stopped to wait, but nothing was waiting for it. Paperclip is retrying the original owner to record a real next step. The task stays with its owner, and no action is needed yet.";
+  }
+  if (lineage.lane === "recovery_owner") {
+    return "The original owner could not record a next step within its retry budget. A recovery owner is now repairing the path only — the task itself still belongs to its original owner.";
+  }
+  return "Automatic recovery is exhausted, so the board must choose the next step. The task itself still belongs to its original owner.";
+}
+
+/** Spent/remaining attempts as pips. The readable count lives beside it in text. */
+function AttemptMeter({ lineage }: { lineage: RecoveryRetryLineage }) {
+  if (lineage.maxAttempts === null || lineage.maxAttempts > 12) return null;
+  const spent = Math.min(lineage.attempt, lineage.maxAttempts);
+  return (
+    <span className="inline-flex items-center gap-1" aria-hidden>
+      {Array.from({ length: lineage.maxAttempts }, (_, index) => (
+        <span
+          key={index}
+          className={cn(
+            "size-1.5 rounded-full",
+            index < spent ? "bg-current opacity-80" : "bg-current opacity-25",
+          )}
+        />
+      ))}
+    </span>
+  );
+}
+
 const RESOLVE_OPTIONS: Array<{
   outcome: RecoveryResolveOutcome;
   label: string;
@@ -665,35 +986,67 @@ const RESOLVE_OPTIONS: Array<{
 export function IssueRecoveryActionCard({
   action,
   agentMap,
+  scheduledRetry = null,
   forcedState,
   onResolve,
   onReissueIsolated,
   reissuePending = false,
   onReconcileForward,
   onBreakGlassOverride,
+  onQuarantineRestore,
+  quarantineRestorePending = false,
   canBreakGlass = false,
   reconcilePending = false,
   canFalsePositive = false,
+  variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
-  const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
+  const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
+  const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
   const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
+  const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
       return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
     }
+    if (
+      (cardState === "needed" || cardState === "escalated") &&
+      action.kind === "active_run_watchdog" &&
+      action.ownerType === "board"
+    ) {
+      return "This recovery needs a human decision. Review the recorded failure and choose the next step.";
+    }
+    if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState]);
+  }, [action.kind, action.outcome, action.ownerType, cardState, lineage]);
 
-  const wakeSummary = readWakePolicySummary(action);
+  // A lane with no path left must not keep advertising a retry that will never run — whether
+  // the budget ran out or the scheduled attempt simply never fired.
+  const wakeSummary = lineage?.retryExpired
+    ? "The scheduled retry did not run — a retry or a decision is needed"
+    : lineage?.exhausted && !lineage.liveRunId && lineage.lane !== "board"
+    ? "Automatic retries are finished — a decision is needed"
+    : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
   const sourceRunId = readEvidenceRunId(action, "sourceRunId") ?? readEvidenceRunId(action, "latestRunId");
   const correctiveRunId = readEvidenceRunId(action, "correctiveRunId");
-  const showAttempt = action.attemptCount > 1 && action.maxAttempts !== null;
+  // The lineage rows below already carry the attempt budget, so the generic chip only
+  // covers actions without one.
+  const showAttempt = !lineage && action.attemptCount > 1 && action.maxAttempts !== null;
+  const sourceOwnerAgentId = action.returnOwnerAgentId ?? action.previousOwnerAgentId;
+  const recoveryOwnerIsSourceOwner =
+    action.ownerType === "agent" &&
+    action.ownerAgentId !== null &&
+    action.ownerAgentId === sourceOwnerAgentId;
+  const retryOffset = lineage ? formatRecoveryRetryOffset(lineage) : null;
+  const attemptLabel = lineage ? formatRecoveryAttemptLabel(lineage) : null;
   const showTimeoutInline = (() => {
+    // The retry-progress row is the single place a lineage reports its timing.
+    if (lineage) return false;
     if (!action.timeoutAt) return false;
     try {
       const date = action.timeoutAt instanceof Date ? action.timeoutAt : new Date(action.timeoutAt);
@@ -713,13 +1066,16 @@ export function IssueRecoveryActionCard({
     resolved: "resolved",
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
-  const showResolveActions = onResolve !== undefined && cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+    if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
+    if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
+  const showResolveActions = onResolve !== undefined && cardState !== "resolved" && visibleResolveOptions.length > 0;
   const reissueBaseRef = divergence?.reissueBaseRef ?? null;
   const showReissueAction =
+    workspaceIsolationControlsVisible &&
     onReissueIsolated !== undefined &&
     cardState !== "resolved" &&
     divergence !== null &&
@@ -741,8 +1097,29 @@ export function IssueRecoveryActionCard({
     cardState !== "resolved" &&
     divergence !== null &&
     canBreakGlass;
+  // The lossless repair — offered only for a *dirty* divergence (a clean one reconciles forward or
+  // via break-glass, with nothing to quarantine). Disabled when the live branch is contended by an
+  // active claimant, since the server refuses `quarantine_restore` in that case.
+  const repairContention = divergence?.contention ?? null;
+  const showRepairAction =
+    onQuarantineRestore !== undefined &&
+    cardState !== "resolved" &&
+    divergence !== null &&
+    divergence.cleanliness === "dirty";
+  const repairDisabledReason = repairContention
+    ? `Held by ${contentionLabel(repairContention)}${showReissueAction ? " — re-issue on an isolated workspace instead." : "."}`
+    : null;
+  // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
+  // "Recommended" hint while the repair button is disabled.
+  const reissueRecommended = showRepairAction && repairContention !== null;
   const showFooter =
-    showResolveActions || showReissueAction || showReconcileForward || showBreakGlass;
+    showResolveActions ||
+    showReissueAction ||
+    showReconcileForward ||
+    showBreakGlass ||
+    showRepairAction;
+
+  if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
   return (
     <section
@@ -750,6 +1127,7 @@ export function IssueRecoveryActionCard({
       aria-label={`Recovery action: ${ariaState}`}
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
+      data-recovery-lane={lineage?.lane}
       className={cn(
         "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
         tone.containerClass,
@@ -785,7 +1163,106 @@ export function IssueRecoveryActionCard({
           <p className="mt-1 text-sm leading-6">{headline}</p>
         </div>
       </header>
+      {variant === "compact" ? null : (
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
+        {lineage ? (
+          <>
+            <MetadataRow label="Task owner">
+              <span
+                className="inline-flex flex-wrap items-center gap-1.5"
+                data-testid="recovery-source-owner"
+              >
+                <AgentLink
+                  agentId={sourceOwnerAgentId}
+                  agentMap={agentMap}
+                  fallback="unassigned"
+                />
+                <span className="text-muted-foreground">keeps this task</span>
+              </span>
+            </MetadataRow>
+            <MetadataRow label="Recovery owner">
+              <span
+                className="inline-flex flex-wrap items-center gap-1.5"
+                data-testid="recovery-recovery-owner"
+              >
+                {lineage.lane === "native_run" && (action.ownerType !== "board" || Boolean(lineage.liveRunId)) ? (
+                  <>
+                    <span className="font-medium">Paperclip</span>
+                    <span className="text-muted-foreground">recovers the existing run</span>
+                  </>
+                ) : recoveryOwnerIsSourceOwner ? (
+                  <span className="font-medium">Original owner — retrying itself</span>
+                ) : action.ownerType === "agent" && action.ownerAgentId ? (
+                  <>
+                    <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
+                    <span className="text-muted-foreground">repairs the next step only</span>
+                  </>
+                ) : action.ownerType === "board" ? (
+                  <>
+                    <span className="font-medium">Board</span>
+                    <span className="text-muted-foreground">decides the next step only</span>
+                  </>
+                ) : action.ownerType === "user" && action.ownerUserId ? (
+                  <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+                ) : (
+                  <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+                )}
+              </span>
+            </MetadataRow>
+            <MetadataRow label="Retry progress">
+              <span
+                className="inline-flex flex-wrap items-center gap-x-2 gap-y-1"
+                data-testid="recovery-retry-progress"
+                data-recovery-lane={lineage.lane}
+                data-recovery-attempt={lineage.attempt}
+                data-recovery-max-attempts={lineage.maxAttempts ?? undefined}
+              >
+                <AttemptMeter lineage={lineage} />
+                <span>{attemptLabel ?? "Attempts not bounded"}</span>
+                {lineage.liveRunId ? (
+                  <span
+                    className={RETRY_PILL_CLASS}
+                    title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
+                    data-testid="recovery-next-retry"
+                  >
+                    Attempt running now
+                  </span>
+                ) : lineage.retryExpired ? (
+                  // The due time is stated plainly as missed. Rendering it as "Next try 5m
+                  // ago" is what made an abandoned lane read as healthy recovery.
+                  <span
+                    className={cn(RETRY_PILL_CLASS, "border-destructive/50 bg-destructive/10 text-destructive")}
+                    title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
+                    data-testid="recovery-next-retry"
+                    data-recovery-retry-expired="true"
+                  >
+                    {retryOffset ? `Retry missed ${retryOffset}` : "Retry missed"}
+                  </span>
+                ) : retryOffset ? (
+                  <span
+                    className={RETRY_PILL_CLASS}
+                    title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
+                    data-testid="recovery-next-retry"
+                  >
+                    {retryOffset === "now" ? "Next try now" : `Next try ${retryOffset}`}
+                  </span>
+                ) : lineage.exhausted ? (
+                  <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">
+                    Automatic retries used up
+                  </span>
+                ) : null}
+              </span>
+            </MetadataRow>
+            {lineage.lane !== "source_owner" && lineage.sourceMaxAttempts !== null ? (
+              <MetadataRow label="Owner retries">
+                <span data-testid="recovery-source-attempts">
+                  The original owner used {lineage.sourceAttempt ?? lineage.sourceMaxAttempts} of{" "}
+                  {lineage.sourceMaxAttempts} automatic attempts.
+                </span>
+              </MetadataRow>
+            ) : null}
+          </>
+        ) : (
         <MetadataRow label="Owner">
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
@@ -810,6 +1287,7 @@ export function IssueRecoveryActionCard({
             ) : null}
           </span>
         </MetadataRow>
+        )}
         <MetadataRow label="Source run">
           <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
         </MetadataRow>
@@ -820,7 +1298,13 @@ export function IssueRecoveryActionCard({
         ) : null}
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
-            <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">{evidenceSummary}</span>
+            evidenceSummary.isCode ? (
+              <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
+                {evidenceSummary.text}
+              </span>
+            ) : (
+              <span className="text-xs leading-5 text-foreground/80">{evidenceSummary.text}</span>
+            )
           ) : (
             <MissingValue />
           )}
@@ -828,7 +1312,7 @@ export function IssueRecoveryActionCard({
         <MetadataRow label="Next action">
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Wake">
+        <MetadataRow label="Follow-up">
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
@@ -852,6 +1336,7 @@ export function IssueRecoveryActionCard({
           </MetadataRow>
         ) : null}
       </dl>
+      )}
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
@@ -913,15 +1398,25 @@ export function IssueRecoveryActionCard({
               Reconcile forward &amp; continue
             </Button>
           ) : null}
+          {showRepairAction && divergence ? (
+            <RepairWorkspace
+              divergence={divergence}
+              pending={quarantineRestorePending}
+              disabled={repairContention !== null}
+              disabledReason={repairDisabledReason}
+              onConfirm={() => onQuarantineRestore?.()}
+            />
+          ) : null}
           {showReissueAction && divergence && reissueBaseRef ? (
             <Popover>
               <PopoverTrigger asChild>
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant={reissueRecommended ? "default" : "outline"}
                   disabled={reissuePending}
                   data-testid="recovery-action-reissue-trigger"
+                  data-recommended={reissueRecommended ? "true" : undefined}
                 >
                   {reissuePending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
@@ -929,6 +1424,14 @@ export function IssueRecoveryActionCard({
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
                   )}
                   Re-issue on isolated workspace
+                  {reissueRecommended ? (
+                    <span
+                      data-testid="recovery-reissue-recommended"
+                      className="ml-1 rounded-sm bg-background/25 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)"
+                    >
+                      Recommended
+                    </span>
+                  ) : null}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
