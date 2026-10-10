@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
 import type { DeploymentMode, SecretProviderConfigDiscoveryPreviewResult } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
@@ -89,6 +89,7 @@ interface AwsSecretsManagerGateway {
   createSecret(input: {
     Name: string;
     SecretString: string;
+    ClientRequestToken: string;
     KmsKeyId?: string;
     Description?: string;
     Tags: AwsSecretsManagerTag[];
@@ -100,6 +101,7 @@ interface AwsSecretsManagerGateway {
   putSecretValue(input: {
     SecretId: string;
     SecretString: string;
+    ClientRequestToken: string;
     VersionStages?: string[];
   }): Promise<{
     ARN?: string;
@@ -892,6 +894,7 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
   createSecret(input: {
     Name: string;
     SecretString: string;
+    ClientRequestToken: string;
     KmsKeyId?: string;
     Description?: string;
     Tags: AwsSecretsManagerTag[];
@@ -906,6 +909,7 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
   putSecretValue(input: {
     SecretId: string;
     SecretString: string;
+    ClientRequestToken: string;
     VersionStages?: string[];
   }) {
     return this.call<{
@@ -1130,6 +1134,7 @@ export function createAwsSecretsManagerProvider(
         const createInput = {
           Name: secretId,
           SecretString: input.value,
+          ClientRequestToken: randomUUID(),
           ...(config.kmsKeyId ? { KmsKeyId: config.kmsKeyId } : {}),
           Description: input.context ? `Paperclip secret ${input.context.secretName}` : undefined,
           Tags: buildManagedSecretTags(config, input.context),
@@ -1163,6 +1168,7 @@ export function createAwsSecretsManagerProvider(
         const created = await gateway.putSecretValue({
           SecretId: secretId,
           SecretString: input.value,
+          ClientRequestToken: randomUUID(),
           VersionStages: [PAPERCLIP_PENDING_VERSION_STAGE],
         });
         const normalizedSecretId = created.ARN ?? created.Name ?? secretId;
