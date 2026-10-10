@@ -191,6 +191,41 @@ describe("computer ownership", () => {
       (await f.repository.get(f.scope)).ledger.action?.providerStopId,
     ).toBe("stop_1");
   });
+  it("replaces a superseded stop while preserving the admission fence", async () => {
+    const f = fixture();
+    await f.attach();
+    await f.service.reconcile();
+    vi.mocked(f.backend.stopStatus).mockResolvedValueOnce({ id: "stop_1", status: "superseded" });
+    vi.mocked(f.backend.stop).mockResolvedValueOnce({ id: "stop_2", status: "pending" });
+    await f.service.reconcile();
+    expect((await f.repository.get(f.scope)).ledger.action?.providerStopId).toBe("stop_2");
+    await expect(f.admit()).rejects.toMatchObject({ code: "conflict" });
+    vi.mocked(f.backend.stopStatus).mockResolvedValueOnce({ id: "stop_2", status: "completed" });
+    await f.service.reconcile();
+    expect(f.backend.stopStatus).toHaveBeenLastCalledWith(expect.anything(), "stop_2");
+    await expect(f.admit()).resolves.toHaveProperty("owner");
+  });
+  it("adopts a newer pending stop without issuing a duplicate operation", async () => {
+    const f = fixture();
+    await f.attach();
+    await f.service.reconcile();
+    vi.mocked(f.backend.stopStatus).mockResolvedValueOnce({ id: "stop_1", status: "superseded" });
+    vi.mocked(f.backend.inspect).mockResolvedValueOnce({ state: "ready", snapshots: true, stop: { id: "stop_2", status: "failing" } });
+    await f.service.reconcile();
+    expect((await f.repository.get(f.scope)).ledger.action?.providerStopId).toBe("stop_2");
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+    await expect(f.admit()).rejects.toMatchObject({ code: "conflict" });
+  });
+  it("settles a superseded stop only after physical archival proof", async () => {
+    const f = fixture();
+    await f.attach();
+    await f.service.detach(f.scope);
+    vi.mocked(f.backend.stopStatus).mockResolvedValueOnce({ id: "stop_1", status: "superseded" });
+    vi.mocked(f.backend.inspect).mockResolvedValueOnce({ state: "archived", snapshots: true, stop: null });
+    await f.service.reconcile();
+    expect((await f.repository.get(f.scope)).ledger).toMatchObject({ status: "detached", action: null });
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
   it("viewer renewals cannot extend the absolute warm deadline or use another user", async () => {
     const f = fixture();
     await f.attach();
