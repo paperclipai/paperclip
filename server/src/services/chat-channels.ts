@@ -5886,7 +5886,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 (ref) => ref.configPath === "credentials.webhookSecret",
               ),
             }
-          : {}),
+          : endpoint.provider === "speko" ? {
+              webhookSecretConfigured: row.credentialSecretRefs.some(
+                (ref) => ref.configPath === "credentials.signingSecret",
+              ),
+            } : {}),
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
