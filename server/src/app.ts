@@ -1,4 +1,8 @@
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
+import { eq } from "drizzle-orm";
+import { chatEndpoints } from "@paperclipai/db";
+import { fastResponseRoutes } from "./routes/fast-responses.js";
+import { fastResponseService } from "./services/fast-responses.js";
 import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
@@ -9,6 +13,7 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { registerChatActionWork } from "./services/chat-action-work.js";
 import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
 import { computerRoutes } from "./routes/computers.js";
@@ -662,6 +667,19 @@ export async function createApp(
     publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl,
   });
   app.use(emailWebhookRoutes(emailChannels));
+  app.locals.fastResponses = fastResponseService(db, {
+    authorizeExternal: async (tx, request) => {
+      const [endpoint] = await tx.select({ provider: chatEndpoints.provider }).from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+      return endpoint?.provider === "agentmail" ? emailChannels.authorizeFastResponse(tx, request) : chatChannels.authorizeFastResponse(tx, request);
+    },
+    publishExternal: async (tx, request, commentId, text) => {
+      const [endpoint] = await tx.select({ provider: chatEndpoints.provider }).from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+      if (endpoint?.provider !== "agentmail") return false;
+      await emailChannels.publishFastResponse(tx, request, commentId, text);
+      return true;
+    },
+    budgetHooks: { cancelWorkForScope: connectionIntentHeartbeat.cancelBudgetScopeWork },
+  });
   app.use(chatWebhookRoutes(chatChannels));
   // The instance validates single-use registration state and its trusted
   // current origin. These exact callback routes are the public setup returns.
@@ -918,6 +936,7 @@ export async function createApp(
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
   api.use(decisionModelRoutes(db));
+  api.use(fastResponseRoutes(db));
   api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));
   api.use(
     toolAccessRoutes(db, {
@@ -1236,6 +1255,7 @@ export async function createApp(
     });
   }
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
+  registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   emailChannels.start();
   const reconcileChatPublicationMaintenance = async () => {
     await chatChannels.processPublicationMaintenance();

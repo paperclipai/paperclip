@@ -1262,6 +1262,10 @@ async function startServerWithDatabaseTeardown(
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  const fastResponses = app.locals.fastResponses as ReturnType<typeof import("./services/fast-responses.js").fastResponseService>;
+  const fastResponseWorker = deliveryWork.register(DELIVERY_QUEUES.fastResponse, {
+    retryMs: 100, run: (signal) => fastResponses.sweepPending(signal), hasPending: () => fastResponses.hasPending(),
+  });
   const deliveryWorkers = ([
     [DELIVERY_QUEUES.chatCompletion, chatCompletionDeliveries],
     [DELIVERY_QUEUES.connection, connectionDeliveries],
@@ -1333,7 +1337,7 @@ async function startServerWithDatabaseTeardown(
 
   await app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
   await app.locals.toolGateway.cleanupExpiredSessions().catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
-  await Promise.all(deliveryWorkers.map(worker => worker.ready));
+  await Promise.all([fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready));
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 

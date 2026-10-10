@@ -1,4 +1,4 @@
-import { notifyChatPublicationWork } from "./chat-work-notifications.js";
+import { notifyChatPublicationWork, notifyChatActionWork } from "./chat-work-notifications.js";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   assets,
@@ -102,6 +102,7 @@ export async function mirrorSlackBoardComment(
     if (!principal) {
       throw forbidden("Link your Slack account to this connection before sending a message to its Slack thread");
     }
+    if (options.wakeAgent) await notifyChatActionWork(db, "slack_board_message");
     const [receipt] = await db
       .insert(chatActions)
       .values({

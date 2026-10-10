@@ -2,6 +2,10 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
+
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const PREVIOUS_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const MENTIONED_AGENT_ID = "33333333-3333-4333-8333-333333333333";

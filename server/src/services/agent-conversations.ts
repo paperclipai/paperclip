@@ -1,3 +1,4 @@
+import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import {
   persistActivity,
   publishActivity,
@@ -229,7 +230,7 @@ export async function prepareConversationTurn(
               and coalesce(completed.context_snapshot->>'wakeCommentId', completed.context_snapshot->>'commentId') = issue_comments.id::text
               and (exists (select 1 from issue_comments reply where reply.company_id = ${run.companyId}::uuid
                 and reply.issue_id = ${issueId}::uuid and reply.created_by_run_id = completed.id
-                and reply.author_agent_id = ${issue.conversationAgentId}::uuid and reply.deleted_at is null)
+                and reply.origin = 'comment' and reply.author_agent_id = ${issue.conversationAgentId}::uuid and reply.deleted_at is null)
                 or exists (select 1 from issue_thread_interactions question where question.company_id = ${run.companyId}::uuid
                   and question.issue_id = ${issueId}::uuid and question.source_run_id = completed.id
                   and question.created_by_agent_id = ${issue.conversationAgentId}::uuid)))`,
@@ -306,6 +307,7 @@ export async function settleConversationTurn(
         and(
           eq(issueComments.issueId, issueId),
           eq(issueComments.createdByRunId, run.id),
+          eq(issueComments.origin, "comment"),
           eq(issueComments.authorAgentId, issue.conversationAgentId!),
           isNull(issueComments.deletedAt),
         ),
@@ -456,12 +458,12 @@ export async function conversationReplay(
     )
     .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
     .limit(40);
-  return rows
+  return FAST_RESPONSE_AGENT_GUIDANCE + "\n" + rows
     .reverse()
     .map((row) =>
       JSON.stringify({
-        author: row.authorAgentId ? "agent" : "user",
-        body: sanitizeQuarantinedCommentForHigherTrust(row).body.slice(0, 8000),
+        author: row.origin === "fast_response" ? "paperclip_receipt" : row.authorAgentId ? "agent" : "user",
+        body: fastResponseHistoryBody(sanitizeQuarantinedCommentForHigherTrust(row)).slice(0, 8000),
       }),
     )
     .join("\n");
