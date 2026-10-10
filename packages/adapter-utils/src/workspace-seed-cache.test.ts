@@ -94,3 +94,21 @@ it("supports cross-device archive copies independently of the per-run seed", asy
   const cached = await readWorkspaceSeedGeneration(f.workspace, generation(1));
   expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
 });
+
+it("skips optional verification when capacity is exhausted", async () => {
+  const f = await fixture(); const verify = vi.fn(async () => true);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, limits: { workspaceGenerations: 0 }, verify,
+  })).toBe(false);
+  expect(verify).not.toHaveBeenCalled();
+  expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+});
+
+it("treats optional verification storage failure as a cache miss", async () => {
+  const f = await fixture();
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, verify: async () => { throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); },
+  })).toBe(false);
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+});

@@ -121,6 +121,7 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
   let supportsCheckpoint = true;
   let payloadBytes = -1;
   let mutateDuringPack = false;
+  let failVerification = false, verificationCalls = 0;
   const run = async (command: string) => {
     if (!supportsCheckpoint && command.startsWith("node --input-type=module")) throw new Error("node unavailable");
     await execute("sh", ["-c", command]);
@@ -147,6 +148,12 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
     adapterKey: "test", client, workspaceLocalDir: f.root, workspaceCheckpoint: true,
     runtimeSpan: async (name, work) => {
       if (mutateDuringPack && name === "pack") await fs.writeFile(path.join(f.root, "unchanged"), "concurrent change");
+      if (name === "seed.verify") {
+        verificationCalls++;
+        const result = await work();
+        if (failVerification) throw Object.assign(new Error("verification disk full"), { code: "ENOSPC" });
+        return result;
+      }
       return work();
     },
     workspaceSeedCacheDirectory: cache, workspaceDurableSeed: { workspaceArchivePath: path.join(f.temp, "run-seed.tar") }, ...overrides });
@@ -176,6 +183,18 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
   expect(await fs.readdir(cache)).toEqual(existingGenerations);
   expect((await fs.stat(path.join(f.temp, "run-seed.tar"))).size).toBeGreaterThan(0);
   await raced.cleanupWorkspaceSnapshot();
+  mutateDuringPack = false; failVerification = true;
+  await fs.writeFile(path.join(f.root, "new"), "verification recovery");
+  const verificationFailed = await prepare();
+  expect(await fs.readdir(cache)).toEqual(existingGenerations);
+  const failedSnapshot = verificationFailed.workspaceSyncSnapshot!;
+  await fs.writeFile(path.join(f.root, "new"), "later host bytes");
+  await fs.rm(remote, { recursive: true, force: true });
+  const verificationRecovery = await prepare({ workspaceInboundMode: "durable_seed", workspaceBaseline: failedSnapshot.baseline,
+    workspaceGitSnapshot: failedSnapshot.gitSnapshot, workspaceRepositories: failedSnapshot.repositories });
+  expect(await fs.readFile(path.join(remote, "new"), "utf8")).toBe("verification recovery");
+  await verificationRecovery.cleanupWorkspaceSnapshot();
+  failVerification = false;
   // A saturated optional cache must still admit and recover from its per-run seed.
   mutateDuringPack = false;
   for (let count = (await fs.readdir(cache)).length; count < 16; count++) {
@@ -183,7 +202,9 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
   }
   const saturated = await fs.readdir(cache);
   await fs.writeFile(path.join(f.root, "new"), "quota recovery");
+  const verificationCallsBeforeSaturation = verificationCalls;
   const uncached = await prepare();
+  expect(verificationCalls).toBe(verificationCallsBeforeSaturation);
   expect(await fs.readdir(cache)).toEqual(saturated);
   const snapshot = uncached.workspaceSyncSnapshot!;
   await fs.writeFile(path.join(f.root, "new"), "later host edit");

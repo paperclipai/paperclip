@@ -77,7 +77,7 @@ async function cacheUsage(root: string, limits: SeedCacheLimits): Promise<{ gene
  * untouched. No eviction: readers may still be using a returned cache path. */
 export async function publishWorkspaceSeedGeneration(
   root: string, generation: string, seed: WorkspaceDurableSeedPaths,
-  options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits> } = {},
+  options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits>; verify?: () => Promise<boolean> } = {},
 ): Promise<boolean> {
   const limits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
   if (!/^[a-f0-9]{64}$/.test(generation)
@@ -119,6 +119,7 @@ export async function publishWorkspaceSeedGeneration(
         || workspaces + (workspaceExists ? 0 : 1) > limits.companyWorkspaces) return false;
       // Reserve enough for a full copy even when hard links are unavailable.
       assertWorkspaceManifestDiskSpace(company, incomingBytes);
+      if (options.verify && !await options.verify()) return false;
       await fs.mkdir(root, { recursive: true, mode: 0o700 });
       const temporary = path.join(root, `.pending-${randomUUID()}`);
       await fs.mkdir(temporary, { mode: 0o700 });
