@@ -12,6 +12,7 @@ const api = async (route, method = "GET", body) => {
   return response.json();
 };
 const run = await api(`/heartbeat-runs/${env.PAPERCLIP_RUN_ID}`);
+assert.equal(run.contextSnapshot.paperclipEnvironment.driver, "local");
 const issueId = run.contextSnapshot.issueId;
 const repositories = await readdir(path.join(process.cwd(), ".paperclip-repositories"));
 const repo = path.join(process.cwd(), ".paperclip-repositories", repositories.find((name) => !name.includes(".clone-")));
