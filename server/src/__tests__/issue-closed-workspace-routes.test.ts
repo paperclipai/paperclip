@@ -57,6 +57,9 @@ const mockRunnerGoalService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerServiceMocks() {
+  vi.doMock("../services/fast-responses.js", () => ({
+    enqueueFastResponse: vi.fn(async () => undefined),
+  }));
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -233,7 +236,7 @@ describe("closed isolated workspace issue routes", () => {
       };
       next();
     });
-    app.use("/api", issueRoutes({} as any, {} as any));
+    app.use("/api", issueRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, {} as any));
     app.use(errorHandler);
     return app;
   }

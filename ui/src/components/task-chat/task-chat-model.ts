@@ -101,6 +101,7 @@ export interface TaskChatTokenUsage {
 
 /** A human/agent/system message bubble. */
 export interface TaskChatMessageItem {
+  origin?: "comment" | "fast_response";
   /** Stable UI identity through optimistic acknowledgement; id remains canonical. */
   renderKey?: string;
   id: string;

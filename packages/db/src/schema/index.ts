@@ -245,3 +245,5 @@ export * from "./decision_models.js";
 export { userCompanyPreferences } from "./user_company_preferences.js";
 export { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections } from "./ai_subscriptions.js";
 export * from "./muse_runner.js";
+
+export * from "./fast_responses.js";

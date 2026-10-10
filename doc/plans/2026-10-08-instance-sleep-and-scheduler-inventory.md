@@ -422,7 +422,19 @@ Longer polling intervals alone do not complete an item.
   eligibility predicate so paused endpoints, unknown outcomes, blocked followers,
   and receipts owned by a live sender do not cause empty scans. Completion wakes
   refill free endpoint slots without waiting for slow peers. No new tables.
-  Remaining **1s** maintenance: provider runtimes, provider-specific action
+  Five additional queues now use independent commit/deadline workers:
+  Slack Board messages, slash-command task starts, setup verification messages,
+  receipt reactions, and Slack session stops. Their producers and foreground
+  claim/retry/settlement writes signal inside the owning transaction. The same
+  eligibility predicates drive dispatch and deadline selection. Paused task
+  starts/Board messages and uncertain sends have no recurring deadline.
+  Verification waits for account linking, welcome completion, and a verified
+  callback; those state changes wake it. Failed confirmed task admission saves
+  a retry deadline so its commit cannot cause an immediate retry loop.
+  Startup restores existing rows, and empty workers disarm. No new tables.
+  Tests cover an idle hour, real producer notifications, PostgreSQL deadline
+  selection, stale claims, outer-transaction wakes, and callback-driven setup.
+  Remaining **1s** maintenance: provider runtimes, other provider action
   outboxes, run milestone/wake-notice projection, GitHub operation recovery,
   Teams protocol maintenance, and Slack session sync. GitHub pre-ingress recovery
   must still inspect provider history: a lost callback has no local queue row.

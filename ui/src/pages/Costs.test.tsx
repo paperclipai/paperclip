@@ -469,7 +469,7 @@ describe("Shared Costs surfaces", () => {
       expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Costs" }]);
     }
     expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(
-      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions"],
+      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions", "Fast responses"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions", "Fast responses"],
     );
   });
 

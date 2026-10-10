@@ -765,3 +765,7 @@ authentication, replay, document-sized limits, inspection, and deletion semantic
 ### Managed decision models
 
 A company may configure a shared decision model for optional Paperclip features. The instance owns credential resolution, authorization, budget admission, and attributable service charges. Company-sponsored background use is enabled by default during configuration; explicit opt-out persists. User and agent requests keep their own access boundaries and cannot become sponsored background requests after denial. Availability is a cheap local capability check, and metadata-only request history makes service usage inspectable. The implemented V1 contract is in [decision-models.md](decision-models.md).
+
+### Fast responses
+
+A company may use a shared API model to acknowledge accepted human messages across tasks, agent chat and external channels while normal work starts. Acknowledgements retain their platform provenance and cannot satisfy execution or completion requirements. The bounded inference, authorization, sponsorship and independent accounting contract is defined in [fast-responses.md](fast-responses.md).

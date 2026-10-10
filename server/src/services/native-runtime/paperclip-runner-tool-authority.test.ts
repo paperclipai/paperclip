@@ -23,6 +23,7 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
 import { READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js";
@@ -178,6 +179,53 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+  });
+
+  it("preserves platform receipt provenance in both mixed task history readers", async () => {
+    const at = new Date("2026-10-10T12:00:00Z");
+    const commentIds = Array.from({ length: 4 }, () => randomUUID());
+    const requestId = randomUUID();
+    await db.insert(issueComments).values([
+      { id: commentIds[0], companyId, issueId, authorUserId: "board-user", authorType: "user",
+        body: "Check the configuration.", createdAt: at },
+      { id: commentIds[1], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", fastResponseRequestId: requestId, body: "I will check the configuration.",
+        createdAt: new Date(at.getTime() + 1000) },
+      { id: commentIds[2], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "Verified the configuration: two settings need updates.", createdAt: new Date(at.getTime() + 2000) },
+      { id: commentIds[3], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", body: "Deleted acknowledgement", createdAt: new Date(at.getTime() + 3000),
+        deletedAt: new Date(at.getTime() + 4000) },
+    ]);
+    try {
+      const tool = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const semantic = new PaperclipRunnerSemanticAuthority(db, { companyId, agentId, issueId, runId });
+      const histories = [
+        async (limit: number) => tool.execute({ tool: "get_task_history", callId: `mixed-tool-history-${limit}`, arguments: { limit } }),
+        async (limit: number) => {
+          const result = await semantic.dispatch({ callId: `mixed-semantic-history-${limit}`, operationId: "get_task_history", input: { limit },
+            correlation: { runId, normalizedSessionId: randomUUID(), turnId: "history", itemId: "history" } });
+          expect(result).toMatchObject({ ok: true });
+          return result.ok ? result.value : null;
+        },
+      ];
+      const expected = [
+        { id: commentIds[0], authorAgentId: null, authorUserId: "board-user", origin: "comment", body: "Check the configuration." },
+        { id: commentIds[1], authorAgentId: agentId, authorUserId: null, origin: "fast_response",
+          body: "[Paperclip acknowledgement; not agent work] I will check the configuration." },
+        { id: commentIds[2], authorAgentId: agentId, authorUserId: null, origin: "comment",
+          body: "Verified the configuration: two settings need updates." },
+      ];
+      for (const history of histories) {
+        expect(await history(3)).toMatchObject({ comments: expected });
+        expect(await history(2)).toMatchObject({ comments: expected.slice(1) });
+      }
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentIds[1])))[0])
+        .toMatchObject({ id: commentIds[1], origin: "fast_response", fastResponseRequestId: requestId,
+          authorAgentId: agentId, body: "I will check the configuration." });
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
   });
 
   it("returns public task URLs from the current claimed origin in context and search results", async () => {
