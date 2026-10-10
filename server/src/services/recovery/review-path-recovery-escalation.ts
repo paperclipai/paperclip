@@ -7,6 +7,7 @@ import { externalConversationStateSql } from "../slack-conversation-state.js";
 import {
   executeIssuePostCommitActions,
   issueService,
+  TERMINAL_HEARTBEAT_RUN_STATUSES,
   type IssuePostCommitAction,
 } from "../issues.js";
 import {
@@ -23,10 +24,12 @@ export async function escalateExhaustedIssueReviewPathRecovery(
   input: { run: typeof heartbeatRuns.$inferSelect; issueId: string },
 ) {
   const { run, issueId } = input;
-  const issuesSvc = issueService(db);
   const publications: ActivityPublication[] = [];
   const postCommitActions: IssuePostCommitAction[] = [];
   const action = await db.transaction(async (tx) => {
+    // Services must use the transaction connection for implicit settings reads
+    // too; borrowing the outer pool deadlocks when its only connection is held.
+    const issuesSvc = issueService(tx as unknown as Db);
     // Share the issue fence with ownership, monitor, and interaction updates.
     // Re-read the disposition under the lock rather than blocking a repaired task.
     const issue = await tx.select({ ...getTableColumns(issues), externalConversationState: externalConversationStateSql() }).from(issues)
@@ -54,7 +57,7 @@ export async function escalateExhaustedIssueReviewPathRecovery(
       )))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1)
       .then((rows) => rows[0] ?? null);
-    if (latestRun?.id !== run.id || !["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) return null;
+    if (latestRun?.id !== run.id || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return null;
 
     const consumedPathRef = reviewPathConsumedRefFromRun({
       runId: run.id, issueId, contextSnapshot: run.contextSnapshot,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -525,6 +525,51 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(await db.select().from(issueComments)).toHaveLength(1);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_path_recovery_exhausted"))).toHaveLength(1);
+  });
+
+  it.each(["restart", "transaction_failure"] as const)("recovers a committed review repair after %s with a one-connection pool", async (gap) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Repair finalized before restart", status: "in_review", assigneeAgentId: agentId });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId, companyId, agentId, source: "automation", status: "completed",
+      reason: "issue_review_path_lost", payload: { issueId, reviewPathRecoveryAttempt: 1 },
+    });
+    const [repairRun] = await db.insert(heartbeatRuns).values({
+      companyId, agentId, issueId, status: "succeeded", wakeupRequestId: wakeId, finishedAt: new Date(),
+      contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
+    }).returning();
+    // Only the terminal run and completed wake were persisted before the crash.
+    // A new service must restore the missing action without invoking the agent.
+    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    try {
+      if (gap === "transaction_failure") {
+        await db.execute(sql`alter table issue_comments add constraint review_repair_notice_test check (false) not valid`);
+        try {
+          await expect(escalateExhaustedIssueReviewPathRecovery(singleConnectionDb, { run: repairRun, issueId })).rejects.toThrow();
+        } finally {
+          await db.execute(sql`alter table issue_comments drop constraint review_repair_notice_test`);
+        }
+        expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_review");
+      }
+      const recovery = heartbeatService(singleConnectionDb);
+      const result = await recovery.reconcileStrandedAssignedIssues();
+      expect(result).toMatchObject({ escalated: 1, issueIds: [issueId] });
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+      expect(await db.select().from(issueComments)).toHaveLength(1);
+      const second = await recovery.reconcileStrandedAssignedIssues();
+      expect(second.escalated).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    } finally {
+      await singleConnectionDb.$client.end({ timeout: 1 });
+    }
   });
 
   it("keeps resolved dependency wake reconciliation active", async () => {

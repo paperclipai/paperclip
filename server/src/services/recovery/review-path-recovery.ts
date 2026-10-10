@@ -13,6 +13,11 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function isIssueReviewPathRecoveryRun(contextSnapshot: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(contextSnapshot?.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
+    || contextSnapshot?.reviewPathRecoveryAttempt === 1;
+}
+
 export function reviewPathConsumedRefFromRun(input: {
   runId: string;
   issueId: string;
@@ -85,10 +90,7 @@ export function decideIssueReviewPathRecovery(input: {
   }
 
   const context = input.contextSnapshot ?? {};
-  if (
-    readNonEmptyString(context.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
-    || context.reviewPathRecoveryAttempt === 1
-  ) {
+  if (isIssueReviewPathRecoveryRun(context)) {
     return { kind: "exhausted" };
   }
 
