@@ -628,6 +628,17 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
+      - name: Ensure SSH fixture prerequisites
+        if: ${{ matrix.group == 'general-workspaces-b' }}
+        run: |
+          if ! command -v sshd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y openssh-server
+          fi
+          command -v ssh
+          command -v sshd
+          command -v ssh-keygen
+
       - name: Run grouped general test suites
         run: |
           if [ -n "${{ matrix.shard_count }}" ]; then

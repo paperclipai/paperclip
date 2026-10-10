@@ -47,6 +47,7 @@ import {
   syncRemoteTextFileWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
 } from "./sandbox-callback-bridge.js";
+import { sandboxBridgeEnvelopeLimit } from "./sandbox-callback-bridge-body.js";
 import {
   createHttp2BridgeServer,
   BridgeProcessCapacityError,
@@ -672,19 +673,16 @@ function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | 
 
 type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
 
-// The Secure Shell command runner's own output buffer. This value used to
-// derive from the bridge body limit (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES
-// * 4`), so a bridge limit rise silently grew it too. It now stands on its
-// own local constant, independent of the bridge body limit, so a later
-// bridge limit change never resizes this buffer as a side effect.
+// Ordinary SSH commands keep a small output cap. The file-queue bridge uses
+// its configured envelope limit so valid attachments fit through stdout.
 const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
 
-function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
+function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget, maxBufferBytes = SSH_COMMAND_MAX_BUFFER_BYTES): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
     return createSshCommandManagedRuntimeRunner({
       spec: target.spec,
       defaultCwd: target.remoteCwd,
-      maxBufferBytes: SSH_COMMAND_MAX_BUFFER_BYTES,
+      maxBufferBytes,
     });
   }
   return requireSandboxRunner(target);
@@ -4410,7 +4408,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // input.hostApiUrl stays available as an explicit override seam.
   const hostApiUrl = input.hostApiUrl?.trim() || resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
-  const runner = adapterExecutionTargetCommandRunner(target);
+  const runner = adapterExecutionTargetCommandRunner(
+    target,
+    target.transport === "ssh" ? sandboxBridgeEnvelopeLimit(maxBodyBytes) + 1 : SSH_COMMAND_MAX_BUFFER_BYTES,
+  );
   const bridgeTimeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
       ? Math.trunc(input.timeoutSec * 1000)
