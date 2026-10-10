@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { MuseConnection, MusePairing, MuseAttestStopInput } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
-import { useMuseConnection, museConnectionState } from "@/hooks/useMuseConnection";
+import { useMuseConnection, useMuseConnectionState } from "@/hooks/useMuseConnection";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatDateTime } from "@/lib/utils";
 import { AgentSetupPrompt } from "./AgentSetupPrompt";
@@ -32,7 +32,8 @@ export function MuseConnectionDetails({ connection, pairing, busy, error, onTest
   const stopBindingRevision = b?.stop.bindingRevision;
   useEffect(() => { setAttestation(null); setConfirmed(false); }, [boundaryIdentity, stopBindingRevision]);
   const live = !!b && b.status !== "revoked";
-  const testing = !!b?.challengeExpiresAt && Date.parse(b.challengeExpiresAt) > Date.now() && !b.backgroundReplyVerified;
+  const state = useMuseConnectionState(connection);
+  const testing = state.testing;
   const configure = connection.enabled && connection.canConfigureConnection && !!connection.publicOrigin;
   const timestamp = (value: string | null) => value ? formatDateTime(value, { includeSeconds: true }) : "Not observed";
   return <div className="space-y-4">
@@ -40,7 +41,7 @@ export function MuseConnectionDetails({ connection, pairing, busy, error, onTest
     {!connection.enabled && <p className="text-sm text-muted-foreground">Muse is disabled in experimental settings. Connection cleanup and stop evidence remain available.</p>}
     {!connection.publicOrigin && <p className="text-sm text-muted-foreground">An authenticated instance with a public HTTPS URL is required to connect Muse.</p>}
     {b && <>
-      <MuseConnectionChecks state={museConnectionState(connection)} />
+      <MuseConnectionChecks state={state} />
       <dl className="space-y-2 text-xs">
         {[
           ["Last persisted receiver contact", timestamp(b.lastReceiverContactAt)],

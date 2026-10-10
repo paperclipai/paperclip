@@ -23,7 +23,10 @@ let root: Root; let container: HTMLDivElement; let cache: QueryClient;
 const close = vi.fn();
 const agent = { id: "muse-agent", name: "Maia", status: "idle" };
 const pendingBinding = { ...museBinding, status: "pairing" as const, paired: false, receiverDetected: false };
-async function flush() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); }); }
+async function flush() { await act(async () => {
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30);
+  else await new Promise(resolve => setTimeout(resolve, 30));
+}); }
 async function render(companyId = "company") {
   await act(async () => root.render(<QueryClientProvider client={cache}><ExternalAgentInviteDialog companyId={companyId} onClose={close} onBack={vi.fn()} /></QueryClientProvider>)); await flush();
 }
@@ -45,7 +48,7 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 });
-afterEach(async () => { await act(async () => root.unmount()); cache.clear(); container.remove(); localStorage.clear(); });
+afterEach(async () => { await act(async () => root.unmount()); cache.clear(); container.remove(); localStorage.clear(); vi.useRealTimers(); });
 it("gates Muse on both flags without changing Dot availability", async () => {
   settings.enableNativeRunner = false; await render();
   expect(document.body.textContent).toContain("Your Dot in ChatGPT");
@@ -152,4 +155,51 @@ it("reconnects the resumed Muse agent without replacing its revoked binding", as
   await click("Reconnect Muse");
   expect(museApi.pair).toHaveBeenCalledWith("company", agent.id, {});
   expect(museApi.create).not.toHaveBeenCalled();
+});
+
+
+it("continues the same newly hired Muse after approval in another window", async () => {
+  vi.useFakeTimers();
+  const awaitingApproval = { agent: { ...agent, status: "pending_approval" }, approvalId: "hire", binding: null };
+  museApi.create.mockResolvedValue(awaitingApproval);
+  museApi.resume.mockResolvedValueOnce(null).mockResolvedValue(awaitingApproval);
+  museApi.connection.mockResolvedValue({ ...museConnection, agentStatus: "pending_approval",
+    agentLifecycleState: "pending_approval", canConfigureConnection: false, binding: null });
+  await render(); await click("Muse — Personal agentYour personal Muse at muse.ai");
+  const name = document.querySelector<HTMLInputElement>('input[placeholder="Muse"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Maia");
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click("Continue");
+  expect(museApi.create).toHaveBeenCalledWith("company", { name: "Maia", role: "general" });
+  expect(document.querySelector('a[href="/approvals/hire"]')).not.toBeNull();
+  expect(museApi.pair).not.toHaveBeenCalled();
+  const readsBeforeApproval = museApi.resume.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(2500); }); await flush();
+  expect(museApi.resume.mock.calls.length).toBeGreaterThan(readsBeforeApproval);
+
+  // Approval is completed elsewhere; this mounted dialog must discover it without another hire.
+  museApi.resume.mockResolvedValue({ agent, approvalId: "hire", binding: null });
+  museApi.connection.mockResolvedValue({ ...museConnection, binding: null });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); await flush();
+  expect(document.querySelector('a[href="/approvals/hire"]')).toBeNull();
+  expect(museApi.pair).toHaveBeenCalledWith("company", agent.id, {});
+  expect(museApi.pair).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).toContain("Copy setup prompt");
+  expect(museApi.create).toHaveBeenCalledTimes(1);
+
+  // The resume endpoint omits completed invitations, but this mounted hire must still finish.
+  museApi.resume.mockResolvedValue(null);
+  museApi.connection.mockResolvedValue({ ...museConnection, agentLifecycleState: "ready",
+    binding: { ...museBinding, status: "ready", backgroundReplyVerified: true } });
+  await act(async () => {
+    await Promise.all([
+      cache.invalidateQueries({ queryKey: ["muse-invitation", "company", "operator"] }),
+      cache.invalidateQueries({ queryKey: ["muse-binding", "company", "operator", agent.id] }),
+    ]);
+  }); await flush();
+  expect([...document.querySelectorAll("button")].some(b => b.textContent === "Done")).toBe(true);
+  expect(document.querySelector('input[placeholder="Muse"]')).toBeNull();
+  expect(museApi.create).toHaveBeenCalledTimes(1);
 });

@@ -1,24 +1,40 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MuseBinding, MusePairing, MusePairingInput, MuseAttestStopInput } from "@paperclipai/shared";
+import type { MuseConnection, MuseBinding, MusePairing, MusePairingInput, MuseAttestStopInput } from "@paperclipai/shared";
 import { museInvitationsApi } from "@/api/museInvitations";
 import { useAccountIdentity } from "@/api/companies-query";
 import type { MuseConnectionState } from "@/components/new-agent/ExternalAgentInviteContent";
 
-export function museConnectionState(connection: import("@paperclipai/shared").MuseConnection | undefined,
+export function museConnectionState(connection: MuseConnection | undefined,
   { offline = false, promptUnavailable = false }: { offline?: boolean; promptUnavailable?: boolean } = {}): MuseConnectionState {
   const b = connection?.binding;
   const passed = !!b?.paired && b.receiverDetected && b.backgroundReplyVerified;
   const finishing = connection?.canConfigureConnection && ["preparing", "verifying"].includes(connection.agentLifecycleState);
   const ready = passed && b.status === "ready" && connection?.agentLifecycleState === "ready"
     && connection.canConfigureConnection && connection.enabled && connection.agentStatus !== "pending_approval";
-  const expiredTest = !!b?.challengeExpiresAt && Date.parse(b.challengeExpiresAt) <= Date.now() && !b.backgroundReplyVerified;
+  const testing = !!b?.challengeExpiresAt && Date.parse(b.challengeExpiresAt) > Date.now();
+  const expiredTest = !!b?.challengeExpiresAt && Date.parse(b.challengeExpiresAt) <= Date.now();
   return {
     paired: b?.paired ?? false, receiverDetected: b?.receiverDetected ?? false,
-    backgroundReplyVerified: b?.backgroundReplyVerified ?? false, ready, finishing,
+    backgroundReplyVerified: b?.backgroundReplyVerified ?? false, ready, finishing, testing,
     problem: offline ? "offline" : b?.status === "revoked" ? "disconnected" : connection && !connection.enabled ? "disabled" : promptUnavailable && !b?.paired ? "prompt_unavailable"
       : passed && !ready && !finishing ? "agent_unavailable" : expiredTest ? "no_recent_response" : undefined,
   };
+}
+
+/** Expire the current test even when polling returns unchanged historical evidence. */
+export function useMuseConnectionState(connection: MuseConnection | undefined,
+  options: { offline?: boolean; promptUnavailable?: boolean } = {}) {
+  const [, updateClock] = useState(0);
+  const expiresAt = connection?.binding?.challengeExpiresAt;
+  useEffect(() => {
+    if (!expiresAt) return;
+    const delay = Date.parse(expiresAt) - Date.now();
+    if (!Number.isFinite(delay) || delay <= 0) return;
+    const timer = window.setTimeout(() => updateClock(value => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [expiresAt]);
+  return museConnectionState(connection, options);
 }
 
 export function museBindingRevision(binding: MuseBinding) {
@@ -35,7 +51,8 @@ export function useMuseConnection(companyId: string | undefined, agentId: string
   const [pairing, setPairing] = useState<MusePairing | null>(null);
   const state = useQuery({ queryKey: key, enabled: enabled && identity.settled && !!companyId && !!agentId,
     queryFn: ({ signal }) => museInvitationsApi.connection(companyId!, agentId!, signal), retry: false, staleTime: 0,
-    refetchInterval: query => query.state.error ? false : query.state.data?.binding ? 5000 : false });
+    refetchInterval: query => query.state.error ? false
+      : query.state.data?.binding || query.state.data?.agentStatus === "pending_approval" ? 5000 : false });
   const refresh = () => cache.invalidateQueries({ queryKey: key });
   const pair = useMutation({ mutationFn: async (input: MusePairingInput) => {
     const requestScope = scope;

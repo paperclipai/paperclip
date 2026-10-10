@@ -4,7 +4,7 @@ import type { MuseInvitation } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { museInvitationsApi } from "@/api/museInvitations";
 import { useAccountIdentity } from "@/api/companies-query";
-import { useMuseConnection, museConnectionState } from "@/hooks/useMuseConnection";
+import { useMuseConnection, useMuseConnectionState } from "@/hooks/useMuseConnection";
 import { clearMuseInvitationDraft, readMuseInvitationDraft, saveMuseInvitationDraft, type MuseInvitationDraft } from "@/lib/muse-invitation-draft";
 import { accessApi } from "@/api/access";
 import { dotInvitationsApi, type DotInvitation, type DotPairing } from "@/api/dotInvitations";
@@ -156,11 +156,17 @@ function MuseInvitationController({ companyId, companyName, onClose, onBack, ini
   const draft = draftState.value;
   const [created, setCreated] = useState<{ scopeKey: string; invitation: MuseInvitation } | null>(null);
   const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
-  const resume = useQuery({ queryKey: ["muse-invitation", companyId, identity.userId],
+  const invitationKey = ["muse-invitation", companyId, identity.userId];
+  const resume = useQuery({ queryKey: invitationKey,
     queryFn: ({ signal }) => museInvitationsApi.resume(companyId, signal), enabled: identity.settled,
     retry: false, staleTime: 0, refetchOnMount: "always",
     refetchInterval: query => query.state.data?.agent.status === "pending_approval" ? 2500 : false });
-  const invitation = created?.scopeKey === scopeKey ? created.invitation : resume.isFetchedAfterMount ? resume.data : null;
+  const resumedInvitation = resume.isFetchedAfterMount ? resume.data : null;
+  const createdInvitation = created?.scopeKey === scopeKey ? created.invitation : null;
+  // Resume omits completed bindings; keep this mounted hire while accepting its fresh server status.
+  const invitation = createdInvitation
+    ? resumedInvitation?.agent.id === createdInvitation.agent.id ? resumedInvitation : createdInvitation
+    : resumedInvitation;
   const muse = useMuseConnection(companyId, invitation?.agent.id);
   const attemptedAutomaticPairing = useRef(false);
   const attemptedAutomaticVerification = useRef<string | null>(null);
@@ -168,7 +174,11 @@ function MuseInvitationController({ companyId, companyName, onClose, onBack, ini
   const create = useMutation({ mutationFn: async (input: MuseInvitationDraft) => {
     const requestScope = scopeKey;
     const result = await museInvitationsApi.create(companyId, { name: input.name.trim(), role: input.role });
-    if (currentScope.current === requestScope) setCreated({ scopeKey: requestScope, invitation: result });
+    if (currentScope.current === requestScope) {
+      setCreated({ scopeKey: requestScope, invitation: result });
+      cache.setQueryData(invitationKey, result);
+      void cache.invalidateQueries({ queryKey: invitationKey, exact: true });
+    }
     void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
     // The creation receipt contains no ticket; pairing happens in the mounted connection hook.
   }, gcTime: 0 });
@@ -198,7 +208,7 @@ function MuseInvitationController({ companyId, companyName, onClose, onBack, ini
     || (!!invitation && muse.state.isPending);
   const promptUnavailable = !!b && !b.paired && b.status === "pairing" && !muse.pairing
     && attemptedAutomaticPairing.current && !muse.pair.isPending && !muse.state.isFetching;
-  const connection = museConnectionState(muse.state.data, { offline: muse.state.isError, promptUnavailable });
+  const connection = useMuseConnectionState(muse.state.data, { offline: muse.state.isError, promptUnavailable });
   const verifyError = muse.verify.error instanceof ApiError && muse.verify.error.status === 409 && b?.challengeExpiresAt
     && Date.parse(b.challengeExpiresAt) > Date.now() ? null : muse.verify.error;
   const error = create.error ?? resume.error ?? muse.pair.error ?? verifyError;

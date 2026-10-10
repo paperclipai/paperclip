@@ -88,6 +88,7 @@ export type MuseConnectionState = {
   backgroundReplyVerified: boolean;
   ready: boolean;
   finishing?: boolean;
+  testing?: boolean;
   problem?: "no_recent_response" | "prompt_unavailable" | "offline" | "agent_unavailable" | "disconnected" | "disabled";
 };
 
@@ -105,6 +106,7 @@ export function MuseConnectionChecks({ state }: { state: MuseConnectionState }) 
     : state.problem === "prompt_unavailable" ? "This setup prompt was replaced or expired. Create a fresh prompt to continue."
     : state.problem === "agent_unavailable" ? "Connection checks passed. Resolve this agent’s setup or approval blocker before assigning tasks."
     : state.problem === "no_recent_response" ? "No recent response. Open Muse to check the current conversation and hostname permission, then test again. Silence does not identify a permission problem."
+    : state.testing ? "Waiting for Muse to reply to the current background test."
     : checksPassed && state.ready ? "Muse is ready for tasks. All connection checks and agent setup passed."
     : checksPassed ? "All connection checks passed. Paperclip is finishing agent setup."
     : !state.paired ? "Watching for Muse to pair. Copy the setup prompt into your current Muse conversation."
@@ -157,7 +159,7 @@ export function ExternalAgentInviteContent({
   const muse = preset === "muse";
   const museDetails = muse && !!museDraft;
   const museAwaitingInvitation = muse && !museDetails && !museConnection && !approvalHref;
-  const museReady = muse && !!museConnection?.ready && museConnection.paired && museConnection.receiverDetected && museConnection.backgroundReplyVerified && !museConnection.problem;
+  const museReady = muse && !!museConnection?.ready && museConnection.paired && museConnection.receiverDetected && museConnection.backgroundReplyVerified && !museConnection.problem && !museConnection.testing;
   const provider = presets.find(item => item.id === preset);
   const dot = preset === "dot";
   const ready = museReady || (dot && connection.phase === "ready" && !connection.problem);

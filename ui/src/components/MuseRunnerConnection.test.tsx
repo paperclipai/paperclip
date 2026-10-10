@@ -16,7 +16,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let container: HTMLDivElement; let root: Root; let cache: QueryClient | null;
 const handlers = { onTest: vi.fn(), onRepair: vi.fn(), onPause: vi.fn(), onDisconnect: vi.fn(), onRefresh: vi.fn(), onAttest: vi.fn() };
 beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); cache = null; vi.clearAllMocks(); });
-afterEach(async () => { await act(async () => root.unmount()); cache?.clear(); vi.restoreAllMocks(); container.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); cache?.clear(); vi.restoreAllMocks(); container.remove(); vi.useRealTimers(); });
 const button = (name: string) => [...container.querySelectorAll("button")].find(b => b.textContent === name)!;
 async function render(connection = museConnection) { await act(async () => root.render(<MuseConnectionDetails connection={connection} {...handlers} />)); }
 
@@ -130,4 +130,65 @@ it("connects after Disconnect without replacing the revoked historical binding",
   expect(pair).toHaveBeenCalledWith("company", "agent", {});
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
   expect(container.textContent).toContain("Copy setup prompt");
+});
+
+
+const lastVerifiedReply = () => [...container.querySelectorAll("dt")].find(label => label.textContent === "Last verified reply")!.nextElementSibling!.textContent;
+async function renderRunner() {
+  cache = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () => root.render(<QueryClientProvider client={cache!}><MuseRunnerConnection companyId="company" agentId="agent" /></QueryClientProvider>));
+  await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+}
+
+it("polls a retest after an earlier successful reply and shows its expiry without erasing history", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-10T15:00:00Z"));
+  const ready: MuseConnection = { ...museConnection, agentLifecycleState: "ready", binding: { ...museConnection.binding!,
+    status: "ready", backgroundReplyVerified: true, lastVerifiedReplyAt: "2026-10-10T14:59:00Z" } };
+  const load = vi.spyOn(museInvitationsApi, "connection").mockResolvedValue(ready);
+  const expiresAt = new Date(Date.now() + 15_000).toISOString();
+  vi.spyOn(museInvitationsApi, "verify").mockImplementation(async () => {
+    load.mockResolvedValue({ ...ready, binding: { ...ready.binding!, revision: 8, challengeExpiresAt: expiresAt } });
+    return { bindingId: ready.binding!.id, generation: ready.binding!.generation, revision: 8, expiresAt, status: "pending" };
+  });
+  await renderRunner();
+  const previousReply = lastVerifiedReply();
+  expect(previousReply).not.toBe("Not observed");
+  await act(async () => button("Test background reply").click());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+  expect(container.textContent).toContain("Waiting for Muse to reply to the current background test");
+  expect(button("Testing background reply…").disabled).toBe(true);
+  expect(lastVerifiedReply()).toBe(previousReply);
+  const readsWhileTesting = load.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(load.mock.calls.length).toBeGreaterThan(readsWhileTesting);
+  expect(button("Testing background reply…").disabled).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(container.textContent).toContain("No recent response.");
+  expect(container.textContent).not.toContain("Muse is ready for tasks");
+  expect(lastVerifiedReply()).toBe(previousReply);
+  expect(button("Test background reply").disabled).toBe(false);
+});
+
+it("finishes a current retest only after the server confirms a new background reply", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-10T15:00:00Z"));
+  const ready: MuseConnection = { ...museConnection, agentLifecycleState: "ready", binding: { ...museConnection.binding!,
+    status: "ready", backgroundReplyVerified: true, lastVerifiedReplyAt: "2026-10-10T14:59:00Z" } };
+  const load = vi.spyOn(museInvitationsApi, "connection").mockResolvedValue(ready);
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  vi.spyOn(museInvitationsApi, "verify").mockImplementation(async () => {
+    load.mockResolvedValue({ ...ready, binding: { ...ready.binding!, revision: 8, challengeExpiresAt: expiresAt } });
+    return { bindingId: ready.binding!.id, generation: ready.binding!.generation, revision: 8, expiresAt, status: "pending" };
+  });
+  await renderRunner();
+  const previousReply = lastVerifiedReply();
+  await act(async () => button("Test background reply").click());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+  expect(container.textContent).toContain("Waiting for Muse to reply to the current background test");
+  expect(lastVerifiedReply()).toBe(previousReply);
+  load.mockResolvedValue({ ...ready, binding: { ...ready.binding!, revision: 9, lastVerifiedReplyAt: "2026-10-10T15:00:02Z" } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(container.textContent).toContain("Muse is ready for tasks");
+  expect(container.textContent).not.toContain("Waiting for Muse to reply to the current background test");
+  expect(lastVerifiedReply()).not.toBe(previousReply);
+  expect(button("Test background reply").disabled).toBe(false);
 });
