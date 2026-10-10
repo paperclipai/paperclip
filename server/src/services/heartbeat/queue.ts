@@ -1,6 +1,8 @@
+import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { normalizeAgentNameKey } from "./retries.js";
 import { publishActiveDotComment } from "../dot-assignment-follow-up.js";
+import { publishActiveMuseComment } from "../muse-assignment-follow-up.js";
 import {
   type WakeupOptions,
   mergeCoalescedContextSnapshot,
@@ -399,7 +401,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // A Dot binding has one external turn. Competing assignments must retain
       // their queue position instead of claiming a second run that cannot bind.
       maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
-        parseObject(agent.adapterConfig).provider === "openai_dot"
+        ["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
@@ -1358,6 +1360,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
+                await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1445,6 +1448,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 };
               }
 
+              await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -1547,6 +1551,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           return tx.transaction(async (claimTx) => {
             const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
             if (issueClaim.blocked) return null;
+            if (run.wakeupRequestId) await claimTx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+            )).for("update");
+            const [lockedRun] = await claimTx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
+            )).for("update");
+            if (!lockedRun || lockedRun.status !== "queued") return null;
+            await withExternalAdmissionGuard(claimTx, run.companyId, run.agentId, () => assertNoExternalOverlap(claimTx, run.companyId, run.agentId));
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
@@ -1795,9 +1807,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
       ));
       if (!latest || !isHeartbeatRunTerminalStatus(latest.status)) continue;
-      if (latest.runtimeMode === "native" && typeof wake.payload?.dotAssignmentFollowUp === "string") {
+      if (latest.runtimeMode === "native" && (typeof wake.payload?.dotAssignmentFollowUp === "string" || typeof wake.payload?.museAssignmentFollowUp === "string")) {
         await releaseIssueExecutionAndPromote(latest, { suppressImmediateRecovery: true }).catch(err => {
-          logger.warn({ err, queueId: wake.id }, "failed to promote unread Dot comment after recovery");
+          logger.warn({ err, queueId: wake.id }, "failed to promote unread external-agent comment after recovery");
         });
         continue;
       }
@@ -3652,25 +3664,45 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // deferred wake that could later replay the same reconciliation.
             if (reconciledSourceRunId) return { kind: "deferred" as const };
 
-            // Offer the input to the active Dot, but keep a durable queued wake
+            // Offer the input to the active external agent, but keep a durable queued wake
             // until it reads the comment. A finish racing the event tick must
             // leave unread input available for the next assignment.
-            const dotBindingId = readNonEmptyString(parseObject(agent.adapterConfig).dotBindingId);
-            const dotFollowUp = agent.adapterType === "paperclip_runner" && parseObject(agent.adapterConfig).provider === "openai_dot"
-                && dotBindingId && activeExecutionRun.agentId === agentId && issue.assigneeAgentId === agentId
+            const followUpProvider = parseObject(agent.adapterConfig).provider;
+            const museFollowUp = followUpProvider === "muse";
+            const bindingId = readNonEmptyString(parseObject(agent.adapterConfig)[museFollowUp ? "museBindingId" : "dotBindingId"]);
+            const followUpPayloadKey = museFollowUp ? "museAssignmentFollowUp" : "dotAssignmentFollowUp";
+            let followUp: false | { assignmentId: string; consumed: boolean } = false;
+            let pendingFollowUps: typeof agentWakeupRequests.$inferSelect[] = [];
+            if (agent.adapterType === "paperclip_runner" && ["openai_dot", "muse"].includes(String(followUpProvider))
+                && bindingId && activeExecutionRun.agentId === agentId && issue.assigneeAgentId === agentId
                 && reason === "issue_commented" && wakeCommentId && opts.allowRunCoalescing !== false
                 && enrichedContextSnapshot.forceFreshSession !== true && !explicitResumeSession && !opts.manualUserWake
-                && !enrichedContextSnapshot.interactionId && !payload?.interactionId && !receiptRequest
-                ? await publishActiveDotComment(tx as unknown as Db, { companyId: agent.companyId, agentId,
-                  bindingId: dotBindingId, runId: activeExecutionRun.id, issueId: issue.id, commentId: wakeCommentId }) : false;
-            if (dotFollowUp) {
-              const [pending] = dotFollowUp.consumed ? [] : await tx.select().from(agentWakeupRequests).where(and(
+                && !enrichedContextSnapshot.interactionId && !payload?.interactionId && !receiptRequest) {
+              // Receipt consumption uses the same issue -> wake -> run -> guard ->
+              // binding order. Lock before publishing, then reuse these wake rows.
+              pendingFollowUps = await tx.select().from(agentWakeupRequests).where(and(
                 eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
                 isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-                sql`${agentWakeupRequests.payload}->>'dotAssignmentFollowUp' = ${dotFollowUp.assignmentId}`,
-                opts.requestedByActorType ? eq(agentWakeupRequests.requestedByActorType, opts.requestedByActorType) : isNull(agentWakeupRequests.requestedByActorType),
-                opts.requestedByActorId ? eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId) : isNull(agentWakeupRequests.requestedByActorId),
-              )).for("update").limit(1);
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                sql`${agentWakeupRequests.payload}->>${followUpPayloadKey} is not null`,
+              )).orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id)).for("update");
+              const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
+                eq(heartbeatRuns.id, activeExecutionRun.id), eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running"),
+                eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativeIssueId, issue.id),
+              )).for("update");
+              if (currentRun) followUp = await withExternalAdmissionGuard(tx, agent.companyId, agentId,
+                () => (museFollowUp ? publishActiveMuseComment : publishActiveDotComment)(tx as unknown as Db, {
+                  companyId: agent.companyId, agentId, bindingId, runId: currentRun.id,
+                  issueId: issue.id, commentId: wakeCommentId,
+                }));
+            }
+            if (followUp) {
+              const assignmentId = followUp.assignmentId;
+              const pending = followUp.consumed ? undefined : pendingFollowUps.find(wake =>
+                wake.payload?.[followUpPayloadKey] === assignmentId &&
+                wake.requestedByActorType === (opts.requestedByActorType ?? null) &&
+                wake.requestedByActorId === (opts.requestedByActorId ?? null));
               if (pending) await tx.update(agentWakeupRequests).set({
                 payload: withQueuedCommentIdsInWakePayload(pending.payload,
                   [...new Set([...queuedCommentIdsFromWakePayload(pending.payload), wakeCommentId!])]),
@@ -3679,13 +3711,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
               else await tx.insert(agentWakeupRequests).values({ companyId: agent.companyId, agentId, source, triggerDetail,
                 reason, payload: withQueuedCommentIdsInWakePayload({ ...payload, issueId: issue.id,
-                  dotAssignmentFollowUp: dotFollowUp.assignmentId,
+                  [followUpPayloadKey]: followUp.assignmentId,
                   [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot }, [wakeCommentId!]),
-                status: dotFollowUp.consumed ? "coalesced" : "deferred_issue_execution",
-                runId: dotFollowUp.consumed ? activeExecutionRun.id : null,
+                status: followUp.consumed ? "coalesced" : "deferred_issue_execution",
+                runId: followUp.consumed ? activeExecutionRun.id : null,
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
-                finishedAt: dotFollowUp.consumed ? new Date() : null });
+                finishedAt: followUp.consumed ? new Date() : null });
               return { kind: "coalesced" as const, run: activeExecutionRun };
             }
 

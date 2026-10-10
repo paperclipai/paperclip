@@ -1,0 +1,217 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { agents, authUsers, companies, companyMemberships, createDb, externalAgentHolds, heartbeatRuns, issueAccessGrants, issues, museAgentBindings as bindings, museCredentials, museInputDeliveries, museMailboxItems as mailbox, museRunnerAssignments as assignments, museRunnerOperations as operations, nativeRunFinalizations } from "@paperclipai/db";
+import { startAgentLifecycle } from "../services/agent-lifecycle.js";
+import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import type { MuseCredentials } from "@paperclipai/shared";
+import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { museIdentity, museCredentialHash } from "../services/muse-identity.js";
+import { museRunnerBroker } from "../services/muse-runner-broker.js";
+import { museReceiver } from "../services/muse-receiver.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { assertNoExternalOverlap, withExternalAdmissionGuard } from "../modules/external-agents/index.js";
+import { digestPaperclipSemanticContent, externalOperationDigest, type ExternalProviderOperation } from "../vendor/paperclip-runner/index.js";
+
+/** Real database/transport authority tests; synthetic provider receipts do not
+ * count as live Muse/native qualification evidence. */
+describe("personal Muse control plane",()=>{
+  let temporary:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,db:ReturnType<typeof createDb>;
+  beforeAll(async()=>{temporary=await startEmbeddedPostgresTestDatabase("muse-control-");db=createDb(temporary.connectionString);await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});},30000);
+  afterAll(async()=>{vi.unstubAllEnvs();await museReceiver(db).stop();await temporary?.cleanup();});
+  async function fixture(ready=true) {
+    const operatorId=randomUUID();await db.insert(authUsers).values({id:operatorId,name:"Muse authorizer",email:operatorId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
+    const [company]=await db.insert(companies).values({name:"Muse control",issuePrefix:"MU"+randomBytes(3).toString("hex")}).returning();
+    const [agent]=await db.insert(agents).values({companyId:company.id,name:"Muse",role:"engineer",status:"active",adapterType:"paperclip_runner",adapterConfig:{provider:"muse",allowUnmeteredProvider:true,lifecycle:"per_turn"},permissions:{canCreateTasks:true}}).returning();
+    await db.insert(companyMemberships).values([{companyId:company.id,principalType:"user",principalId:operatorId,membershipRole:"owner",status:"active"},{companyId:company.id,principalType:"agent",principalId:agent.id,membershipRole:"member",status:"active"}]);
+    const ticket=randomBytes(32).toString("base64url");const [binding]=await db.insert(bindings).values({companyId:company.id,agentId:agent.id,operatorId,ticketHash:museCredentialHash(ticket),ticketExpiresAt:new Date(Date.now()+600000)}).returning();
+    await db.update(agents).set({adapterConfig:{...agent.adapterConfig,museBindingId:binding.id}}).where(eq(agents.id,agent.id));
+    const identity=museIdentity(db),credentials=await identity.pair(ticket,"1"),broker=museRunnerBroker(db,{publicOrigin:"https://paperclip.example",heartbeat:{wakeup:vi.fn().mockResolvedValue(null),cancelRun:vi.fn()}});
+    if(ready)await db.update(bindings).set({status:"ready",receiverContactAt:new Date(),verifiedReplyAt:new Date()}).where(eq(bindings.id,binding.id));
+    return {company,agent,operatorId,binding,ticket,identity,credentials,broker,subject:await identity.authenticate(credentials.accessToken)};
+  }
+  async function active() {
+    const f=await fixture(),runId=randomUUID(),session=randomUUID(),turnId="turn_"+randomUUID();
+    const [issue]=await db.insert(issues).values({companyId:f.company.id,title:"Muse task",status:"in_progress",assigneeAgentId:f.agent.id,responsibleUserId:f.operatorId}).returning();
+    await db.insert(heartbeatRuns).values({id:runId,companyId:f.company.id,agentId:f.agent.id,status:"running",runtimeMode:"native",driverKind:"muse_external",nativeIssueId:issue.id,nativeSessionId:session,nativePhase:"turn_running",responsibleUserId:f.operatorId});
+    await db.update(issues).set({checkoutRunId:runId,executionRunId:runId}).where(eq(issues.id,issue.id));
+    await db.insert(nativeRunFinalizations).values({runId,companyId:f.company.id,issueId:issue.id,phase:"running",controllerGeneration:1,leaseExpiresAt:new Date(Date.now()+600000)});
+    const execution={binding:{companyId:f.company.id,agentId:f.agent.id,runId},provider:{binding:await f.broker.snapshot(f.company.id,f.agent.id,f.binding.id)}};
+    const port=f.broker.port(execution),sent:ExternalProviderOperation[]=[];
+    const detach=await port.attach(async command=>{sent.push(command);await port.settle({sourceEventId:"settle_"+command.requestId,payload:{binding:ref,requestId:command.requestId,outcome:command.action==="consume_input"?{status:"consumed",requestId:command.input.requestId,inputDigest:command.input.inputDigest}:{status:command.action==="accept"?"accepted":"completed"}}});});
+    const ref={...execution.provider.binding,runId,normalizedSessionId:session,turnId,assignmentRevision:1};
+    await port.dispatch({sourceEventId:"offer_"+randomUUID(),payload:{kind:"assignment",binding:ref,tools:[],acceptByUnixMs:Date.now()+600000,expiresAtUnixMs:Date.now()+3600000}});
+    const [assignment]=await db.select().from(assignments).where(eq(assignments.runId,runId));
+    return {...f,runId,issue,port,ref,assignment,sent,detach};
+  }
+  it("consumes a ten-minute ticket once and separates credential lanes",async()=>{
+    const f=await fixture(false);await expect(f.identity.pair(f.ticket,"1")).rejects.toThrow("consumed");
+    expect(f.credentials.accessToken).not.toBe(f.credentials.signalToken);
+    await expect(f.identity.authenticate(f.credentials.signalToken)).rejects.toThrow();
+    await expect(f.identity.authenticate(f.credentials.accessToken,"signal")).rejects.toThrow();
+    const rows=await db.select().from(museCredentials).where(eq(museCredentials.bindingId,f.binding.id));
+    expect(rows).toHaveLength(5);expect(rows.some(r=>r.tokenHash===f.credentials.accessToken)).toBe(false);
+    expect(new Date(f.credentials.accessExpiresAt).getTime()-Date.now()).toBeLessThanOrEqual(15*60000);
+  });
+  it("rotates refresh once and commits family revocation on consumed-token replay",async()=>{
+    const f=await fixture(),rotated=await f.identity.refresh(f.credentials.refreshToken);
+    await expect(f.identity.authenticate(f.credentials.accessToken)).rejects.toThrow();
+    await expect(f.identity.refresh(f.credentials.refreshToken)).rejects.toThrow("replay");
+    await expect(f.identity.authenticate(rotated.accessToken)).rejects.toThrow();
+    await expect(f.identity.authenticate(rotated.signalToken,"signal")).rejects.toThrow();
+  });
+  it("polling does not extend refresh inactivity and independent contact creates the first challenge",async()=>{
+    const f=await fixture(false),signal=await f.identity.authenticate(f.credentials.signalToken,"signal");
+    const [before]=await db.select().from(museCredentials).where(and(eq(museCredentials.bindingId,f.binding.id),eq(museCredentials.kind,"refresh")));
+    expect((await museReceiver(db).signal(signal)).signal).toBeNull();await museReceiver(db).flush();
+    const [after]=await db.select().from(museCredentials).where(eq(museCredentials.id,before.id));expect(after.expiresAt).toEqual(before.expiresAt);
+    const items=await f.broker.inspect(f.subject,{version:1,query:"mailbox",after:0}) as {items:Array<{references:{nonce:string}}>};expect(items.items).toHaveLength(1);
+    await f.broker.act(f.subject,{version:1,command:"challenge.confirm",nonce:items.items[0].references.nonce,requestId:randomUUID()});
+    expect((await f.broker.bindingForAgent(f.company.id,f.agent.id))?.backgroundReplyVerified).toBe(true);
+  });
+  it("retains a mailbox batch until its prior durable cursor is acknowledged",async()=>{
+    const f=await fixture();await db.insert(mailbox).values({companyId:f.company.id,bindingId:f.binding.id,bindingGeneration:1,kind:"follow_up",sourceEventId:randomUUID(),references:{}});
+    const batch=await f.broker.inspect(f.subject,{version:1,query:"mailbox",after:0}) as {nextCursor:number};
+    expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].workerCursor).toBe(0);
+    await f.broker.inspect(f.subject,{version:1,query:"mailbox",after:batch.nextCursor});
+    expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].workerCursor).toBe(batch.nextCursor);
+  });
+  it("filters current idle task visibility even with global privacy disabled",async()=>{
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE","off");const f=await fixture();
+    const other=randomUUID();await db.insert(authUsers).values({id:other,name:"other",email:other+"@example.test",createdAt:new Date(),updatedAt:new Date()});
+    const [issue]=await db.insert(issues).values({companyId:f.company.id,title:"secret",visibility:"private",responsibleUserId:other,assigneeAgentId:f.agent.id}).returning();
+    expect((await f.broker.inspect(f.subject,{version:1,query:"task.list"}) as {tasks:unknown[]}).tasks).toEqual([]);
+    await db.insert(issueAccessGrants).values({issueId:issue.id,subjectType:"user",subjectId:f.operatorId,source:"explicit"});
+    expect((await f.broker.inspect(f.subject,{version:1,query:"task.list"}) as {tasks:unknown[]}).tasks).toHaveLength(1);
+    await db.update(companyMemberships).set({status:"inactive"}).where(and(eq(companyMemberships.companyId,f.company.id),eq(companyMemberships.principalId,f.operatorId)));
+    await expect(f.broker.inspect(f.subject,{version:1,query:"task.read",issueId:issue.id})).rejects.toThrow();vi.unstubAllEnvs();
+  });
+  it("admits one authenticated claim and keeps claimed/native accepted times distinct",async()=>{
+    const f=await active();try {
+      const requestId=randomUUID(),claim={version:1 as const,command:"accept" as const,assignmentId:f.assignment.id,requestId};
+      expect((await f.broker.act(f.subject,claim)).status).toBe("accepted");expect(f.sent).toHaveLength(1);
+      expect((await f.broker.act(f.subject,claim)).status).toBe("accepted");expect(f.sent).toHaveLength(1);
+      await expect(f.broker.act(f.subject,{...claim,requestId:randomUUID()})).rejects.toThrow("claimed");
+      const [a]=await db.select().from(assignments).where(eq(assignments.id,f.assignment.id));expect(a.claimedAt).toBeInstanceOf(Date);expect(a.nativeAcceptedAt).toBeInstanceOf(Date);
+      await expect(db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)))).rejects.toMatchObject({details:{code:"external_agent_overlap"}});
+    }finally{await f.detach();}
+  });
+  it("persists canonical input before ACK and separates client proof from exact native input",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const requestId="native_question",response={schema:"paperclip.question_response.v1",answers:[]},inputDigest=digestPaperclipSemanticContent({requestId,turnId:f.ref.turnId,response});
+      await f.port.inputAvailable({sourceEventId:randomUUID(),payload:{binding:f.ref,requestId,turnId:f.ref.turnId,inputDigest,response}});
+      expect(await db.select().from(museInputDeliveries).where(eq(museInputDeliveries.assignmentId,f.assignment.id))).toHaveLength(1);
+      await expect(f.broker.act(f.subject,{version:1,command:"finish",assignmentId:f.assignment.id,requestId:randomUUID(),result:{}})).rejects.toThrow("input");
+      const proof=randomUUID();await f.broker.act(f.subject,{version:1,command:"consume_input",assignmentId:f.assignment.id,requestId:randomUUID(),nativeRequestId:requestId,inputDigest,continuationReceiptId:proof,continuationPersisted:true});
+      expect(f.sent.at(-1)?.input).toEqual({requestId,inputDigest});expect((await db.select().from(museInputDeliveries).where(eq(museInputDeliveries.assignmentId,f.assignment.id)))[0].continuationReceiptId).toBe(proof);
+    }finally{await f.detach();}
+  });
+  it("fences without fabricating private stop and retains unknown native effects across operator attestation",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      await db.update(externalAgentHolds).set({nativeEffectsUnknown:true}).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.revoke(f.company.id,f.agent.id,f.operatorId,{bindingId:f.binding.id,generation:1,expectedRevision:state.revision});
+      const stopped=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!,boundary=stopped.stop.boundary!;expect(stopped.stop.status).toBe("cannot_confirm");
+      await instanceSettingsService(db).updateExperimental({enableMuse:false});
+      const cleanup=await f.identity.authenticate(f.credentials.cleanupToken,"cleanup");expect((await f.broker.cleanup(cleanup,{command:"worker.quiescent",boundary,requestId:randomUUID()})).externalStopConfirmed).toBe(false);
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary,expectedRevision:stopped.revision,workerStopped:true});
+      const [hold]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));expect(hold.workerUnknown).toBe(false);expect(hold.nativeEffectsUnknown).toBe(true);expect(hold.releasedAt).toBeNull();
+      await expect(f.identity.authenticate(f.credentials.accessToken)).rejects.toThrow();
+    }finally{await instanceSettingsService(db).updateExperimental({enableMuse:true});await f.detach();}
+  });
+  it("preserves a persisted qualification deadline on retry and enforces it without a watcher",async()=>{
+    const f=await fixture(),state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!,qualificationId=randomUUID(),input={companyId:f.company.id,agentId:f.agent.id,bindingId:f.binding.id,generation:1,expectedRevision:state.revision,operatorId:f.operatorId,qualificationId,expiresAt:new Date(Date.now()+86400000)};
+    const start=await f.broker.beginQualification(input),retry=await f.broker.beginQualification({...input,expiresAt:new Date(Date.now()+86400000)});expect(retry.expiresAt).toEqual(start.expiresAt);expect(Date.parse(start.expiresAt)-Date.parse(start.startedAt)).toBe(86400000);
+    await db.update(bindings).set({qualificationExpiresAt:new Date(Date.now()-1)}).where(eq(bindings.id,f.binding.id));
+    await expect(f.identity.authenticate(f.credentials.signalToken,"signal")).rejects.toThrow("deadline");
+    const [ended]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));expect(ended.revokedAt).toBeInstanceOf(Date);expect(ended.deadlineEnforcedAt).toBeInstanceOf(Date);
+  });
+  it("rejects a claim when reassignment commits while its exact issue lock is held",async()=>{
+    const f=await active();let unlock!:()=>void,held!:()=>void;
+    const gate=new Promise<void>(resolve=>{unlock=resolve;}),locked=new Promise<void>(resolve=>{held=resolve;});
+    const reassignment=db.transaction(async tx=>{await tx.select({id:issues.id}).from(issues).where(eq(issues.id,f.issue.id)).for("update");held();await gate;await tx.update(issues).set({assigneeAgentId:null,checkoutRunId:null,executionRunId:null}).where(eq(issues.id,f.issue.id));});
+    await locked;let settled=false;
+    const claim=f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()}).finally(()=>{settled=true;});
+    try {await new Promise(resolve=>setTimeout(resolve,50));expect(settled).toBe(false);unlock();await reassignment;await expect(claim).rejects.toThrow("task");expect(f.sent).toEqual([]);expect((await db.select().from(assignments).where(eq(assignments.id,f.assignment.id)))[0].claimedAt).toBeNull();}finally{unlock();await f.detach();}
+  });
+  it("reconciles pending sends to an independent unknown barrier on controller recovery",async()=>{
+    const f=await active();await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});await f.detach();
+    const requestId=randomUUID(),input={name:"write_document",arguments:{}},command={requestId,bindingId:f.binding.id,bindingGeneration:1,runId:f.runId,normalizedSessionId:f.assignment.normalizedSessionId,turnId:f.assignment.turnId,assignmentRevision:1,action:"tool",input,digest:externalOperationDigest("tool",input)};
+    await db.insert(operations).values({companyId:f.company.id,assignmentId:f.assignment.id,requestId,digest:command.digest,command,status:"pending"});
+    const send=vi.fn(),detach=await f.port.attach(send,undefined,true);
+    try {expect((await db.select().from(operations).where(eq(operations.requestId,requestId)))[0].status).toBe("unknown");expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0].nativeEffectsUnknown).toBe(true);expect((await f.broker.act(f.subject,{version:1,command:"tool",assignmentId:f.assignment.id,requestId,name:input.name,arguments:{}})).status).toBe("unknown");expect(send).not.toHaveBeenCalled();}finally{await detach();}
+  });
+  it("rearms an unclaimed offer after a lost wake but never restarts a claimed assignment",async()=>{
+    const f=await active();try {
+      const signal=await f.identity.authenticate(f.credentials.signalToken,"signal"),first=await museReceiver(db).signal(signal);
+      await db.update(mailbox).set({signalNotifiedAt:new Date(Date.now()-31000)}).where(eq(mailbox.assignmentId,f.assignment.id));
+      const retry=await museReceiver(db).signal(signal);expect(retry.signal?.reference).not.toEqual(first.signal?.reference);
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});expect((await museReceiver(db).signal(signal)).signal).toBeNull();
+    }finally{await f.detach();}
+  });
+  it("rejects missing public origin before replacing a durable connection",async()=>{
+    const f=await fixture(),state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+    // A broker instance keeps its configured public origin; use a fresh DB
+    // wrapper to exercise the same persisted binding with a bad setup origin.
+    const bad=museRunnerBroker(createDb(temporary.connectionString),{publicOrigin:"http://invalid.example"});
+    await expect(bad.createPairing({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,replaceBindingId:f.binding.id,expectedRevision:state.revision})).rejects.toThrow("HTTPS");
+    expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].revokedAt).toBeNull();
+  });
+
+  it("denies an existing subject after its same-provider configured binding changes",async()=>{
+    const f=await fixture();await db.update(agents).set({adapterConfig:{provider:"muse",museBindingId:randomUUID(),allowUnmeteredProvider:true}}).where(eq(agents.id,f.agent.id));
+    await expect(f.broker.inspect(f.subject,{version:1,query:"task.list"})).rejects.toThrow("authority");
+    await expect(f.identity.authenticate(f.credentials.signalToken,"signal")).rejects.toThrow("authority");
+  });
+
+  it("gives a settled result an exact stop boundary when native finalization fails",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      await db.update(assignments).set({status:"settled",acceptedResultAt:new Date()}).where(eq(assignments.id,f.assignment.id));
+      await db.update(heartbeatRuns).set({status:"failed",finishedAt:new Date()}).where(eq(heartbeatRuns.id,f.runId));
+      await f.broker.reconcileTerminalAssignments(f.company.id,f.agent.id,f.binding.id);
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;expect(state.stop.status).toBe("cannot_confirm");expect(state.stop.boundary?.assignmentId).toBe(f.assignment.id);
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary:state.stop.boundary!,expectedRevision:state.revision,workerStopped:true});
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0].releasedAt).toBeInstanceOf(Date);
+    }finally{await f.detach();}
+  });
+
+  it("keeps the native-effect barrier when a Runner fence precedes worker attestation",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      await db.insert(operations).values({companyId:f.company.id,assignmentId:f.assignment.id,requestId:randomUUID(),digest:"pending",command:{action:"tool"},status:"pending"});
+      await f.port.dispatch({sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}});
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;expect(state.stop.nativeEffectsUnknown).toBe(true);
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary:state.stop.boundary!,expectedRevision:state.revision,workerStopped:true});
+      const [hold]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));expect(hold.releasedAt).toBeNull();expect(hold.nativeEffectsUnknown).toBe(true);
+    }finally{await f.detach();}
+  });
+
+  it("denies already-dispatched native authority immediately at the qualification deadline",async()=>{
+    const f=await active();try {
+      await db.update(bindings).set({qualificationId:randomUUID(),qualificationExpiresAt:new Date(Date.now()-1)}).where(eq(bindings.id,f.binding.id));
+      await expect(f.broker.assertRunAuthority({binding:{companyId:f.company.id,agentId:f.agent.id,runId:f.runId},provider:{binding:f.ref}})).rejects.toThrow("deadline");
+      await expect(f.broker.authorizingUserIdForBinding(f.ref)).rejects.toThrow("deadline");
+      expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].revokedAt).toBeNull();
+    }finally{await f.detach();}
+  });
+
+  it("promotes a verifying Muse hire through the ordinary lifecycle after authenticated background confirmation",async()=>{
+    const f=await fixture(false);
+    await db.update(agents).set({status:"paused",lifecycleState:"verifying",lifecycleOperation:{id:randomUUID(),hostComplete:false,completedPluginIds:[],attempts:0,responsibleUserId:f.operatorId},lifecycleRequiredPluginIds:[]}).where(eq(agents.id,f.agent.id));
+    const harness=agentHarnessVerificationService(db,{} as PluginWorkerManager),onReady=vi.fn();
+    const lifecycle=startAgentLifecycle(db,{requiredPluginIds:async()=>[],runPlugin:async()=>"complete",runHost:snapshot=>harness.verify(snapshot),onReady},()=>true);
+    try {
+      await lifecycle.sweep();expect((await db.select().from(agents).where(eq(agents.id,f.agent.id)))[0].lifecycleState).toBe("verifying");
+      await museReceiver(db).signal(await f.identity.authenticate(f.credentials.signalToken,"signal"));await museReceiver(db).flush();
+      const items=await f.broker.inspect(f.subject,{version:1,query:"mailbox",after:0}) as {items:Array<{references:{nonce:string}}>};
+      await f.broker.act(f.subject,{version:1,command:"challenge.confirm",nonce:items.items[0].references.nonce,requestId:randomUUID()});
+      await expect.poll(async()=> (await db.select().from(agents).where(eq(agents.id,f.agent.id)))[0].lifecycleState,{timeout:8000,interval:100}).toBe("ready");
+      expect((await db.select().from(agents).where(eq(agents.id,f.agent.id)))[0].status).toBe("idle");expect(onReady).toHaveBeenCalledOnce();
+    }finally{await lifecycle.stop();}
+  });
+
+});
