@@ -2027,18 +2027,7 @@ export async function resolveWikiSkillResources(
 }
 
 export async function reconcileWikiAgentResource(ctx: PluginContext, companyId: string): Promise<WikiAgentResource> {
-  const resolved = await ctx.agents.managed.reconcile(WIKI_MAINTAINER_AGENT_KEY, companyId);
-  if (resolved.agentId) {
-    await upsertResourceBinding(ctx, {
-      companyId,
-      wikiId: DEFAULT_WIKI_ID,
-      resourceKind: "agent",
-      resourceKey: WIKI_MAINTAINER_AGENT_KEY,
-      resolvedId: resolved.agentId,
-      metadata: { source: "managed-default", updatedBy: "reconcile" },
-    });
-  }
-  return agentResource({ status: resolved.status, source: "managed", agent: resolved.agent, defaultDrift: resolved.defaultDrift ?? null });
+  return resolveWikiAgentResource(ctx, companyId, { reconcileMissing: true });
 }
 
 export async function resetWikiAgentResource(ctx: PluginContext, companyId: string): Promise<WikiAgentResource> {
@@ -2073,18 +2062,7 @@ export async function selectWikiAgentResource(ctx: PluginContext, input: { compa
 }
 
 export async function reconcileWikiProjectResource(ctx: PluginContext, companyId: string): Promise<WikiProjectResource> {
-  const resolved = await ctx.projects.managed.reconcile(WIKI_PROJECT_KEY, companyId);
-  if (resolved.projectId) {
-    await upsertResourceBinding(ctx, {
-      companyId,
-      wikiId: DEFAULT_WIKI_ID,
-      resourceKind: "project",
-      resourceKey: WIKI_PROJECT_KEY,
-      resolvedId: resolved.projectId,
-      metadata: { source: "managed-default", updatedBy: "reconcile" },
-    });
-  }
-  return projectResource({ status: resolved.status, source: "managed", project: resolved.project });
+  return resolveWikiProjectResource(ctx, companyId, { reconcileMissing: true });
 }
 
 export async function resetWikiProjectResource(ctx: PluginContext, companyId: string): Promise<WikiProjectResource> {

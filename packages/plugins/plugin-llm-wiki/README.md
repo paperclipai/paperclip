@@ -158,3 +158,10 @@ Any additional files in that folder are installed as sibling instruction files
 for the managed agent. The settings health check reports drift from these
 defaults, and resetting the managed agent asks for confirmation before replacing
 customized instructions.
+
+Resource reconciliation and bootstrap preserve an existing selected maintainer and project.
+They create managed defaults only when the bound resources are missing or the
+selected maintainer is terminated. New maintenance routines use the resolved
+maintainer and project; existing routines keep their owners. Explicit reset
+actions restore managed defaults. The settings action to fix all configuration
+errors can invoke those resets.
