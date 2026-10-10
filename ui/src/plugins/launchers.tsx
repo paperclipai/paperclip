@@ -158,6 +158,32 @@ function focusFirstElement(container: HTMLElement | null): void {
   container.focus();
 }
 
+function resolveLauncherNavigationTarget(target: string, hostContext: PluginLauncherContext): string {
+  if (/^https?:\/\//.test(target) || target.startsWith("/") || target.startsWith("#") || target.startsWith(".") || target.startsWith("?")) {
+    return target;
+  }
+  const companyPrefix = hostContext.companyPrefix?.trim();
+  return companyPrefix ? `/${companyPrefix}/${target}` : target;
+}
+
+function launcherRoutePath(launcher: ResolvedPluginLauncher): string | null {
+  if (launcher.action.type !== "navigate" && launcher.action.type !== "deepLink") return null;
+  if (/^https?:\/\//.test(launcher.action.target)) return null;
+  const [pathOnly] = launcher.action.target.split(/[?#]/, 1);
+  const segment = pathOnly?.split("/").filter(Boolean).at(-1);
+  return segment ? segment.toLowerCase() : null;
+}
+
+function launcherDisplayName(launcher: ResolvedPluginLauncher, contribution: PluginUiContribution | undefined): string {
+  if (launcher.placementZone !== "sidebar" || !contribution) return launcher.displayName;
+  const routePath = launcherRoutePath(launcher);
+  if (!routePath) return launcher.displayName;
+  const routeSidebar = contribution.slots.find((slot) =>
+    slot.type === "routeSidebar" && slot.routePath?.toLowerCase() === routePath
+  );
+  return routeSidebar?.displayName ?? launcher.displayName;
+}
+
 function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
   if (event.key !== "Tab") return;
   const focusable = Array.from(
@@ -652,13 +678,13 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
     ) => {
       switch (launcher.action.type) {
         case "navigate":
-          navigate(launcher.action.target);
+          navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
           return;
         case "deepLink":
           if (/^https?:\/\//.test(launcher.action.target)) {
             window.open(launcher.action.target, "_blank", "noopener,noreferrer");
           } else {
-            navigate(launcher.action.target);
+            navigate(resolveLauncherNavigationTarget(launcher.action.target, hostContext));
           }
           return;
         case "performAction":
@@ -725,10 +751,12 @@ export function usePluginLauncherRuntime(): PluginLauncherRuntimeContextValue {
 }
 
 function DefaultLauncherTrigger({
+  displayName,
   launcher,
   placementZone,
   onClick,
 }: {
+  displayName?: string;
   launcher: ResolvedPluginLauncher;
   placementZone: PluginLauncherPlacementZone;
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -741,7 +769,7 @@ function DefaultLauncherTrigger({
       className={launcherTriggerClassName(placementZone)}
       onClick={onClick}
     >
-      {launcher.displayName}
+      {displayName ?? launcher.displayName}
     </Button>
   );
 }
@@ -753,6 +781,12 @@ type PluginLauncherOutletProps = {
   className?: string;
   itemClassName?: string;
   errorClassName?: string;
+  /**
+   * `hidden` suppresses the inline error and keeps rendering the last loaded
+   * launchers, so ambient chrome (the sidebar) stays quiet while the server is
+   * unreachable.
+   */
+  errorBehavior?: "inline" | "hidden";
 };
 
 export function PluginLauncherOutlet({
@@ -762,6 +796,7 @@ export function PluginLauncherOutlet({
   className,
   itemClassName,
   errorClassName,
+  errorBehavior = "inline",
 }: PluginLauncherOutletProps) {
   const { activateLauncher } = usePluginLauncherRuntime();
   const { launchers, contributionsByPluginId, errorMessage } = usePluginLaunchers({
@@ -771,7 +806,7 @@ export function PluginLauncherOutlet({
     enabled: !!context.companyId,
   });
 
-  if (errorMessage) {
+  if (errorMessage && errorBehavior === "inline") {
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
         Plugin launchers unavailable: {errorMessage}
@@ -786,6 +821,7 @@ export function PluginLauncherOutlet({
       {launchers.map((launcher) => (
         <div key={`${launcher.pluginKey}:${launcher.id}`} className={itemClassName}>
           <DefaultLauncherTrigger
+            displayName={launcherDisplayName(launcher, contributionsByPluginId.get(launcher.pluginId))}
             launcher={launcher}
             placementZone={launcher.placementZone}
             onClick={(event) => {

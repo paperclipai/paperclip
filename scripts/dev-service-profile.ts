@@ -8,7 +8,7 @@ export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 export function createDevServiceIdentity(input: {
   mode: "watch" | "dev";
   forwardedArgs: string[];
-  tailscaleAuth: boolean;
+  networkProfile: string;
   port: number;
 }) {
   const envFingerprint = createHash("sha256")
@@ -16,7 +16,7 @@ export function createDevServiceIdentity(input: {
       JSON.stringify({
         mode: input.mode,
         forwardedArgs: input.forwardedArgs,
-        tailscaleAuth: input.tailscaleAuth,
+        networkProfile: input.networkProfile,
         port: input.port,
       }),
     )

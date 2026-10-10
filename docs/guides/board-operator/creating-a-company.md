@@ -23,11 +23,11 @@ Go to the Goals section and create your top-level company goal.
 
 ## Step 3: Create the CEO Agent
 
-The CEO is the first agent you create. Choose an adapter type (Claude Local is a good default) and configure:
+The CEO is the first agent you create. Choose an adapter type (Claude Code is a good default) and configure:
 
 - **Name** — e.g. "CEO"
 - **Role** — `ceo`
-- **Adapter** — how the agent runs (Claude Local, Codex Local, etc.)
+- **Adapter** — how the agent runs (Claude Code, Codex, etc.)
 - **Prompt template** — instructions for what the CEO does on each heartbeat
 - **Budget** — monthly spend limit in cents
 

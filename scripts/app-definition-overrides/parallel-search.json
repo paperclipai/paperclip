@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "slug": "parallel-search",
+  "name": "Parallel Search",
+  "description": "Search the public web and extract source pages with Parallel.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/parallel.svg",
+    "darkLogoUrl": "/brands/apps/parallel-dark.svg"
+  },
+  "urlPatterns": [
+    "https://search.parallel.ai/*"
+  ],
+  "docsUrl": "https://docs.parallel.ai/integrations/mcp/search-mcp",
+  "methods": [
+    {
+      "key": "public-search",
+      "label": "Use public Parallel Search",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Parallel Search’s public, keyless MCP route.",
+      "defaults": {
+        "serverUrl": "https://search.parallel.ai/mcp"
+      },
+      "guidanceMd": "The public route exposes web_search and web_fetch. Keep source URLs, excerpts, and retrieval context in the result; this is separate from Parallel Task MCP.",
+      "riskTier": "S2"
+    }
+  ]
+}

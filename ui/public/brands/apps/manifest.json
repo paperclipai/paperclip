@@ -1,0 +1,664 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {
+      "slug": "agentmail",
+      "provider": "AgentMail",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/agentmail.svg"
+    },
+    {
+      "slug": "airtable",
+      "provider": "Airtable",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/airtable.svg"
+    },
+    {
+      "slug": "anthropic",
+      "provider": "Anthropic",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/anthropic.svg",
+      "darkAsset": "/brands/apps/anthropic-dark.svg"
+    },
+    {
+      "slug": "arcade",
+      "provider": "Arcade",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/arcade.png"
+    },
+    {
+      "slug": "asana",
+      "provider": "Asana",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/asana.svg"
+    },
+    {
+      "slug": "bedrock",
+      "provider": "Amazon Bedrock",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/bedrock.svg"
+    },
+    {
+      "slug": "beehiiv",
+      "provider": "beehiiv",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/beehiiv.png"
+    },
+    {
+      "slug": "bitly",
+      "provider": "Bitly",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/bitly.svg"
+    },
+    {
+      "slug": "box",
+      "provider": "Box",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/box.svg"
+    },
+    {
+      "slug": "brex",
+      "provider": "Brex",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/brex.svg",
+      "darkAsset": "/brands/apps/brex-dark.svg"
+    },
+    {
+      "slug": "candid",
+      "provider": "Candid",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/candid.png"
+    },
+    {
+      "slug": "clickhouse",
+      "provider": "ClickHouse",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/clickhouse.svg",
+      "darkAsset": "/brands/apps/clickhouse-dark.svg"
+    },
+    {
+      "slug": "cloudflare",
+      "provider": "Cloudflare",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cloudflare.svg"
+    },
+    {
+      "slug": "cloudinary",
+      "provider": "Cloudinary",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cloudinary.svg",
+      "darkAsset": "/brands/apps/cloudinary-dark.svg"
+    },
+    {
+      "slug": "coda",
+      "provider": "Coda",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/coda.svg"
+    },
+    {
+      "slug": "composio",
+      "provider": "Composio",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/composio.svg",
+      "darkAsset": "/brands/apps/composio-dark.svg"
+    },
+    {
+      "slug": "context7",
+      "provider": "Context7",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/context7.svg",
+      "darkAsset": "/brands/apps/context7-dark.svg"
+    },
+    {
+      "slug": "discord",
+      "provider": "Discord",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/discord.svg",
+      "darkAsset": "/brands/apps/discord-dark.svg"
+    },
+    {
+      "slug": "egnyte",
+      "provider": "Egnyte",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/egnyte.svg"
+    },
+    {
+      "slug": "embat",
+      "provider": "Embat",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/embat.svg"
+    },
+    {
+      "slug": "enterpret",
+      "provider": "Enterpret",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/enterpret.png"
+    },
+    {
+      "slug": "executor",
+      "provider": "Executor",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/executor.png"
+    },
+    {
+      "slug": "gauge",
+      "provider": "Gauge",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gauge.png"
+    },
+    {
+      "slug": "github",
+      "provider": "GitHub",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github.svg",
+      "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "github-code-review-bot",
+      "provider": "GitHub Code Review Bot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github.svg",
+      "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "gmail",
+      "provider": "Gmail",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gmail.svg"
+    },
+    {
+      "slug": "google-sheets",
+      "provider": "Google Sheets",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-sheets.svg"
+    },
+    {
+      "slug": "google",
+      "provider": "Google",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google.svg"
+    },
+    {
+      "slug": "google-drive",
+      "provider": "Google Drive",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-drive.svg"
+    },
+    {
+      "slug": "google-docs",
+      "provider": "Google Docs",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-docs.svg"
+    },
+    {
+      "slug": "google-slides",
+      "provider": "Google Slides",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-slides.svg"
+    },
+    {
+      "slug": "google-calendar",
+      "provider": "Google Calendar",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-calendar.svg",
+      "aliases": [
+        "gcal"
+      ]
+    },
+    {
+      "slug": "google-chat",
+      "provider": "Google Chat",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-chat.svg"
+    },
+    {
+      "slug": "google-people",
+      "provider": "Google People",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-people.svg",
+      "aliases": [
+        "google contacts"
+      ]
+    },
+    {
+      "slug": "google-workspace-search",
+      "provider": "Google Workspace Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-workspace-search.svg",
+      "aliases": [
+        "workspace search"
+      ]
+    },
+    {
+      "slug": "hugging-face",
+      "provider": "Hugging Face",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/hugging-face.svg",
+      "aliases": [
+        "huggingface"
+      ]
+    },
+    {
+      "slug": "jira",
+      "provider": "Jira",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/jira.svg"
+    },
+    {
+      "slug": "kernel",
+      "provider": "Kernel",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/kernel.svg"
+    },
+    {
+      "slug": "linear",
+      "provider": "Linear",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/linear.svg",
+      "darkAsset": "/brands/apps/linear-dark.svg"
+    },
+    {
+      "slug": "local-falcon",
+      "provider": "Local Falcon",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/local-falcon.png"
+    },
+    {
+      "slug": "make",
+      "provider": "Make",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/make.svg",
+      "darkAsset": "/brands/apps/make-dark.svg"
+    },
+    {
+      "slug": "manufact",
+      "provider": "Manufact",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/manufact.svg",
+      "darkAsset": "/brands/apps/manufact-dark.svg"
+    },
+    {
+      "slug": "mem0",
+      "provider": "Mem0",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/mem0.svg"
+    },
+    {
+      "slug": "miro",
+      "provider": "Miro",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/miro.svg"
+    },
+    {
+      "slug": "mixpanel",
+      "provider": "Mixpanel",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/mixpanel.svg",
+      "darkAsset": "/brands/apps/mixpanel-dark.svg"
+    },
+    {
+      "slug": "microsoft-teams",
+      "provider": "Microsoft Teams",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/microsoft-teams.svg",
+      "aliases": [
+        "teams"
+      ]
+    },
+    {
+      "slug": "netlify",
+      "provider": "Netlify",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/netlify.svg",
+      "darkAsset": "/brands/apps/netlify-dark.svg"
+    },
+    {
+      "slug": "neon",
+      "provider": "Neon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/neon.png"
+    },
+    {
+      "slug": "notion",
+      "provider": "Notion",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/notion.svg"
+    },
+    {
+      "slug": "oreilly",
+      "provider": "O'Reilly",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/oreilly.svg"
+    },
+    {
+      "slug": "pagerduty",
+      "provider": "PagerDuty",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/pagerduty.svg"
+    },
+    {
+      "slug": "planetscale",
+      "provider": "PlanetScale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/planetscale.svg",
+      "darkAsset": "/brands/apps/planetscale-dark.svg"
+    },
+    {
+      "slug": "posthog",
+      "provider": "PostHog",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/posthog.svg",
+      "darkAsset": "/brands/apps/posthog-dark.svg"
+    },
+    {
+      "slug": "postman",
+      "provider": "Postman",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/postman.svg"
+    },
+    {
+      "slug": "razorpay",
+      "provider": "Razorpay",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/razorpay.svg",
+      "darkAsset": "/brands/apps/razorpay-dark.svg"
+    },
+    {
+      "slug": "resend",
+      "provider": "Resend",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/resend.svg",
+      "darkAsset": "/brands/apps/resend-dark.svg"
+    },
+    {
+      "slug": "sanity",
+      "provider": "Sanity",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/sanity.svg",
+      "darkAsset": "/brands/apps/sanity-dark.svg"
+    },
+    {
+      "slug": "sentry",
+      "provider": "Sentry",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/sentry.svg",
+      "darkAsset": "/brands/apps/sentry-dark.svg"
+    },
+    {
+      "slug": "shopify",
+      "provider": "Shopify",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/shopify.svg"
+    },
+    {
+      "slug": "similarweb",
+      "provider": "Similarweb",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/similarweb.svg",
+      "darkAsset": "/brands/apps/similarweb-dark.svg"
+    },
+    {
+      "slug": "slack",
+      "provider": "Slack",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/slack.svg"
+    },
+    {
+      "slug": "stripe",
+      "provider": "Stripe",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/stripe.svg"
+    },
+    {
+      "slug": "supabase",
+      "provider": "Supabase",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/supabase.svg"
+    },
+    {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
+      "slug": "telem",
+      "provider": "Telem.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telem.svg",
+      "darkAsset": "/brands/apps/telem-dark.svg"
+    },
+    {
+      "slug": "telegram",
+      "provider": "Telegram",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telegram.svg"
+    },
+    {
+      "slug": "ticket-tailor",
+      "provider": "Ticket Tailor",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/ticket-tailor.svg",
+      "darkAsset": "/brands/apps/ticket-tailor-dark.svg"
+    },
+    {
+      "slug": "ticktick",
+      "provider": "TickTick",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/ticktick.svg"
+    },
+    {
+      "slug": "todoist",
+      "provider": "Todoist",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/todoist.svg"
+    },
+    {
+      "slug": "vercel",
+      "provider": "Vercel",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/vercel.svg",
+      "darkAsset": "/brands/apps/vercel-dark.svg"
+    },
+    {
+      "slug": "webflow",
+      "provider": "Webflow",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/webflow.svg"
+    },
+    {
+      "slug": "wix",
+      "provider": "Wix",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/wix.svg",
+      "darkAsset": "/brands/apps/wix-dark.svg"
+    },
+    {
+      "slug": "xero",
+      "provider": "Xero",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/xero.svg"
+    },
+    {
+      "slug": "youcom",
+      "provider": "You.com",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/youcom.svg",
+      "darkAsset": "/brands/apps/youcom-dark.svg"
+    },
+    {
+      "slug": "zapier",
+      "provider": "Zapier",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zapier.svg"
+    },
+    {
+      "slug": "openai",
+      "provider": "OpenAI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/openai.svg",
+      "darkAsset": "/brands/apps/openai-dark.svg"
+    },
+    {
+      "slug": "openrouter",
+      "provider": "OpenRouter",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/openrouter.svg",
+      "darkAsset": "/brands/apps/openrouter-dark.svg"
+    },
+    {
+      "slug": "xai",
+      "provider": "Grok",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/xai.svg",
+      "darkAsset": "/brands/apps/xai-dark.svg"
+    },
+    {
+      "slug": "imessage-photon",
+      "provider": "iMessage Photon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/imessage-photon.png"
+    },
+    {
+      "slug": "jam-dev",
+      "provider": "Jam.dev",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/jam-dev.svg",
+      "darkAsset": "/brands/apps/jam-dev-dark.svg",
+      "aliases": [
+        "jam"
+      ]
+    },
+    {
+      "slug": "railway",
+      "provider": "Railway",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/railway.svg",
+      "darkAsset": "/brands/apps/railway-dark.svg"
+    },
+    {
+      "slug": "fireflies",
+      "provider": "Fireflies",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/fireflies.svg"
+    },
+    {
+      "slug": "cognee",
+      "provider": "Cognee",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cognee.png"
+    },
+    {
+      "slug": "honcho",
+      "provider": "Honcho",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/honcho.svg"
+    },
+    {
+      "slug": "supermemory",
+      "provider": "Supermemory",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/supermemory.png"
+    },
+    {
+      "slug": "zep",
+      "provider": "Zep",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zep.png"
+    },
+    {
+      "slug": "browser-use-cloud",
+      "provider": "Browser Use Cloud",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/browser-use.svg",
+      "sourceUrl": "https://browser-use.com/logo-primary.svg",
+      "retrievedAt": "2026-09-29"
+    },
+    {
+      "slug": "chat-completions-api",
+      "provider": "Chat Completions API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "local",
+      "provider": "Local endpoint",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "messages-api",
+      "provider": "Messages API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "responses-api",
+      "provider": "Responses API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "calendly",
+      "provider": "Calendly",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/calendly.png"
+    },
+    {
+      "slug": "exa",
+      "provider": "Exa",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/exa.svg"
+    },
+    {
+      "slug": "firecrawl",
+      "provider": "Firecrawl",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/firecrawl.svg"
+    },
+    {
+      "slug": "gsc-wizard",
+      "provider": "GSC Wizard",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gsc-wizard.png"
+    },
+    {
+      "slug": "parallel-search",
+      "provider": "Parallel Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/parallel.svg",
+      "darkAsset": "/brands/apps/parallel-dark.svg"
+    },
+    {
+      "slug": "tavily",
+      "provider": "Tavily",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/tavily.png"
+    },
+    {
+      "slug": "windsor-ai",
+      "provider": "Windsor.ai",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/windsor-ai.png"
+    },
+    {
+      "slug": "clickup",
+      "provider": "ClickUp",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/clickup.png"
+    },
+    {
+      "slug": "klaviyo",
+      "provider": "Klaviyo",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/klaviyo.png"
+    },
+    {
+      "slug": "monday",
+      "provider": "monday.com",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/monday.png",
+      "darkAsset": "/brands/apps/monday-dark.png"
+    }
+  ]
+}
