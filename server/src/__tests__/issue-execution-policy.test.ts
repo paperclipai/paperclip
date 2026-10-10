@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  applyIssueExecutionStageReassignment,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -2101,5 +2106,201 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+describe("applyIssueExecutionStageReassignment", () => {
+  function twoParticipantReviewPolicy() {
+    return makePolicy([
+      {
+        type: "review",
+        participants: [
+          { type: "agent", agentId: qaAgentId },
+          { type: "user", userId: ctoUserId },
+        ],
+      },
+    ]);
+  }
+
+  function pendingStageIssue(policy: IssueExecutionPolicy, overrides: Record<string, unknown> = {}) {
+    return {
+      status: "in_review",
+      assigneeAgentId: qaAgentId,
+      assigneeUserId: null,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+      ...overrides,
+    };
+  }
+
+  it("lets the current participant reassign to another configured participant on the same stage", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy);
+
+    const result = applyIssueExecutionStageReassignment({
+      issue,
+      policy,
+      actor: { agentId: qaAgentId },
+      isBoardActor: false,
+      toParticipant: { type: "user", userId: ctoUserId },
+      comment: "Needs a human sign-off on this one",
+    });
+
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeAgentId).toBeNull();
+    expect(result.patch.assigneeUserId).toBe(ctoUserId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: policy.stages[0].id,
+      currentParticipant: { type: "user", userId: ctoUserId },
+      lastDecisionOutcome: "reassigned",
+      lastReassignment: {
+        fromParticipant: { type: "agent", agentId: qaAgentId },
+        toParticipant: { type: "user", userId: ctoUserId },
+        comment: "Needs a human sign-off on this one",
+      },
+    });
+    expect(result.decision).toMatchObject({
+      stageId: policy.stages[0].id,
+      stageType: "review",
+      outcome: "reassigned",
+      body: "Needs a human sign-off on this one",
+    });
+  });
+
+  it("does not advance currentStageIndex or consume a review round", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy, {
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 2,
+      },
+    });
+
+    const result = applyIssueExecutionStageReassignment({
+      issue,
+      policy,
+      actor: { agentId: qaAgentId },
+      isBoardActor: false,
+      toParticipant: { type: "user", userId: ctoUserId },
+      comment: "Handing off, not a changes-requested round",
+    });
+
+    expect(result.patch.executionState).toMatchObject({
+      currentStageIndex: 0,
+      changesRequestedCount: 2,
+    });
+  });
+
+  it("rejects a reassignment without a comment", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy);
+
+    expect(() =>
+      applyIssueExecutionStageReassignment({
+        issue,
+        policy,
+        actor: { agentId: qaAgentId },
+        isBoardActor: false,
+        toParticipant: { type: "user", userId: ctoUserId },
+        comment: "",
+      }),
+    ).toThrow("requires a comment");
+  });
+
+  it("rejects a reassignment to a principal not configured on the stage", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy);
+
+    expect(() =>
+      applyIssueExecutionStageReassignment({
+        issue,
+        policy,
+        actor: { agentId: qaAgentId },
+        isBoardActor: false,
+        toParticipant: { type: "agent", agentId: ctoAgentId },
+        comment: "Passing this along",
+      }),
+    ).toThrow("must already be a configured participant");
+  });
+
+  it("rejects a non-participant, non-board actor attempting to reassign", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy);
+
+    expect(() =>
+      applyIssueExecutionStageReassignment({
+        issue,
+        policy,
+        actor: { agentId: coderAgentId },
+        isBoardActor: false,
+        toParticipant: { type: "user", userId: ctoUserId },
+        comment: "I'm not the active reviewer",
+      }),
+    ).toThrow("Only the active reviewer or approver can reassign");
+  });
+
+  it("allows a board actor to reassign on behalf of a stuck stage", () => {
+    const policy = twoParticipantReviewPolicy();
+    const issue = pendingStageIssue(policy);
+
+    const result = applyIssueExecutionStageReassignment({
+      issue,
+      policy,
+      actor: { userId: boardUserId },
+      isBoardActor: true,
+      toParticipant: { type: "user", userId: ctoUserId },
+      comment: "Escalating because the agent reviewer is stuck",
+    });
+
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "user", userId: ctoUserId },
+      lastReassignment: {
+        fromParticipant: { type: "agent", agentId: qaAgentId },
+        toParticipant: { type: "user", userId: ctoUserId },
+        comment: "Escalating because the agent reviewer is stuck",
+      },
+    });
+    expect(result.decision.outcome).toBe("reassigned");
+  });
+
+  it("throws when there is no pending execution stage to reassign", () => {
+    const policy = twoParticipantReviewPolicy();
+
+    expect(() =>
+      applyIssueExecutionStageReassignment({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        actor: { agentId: qaAgentId },
+        isBoardActor: false,
+        toParticipant: { type: "user", userId: ctoUserId },
+        comment: "No active stage",
+      }),
+    ).toThrow("no pending execution stage to reassign");
   });
 });

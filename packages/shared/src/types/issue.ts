@@ -763,6 +763,19 @@ export interface IssueReviewRequest {
   instructions: string;
 }
 
+/**
+ * Records a hand-off of a still-pending stage from one configured
+ * participant to another (e.g. an agent reviewer passing final sign-off to
+ * a human owner also listed on the stage). Distinct from an approve or
+ * changes-requested decision: the stage stays pending and no review round
+ * is consumed.
+ */
+export interface IssueExecutionReassignment {
+  fromParticipant: IssueExecutionStagePrincipal;
+  toParticipant: IssueExecutionStagePrincipal;
+  comment: string;
+}
+
 export interface IssueExecutionState {
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
@@ -777,6 +790,8 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  /** The most recent in-stage hand-off to a different configured participant, if any. */
+  lastReassignment?: IssueExecutionReassignment | null;
 }
 
 export interface IssueExecutionDecision {

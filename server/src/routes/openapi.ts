@@ -64,6 +64,7 @@ import {
   setIssueTitleSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
+  reassignIssueExecutionStageSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
@@ -4222,6 +4223,27 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-policy/reassign",
+  tags: ["issues"],
+  summary: "Hand a pending execution-policy stage to another configured participant",
+  description:
+    "Reassigns a still-pending review/approval stage to a different participant already configured on that same stage, without advancing to the next stage or consuming a review round. Only the stage's current participant or a board actor may call this, and the target must already be listed on the stage.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(reassignIssueExecutionStageSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
   },
 });
 

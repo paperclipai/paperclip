@@ -556,7 +556,7 @@ export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
 ] as const;
 export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
-export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
+export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested", "reassigned"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;

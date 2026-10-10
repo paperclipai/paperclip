@@ -11,7 +11,7 @@ import type {
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -1042,6 +1042,96 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   return {
     patch,
     workflowControlledAssignment: true,
+  };
+}
+
+type ReassignStageInput = {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  actor: ActorLike;
+  /** Mirrors `allowBoardOverride` elsewhere: any board (human) actor may reassign, not just the current participant. */
+  isBoardActor: boolean;
+  toParticipant: IssueExecutionStagePrincipal;
+  comment?: string | null;
+};
+
+type ReassignStageResult = {
+  patch: Record<string, unknown>;
+  decision: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+};
+
+/**
+ * Hands a still-pending stage from its current participant to a different
+ * participant already configured on that same stage (e.g. an agent reviewer
+ * passing final sign-off to a human owner also listed on the stage). Unlike
+ * approve/request-changes this does not advance `currentStageIndex` and does
+ * not consume a review round — the stage stays pending, now on a different
+ * participant.
+ */
+export function applyIssueExecutionStageReassignment(input: ReassignStageInput): ReassignStageResult {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const activeStage = input.policy ? findStageById(input.policy, existingState?.currentStageId) : null;
+
+  if (!input.policy || !activeStage || existingState?.status !== PENDING_STATUS) {
+    throw unprocessable("This issue has no pending execution stage to reassign");
+  }
+
+  const currentParticipant =
+    existingState.currentParticipant ??
+    selectStageParticipant(activeStage, { exclude: existingState.returnAssignee ?? null });
+  if (!currentParticipant) {
+    throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
+  }
+
+  const actor = actorPrincipal(input.actor);
+  if (!input.isBoardActor && !principalsEqual(currentParticipant, actor)) {
+    throw forbidden("Only the active reviewer or approver can reassign the current execution stage");
+  }
+
+  if (!stageHasParticipant(activeStage, input.toParticipant)) {
+    throw unprocessable("The reassignment target must already be a configured participant on this stage");
+  }
+
+  if (
+    existingState.returnAssignee &&
+    principalsEqual(input.toParticipant, existingState.returnAssignee)
+  ) {
+    throw unprocessable(
+      "Cannot reassign this stage to the executor whose own work is under review",
+    );
+  }
+
+  if (!input.comment?.trim()) {
+    throw unprocessable(`Reassigning a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+
+  const comment = input.comment.trim();
+  const reassignedState: IssueExecutionState = {
+    ...existingState,
+    status: PENDING_STATUS,
+    currentStageId: activeStage.id,
+    currentStageType: activeStage.type,
+    currentParticipant: input.toParticipant,
+    lastDecisionOutcome: "reassigned",
+    lastReassignment: {
+      fromParticipant: currentParticipant,
+      toParticipant: input.toParticipant,
+      comment,
+    },
+  };
+
+  const patch: Record<string, unknown> = { status: "in_review" };
+  Object.assign(patch, patchForPrincipal(input.toParticipant));
+  patch.executionState = reassignedState;
+
+  return {
+    patch,
+    decision: {
+      stageId: activeStage.id,
+      stageType: activeStage.type,
+      outcome: "reassigned",
+      body: comment,
+    },
   };
 }
 
