@@ -250,6 +250,27 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it.each([
+    { packagePath: null, driverKey: "smolmachines", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/smolmachines", driverKey: "smolmachines", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-smolmachines", driverKey: "smolmachines", allowed: false },
+    { packagePath: null, driverKey: "daytona", allowed: false },
+  ])("passes the cloud token only to the trusted Smol Machines provider: $packagePath / $driverKey", ({ packagePath, driverKey, allowed }) => {
+    const env = buildPluginWorkerEnv({
+      manifest: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey }] },
+      packageName: "@paperclipai/plugin-smolmachines",
+      packagePath,
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { SMOL_CLOUD_TOKEN: "smol-token", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { SMOL_CLOUD_TOKEN: "smol-token" } : {}),
+    });
+  });
+
   it("passes the credential to a first-party plugin installed from the bundled catalog", () => {
     const env = buildPluginWorkerEnv({
       manifest: {

@@ -104,6 +104,11 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
     pluginKey: "paperclip.novita-sandbox-provider",
     relativePath: "sandbox-providers/novita",
   },
+  {
+    key: "smolmachines",
+    pluginKey: "paperclip.smolmachines-sandbox-provider",
+    relativePath: "sandbox-providers/smolmachines",
+  },
 ];
 
 /**
