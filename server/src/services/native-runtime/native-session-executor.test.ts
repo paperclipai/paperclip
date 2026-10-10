@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -2473,6 +2474,9 @@ describe("remote provider checkpoint restores", () => {
       await mkdir(join(sourcePath, "bin"), { recursive: true });
       await writeFile(join(sourcePath, "provider-pack.json"), manifest);
       await writeFile(join(sourcePath, "bin", "provider"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      if (process.platform === "darwin") {
+        execFileSync("xattr", ["-w", "com.apple.metadata:paperclip-test", "fixture", join(sourcePath, "bin", "provider")]);
+      }
       const chunk = randomBytes(1024 * 1024);
       const expectedDigest = createHash("sha256");
       const payload = await open(join(sourcePath, "payload.bin"), "w");
@@ -2514,7 +2518,12 @@ describe("remote provider checkpoint restores", () => {
       expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);
       const actualDigest = execFileSync("shasum", ["-a", "256", join(targetPath, "payload.bin")], { encoding: "utf8" }).split(" ")[0];
       expect(actualDigest).toBe(expectedDigest.digest("hex"));
-      expect(execute.mock.calls.filter(([request]) => request.stdin)).toHaveLength(sizeMiB ? 17 : 1);
+      const uploads = execute.mock.calls.filter(([request]) => request.stdin);
+      expect(uploads).toHaveLength(sizeMiB ? 17 : 1);
+      if (sizeMiB === 0) {
+        const tarBytes = gunzipSync(Buffer.from(uploads[0]![0].stdin!, "base64"));
+        expect(tarBytes.includes(Buffer.from("/._provider"))).toBe(false);
+      }
       expect(execute.mock.calls[0]![0]).toMatchObject({ bypassSession: true });
       expect((await readdir(root)).some((name) => name.includes(".upload-"))).toBe(false);
     } finally {
@@ -13190,7 +13199,7 @@ describe("runnerd provider runtime wiring", () => {
     try {
       expect(await verifyPriorRunnerdStateForSessionScope({
         db, root, execution: current,
-        identity: { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId,
+        identity: { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId!,
           runnerInstanceId: "computer-runner", environmentLeaseId: "computer-lease" },
         allowVerifiedBackup: false, remoteRunnerState: true, allowRetainedWarmRunner: owner,
       })).toBe(expected);

@@ -10375,7 +10375,8 @@ export async function stageRemoteRunnerDirectory(input: {
     // and transfer from disk in bounded chunks instead of buffering the archive.
     await new Promise<void>((resolve, reject) => {
       execFile("tar", [...excludeArgs, "-czf", archivePath, "-C", input.sourcePath, "."],
-        { maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve());
+        { maxBuffer: 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } },
+        (error) => error ? reject(error) : resolve());
     });
     await run(`umask 077; mkdir -p ${quote(posix.dirname(remoteArchive))} && : > ${quote(remoteArchive)}`);
     const digest = createHash("sha256");
