@@ -63,6 +63,15 @@ const support = await getEmbeddedPostgresTestSupport();
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
 
+  it("reports signing-secret presence for interrupted setup without returning credential refs", async () => {
+    const f = await fixture();
+    const chat = chatChannelService(db, {heartbeat: {wakeup: vi.fn()}});
+    expect((await chat.get(f.endpointId)).setup.webhookSecretConfigured).toBe(false);
+    await db.update(toolConnections).set({credentialSecretRefs: [{configPath: "credentials.signingSecret", secretId: randomUUID()}]}).where(eq(toolConnections.id, f.connectionId));
+    const endpoint = await chat.get(f.endpointId);
+    expect(endpoint.setup.webhookSecretConfigured).toBe(true);
+    expect(endpoint).not.toHaveProperty("credentialSecretRefs");
+  });
   it("deduplicates concurrent session requests before creating a second task", async () => {
     const f = await fixture();
     const results = await Promise.all([f.store.reserve(f.request), f.store.reserve(f.request)]);
