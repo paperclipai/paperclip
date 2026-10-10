@@ -3374,8 +3374,9 @@ export function heartbeatService(
         agent.companyId,
         {
           agentId: agent.id,
-          responsibleUserId,
-          allowStandingDelegation: false,
+          responsibleUserId:
+            identityContext.cause === "company_default" ? null : responsibleUserId,
+          allowStandingDelegation: identityContext.cause === "company_default",
         },
       );
       const useHostGitHub =
