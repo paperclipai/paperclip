@@ -298,19 +298,25 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         companyId,
         input,
       );
-      if (input.method !== "api_key")
+      // A pasted `claude setup-token` token is the one subscription credential
+      // this route accepts. The schema checks its format. It has no usage
+      // scope, so there is no cheap provider check here; the hello probe runs
+      // when an agent adopts the connection.
+      const setupToken = input.method === "subscription" ? input.setupToken : undefined;
+      if (input.method !== "api_key" && !setupToken)
         throw unprocessable(
           "Use the existing provider sign-in flow to connect a subscription",
         );
       const attemptStartedAt = new Date();
       // Custom destinations are exercised in the selected execution environment,
       // never fetched by the control plane (including localhost/private URLs).
-      if (!input.routing || input.routing.kind === "openrouter") await validateAiApiKey(input.provider, input.apiKey!);
+      // A setup token has no usage scope to probe, so skip it the same way.
+      if (!setupToken && (!input.routing || input.routing.kind === "openrouter")) await validateAiApiKey(input.provider, input.apiKey!);
       const result = await service.save(
         companyId,
         userId,
         input,
-        input.apiKey ?? "",
+        setupToken ?? input.apiKey ?? "",
         undefined,
         attemptStartedAt,
       );

@@ -414,6 +414,15 @@ allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in, then clicks Connect.
 Grok retains its terminal sign-in flow until it has a local browser login runner.
 
+A Claude subscription can also use a pasted `claude setup-token` token. The local
+sign-in step offers "Use a setup token instead"; the create route accepts it as
+`setupToken` on an Anthropic `subscription` request. The token is valid for one
+year and is separate from the operator's interactive Claude login, so it suits
+agents that must keep running. It carries only the inference scope, so saving it skips the
+usage check that verifies a normal login. The hello probe still checks it when an
+agent adopts the connection. Runs receive it as `CLAUDE_CODE_OAUTH_TOKEN`, the same
+as a copied login.
+
 Attempts reuse `adapter_auth_sessions`, binding company, owner, provider, access
 intent, reconnect target, and a 30-minute expiry. Validation and completion are
 serialized; duplicate completion returns the saved connection. Restart retains

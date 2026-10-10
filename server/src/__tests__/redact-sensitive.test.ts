@@ -39,6 +39,8 @@ describe("redactSensitive", () => {
       refresh_token: "d",
       api_key: "e",
       authorization: "Bearer f",
+      setupToken: "g",
+      setup_token: "h",
     }) as Record<string, string>;
 
     for (const value of Object.values(out)) {
