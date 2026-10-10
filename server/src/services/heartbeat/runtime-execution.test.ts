@@ -6,6 +6,7 @@ import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbe
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import * as legacyRecovery from "../legacy-execution-recovery.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
@@ -215,6 +216,31 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
     expect(await finalizations()).toMatchObject([{ status: "failed" }]);
     expectCleanup(input);
+  });
+
+  it("retains a failed sandbox restore even when persisting its receipt throws", async () => {
+    const { input, adapter, run } = await fixture();
+    input.workspace.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: home };
+    const evidence = { workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: { message: "copy-back failed" } };
+    adapter.execute.mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, resultJson: evidence });
+    const order: string[] = [];
+    input.effects.onWorkspaceRestoreFailure = vi.fn(() => { order.push("restore evidence"); });
+    input.effects.onProviderResourceDisposition = vi.fn(() => { order.push("retain sandbox"); });
+    input.instructions.releaseInstructionCopy = vi.fn(async () => { order.push("cleanup"); });
+    const error = new Error("restore receipt write failed");
+    const record = vi.spyOn(legacyRecovery, "recordLegacyWorkspaceRestoreFailure").mockImplementationOnce(async () => {
+      order.push("receipt write");
+      throw error;
+    });
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+      expect(record).toHaveBeenCalledWith(db, run, evidence, input.workspace.workspaceRestoreSource);
+      expect(input.effects.onWorkspaceRestoreFailure).toHaveBeenCalledWith(evidence);
+      expect(input.effects.onProviderResourceDisposition).toHaveBeenCalledWith("stop_and_retain");
+      expect(order).toEqual(["restore evidence", "retain sandbox", "receipt write", "cleanup"]);
+      expect(await finalizations()).toMatchObject([{ status: "failed" }]);
+      expectCleanup(input);
+    } finally { record.mockRestore(); }
   });
 
   it("runs instruction cleanup even when gateway revocation fails", async () => {
