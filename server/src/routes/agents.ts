@@ -3500,6 +3500,14 @@ export function agentRoutes(
       }
       return result;
     }
+    if (adapterType === "paperclip_runner" && context.config.provider === "acpx" && context.config.acpxAgent === "hermes") {
+      // Hermes consumes the managed account through its native runtime. A
+      // different provider CLI cannot prove that projection or its model access.
+      result.status = "warn";
+      result.checks.push({ code: "hermes_connection_qualification_required", level: "warn",
+        message: "The Hermes runtime is verified. This account and model still need an operator-controlled qualification run." });
+      return result;
+    }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
       const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });

@@ -190,3 +190,24 @@ describe("owned Hermes wire billing", () => {
     expect((usage?.breakdown as Record<string, unknown>).inputTokens).toBeUndefined();
   });
 });
+
+describe("owned Hermes direct API token accounting", () => {
+  const accounting = { schema: "paperclip.usage.tokens/v1" as const, source: "provider_wire" as const,
+    biller: "anthropic" as const, model: "claude-haiku-4-5-20251001", protocol: "messages" as const,
+    complete: true, requestCount: 2, reportedRequestCount: 2,
+    tokens: { inputTokens: 12, outputTokens: 4, cacheReadTokens: 30, cacheWriteTokens: 20 },
+    pricingContext: { serviceTier: "standard" as const, contextTier: "short" as const } };
+  const after = { lastRequestId: "active", requestTokenUsage: { receipt: { input_tokens: 1, output_tokens: 1 } } };
+  it("uses all attempted wire tokens instead of the native accepted-response subset", () => {
+    const usage = persistedAcpxTurnUsage({}, after, "active", "hermes", undefined, accounting);
+    expect(usage).toMatchObject({ tokenAccounting: accounting, breakdown: {
+      inputTokens: 12, outputTokens: 4, cachedReadTokens: 30, cachedWriteTokens: 20, thoughtTokens: 0, totalTokens: 66 } });
+    expect(usage?.cost).toBeUndefined();
+    expect(persistedAcpxTurnUsage({}, after, "stale", "hermes", undefined, accounting)).toBeNull();
+    expect(persistedAcpxTurnUsage({}, after, "active", "claude", undefined, accounting)?.tokenAccounting).toBeUndefined();
+  });
+  it("does not promote accepted response tokens when another attempt was unobserved", () => {
+    expect(persistedAcpxTurnUsage({}, after, "active", "hermes", undefined, { ...accounting, complete: false, requestCount: 3 }))
+      .toMatchObject({ tokenAccounting: { complete: false }, breakdown: {} });
+  });
+});

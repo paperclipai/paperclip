@@ -124,12 +124,18 @@ describe("public repository paid workflow security", () => {
     expect(workflow).not.toMatch(/path: runner-e2e-(?:build|provider-pack)\n/u);
     expect(workflow).not.toMatch(/--file runner-e2e-(?:build|provider-pack)\//u);
   });
-  it("keeps the manual EC2 image build credential-free and pins the authorized target", async () => {
+  it("keeps manual cloud builds credential-free, defaults to hosted compute, and pins the authorized target", async () => {
     const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
     const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
     expect(manual.match(/AWS_CI_TRUSTED_USER_IDS/gu)).toHaveLength(2);
     expect(manual.match(/test "\$REPOSITORY_ID" = 1170821064/gu)).toHaveLength(2);
-    expect(manual).toContain('runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci');
+    expect(workflow).toMatch(/execution_host:\s+description: [^\n]+\s+type: choice\s+options:\s+- github-hosted\s+- ec2\s+default: github-hosted/u);
+    expect(manual).toContain("runs-on: ${{ inputs.execution_host == 'ec2' && 'runs-on/fleet=paperclip-public-pr-x64/env=public-ci' || 'ubuntu-24.04' }}");
+    const diskPreparation = manual.slice(manual.indexOf("      - name: Prepare disposable GitHub-hosted build disk"), manual.indexOf("      - name: Resolve source dependencies"));
+    expect(diskPreparation).toContain("if: inputs.execution_host != 'ec2'");
+    expect(diskPreparation).toContain('test "$RUNNER_ENVIRONMENT" = github-hosted');
+    expect(diskPreparation).toContain('test "$RUNNER_OS" = Linux');
+    expect(diskPreparation).not.toMatch(/\$HOME|\$RUNNER_TEMP|\.secrets/);
     expect(manual).toContain('repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH');
     expect(manual).toContain('ref: ${{ needs.authorize_manual.outputs.target_sha }}');
     expect(manual).toContain('SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}');
@@ -137,6 +143,11 @@ describe("public repository paid workflow security", () => {
     expect(manual).toContain('pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile');
     expect(manual).toContain('PAPERCLIP_RUNNER_LOCK_SHA256=$lock_sha');
     expect(manual).toContain('docker logout ghcr.io');
+    expect(manual).toContain('docker create --platform linux/amd64 --network none --entrypoint /bin/true "$immutable"');
+    expect(manual).toContain('docker cp "$container_id:/opt/paperclip-runner/provider-pack" "$runtime_dir/provider-pack"');
+    expect(manual).toContain('docker cp "$container_id:/usr/local/bin/paperclip-runnerd" "$runtime_dir/paperclip-runnerd"');
+    expect(manual).toContain('sha256sum paperclip-runnerd provider-pack/provider-pack.json');
+    expect(manual).toContain('sha256sum controller-runtime.tar.gz > controller-runtime.tar.gz.sha256');
   });
 
   it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {

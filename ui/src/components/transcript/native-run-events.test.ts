@@ -2,6 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
+import {
+  paperclipRunnerTimelineItems,
+  settledRunChildren,
+  splitTranscriptAtAnchors,
+  transcriptToTaskChatItems,
+} from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -73,6 +79,35 @@ function runResult(summary: string): Record<string, unknown> {
 }
 
 describe("provider notice presentation", () => {
+  it("keeps native ACPX commentary when steering freezes its earlier interval", () => {
+    const entries = nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "reasoning-1", {
+        kind: "reasoning", channel: "summary", text: "Inspecting the current task.",
+      }),
+      itemEvent(2, "item.delta", "message-before-steer", {
+        kind: "agentMessage", channel: "progress", text: "I am starting the requested work.",
+      }),
+      itemEvent(3, "item.completed", "steering-ack", {
+        kind: "steering_acknowledgement", status: "acknowledged", text: "Steering acknowledged for the active turn.",
+      }),
+      itemEvent(4, "item.delta", "message-after-steer", {
+        kind: "agentMessage", channel: "progress", text: "The correction is now applied.",
+      }),
+    ]);
+    const [before, after] = splitTranscriptAtAnchors(
+      entries, Date.parse("2026-08-25T18:00:00.000Z"), [Date.parse("2026-08-25T18:00:03.000Z")],
+    );
+    const frozen = settledRunChildren(paperclipRunnerTimelineItems(transcriptToTaskChatItems(before.entries, {
+      runId: RUN_ID, running: false,
+    })));
+    expect(frozen.filter(item => item.kind === "activity_phase").map(item => item.interstitial?.text))
+      .toContain("I am starting the requested work.");
+    const continued = transcriptToTaskChatItems(after.entries, { runId: RUN_ID, running: true });
+    expect(continued.find(item => item.kind === "message")).toMatchObject({
+      text: "The correction is now applied.", channel: "progress",
+    });
+  });
+
   it("omits unrelated information from saved chat without removing warnings or responses", () => {
     const legacyNotice = {
       schema: "paperclip.provider.notice.v1",
@@ -118,6 +153,47 @@ describe("provider notice presentation", () => {
 });
 
 describe("nativeRunEventsToTranscript", () => {
+  it("keeps JSON printed through native command output intact in the expanded tool", () => {
+    const output = JSON.stringify({ content: "hello", count: 3 });
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1", executionId: "json-command",
+        transport: "process", operation: "execute", name: "terminal", status: "running",
+        input: { cmd: "print JSON" },
+      }),
+      event(2, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "json-command",
+        transport: "process", operation: "execute", name: "terminal", status: "completed", output,
+      }),
+    ]);
+    const items = transcriptToTaskChatItems(entries, { runId: RUN_ID, running: false });
+    expect(items).toContainEqual(expect.objectContaining({ kind: "tool", detail: output }));
+  });
+
+  it.each(["command", "cmd"])("uses native %s arguments for process previews and preserves plain results", (key) => {
+    const input = { [key]: "printf 'native output'", cwd: "/workspace" };
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1", executionId: "hermes-terminal",
+        transport: "process", operation: "execute", name: "terminal", status: "running",
+      }),
+      itemEvent(2, "item.started", "hermes-terminal", {
+        item: { type: "tool_use", id: "hermes-terminal", name: "terminal", input: JSON.stringify(input) },
+      }),
+      event(3, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1", executionId: "hermes-terminal",
+        transport: "process", operation: "execute", name: "terminal", status: "completed",
+      }),
+      itemEvent(4, "item.completed", "hermes-terminal", {
+        item: { type: "tool_result", tool_use_id: "hermes-terminal", result: "native output\nnext line" },
+      }),
+    ]);
+    expect(transcript).toMatchObject([
+      { kind: "tool_call", toolUseId: "hermes-terminal", name: "Bash", input },
+      { kind: "tool_result", toolUseId: "hermes-terminal", content: "native output\nnext line", isError: false },
+    ]);
+  });
+
   describe("accepted response-wake authority", () => {
     function fixture() {
       const result = {
@@ -532,6 +608,68 @@ describe("nativeRunEventsToTranscript", () => {
     ])).toEqual([
       expect.objectContaining({ kind: "assistant", text: "Still ", delta: true }),
       expect.objectContaining({ kind: "assistant", text: "working", delta: true }),
+    ]);
+  });
+
+  it("keeps earlier assistant messages when the final message snapshot arrives", () => {
+    const streamed = [
+      event(1, "item.delta", {
+        itemId: "acpx-assistant-initial",
+        kind: "agentMessage",
+        channel: "progress",
+        text: "Initial work is active.",
+      }),
+      event(2, "item.delta", {
+        itemId: "acpx-assistant-final",
+        kind: "agentMessage",
+        channel: "progress",
+        text: "Work is done.",
+      }),
+    ];
+    expect(nativeRunEventsToTranscript(streamed)).toEqual([
+      expect.objectContaining({
+        kind: "assistant", itemId: "acpx-assistant-initial",
+        text: "Initial work is active.", delta: true, channel: "progress",
+      }),
+      expect.objectContaining({
+        kind: "assistant", itemId: "acpx-assistant-final",
+        text: "Work is done.", delta: true, channel: "progress",
+      }),
+    ]);
+    expect(nativeRunEventsToTranscript([
+      ...streamed,
+      event(3, "item.completed", {
+        itemId: "acpx-assistant-final",
+        kind: "agentMessage",
+        channel: "final",
+        text: "Work is done.",
+      }),
+    ])).toEqual([
+      expect.objectContaining({
+        kind: "assistant", itemId: "acpx-assistant-initial",
+        text: "Initial work is active.", delta: true, channel: "progress",
+      }),
+      expect.objectContaining({
+        kind: "assistant", itemId: "acpx-assistant-final",
+        text: "Work is done.", channel: "final",
+      }),
+    ]);
+  });
+
+  it("uses replacement text only for the message it replaces", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "item.delta", {
+        itemId: "initial", kind: "agentMessage", channel: "progress", text: "Initial work.",
+      }),
+      event(2, "item.delta", {
+        itemId: "final", kind: "agentMessage", channel: "progress", text: "Draft answer.",
+      }),
+      event(3, "item.completed", {
+        itemId: "final", kind: "agentMessage", channel: "final", text: "Corrected answer.",
+      }),
+    ])).toEqual([
+      expect.objectContaining({ kind: "assistant", itemId: "initial", text: "Initial work." }),
+      expect.objectContaining({ kind: "assistant", itemId: "final", text: "Corrected answer." }),
     ]);
   });
 

@@ -40,6 +40,7 @@ export type {
   ExternalProviderPort,
   ExternalProviderOperation,
   NativeUserAttachment,
+  ProviderTokenAccounting,
   NativeCompletionSource,
   NativeCompletionSources,
   NativeInteractionResponseEnvelope,
@@ -131,6 +132,7 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const readProviderUsageBilling = runner.readProviderUsageBilling;
+export const readProviderTokenAccounting = runner.readProviderTokenAccounting;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;

@@ -1439,6 +1439,11 @@ credential boundaries and repetition requirements.
 
 ### Grok branch qualification on EC2
 
+Credential-free image and clean-install preparation can use the manual
+`Docker Runner check` workflow's default `execution_host=github-hosted`.
+Choose `execution_host=ec2` only for an allowlisted workflow ref. Both paths
+build remotely and retain the immutable target revision and image evidence.
+
 The trusted default-branch workflow can run the explicit `grok-qualification`
 suite from a selected target branch. Store `XAI_API_KEY` only in the protected
 `runner-e2e-paid` environment. The paid step delivers it only to a profile whose
@@ -1566,7 +1571,9 @@ candidate image and the matching controller-owned provider pack described in
 The explicit-only `hermes-api-connections` suite adds ten one-turn completion
 cells: managed OpenRouter, Anthropic, OpenAI, xAI and Google API accounts on
 local and Daytona. Select one exact execution ID. The October 7 authenticated
-catalog choices are pending inference qualification, and no production default
+catalog choices are pending inference qualification; OpenAI's API cell now
+uses `gpt-6-luna`, confirmed by authenticated catalog discovery on October 9
+and covered by the reviewed direct-API rate card. No production default
 changes. Each fixture creates its personal account through the public
 Connections API, removes agent credential overrides, and independently checks
 the native run's company/task/agent scope, responsible user, selected account,
@@ -1580,7 +1587,13 @@ The OpenRouter cell additionally waits for its public run's reported wire cost
 to settle and checks that the company remains active and the agent idle with
 no pause reason before cleanup. Its separate settlement snapshot rejects missing
 price evidence, estimates and an unpriced budget pause even when the answer is
-correct. Other providers retain completion-only coverage.
+correct. Claude and OpenAI API cells require a complete selected-account wire
+token receipt, the correct model's explicitly estimated rate-card cost and
+healthy post-settlement budgets. Their `hermes-api-settlement.json` rejects
+reported-dollar claims, missing tokens, wrong model/biller and pending or
+unpriced accounting. Direct rate-card estimates use the canonical exact decimal
+amount; an optional numeric duplicate must agree. OpenRouter continues to require
+both reported-price representations. xAI, Google and routed Bedrock retain completion-only coverage.
 Before creating the task, public account readback must identify the selected
 connected personal account, its company and owner, and the authenticated caller.
 Both run attribution fields must match that independently recorded owner.
@@ -1618,7 +1631,8 @@ pnpm test:e2e:runner -- --id hermes-bedrock-connections.runner-acpx-hermes-bedro
 ```
 
 The explicit-only `hermes-native-interactions` suite declares question/reconnect
-cells on local and Daytona, plus a separate local native Stop cell. One native Hermes
+cells on local and Daytona, plus a separate local native Stop cell, for managed
+OpenRouter, Claude API and OpenAI API profiles (nine explicit cells). One native Hermes
 `clarify` call asks an ordered batch of single choice, multiple choice with a
 custom answer, and free text. The browser reloads while the original run remains
 active, checks the same durable request and complete form, then submits all
@@ -1629,8 +1643,9 @@ original succeeded run without a continuation. The final answer must contain
 the reviewer's undisclosed free text returned by the native callback; a
 semantic `request_human_input` call or a guessed completion cannot pass.
 
-This suite uses the same managed OpenRouter account/model, public bounded
-budgets, settled reported billing, pre-credential source admission and cleanup
+This suite uses the same managed accounts/models, public bounded
+budgets, settled reported OpenRouter or estimated direct-API billing,
+pre-credential source admission and cleanup
 pipeline. It allows one attempt and records its harness source digest. Its
 browser-reconnect scope does not qualify controller restart, cancellation,
 Stop, subscriptions, or Daytona until each corresponding live check passes.
@@ -1653,13 +1668,18 @@ mock control plane. Neither suite substitutes for the other.
 
 ### Hermes native image input (explicit-only)
 
-`hermes-image-input` declares one local and one Daytona `image-code-complete`
-cell. Its separate candidate profile uses `google/gemini-2.5-flash-lite` through
+`hermes-image-input` declares local and Daytona `image-code-complete`
+cells for OpenRouter, Claude API and OpenAI API (six explicit cells).
+Its separate OpenRouter candidate profile uses `google/gemini-2.5-flash-lite` through
 the selected managed OpenRouter account. The public model catalog reports image
 input and tools; this metadata is preparation, not inference qualification.
-The existing DeepSeek profile remains text-only.
+The existing DeepSeek profile remains text-only. Direct API profiles use their
+selected Claude/OpenAI models; successful inference is required to qualify image input.
 
-The browser uploads a generated PNG in the ordinary task-creation flow. Its
+The browser uploads a generated PNG in the ordinary task-creation flow and starts
+the task only after all selected files are bound to its wake comment. Definition
+version 4 renders ordinary Inter text from a pinned glyph raster; version 3 used
+a block font and its failed attempts remain failed. Its
 eight-character hexadecimal code is present only in pixels, absent from the
 prompt, filename and PNG text metadata. An exact native final response must
 contain that undisclosed code once. Public attachment metadata and a downloaded
@@ -1672,7 +1692,7 @@ can pass. It evaluates this gate after collecting account and billing evidence,
 so wrong image bytes or forbidden tools cannot qualify on a correct final code.
 
 The suite reuses managed account attribution, pre-credential source/runtime
-admission, bounded company/agent budgets, per-run reported billing and cleanup.
+admission, bounded company/agent budgets, per-run reported or estimated billing and cleanup.
 It admits one attempt with no automatic retry. Remote selection still requires
 the verified immutable image and authorized Daytona credential. Neither target
 is qualified by the fixture's unit tests or public model discovery.

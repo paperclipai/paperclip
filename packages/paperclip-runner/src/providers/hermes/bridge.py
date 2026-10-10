@@ -419,6 +419,7 @@ class ManagedHermesACPAgent(HermesACPAgent):
         self._usage_before = None
         self._billing = None
         self._billing_negotiated = False
+        self._token_accounting_negotiated = False
         self._committed_wait_updates = []
         self._assigned_skill_identity = assigned_skill_identity(json.loads(os.environ.get("PAPERCLIP_HERMES_ASSIGNED_SKILLS", "[]")))
 
@@ -445,11 +446,13 @@ class ManagedHermesACPAgent(HermesACPAgent):
         meta = getattr(capabilities, "field_meta", None) or {}
         self._negotiated = meta.get("paperclipHermes", {}).get("version") == EXTENSION_VERSION
         self._billing_negotiated = self._negotiated and meta.get("paperclipHermes", {}).get("billingReceipts") == 1
+        self._token_accounting_negotiated = self._negotiated and meta.get("paperclipHermes", {}).get("tokenAccountingReceipts") == 1
         response = await super().initialize(*args, **kwargs)
         response.agent_capabilities.field_meta = {"paperclipHermes": {
             "version": EXTENSION_VERSION, "steering": True, "questions": True,
             "queuedFollowUp": False, "strictRestore": True,
             **({"billingReceipts": 1} if self._billing_negotiated else {}),
+            **({"tokenAccountingReceipts": 1} if self._token_accounting_negotiated else {}),
         }}
         return response
 
@@ -509,7 +512,7 @@ class ManagedHermesACPAgent(HermesACPAgent):
             if state is None:
                 raise ValueError("Hermes session is unavailable")
             self._usage_before = usage_snapshot(state.agent)
-            self._billing = start_turn(state.agent) if self._billing_negotiated else None
+            self._billing = start_turn(state.agent, token_accounting=self._token_accounting_negotiated) if self._billing_negotiated or self._token_accounting_negotiated else None
             state.agent._paperclip_usage_receipts = []
             state.agent._paperclip_cost_receipts = []
             await self._conn.ext_notification("hermes/turn_started", {
@@ -557,7 +560,7 @@ class ManagedHermesACPAgent(HermesACPAgent):
             "tokens": "reported" if response.usage is not None else "unavailable",
             "cost": "estimated" if estimated else "unavailable",
             **({"estimatedUsd": after["estimated_cost_usd"] - before["estimated_cost_usd"]} if estimated else {}),
-            **({"billing": billing} if billing is not None else {}),
+            **({"tokenAccounting" if billing["schema"] == "paperclip.usage.tokens/v1" else "billing": billing} if billing is not None else {}),
         })
         # The controller yields when it sees the committed question result.
         # Publish it only after native work and its turn receipt have finished;

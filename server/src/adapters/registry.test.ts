@@ -4,13 +4,15 @@ import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
-const { probeInstallation, probeGrokInstallation } = vi.hoisted(() => ({
+const { probeInstallation, probeGrokInstallation, probeHermesInstallation } = vi.hoisted(() => ({
   probeInstallation: vi.fn(),
   probeGrokInstallation: vi.fn(),
+  probeHermesInstallation: vi.fn(),
 }));
 vi.mock("@paperclipai/paperclip-runner/live", () => ({
   probeAcpxClaudeInstallation: probeInstallation,
   probeAcpxGrokInstallation: probeGrokInstallation,
+  probeAcpxHermesInstallation: probeHermesInstallation,
   probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 
@@ -96,8 +98,9 @@ describe("native ACPX environment checks", () => {
   beforeEach(() => {
     probeInstallation.mockReset().mockResolvedValue(undefined);
     probeGrokInstallation.mockReset().mockResolvedValue(undefined);
+    probeHermesInstallation.mockReset().mockResolvedValue(undefined);
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   const context = {
     companyId: "company-test",
@@ -130,6 +133,36 @@ describe("native ACPX environment checks", () => {
     expect(result.status).toBe(ready ? "pass" : "fail");
     expect(probeGrokInstallation).toHaveBeenCalledWith("grok-4.7");
     expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("checks the admitted Hermes runtime without claiming production qualification (%s)", async ready => {
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "hermes", model: "hermes-validation-fixture" }]));
+    if (!ready) probeHermesInstallation.mockRejectedValueOnce(new Error("Hermes runtime is unavailable; run paperclipai runtime setup hermes"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context, config: { provider: "acpx", acpxAgent: "hermes", model: "hermes-validation-fixture" },
+    });
+    expect(result.status).toBe(ready ? "warn" : "fail");
+    expect(result.checks[0]).toMatchObject({ code: ready ? "acpx_candidate_qualification_only" : "acpx_runtime_unavailable" });
+    expect(probeHermesInstallation).toHaveBeenCalledWith("hermes-validation-fixture");
+    expect(probeInstallation).not.toHaveBeenCalled();
+    expect(probeGrokInstallation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Linux\nx86_64\n", "warn"], ["Darwin\narm64\n", "warn"],
+    ["Darwin\nx86_64\n", "fail"], ["Linux\naarch64\n", "fail"],
+  ])("admits only supported Hermes remote platforms %j", async (stdout, status) => {
+    vi.stubEnv("PAPERCLIP_RUNNER_ACPX_QUALIFICATION", JSON.stringify([{ agent: "hermes", model: "hermes-validation-fixture" }]));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context, config: { provider: "acpx", acpxAgent: "hermes", model: "hermes-validation-fixture" },
+      executionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout }) },
+      },
+    });
+    expect(result.status).toBe(status);
+    expect(result.checks[0].code).toBe(status === "warn" ? "acpx_remote_runtime_unverified" : "acpx_runtime_unavailable");
+    expect(probeHermesInstallation).not.toHaveBeenCalled();
   });
 
   it("does not use the host platform to reject a remote environment", async () => {

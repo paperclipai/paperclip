@@ -6,6 +6,7 @@ import { isCanonicalProviderEventType, type AcpRuntimeEventShape, type Canonical
 import { validatePrpEvent } from "../../protocol/replay-contract.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import { parseProviderUsageBilling, type ProviderUsageBilling } from "../../contracts/usage-billing.js";
+import { parseProviderTokenAccounting, type ProviderTokenAccounting } from "../../contracts/usage-tokens.js";
 
 export const ACPX_CANONICAL_INPUT_METHODS = [
   "elicitation/create", "cursor/ask_question", "cursor/create_plan", "_hermes/ask_questions",
@@ -33,6 +34,7 @@ export interface AcpxProfileExtensionContext {
   sessionId: string;
   turnId: string;
   onBilling?(receipt: ProviderUsageBilling): void;
+  onTokenAccounting?(receipt: ProviderTokenAccounting): void;
 }
 
 /** ACPX 0.13.1 bounds the complete encoded extension response at 256 KiB.
@@ -106,6 +108,12 @@ export function createAcpxProfileExtensionAdapter(
         }
         const estimated = params.cost === "estimated";
         const billing = params.billing === undefined ? null : parseProviderUsageBilling(params.billing);
+        const tokenAccounting = params.tokenAccounting === undefined ? null : parseProviderTokenAccounting(params.tokenAccounting);
+        if (billing && tokenAccounting) throw new Error("Hermes supplied conflicting accounting authorities");
+        if (tokenAccounting) {
+          if (!context.onTokenAccounting) throw new Error("Hermes token accounting was not negotiated");
+          context.onTokenAccounting(tokenAccounting);
+        }
         if (billing) {
           if (!context.onBilling) throw new Error("Hermes billing receipts were not negotiated");
           context.onBilling(billing);
@@ -120,6 +128,9 @@ export function createAcpxProfileExtensionAdapter(
           details: [{ name: "Token usage", value: String(params.tokens) }, { name: "Cost source", value: billing ? "OpenRouter response usage.cost" : estimated ? "Hermes model pricing estimate" : "Unavailable" },
             ...(billing ? [{ name: "Reported USD", value: billing.amountUsdExact }, { name: "Billing complete", value: String(billing.complete) },
               { name: "Reported requests", value: `${billing.reportedRequestCount}/${billing.requestCount}` }] : []),
+            ...(tokenAccounting ? [{ name: "Usage source", value: "Selected-account API response usage" },
+              { name: "Token accounting complete", value: String(tokenAccounting.complete) },
+              { name: "Reported requests", value: `${tokenAccounting.reportedRequestCount}/${tokenAccounting.requestCount}` }] : []),
             ...(estimated ? [{ name: "Estimated USD", value: String(params.estimatedUsd) }] : [])],
         } }];
       }
@@ -131,7 +142,7 @@ export function createAcpxProfileExtensionAdapter(
 }
 export function acpxProfileClientCapabilities(agent: QualifiedAcpxAgent): Record<string, unknown> {
   if (agent === "cursor") return structuredClone(CURSOR_CLIENT_CAPABILITIES);
-  return agent === "hermes" ? { _meta: { paperclipHermes: { version: 1, billingReceipts: 1 } } } : {};
+  return agent === "hermes" ? { _meta: { paperclipHermes: { version: 1, billingReceipts: 1, tokenAccountingReceipts: 1 } } } : {};
 }
 
 /** Delay this tool's display completion until its native prompt receipt is read.

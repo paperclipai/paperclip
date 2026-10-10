@@ -104,14 +104,29 @@ impl AcpxEventProjectionContext {
         self.provider_turn_id.as_deref().unwrap_or(&self.turn_id)
     }
 
-    fn assistant_item_id(&self) -> String {
-        // Recovery can submit multiple provider turns within one PRP run. Keep
-        // each delivered answer distinct while coalescing its streaming deltas.
-        acpx_message_item_id(
-            "",
-            &format!("{}:{}", self.item_id, self.active_provider_turn_id()),
-            "assistant",
-        )
+    fn assistant_item_id(&self, provider_item_id: Option<&str>) -> String {
+        let unlabelled_item_id =
+            acpx_message_item_id("", self.active_provider_turn_id(), "assistant-message");
+        let Some(provider_item_id) =
+            provider_item_id.filter(|item_id| *item_id != unlabelled_item_id)
+        else {
+            // Keep the original identity for providers without message IDs.
+            return acpx_message_item_id(
+                "",
+                &format!("{}:{}", self.item_id, self.active_provider_turn_id()),
+                "assistant",
+            );
+        };
+        // A turn can contain several assistant messages, and recovery can reuse
+        // provider message IDs in another turn. Scope each message to both.
+        let mut digest = Sha256::new();
+        digest.update(b"paperclip.acpx.assistant-item.v2\0");
+        digest.update(self.item_id.as_bytes());
+        digest.update(b"\0");
+        digest.update(self.active_provider_turn_id().as_bytes());
+        digest.update(b"\0");
+        digest.update(provider_item_id.as_bytes());
+        format!("acpx-assistant-{:x}", digest.finalize())
     }
 
     fn correlation(&self) -> Value {
@@ -149,17 +164,19 @@ pub fn project_acpx_state_event(
                     .payload
                     .as_object_mut()
                     .expect("normalized ACPX item delta has an object payload");
-                if let Some(provider_item_id) = payload
+                let provider_item_id = payload
                     .get("itemId")
                     .and_then(Value::as_str)
-                    .filter(|item_id| *item_id != context.item_id.as_str())
-                    .map(str::to_owned)
-                {
-                    payload.insert("providerItemId".to_owned(), Value::String(provider_item_id));
+                    .map(str::to_owned);
+                if let Some(provider_item_id) = provider_item_id.as_ref() {
+                    payload.insert(
+                        "providerItemId".to_owned(),
+                        Value::String(provider_item_id.clone()),
+                    );
                 }
                 payload.insert(
                     "itemId".to_owned(),
-                    Value::String(context.assistant_item_id()),
+                    Value::String(context.assistant_item_id(provider_item_id.as_deref())),
                 );
             }
             Ok(vec![event])
@@ -359,14 +376,18 @@ pub fn project_acpx_state_event(
                 )?])
             }
         }
-        AcpxProviderStateEvent::AssistantMessage { turn_id, text } => {
+        AcpxProviderStateEvent::AssistantMessage {
+            turn_id,
+            provider_item_id,
+            text,
+        } => {
             require_projected_turn(context, turn_id)?;
             one(
                 "item.completed",
                 EventPriority::P1,
                 json!({
                     "provider": "acpx",
-                    "itemId": context.assistant_item_id(),
+                    "itemId": context.assistant_item_id(provider_item_id.as_deref()),
                     "kind": "agentMessage",
                     "status": "completed",
                     "channel": "final",
@@ -709,6 +730,50 @@ fn provider_usage_billing(value: Option<&Value>) -> Option<Value> {
         || amount != units as f64 / 1_000_000_000.0
         || (reported == 0 && amount != 0.0)
     {
+        return None;
+    }
+    Some(value.clone())
+}
+
+/// Wire token authority is separate from a provider-reported dollar amount.
+fn provider_token_accounting(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    if value.as_object()?.len() != 10
+        || value["schema"] != "paperclip.usage.tokens/v1"
+        || value["source"] != "provider_wire"
+        || value["model"].as_str()?.trim().is_empty()
+        || value["model"].as_str()?.encode_utf16().count() > 240
+        || value["pricingContext"].as_object()?.len() != 2
+        || value["pricingContext"]["serviceTier"] != "standard"
+        || value["pricingContext"]["contextTier"] != "short"
+    {
+        return None;
+    }
+    match (value["biller"].as_str()?, value["protocol"].as_str()?) {
+        ("anthropic", "messages") | ("openai", "responses" | "chat_completions") => {}
+        _ => return None,
+    }
+    let complete = value["complete"].as_bool()?;
+    let requests = value["requestCount"].as_u64()?;
+    let reported = value["reportedRequestCount"].as_u64()?;
+    if requests > 9_007_199_254_740_991 || reported > requests || (complete && reported != requests)
+    {
+        return None;
+    }
+    let tokens = value["tokens"].as_object()?;
+    if tokens.len() != 4 {
+        return None;
+    }
+    let mut total = 0_u64;
+    for key in [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+    ] {
+        total = total.checked_add(tokens.get(key)?.as_u64()?)?;
+    }
+    if total > 9_007_199_254_740_991 || (reported == 0 && total != 0) {
         return None;
     }
     Some(value.clone())
@@ -1267,6 +1332,9 @@ fn normalize_acpx_status(
         });
         if let Some(billing) = billing {
             usage_payload["billing"] = billing;
+        }
+        if let Some(accounting) = provider_token_accounting(payload.get("tokenAccounting")) {
+            usage_payload["tokenAccounting"] = accounting;
         }
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),

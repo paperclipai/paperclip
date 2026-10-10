@@ -45,6 +45,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { routineService } from "../routines.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
@@ -2035,6 +2036,12 @@ export async function commitNativeStatusDecision(input: {
           reasonCode,
         },
       });
+    }
+
+    // Keep the firing projection atomic with the authoritative task status.
+    // Recovery and normal completion use the same status-decision transaction.
+    if (updated.originKind === "routine_execution") {
+      await routineService(tx as unknown as Db).syncRunStatusForIssue(input.issueId);
     }
 
     if (input.decision.statusAction === "done" && issue.status !== "done") {

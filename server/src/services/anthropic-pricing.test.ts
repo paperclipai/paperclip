@@ -10,10 +10,15 @@ describe("complete Anthropic receipt pricing", () => {
     const priced = priceAnthropicReceipt(receipt);
     expect(priced.costUsdExact).toBe("0.155967600");
     expect(priced.costStatus).toBe("estimated");
-    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "anthropic-standard-2026-10-07" });
+    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "anthropic-standard-2026-10-09" });
     expect(priced.pricingProvenance?.evidence).toContain("one-hour upper rate");
     expect(priced.usage).toBe(receipt.usage);
     expect(receipt.costStatus).toBe("unpriced");
+  });
+  it.each([
+    ["claude-haiku-4-5-20251001", "0.077983800"], ["claude-sonnet-4-6", "0.233951400"],
+  ])("prices the exact %s API model while retaining the conservative cache-write assumption", (model, expected) => {
+    expect(priceAnthropicReceipt({ ...receipt, model })).toMatchObject({ costUsdExact: expected, costStatus: "estimated" });
   });
   it.each([
     { complete: false }, { billingType: "unknown" }, { billingType: "subscription_included" },

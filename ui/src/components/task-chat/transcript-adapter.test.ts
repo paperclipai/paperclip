@@ -248,14 +248,14 @@ describe("omitProgressRepeatedByResponseAcrossSegments", () => {
   });
 });
 
-function toolCall(name: string, input?: unknown): TranscriptEntry {
+function toolCall(name: string, input?: unknown): Extract<TranscriptEntry, { kind: "tool_call" }> {
   return {
     kind: "tool_call",
     ts: TS,
     name,
     toolUseId: `tool-${name}`,
     input,
-  } as TranscriptEntry;
+  };
 }
 
 describe("splitTranscriptAtAnchors", () => {
@@ -365,6 +365,65 @@ describe("toolDisplayName", () => {
 
 describe("transcriptToTaskChatItems tool_call updates", () => {
   const opts = { runId: "run-1", running: false };
+
+  it("renders serialized native command arguments as the invocation", () => {
+    const items = transcriptToTaskChatItems([
+      toolCall("terminal", JSON.stringify({ cmd: "printf 'hello'", cwd: "/workspace" })),
+      { kind: "tool_result", ts: TS, toolUseId: "tool-terminal", content: "hello", isError: false },
+    ], opts);
+    expect(items).toMatchObject([{ kind: "tool", target: "printf 'hello'", detail: "hello", status: "completed" }]);
+  });
+
+  it("updates a missing invocation without merging overlapping same-name calls", () => {
+    const items = transcriptToTaskChatItems([
+      toolCall("terminal"),
+      { ...toolCall("terminal", { command: "echo second" }), toolUseId: "second-call" },
+      toolCall("terminal", JSON.stringify({ command: "echo first" })),
+      { kind: "tool_result", ts: TS, toolUseId: "second-call", content: "second", isError: false },
+      { kind: "tool_result", ts: TS, toolUseId: "tool-terminal", content: "first", isError: false },
+    ], opts);
+    expect(items).toMatchObject([
+      { kind: "tool", target: "echo first", detail: "first", status: "completed" },
+      { kind: "tool", target: "echo second", detail: "second", status: "completed" },
+    ]);
+  });
+
+  it("shows native output and failures while retaining unknown structured details", () => {
+    const metadata = JSON.stringify({ disposition: "applied", document: { key: "plan" } });
+    const items = transcriptToTaskChatItems([
+      toolCall("terminal", { command: "run checks" }),
+      { kind: "tool_result", ts: TS, toolUseId: "tool-terminal", isError: true,
+        content: JSON.stringify({ stdout: "Checking\nTwo checks failed", stderr: "Missing input", exit_code: 2 }) },
+      toolCall("write_document", { key: "plan" }),
+      { kind: "tool_result", ts: TS, toolUseId: "tool-write_document", content: metadata, isError: false },
+    ], opts);
+    expect(items).toMatchObject([
+      { kind: "tool", status: "failed", detail: "Checking\nTwo checks failed\nMissing input\nExit code: 2" },
+      { kind: "tool", status: "completed", detail: metadata },
+    ]);
+  });
+
+  it.each([
+    { content: "hello", count: 3 },
+    { output: "hello", count: 3, exit_code: 0 },
+    { stdout: "hello", error: { code: "missing_input" }, exit_code: 2 },
+  ])("preserves every field in arbitrary JSON tool output: %j", (output) => {
+    const content = JSON.stringify(output);
+    const items = transcriptToTaskChatItems([
+      toolCall("terminal", { command: "print JSON" }),
+      { kind: "tool_result", ts: TS, toolUseId: "tool-terminal", content, isError: false },
+    ], opts);
+    expect(items).toMatchObject([{ kind: "tool", detail: content }]);
+  });
+
+  it("retains distinct output streams in a known command result", () => {
+    const items = transcriptToTaskChatItems([
+      toolCall("terminal", { command: "run checks" }),
+      { kind: "tool_result", ts: TS, toolUseId: "tool-terminal", isError: true,
+        content: JSON.stringify({ output: "Progress", stdout: "Checks failed", stderr: "Missing input", exit_code: 2 }) },
+    ], opts);
+    expect(items).toMatchObject([{ kind: "tool", detail: "Progress\nChecks failed\nMissing input\nExit code: 2" }]);
+  });
 
   function update(toolUseId: string, status: string): TranscriptEntry {
     // Mirrors what a persisted acpx tool_call_update line parses to: the

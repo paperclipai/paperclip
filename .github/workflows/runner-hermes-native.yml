@@ -142,6 +142,9 @@ jobs:
 
       - name: Run native fixtures against a deterministic loopback model
         id: fixtures
+        # Retain provenance even if a timed-out fixture leaves a native handle
+        # in its cleanup hook. The whole-job deadline would skip that evidence.
+        timeout-minutes: 12
         working-directory: packages/paperclip-runner
         run: |
           set -euo pipefail

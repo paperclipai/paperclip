@@ -46,8 +46,9 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
-    { "if": { "properties": { "eventType": { "const": "usage.reported" } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "billing": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing" } } } } } },
+    { "if": { "properties": { "eventType": { "const": "usage.reported" } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "billing": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing" }, "tokenAccounting": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting" } }, "not": { "required": ["billing", "tokenAccounting"] } } } } },
     { "if": { "properties": { "payload": { "type": "object", "required": ["kind", "usage"], "properties": { "kind": { "const": "usage" }, "usage": { "type": "object", "required": ["billing"] } } } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "usage": { "type": "object", "properties": { "billing": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing" } } } } } } } },
+    { "if": { "properties": { "payload": { "type": "object", "required": ["kind", "usage"], "properties": { "kind": { "const": "usage" }, "usage": { "type": "object", "required": ["tokenAccounting"] } } } } }, "then": { "properties": { "payload": { "type": "object", "properties": { "usage": { "type": "object", "properties": { "tokenAccounting": { "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting" } }, "not": { "required": ["billing", "tokenAccounting"] } } } } } } },
     {
       "if": { "properties": { "eventType": { "enum": ["session.goal.snapshot", "session.goal.updated"] } } },
       "then": {

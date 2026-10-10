@@ -88,6 +88,7 @@ import {
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
 import { acpxUsageEstimateNotice, persistedAcpxTurnUsage } from "./usage-accounting.js";
 import type { ProviderUsageBilling } from "../../contracts/usage-billing.js";
+import type { ProviderTokenAccounting } from "../../contracts/usage-tokens.js";
 
 const MAX_BUFFERED_EVENTS = 512;
 const TERMINAL_EVENT_RESERVE = 3;
@@ -894,12 +895,17 @@ class CodexAcpxSession implements HarnessSession {
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
     let billing: ProviderUsageBilling | undefined;
+    let tokenAccounting: ProviderTokenAccounting | undefined;
     const extensions = bindAcpxExtensionTurn({
       adapter: createAcpxProfileExtensionAdapter(this.#agent, {
         workspacePath: this.#input.workingDirectory, sessionId: this.#host.identity().backendSessionId, turnId,
         onBilling: receipt => {
           if (billing) throw new Error("Hermes supplied more than one terminal billing receipt");
           billing = receipt;
+        },
+        onTokenAccounting: receipt => {
+          if (tokenAccounting) throw new Error("Hermes supplied more than one token accounting receipt");
+          tokenAccounting = receipt;
         },
       }),
       active: () => this.#activeTurnId === turnId && !this.#closingStarted,
@@ -945,7 +951,7 @@ class CodexAcpxSession implements HarnessSession {
       );
       throw error;
     }
-    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore, activity, toolEvidence, () => billing);
+    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore, activity, toolEvidence, () => billing, () => tokenAccounting);
     this.#activePump = pump;
     void pump
       .finally(() => {
@@ -1454,7 +1460,7 @@ class CodexAcpxSession implements HarnessSession {
       .catch(() => undefined);
   }
 
-  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence, readBilling?: () => ProviderUsageBilling | undefined): Promise<void> {
+  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence, readBilling?: () => ProviderUsageBilling | undefined, readTokenAccounting?: () => ProviderTokenAccounting | undefined): Promise<void> {
     try {
       let index = 0;
       const normalizeToolEvent =
@@ -1482,7 +1488,7 @@ class CodexAcpxSession implements HarnessSession {
         const notice = activity.usageNotice?.(usageBefore, usageAfter, turn.requestId, turnId);
         if (notice) { validateAcpxRichEvent(notice); this.#emit(notice.eventType, notice.payload, { turnId, itemId: notice.itemId }); }
       } catch { /* Partial native diagnostics are optional, never settlement authority. */ }
-      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent, readBilling?.());
+      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent, readBilling?.(), readTokenAccounting?.());
       if (receipt) {
         this.#mapRuntimeEvent(receipt as unknown as AcpRuntimeEvent, turnId, ++index);
         const estimate = acpxUsageEstimateNotice(receipt, `${turnId}:usage-estimate`);
@@ -1683,7 +1689,9 @@ class CodexAcpxSession implements HarnessSession {
         "item.delta",
         {
           kind: isReasoning ? "reasoning" : "agentMessage",
-          channel: isReasoning ? "summary" : "unknown",
+          // Output chunks are progress; the settled snapshot owns final text.
+          // Frozen pre-steering intervals must retain their commentary.
+          channel: isReasoning ? "summary" : "progress",
           text: output,
         },
         {

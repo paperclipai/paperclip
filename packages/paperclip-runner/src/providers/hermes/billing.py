@@ -1,4 +1,4 @@
-"""Turn-owned OpenRouter wire receipts for the pinned synchronous SDK transport.
+"""Turn-owned wire receipts for the pinned synchronous SDK transport.
 
 Observe bytes without changing requests or Hermes's loop. Retry attempts,
 compaction and delegated calls share the ledger; incomplete requests stay unknown.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import threading
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import urlsplit
 
 MAX_REQUESTS = 10000
 MAX_FRAME = 1024 * 1024
@@ -195,15 +196,166 @@ class WireReceipt:
             self._data.clear()
 
 
-def start_turn(agent):
+class TokenBilling(TurnBilling):
+    """Direct API token authority, without inventing a provider price receipt."""
+    def __init__(self, biller, model, protocol):
+        super().__init__()
+        self.biller, self.model, self.protocol = biller, model, protocol
+
+    def begin(self, authorized=True):
+        with self._lock:
+            if self._closed or len(self._requests) >= MAX_REQUESTS:
+                self._overflow = True
+                return None
+            receipt = TokenWireReceipt(self, authorized)
+            self._requests.append(receipt)
+            return receipt
+
+    def authorized_request(self, request, environment):
+        host, path, key_name = ("api.anthropic.com", "/v1/messages", "ANTHROPIC_API_KEY") if self.biller == "anthropic" else (
+            "api.openai.com", "/v1/responses" if self.protocol == "responses" else "/v1/chat/completions", "OPENAI_API_KEY")
+        key = environment.get(key_name)
+        if (not key or request.url.scheme != "https" or request.url.host != host
+                or request.url.port not in (None, 443) or request.url.path != path
+                or request.url.query or request.url.username or request.url.password):
+            return False
+        if (request.headers.get("x-api-key") != key if self.biller == "anthropic"
+                else request.headers.get("authorization") != "Bearer " + key):
+            return False
+        try:
+            if len(request.content) > MAX_BODY:
+                return False
+            body = json.loads(request.content)
+            return (isinstance(body, dict) and body.get("model") == self.model
+                    and body.get("service_tier") in (None, "auto", "standard", "default")
+                    and body.get("speed") in (None, "standard")
+                    and body.get("inference_geo") in (None, "global")
+                    and all(isinstance(tool, dict) and tool.get("type") in (None, "function", "custom")
+                            for tool in body.get("tools", [])))
+        except (ValueError, TypeError, UnicodeError):
+            return False
+
+    def finish(self, owned_work_complete=True):
+        with self._lock:
+            self._closed = True
+            completed = [r for r in self._requests if r.valid and r.done and r.tokens is not None]
+            totals = tuple(sum(r.tokens[i] for r in completed) for i in range(4))
+            complete = (owned_work_complete and not self._overflow and not self._children
+                        and len(completed) == len(self._requests)
+                        and sum(totals) <= 9007199254740991)
+            if sum(totals) > 9007199254740991:
+                # No representable partial receipt can carry this aggregate.
+                raise ValueError("Hermes turn tokens exceed the receipt bound")
+            receipt = {"schema": "paperclip.usage.tokens/v1", "source": "provider_wire",
+                "biller": self.biller, "model": self.model, "protocol": self.protocol,
+                "complete": complete, "requestCount": len(self._requests), "reportedRequestCount": len(completed),
+                "tokens": dict(zip(("inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"), totals)),
+                "pricingContext": {"serviceTier": "standard", "contextTier": "short"}}
+            return receipt, totals if complete else None
+
+
+class TokenWireReceipt(WireReceipt):
+    def __init__(self, owner, authorized):
+        super().__init__(owner, authorized)
+        self._input = None
+        self._final_usage = False
+
+    def _accept(self, tokens):
+        if tokens is None or sum((tokens[0], tokens[2], tokens[3])) > 128000:
+            self.valid = False
+        else:
+            self.tokens = tokens
+
+    def _document(self, data):
+        try:
+            value = json.loads(data)
+            if not isinstance(value, dict) or value.get("error") is not None:
+                raise ValueError()
+            if value.get("service_tier") not in (None, "standard", "default"):
+                raise ValueError()
+            if self.owner.protocol == "messages":
+                kind = value.get("type")
+                usage = (value.get("message") or {}).get("usage") if kind == "message_start" else value.get("usage")
+                if isinstance(usage, dict):
+                    # Haiku 4.5 predates geographic pricing and reports this
+                    # documented sentinel even on ordinary standard-rate work.
+                    # Newer models' regional premiums must still stay unknown.
+                    geography = (None, "global", "not_available") if self.owner.model == "claude-haiku-4-5-20251001" else (None, "global")
+                    if (usage.get("speed") not in (None, "standard")
+                            or usage.get("service_tier") not in (None, "standard")
+                            or usage.get("inference_geo") not in geography):
+                        raise ValueError()
+                    if kind in ("message_start", "message"):
+                        if self._input is not None:
+                            raise ValueError()
+                        self._input = (_count(usage.get("input_tokens")), _count(usage.get("cache_read_input_tokens", 0)),
+                            _count(usage.get("cache_creation_input_tokens", 0)))
+                        if None in self._input:
+                            raise ValueError()
+                    elif self._input is not None:
+                        self._input = tuple(_count(usage[name]) if name in usage else self._input[i]
+                            for i, name in enumerate(("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
+                        if None in self._input:
+                            raise ValueError()
+                    output = _count(usage.get("output_tokens"))
+                    if self._input is None or output is None or (self.tokens is not None and output < self.tokens[1]):
+                        raise ValueError()
+                    self._accept((self._input[0], output, self._input[1], self._input[2]))
+                    if kind == "message_delta":
+                        self._final_usage = True
+                if kind == "message_stop":
+                    if not self._final_usage:
+                        raise ValueError()
+                    self.done = True
+            elif self.owner.protocol == "responses":
+                response = value.get("response") if value.get("type") in ("response.completed", "response.incomplete") else value
+                if isinstance(response, dict) and response.get("usage") is not None:
+                    if response.get("error") is not None or response.get("status") not in (None, "completed", "incomplete"):
+                        raise ValueError()
+                    usage = response["usage"]
+                    prompt, output = _count(usage.get("input_tokens")), _count(usage.get("output_tokens"))
+                    details = usage.get("input_tokens_details") or {}
+                    read = _count(details.get("cached_tokens", 0))
+                    self._accept(None if None in (prompt, output, read) or prompt < read else (prompt - read, output, read, 0))
+                    if response.get("service_tier") not in (None, "standard", "default"):
+                        raise ValueError()
+                    self.done = value.get("type") in ("response.completed", "response.incomplete")
+            elif value.get("usage") is not None:
+                tokens, _ = _usage(value["usage"])
+                if self.tokens is not None and self.tokens != tokens:
+                    raise ValueError()
+                self._accept(tokens)
+        except (ValueError, TypeError, AttributeError, UnicodeError):
+            self.valid = False
+
+    def eof(self):
+        # An explicit terminal frame is required for a streamed token receipt.
+        with self.owner._lock:
+            self._buffer.clear()
+            self._data.clear()
+
+
+def start_turn(agent, token_accounting=False):
     global _active
-    # Only the native selected OpenRouter Chat Completions route is qualified
-    # for billed usage.cost. Custom protocols and model-price estimates are not.
-    enabled = getattr(agent, "provider", None) == "openrouter" and getattr(agent, "api_mode", None) == "chat_completions"
+    provider, mode = getattr(agent, "provider", None), getattr(agent, "api_mode", None)
+    # Pinned Hermes expands its direct OpenAI alias to a custom runtime.
+    # Recognize only the official endpoint; per-request authorization still
+    # binds the exact selected model, protocol and staged credential.
+    if provider == "custom":
+        route = urlsplit(getattr(agent, "base_url", "") or "")
+        if (route.scheme == "https" and route.hostname == "api.openai.com"
+                and route.port in (None, 443) and route.path.rstrip("/") == "/v1"
+                and not route.query and not route.fragment and not route.username and not route.password):
+            provider = "openai"
+    ledger = TurnBilling() if provider == "openrouter" and mode == "chat_completions" else None
+    if token_accounting and provider == "anthropic" and mode == "anthropic_messages":
+        ledger = TokenBilling(provider, agent.model, "messages")
+    elif token_accounting and provider == "openai" and mode in ("chat_completions", "codex_responses"):
+        ledger = TokenBilling(provider, agent.model, "responses" if mode == "codex_responses" else "chat_completions")
     with _active_lock:
         if _active is not None:
             raise ValueError("Hermes billing already belongs to an active turn")
-        _active = TurnBilling() if enabled else None
+        _active = ledger
         return _active
 
 
@@ -250,7 +402,7 @@ def install_billing_capture():
                 and request.url.port in (None, 443) and request.url.path == "/api/v1/chat/completions" \
                 and not request.url.query and not request.url.username and not request.url.password \
                 and request.headers.get("authorization") == "Bearer " + key
-            receipt = ledger.begin(authorized)
+            receipt = ledger.begin(ledger.authorized_request(request, os.environ) if isinstance(ledger, TokenBilling) else authorized)
         try:
             response = original_send(client, request, *args, **kwargs)
         except BaseException:

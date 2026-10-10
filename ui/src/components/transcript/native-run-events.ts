@@ -547,6 +547,7 @@ function nativeToolItemDetails(
 
 function serializedNativeToolResult(item: NativeToolItemDetails): string {
   if (item.result === undefined) return "";
+  if (typeof item.result === "string") return item.result;
   try {
     return JSON.stringify(item.result) ?? "";
   } catch {
@@ -562,6 +563,14 @@ function toolPresentation(
   const operation = text(payload.operation);
   const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
+    let input = item?.input;
+    if (typeof input === "string") {
+      try { input = JSON.parse(input); } catch { /* Keep the reported invocation fallback. */ }
+    }
+    const argumentsRecord = record(input);
+    if (text(argumentsRecord?.command) || text(argumentsRecord?.cmd)) {
+      return { name: "Bash", input };
+    }
     return {
       name: "Bash",
       input: reportedName ? { command: reportedName } : { operation: operation ?? "execute" },

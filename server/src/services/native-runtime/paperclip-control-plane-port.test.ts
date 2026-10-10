@@ -21,6 +21,8 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  routines,
+  routineRuns,
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
@@ -290,6 +292,8 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
       await db.delete(completionContracts);
+      await db.delete(routineRuns);
+      await db.delete(routines);
       await db.delete(issues);
       await db.delete(agents);
       await db.delete(companyMemberships);
@@ -974,7 +978,18 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(response.decision.chosenSource).toBe("final_agent_message");
     expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
       .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
+    const routineId = randomUUID();
+    const firingId = randomUUID();
+    await db.insert(routines).values({ id: routineId, companyId: identity.companyId,
+      title: "Native completion routine", assigneeAgentId: identity.agentId });
+    await db.insert(routineRuns).values({ id: firingId, companyId: identity.companyId,
+      routineId, source: "schedule", status: "issue_created", linkedIssueId: taskIssueId });
+    await db.update(issues).set({ originKind: "routine_execution", originId: routineId,
+      originRunId: firingId }).where(eq(issues.id, taskIssueId));
     await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
+    const [completedFiring] = await db.select().from(routineRuns).where(eq(routineRuns.id, firingId));
+    expect(completedFiring).toMatchObject({ status: "completed", failureReason: null });
+    expect(completedFiring.completedAt).not.toBeNull();
     await expect(port.completeRun({
       result: taskResult,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
@@ -995,6 +1010,9 @@ describe("PaperclipControlPlanePort conformance", () => {
     ]);
     await expect(db.select().from(issues).where(eq(issues.id, taskIssueId))).resolves.toEqual([
       expect.objectContaining({ status: "done", statusVersion: 1 }),
+    ]);
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.id, firingId))).resolves.toEqual([
+      expect.objectContaining({ status: "completed", completedAt: completedFiring.completedAt }),
     ]);
     await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, taskRunId))).resolves.toHaveLength(1);
     await expect(db.select().from(workAssessments).where(eq(workAssessments.runId, taskRunId))).resolves.toHaveLength(1);
@@ -2161,6 +2179,14 @@ describe("PaperclipControlPlanePort conformance", () => {
         backendKind: "mock",
         sourceInstanceId: runnerInstanceId,
       });
+      const routineId = randomUUID();
+      const firingId = randomUUID();
+      await db.insert(routines).values({ id: routineId, companyId: identity.companyId,
+        title: `Atomic routine ${entry.failpoint}`, assigneeAgentId: identity.agentId });
+      await db.insert(routineRuns).values({ id: firingId, companyId: identity.companyId,
+        routineId, source: "schedule", status: "issue_created", linkedIssueId: issueId });
+      await db.update(issues).set({ originKind: "routine_execution", originId: routineId,
+        originRunId: firingId }).where(eq(issues.id, issueId));
       await port.completeRun({ result: entry.result, terminal, callerResultId: `atomic-result-${entry.suffix}` });
       await expect(finalizeNativeRun({
         db,
@@ -2170,6 +2196,9 @@ describe("PaperclipControlPlanePort conformance", () => {
       })).resolves.toEqual(expect.objectContaining({ phase: "retryable_failure" }));
       await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
         expect.objectContaining({ status: "in_progress", statusVersion: 0, lastStatusDecisionId: null }),
+      ]);
+      await expect(db.select().from(routineRuns).where(eq(routineRuns.id, firingId))).resolves.toEqual([
+        expect.objectContaining({ status: "issue_created", completedAt: null, failureReason: null }),
       ]);
       await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).resolves.toHaveLength(0);
       await expect(db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, issueId))).resolves.toHaveLength(0);

@@ -16,6 +16,7 @@ export * from "./contracts/runtime-context.js";
 export * from "./contracts/types.js";
 export * from "./contracts/user-attachments.js";
 export * from "./contracts/usage-billing.js";
+export * from "./contracts/usage-tokens.js";
 export * from "./backends/harness-driver-backend.js";
 export * from "./drivers/dot/dot-harness-driver.js";
 export { describeRunnerdNativeSessionBackend } from "./backends/codex-native-backend.js";

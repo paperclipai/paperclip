@@ -1,6 +1,7 @@
 import type { CanonicalProviderEvent } from "../../provider-events.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import { parseProviderUsageBilling, type ProviderUsageBilling } from "../../contracts/usage-billing.js";
+import { parseProviderTokenAccounting, type ProviderTokenAccounting } from "../../contracts/usage-tokens.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -42,6 +43,7 @@ export function persistedAcpxTurnUsage(
   requestId: string,
   agent: QualifiedAcpxAgent | null = null,
   billing?: ProviderUsageBilling,
+  tokenAccounting?: ProviderTokenAccounting,
 ): Record<string, unknown> | null {
   const current = record(after);
   if (current.lastRequestId !== requestId) return null;
@@ -50,9 +52,11 @@ export function persistedAcpxTurnUsage(
   const added = Object.keys(receipts).filter(
     (key) => !Object.hasOwn(previousReceipts, key),
   );
-  if (added.length !== 1 && !(agent === "hermes" && billing && added.length === 0)) return null;
+  if (added.length !== 1 && !(agent === "hermes" && (billing || tokenAccounting) && added.length === 0)) return null;
   const usage = added.length === 1 ? record(receipts[added[0]!]) : {};
   const boundBilling = agent === "hermes" && billing ? parseProviderUsageBilling(billing) : null;
+  const boundTokens = agent === "hermes" && tokenAccounting ? parseProviderTokenAccounting(tokenAccounting) : null;
+  if (boundBilling && boundTokens) throw new Error("Conflicting Hermes accounting receipts");
   const piReceipt = agent === "pi" ? record(usage.paperclip_pi) : {};
   const piReceiptVerified = piReceipt.provenance === "assistant_message_receipts"
     || piReceipt.provenance === "assistant_message_and_compaction_receipts";
@@ -66,9 +70,14 @@ export function persistedAcpxTurnUsage(
     // this estimate into the authoritative/cumulative provider spend channel.
     cost: agent === "pi" || agent === "hermes" ? undefined : current.usageCost,
     ...(boundBilling ? { billing: boundBilling } : {}),
+    ...(boundTokens ? { tokenAccounting: boundTokens } : {}),
     ...(piReceiptVerified ? { usageProvenance: `pi_${piReceipt.provenance}` } : {}),
     ...(estimate === undefined ? {} : { pricingEstimateUsd: estimate }),
-    breakdown: {
+    breakdown: boundTokens ? boundTokens.complete ? {
+      inputTokens: boundTokens.tokens.inputTokens, outputTokens: boundTokens.tokens.outputTokens,
+      cachedReadTokens: boundTokens.tokens.cacheReadTokens, cachedWriteTokens: boundTokens.tokens.cacheWriteTokens,
+      thoughtTokens: 0, totalTokens: Object.values(boundTokens.tokens).reduce((sum, value) => sum + value, 0),
+    } : {} : {
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,
       cachedReadTokens: usage.cache_read_input_tokens,

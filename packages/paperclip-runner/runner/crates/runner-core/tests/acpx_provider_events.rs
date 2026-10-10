@@ -321,6 +321,35 @@ fn retains_only_closed_per_turn_reported_billing_without_reusing_cumulative_cost
 }
 
 #[test]
+fn preserves_direct_wire_token_authority_without_minting_a_price() {
+    let accounting = json!({"schema":"paperclip.usage.tokens/v1","source":"provider_wire",
+        "biller":"anthropic","model":"claude-haiku-4-5-20251001","protocol":"messages",
+        "complete":true,"requestCount":2,"reportedRequestCount":2,
+        "tokens":{"inputTokens":12,"outputTokens":4,"cacheReadTokens":30,"cacheWriteTokens":20},
+        "pricingContext":{"serviceTier":"standard","contextTier":"short"}});
+    let status = json!({"type":"status","tag":"usage_update","tokenAccounting":accounting,
+        "breakdown":{"inputTokens":12,"outputTokens":4,"thoughtTokens":0,"cachedReadTokens":30,"cachedWriteTokens":20}});
+    let usage = normalize(AcpxRuntimeEventKind::Status, status.clone());
+    assert_eq!(usage[0].payload["tokenAccounting"], accounting);
+    assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    assert!(usage[0].payload.get("billing").is_none());
+    for (key, value) in [
+        ("source", json!("model_estimate")),
+        ("biller", json!("custom")),
+        ("protocol", json!("responses")),
+        ("reportedRequestCount", json!(1)),
+        ("credential", json!("private")),
+    ] {
+        let mut invalid = status.clone();
+        invalid["tokenAccounting"][key] = value;
+        assert!(normalize(AcpxRuntimeEventKind::Status, invalid)[0]
+            .payload
+            .get("tokenAccounting")
+            .is_none());
+    }
+}
+
+#[test]
 fn does_not_claim_missing_or_partial_usage_breakdowns_are_exact() {
     for payload in [
         json!({

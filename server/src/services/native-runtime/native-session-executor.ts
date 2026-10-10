@@ -4,7 +4,7 @@ import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { CURSOR_DISTRIBUTION_PINS, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
-import { readProviderUsageBilling } from "../../vendor/paperclip-runner/index.js";
+import { readProviderUsageBilling, readProviderTokenAccounting, type ProviderTokenAccounting } from "../../vendor/paperclip-runner/index.js";
 import { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
@@ -7958,6 +7958,7 @@ async function executePaperclipNativeSessionWithinScope(
     const costUsdExact = typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
     await input.onUsage?.({ usage: accountingUsage, ...billing, complete, settlement, usageBasis: "per_run", costUsdExact,
       model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
+      ...(readProviderTokenAccounting(usage?.tokenAccounting)?.complete ? { pricingContext: readProviderTokenAccounting(usage?.tokenAccounting)!.pricingContext } : {}),
       ...nativeHermesPriceEvidence(usage, input.execution.provider, selectedBiller) });
     if (!input.onUsage) await input.db.update(heartbeatRuns).set({
       costAccountingPending: true,
@@ -9487,6 +9488,7 @@ async function executePaperclipNativeSessionWithinScope(
       ? input.execution.provider.kind === "aws_agentcore" ? "estimated" : nativeHermesPriceEvidence(native.usage, input.execution.provider, selectedBiller) ? "reported" : undefined
       : "unpriced",
     usageComplete: nativeAccountingComplete,
+    ...(readProviderTokenAccounting(native.usage?.tokenAccounting)?.complete ? { pricingContext: readProviderTokenAccounting(native.usage?.tokenAccounting)!.pricingContext } : {}),
     ...(nativeSettlementReady ? { settlement: { schema: "paperclip.accounting.settlement/v1" as const, providerWorkEnded: true as const, usageComplete: nativeAccountingComplete } } : {}),
     ...nativeHermesPriceEvidence(native.usage, input.execution.provider, selectedBiller),
     usageBasis: "per_run",
@@ -9570,6 +9572,10 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
     let requestCount = 0, reportedRequestCount = 0;
     let tokensComplete = true;
     let settlementReady = hermes;
+    let directAccountingReady = hermes && ["anthropic", "openai"].includes(selectedBiller ?? "");
+    let directAccounting: ProviderTokenAccounting | null = null;
+    let directRequests = 0, directReported = 0;
+    const directTokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     for (const [turnId, turn] of turns) {
       const normalized = normalizeNativeUsage(turn.usage);
       tokensComplete &&= normalized !== undefined;
@@ -9581,9 +9587,22 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       const price = nativeUsageCostUsd(turn.usage, provider, selectedBiller);
       const billing = provider.kind === "acpx" && provider.agent === "hermes"
         ? readProviderUsageBilling(turn.usage?.billing) : null;
-      settlementReady &&= turnId !== "unattributed" && turn.terminal && billing !== null
-        && selectedBiller === billing.biller && turn.usage !== null && nativeUsageMeasurement(turn.usage).providerCostUsd === billing.amountUsd;
-      if (price === undefined) costIncomplete = true;
+      const direct = nativeHermesTokenAccounting(turn.usage, provider, selectedBiller);
+      const compatibleDirect = direct !== null && (!directAccounting || directAccounting.protocol === direct.protocol);
+      directAccountingReady &&= compatibleDirect;
+      if (direct) {
+        if (!compatibleDirect) { tokensComplete = false; complete = false; }
+        directAccounting = direct;
+        directRequests += direct.requestCount; directReported += direct.reportedRequestCount;
+        for (const key of Object.keys(directTokens) as (keyof typeof directTokens)[]) directTokens[key] += direct.tokens[key];
+        tokensComplete &&= direct.complete;
+        complete &&= direct.complete;
+      } else if (hermes && ["anthropic", "openai"].includes(selectedBiller ?? "")) {
+        tokensComplete = false; complete = false;
+      }
+      settlementReady &&= turnId !== "unattributed" && turn.terminal && ((billing !== null
+        && selectedBiller === billing.biller && turn.usage !== null && nativeUsageMeasurement(turn.usage).providerCostUsd === billing.amountUsd) || direct !== null);
+      if (price === undefined) costIncomplete ||= !direct?.complete;
       else {
         cost += usdToUnits(billing?.amountUsdExact ?? price); costKnown = true;
         if (billing) {
@@ -9593,6 +9612,12 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
         }
       }
     }
+    const aggregateSafe = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+      directRequests, directReported, ...Object.values(directTokens),
+      Object.values(directTokens).reduce((sum, value) => sum + value, 0)]
+      .every(value => Number.isSafeInteger(value) && value >= 0);
+    if (!aggregateSafe) { tokensComplete = false; complete = false; directAccountingReady = false; }
     // A free empty attempt contributes no price evidence for later paid work.
     // Keep an incomplete zero subtotal absent so complete aggregate tokens can
     // still receive an estimate. Preserve positive known spend and true zero totals.
@@ -9602,13 +9627,17 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
     const current = currentTurn ? turns.get(currentTurn) : undefined;
     const costExact = `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}`;
     return { usage: { runDelta, runDeltaComplete: hermes ? tokensComplete : true, accountingCostIncomplete: costIncomplete,
+      ...(directAccountingReady && directAccounting && Number.isSafeInteger(directRequests) && Number.isSafeInteger(directReported)
+        ? { tokenAccounting: { ...directAccounting, complete: tokensComplete, requestCount: directRequests, reportedRequestCount: directReported,
+          tokens: directTokens } } : {}),
       ...(retainCost && provider.kind === "acpx" && provider.agent === "hermes" ? { billing: {
         schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD",
         complete: !costIncomplete, requestCount, reportedRequestCount,
         amountUsd: Number(costExact), amountUsdExact: costExact,
       } } : {}),
       ...(retainCost ? { accountingCostUsdExact: costExact } : {}) },
-      turnId: current && (normalizeNativeUsage(current.usage) || (settlementReady && readProviderUsageBilling(current.usage?.billing))) ? currentTurn : undefined,
+      turnId: current && (normalizeNativeUsage(current.usage) || (settlementReady
+        && (readProviderUsageBilling(current.usage?.billing) || nativeHermesTokenAccounting(current.usage, provider, selectedBiller)))) ? currentTurn : undefined,
       complete, settlementReady };
   };
   return {
@@ -9634,6 +9663,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
         const usage = record(payload.usage);
         turn.usage = Object.hasOwn(usage, "runDelta")
           ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete,
+            ...(usage.tokenAccounting === undefined ? {} : { tokenAccounting: usage.tokenAccounting }),
             ...(usage.billing === undefined ? {} : { billing: usage.billing }) } : null;
       }
       if (terminal) turn.terminal = true;
@@ -9647,6 +9677,18 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       return snapshot();
     },
   };
+}
+
+/** Only this versioned, route/model-bound receipt certifies all direct API attempts. */
+function nativeHermesTokenAccounting(usage: Record<string, unknown> | null, provider: NativeExecutionInput["provider"], selectedBiller?: string | null) {
+  if (provider.kind !== "acpx" || provider.agent !== "hermes" || !usage || usage.billing !== undefined) return null;
+  const receipt = readProviderTokenAccounting(usage.tokenAccounting);
+  if (!receipt || receipt.biller !== selectedBiller || receipt.model !== provider.model) return null;
+  // Incomplete receipts preserve settlement authority, but never certify a
+  // placeholder breakdown as complete tokens or a zero-cost estimate.
+  if (!receipt.complete) return receipt;
+  const measurement = nativeUsageMeasurement(usage);
+  return Object.entries(receipt.tokens).every(([key, value]) => measurement[key] === value) ? receipt : null;
 }
 
 export function nativeUsageCostUsd(

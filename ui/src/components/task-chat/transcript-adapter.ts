@@ -139,6 +139,7 @@ const TARGET_KEYS = [
   "path",
   "notebook_path",
   "command",
+  "cmd",
   "pattern",
   "query",
   "url",
@@ -162,6 +163,12 @@ function clip(text: string, max: number): string {
  */
 export function summarizeToolInput(input: unknown): string | undefined {
   if (input == null) return undefined;
+  if (typeof input === "string") {
+    try {
+      const parsed: unknown = JSON.parse(input);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed;
+    } catch { /* Ordinary text remains a valid tool input. */ }
+  }
   if (typeof input === "string")
     return input.trim() ? clip(input, TARGET_MAX) : undefined;
   if (typeof input !== "object") return clip(String(input), TARGET_MAX);
@@ -555,7 +562,27 @@ function mergeProviderActivityItem(
 /** Result content → the expandable mono detail block (clipped, trimmed). */
 function formatToolResultDetail(content: unknown): string | undefined {
   if (content == null) return undefined;
-  const text = typeof content === "string" ? content : String(content);
+  let text = typeof content === "string" ? content : String(content);
+  try {
+    const result: unknown = typeof content === "string" ? JSON.parse(content) : content;
+    const output = objectRecord(result);
+    const commandFields = ["output", "stdout", "stderr", "error"];
+    const isCommandResult = typeof output.exit_code === "number"
+      && Number.isFinite(output.exit_code)
+      && Object.entries(output).every(([key, value]) =>
+        key === "exit_code" || (commandFields.includes(key)
+          && (value == null || typeof value === "string")));
+    const parts = commandFields.map((key) => output[key])
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    // Only unwrap the complete command-result shape. Arbitrary JSON printed by
+    // a command (including objects with a "content" field) remains inspectable.
+    if (isCommandResult && parts.length > 0) {
+      text = [...new Set(parts)].join("\n");
+      if (typeof output.exit_code === "number" && output.exit_code !== 0) {
+        text += `\nExit code: ${output.exit_code}`;
+      }
+    }
+  } catch { /* Preserve plain output and unrecognized structured results. */ }
   const trimmed = text.trim();
   if (!trimmed) return undefined;
   return trimmed.length > DETAIL_MAX
@@ -733,6 +760,8 @@ export function transcriptToTaskChatItems(
               existing.target = clip(entry.name!, TARGET_MAX);
             }
           }
+          const incomingTarget = summarizeToolInput(entry.input);
+          if (incomingTarget) existing.target = incomingTarget;
           lastToolIndex = existingIndex!;
         } else {
           items.push({

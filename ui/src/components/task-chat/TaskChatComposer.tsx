@@ -1379,16 +1379,6 @@ export function TaskChatComposer({
             />
           </div>
 
-          {actionError ? (
-            <p
-              className="px-1 text-xs text-destructive"
-              role="alert"
-              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
-            >
-              {actionError}
-            </p>
-          ) : null}
-
           {visibleAttachments.length > 0 ? (
             <AttachmentGroup
               className="mb-1 px-1"
@@ -1451,6 +1441,16 @@ export function TaskChatComposer({
           ) : null}
 
           {creation?.details}
+
+          {actionError ? (
+            <p
+              className="px-1 text-xs text-destructive"
+              role="alert"
+              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
+            >
+              {actionError}
+            </p>
+          ) : null}
 
           <div
             className={cn("mt-2 flex items-center gap-x-2 gap-y-3", mobile && !queuedEdit ? "flex-nowrap" : "flex-wrap")}

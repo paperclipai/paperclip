@@ -1835,6 +1835,7 @@ export function rehydrateRunnerdUsageNotification(
       // durable replay cannot certify an incomplete delta as a free receipt.
       runDeltaComplete: rawParams.runDeltaAvailable === true,
       ...(rawParams.billing === undefined ? {} : { billing: rawParams.billing }),
+      ...(rawParams.tokenAccounting === undefined ? {} : { tokenAccounting: rawParams.tokenAccounting }),
     },
   };
 }

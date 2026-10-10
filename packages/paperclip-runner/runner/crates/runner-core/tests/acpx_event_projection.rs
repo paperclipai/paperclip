@@ -151,6 +151,7 @@ fn keeps_durable_correlation_separate_from_the_active_provider_turn() {
         &context,
         &AcpxProviderStateEvent::AssistantMessage {
             turn_id: "provider-turn-1".to_owned(),
+            provider_item_id: None,
             text: "Done".to_owned(),
         },
     )
@@ -338,6 +339,7 @@ fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
 
     let assistant = project(AcpxProviderStateEvent::AssistantMessage {
         turn_id: "turn-1".to_owned(),
+        provider_item_id: Some("opaque-provider-message".to_owned()),
         text: "Done".to_owned(),
     });
     assert_eq!(assistant[0].event_type, "item.completed");
@@ -627,6 +629,7 @@ fn runtime_request_projection_preserves_durable_identity_boundaries() {
 fn recovery_preserves_the_preceding_provider_turn_answer() {
     let first = project(AcpxProviderStateEvent::AssistantMessage {
         turn_id: "turn-1".to_owned(),
+        provider_item_id: None,
         text: "Useful answer".to_owned(),
     });
     let mut recovery = context();
@@ -635,6 +638,7 @@ fn recovery_preserves_the_preceding_provider_turn_answer() {
         &recovery,
         &AcpxProviderStateEvent::AssistantMessage {
             turn_id: "recovery-turn".to_owned(),
+            provider_item_id: None,
             text: "Recovery update".to_owned(),
         },
     )
@@ -642,6 +646,68 @@ fn recovery_preserves_the_preceding_provider_turn_answer() {
     assert_ne!(first[0].payload["itemId"], second[0].payload["itemId"]);
     assert_eq!(first[0].payload["text"], "Useful answer");
     assert_eq!(second[0].payload["text"], "Recovery update");
+}
+
+#[test]
+fn assistant_message_identity_matches_its_snapshot_and_is_scoped_to_the_provider_turn() {
+    use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+    use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
+
+    let opaque_id = format!("message / {}", "é".repeat(200));
+    for message_id in [
+        None,
+        Some("item-1"),
+        Some("message-1"),
+        Some(opaque_id.as_str()),
+    ] {
+        let mut payload = json!({"type":"text_delta","text":"Done"});
+        if let Some(message_id) = message_id {
+            payload["messageId"] = Value::String(message_id.to_owned());
+        }
+        let activity = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &payload,
+            None,
+            "event-1",
+            "turn-1",
+            1,
+        )
+        .remove(0);
+        let provider_item_id = activity.payload["itemId"].as_str().unwrap().to_owned();
+        let streamed = project(AcpxProviderStateEvent::Activity(activity.clone()));
+        assert_eq!(
+            streamed,
+            project(AcpxProviderStateEvent::Activity(activity)),
+        );
+        let final_message = project(AcpxProviderStateEvent::AssistantMessage {
+            turn_id: "turn-1".to_owned(),
+            provider_item_id: Some(provider_item_id.clone()),
+            text: "Done".to_owned(),
+        });
+        assert_eq!(
+            streamed[0].payload["itemId"],
+            final_message[0].payload["itemId"]
+        );
+        let item_id = final_message[0].payload["itemId"].as_str().unwrap();
+        assert!(item_id.starts_with("acpx-assistant-"));
+        assert_eq!(item_id.len(), "acpx-assistant-".len() + 64);
+
+        let mut recovery = context();
+        recovery.provider_turn_id = Some("recovery-turn".to_owned());
+        let recovered = project_acpx_state_event(
+            &recovery,
+            &AcpxProviderStateEvent::AssistantMessage {
+                turn_id: "recovery-turn".to_owned(),
+                provider_item_id: Some(provider_item_id.clone()),
+                text: "Recovered".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            final_message[0].payload["itemId"],
+            recovered[0].payload["itemId"]
+        );
+    }
 }
 
 #[test]

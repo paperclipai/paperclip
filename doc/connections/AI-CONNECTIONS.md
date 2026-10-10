@@ -617,6 +617,13 @@ fingerprint; secrets travel through the ephemeral credential channel. Implemente
 projections remain subject to per-method live qualification. See the
 [Hermes runner contract](../../packages/paperclip-runner/docs/hermes.md).
 
+The current Hermes delivery milestone uses managed Anthropic and OpenAI API
+keys. Subscription, Grok and Bedrock qualification is deferred. Complete
+route/model-bound wire token receipts can receive a labeled Paperclip rate-card
+estimate; native cumulative prices and accepted-response subsets cannot settle
+direct API spend. OpenRouter's separate provider-reported cost receipt remains
+authoritative for that account. The harness remains pending live qualification.
+
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
 ordered with `sort=most-popular`. New-agent setup and agent settings share this

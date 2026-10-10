@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import type { AiProviderRouting } from "../../packages/shared/src/ai-provider-routing.js";
 import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
 import type { Page } from "@playwright/test";
@@ -109,36 +109,28 @@ export const hermesNativeQuestionStopTask: RunnerTaskFixture = {
 /** An undisclosed code exists only in PNG pixels, never in the filename or prompt. */
 export function hermesImageChallenge(nonce: string) {
   const code = createHash("sha256").update(`hermes-image-pixels:${nonce}`).digest("hex").slice(0, 8).toUpperCase();
-  const glyphs: Record<string, readonly string[]> = {
-    "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-    "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-    "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-    "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
-    "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
-    "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-    "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-    "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
-    A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-    B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
-    C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
-    D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
-    E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-    F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  // Versioned, ordinary text glyphs from the repository's Inter font. Keep
+  // vision transport qualification independent from decoding a block font.
+  const glyphs = JSON.parse(readFileSync(new URL("./hermes-image-glyphs.json", import.meta.url), "utf8")) as {
+    width: number; height: number; characters: string; rawSha256: string; deflateBase64: string;
   };
-  const width = 640, height = 180, scale = 12;
+  const raster = inflateSync(Buffer.from(glyphs.deflateBase64, "base64"));
+  if (glyphs.width !== 96 || glyphs.height !== 144 || glyphs.characters !== "0123456789ABCDEF"
+    || raster.length !== 16 * 96 * 144
+    || createHash("sha256").update(raster).digest("hex") !== glyphs.rawSha256) {
+    throw new Error("Hermes image fixture glyph integrity failed");
+  }
+  const width = 880, height = 192;
   const pixels = Buffer.alloc((width * 3 + 1) * height, 255);
   for (let y = 0; y < height; y++) pixels[y * (width * 3 + 1)] = 0;
-  [...code].forEach((character, index) => glyphs[character]!.forEach((row, y) => {
-    [...row].forEach((value, x) => {
-      if (value !== "1") return;
-      for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) {
-        const offset = (48 + y * scale + dy) * (width * 3 + 1) + 1 + (38 + index * 6 * scale + x * scale + dx) * 3;
-        pixels.fill(0, offset, offset + 3);
-      }
-    });
-  }));
+  [...code].forEach((character, index) => {
+    const glyph = glyphs.characters.indexOf(character);
+    for (let y = 0; y < glyphs.height; y++) for (let x = 0; x < glyphs.width; x++) {
+      const shade = raster[glyph * 96 * 144 + y * 96 + x]!;
+      const offset = (24 + y) * (width * 3 + 1) + 1 + (56 + index * 96 + x) * 3;
+      pixels.fill(shade, offset, offset + 3);
+    }
+  });
   const chunk = (type: string, body: Buffer) => {
     const payload = Buffer.concat([Buffer.from(type), body]);
     let crc = 0xffffffff;
@@ -451,12 +443,14 @@ export async function runHermesNativeQuestionStop(input: {
     issueId: issue.id, connectionId: fixtures.aiConnection.connectionId, provider: fixtures.aiConnection.binding.provider,
     expectedResponsibleUserId: input.callerUserId, model: execution.profile.model, runs, expectedRunStatus: "cancelled" });
   connectionChecks.forEach(value => check(value.id, value.passed, "Public native model and account attribution remain correct after Stop."));
-  let billing: Awaited<ReturnType<typeof captureHermesOpenRouterSettlement>> | undefined;
+  const expectedBiller = fixtures.aiConnection.binding.provider;
+  if (expectedBiller !== "openrouter" && expectedBiller !== "anthropic" && expectedBiller !== "openai") throw new Error("Unqualified Hermes Stop accounting provider");
+  let billing: Awaited<ReturnType<typeof captureHermesApiSettlement>> | undefined;
   await pollUntil({ label: "cancelled Hermes run billing settlement", deadlineAt: Math.min(deadlineAt, Date.now() + 30_000), intervalMs: 200,
-    load: async () => billing = await captureHermesOpenRouterSettlement({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id,
-      issueId: issue.id, runId: final.run.id, expectedRunStatus: "cancelled" }), accept: receipt => receipt.checks.every(value => value.passed) });
-  billing!.checks.forEach(value => check(value.id, value.passed, "Cancelled native usage settles reported cost while the company and agent retain healthy budgets."));
-  await input.evidence("hermes-openrouter-settlement.json", billing);
+    load: async () => billing = await captureHermesApiSettlement({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id,
+      issueId: issue.id, runId: final.run.id, expectedRunStatus: "cancelled", expectedBiller, model: execution.profile.model }), accept: receipt => receipt.checks.every(value => value.passed) });
+  billing!.checks.forEach(value => check(value.id, value.passed, "Cancelled native usage settles with explicit reported or estimated provenance while budgets remain healthy."));
+  await input.evidence(expectedBiller === "openrouter" ? "hermes-openrouter-settlement.json" : "hermes-api-settlement.json", billing);
   await input.capture("final-state", "Cancelled native question remains unanswerable", "final-state.png");
   await input.evidence("api-state.json", { ...final, runs, run: final.run, checks, processes, nativeStop: identity });
   complete = true;
@@ -500,9 +494,10 @@ export async function captureHermesApiBudgets(input: {
 }
 
 /** Observe settled billing and budget health before fixture cleanup pauses the agent. */
-export async function captureHermesOpenRouterSettlement(input: {
+export async function captureHermesApiSettlement(input: {
   api: { get<T>(path: string): Promise<T> }; companyId: string; agentId: string; issueId: string; runId: string;
   expectedRunStatus?: "succeeded" | "cancelled";
+  expectedBiller: "openrouter" | "anthropic" | "openai"; model?: string;
 }) {
   const [company, agent, run] = await Promise.all([
     input.api.get<Record<string, unknown>>(`/api/companies/${input.companyId}`),
@@ -510,25 +505,37 @@ export async function captureHermesOpenRouterSettlement(input: {
     input.api.get<Record<string, unknown>>(`/api/heartbeat-runs/${input.runId}`),
   ]);
   const usage = record(run.usageJson), provenance = record(usage.pricingProvenance);
+  const direct = input.expectedBiller !== "openrouter";
+  const expectedVersion = input.expectedBiller === "anthropic" ? "anthropic-standard-2026-10-09"
+    : input.expectedBiller === "openai" ? "openai-standard-2026-09-30" : "hermes-openrouter-wire/v1";
   const cost = usage.costUsd, exact = usage.costUsdExact;
   return { observation: {
     company: { id: company.id, status: company.status, pauseReason: company.pauseReason, budgetMonthlyCents: company.budgetMonthlyCents },
     agent: { id: agent.id, companyId: agent.companyId, status: agent.status, pauseReason: agent.pauseReason, budgetMonthlyCents: agent.budgetMonthlyCents },
     run: { id: run.id, companyId: run.companyId, agentId: run.agentId, issueId: run.issueId, status: run.status,
       costAccountingPending: run.costAccountingPending, costAccountedAt: run.costAccountedAt,
-      usage: Object.fromEntries(["provider", "biller", "billingType", "costStatus", "costUsd", "costUsdExact", "inputTokens", "outputTokens", "accountingReceiptReady", "pricingProvenance"].map(key => [key, usage[key]])) },
+      usage: Object.fromEntries(["provider", "biller", "billingType", "model", "costStatus", "costUsd", "costUsdExact", "inputTokens", "outputTokens", "accountingReceiptReady", "accountingUsageComplete", "pricingProvenance"].map(key => [key, usage[key]])) },
   }, checks: [
     { id: "billing-observation-scope", passed: company.id === input.companyId && agent.id === input.agentId && agent.companyId === input.companyId
       && run.id === input.runId && run.companyId === input.companyId && run.agentId === input.agentId && run.issueId === input.issueId },
-    { id: "settled-openrouter-reported-cost", passed: run.status === (input.expectedRunStatus ?? "succeeded") && run.costAccountingPending === false && present(run.costAccountedAt)
-      && usage.accountingReceiptReady === true && usage.biller === "openrouter" && usage.billingType === "metered_api" && usage.costStatus === "reported"
-      && provenance.source === "provider_reported" && provenance.version === "hermes-openrouter-wire/v1"
-      && typeof cost === "number" && Number.isFinite(cost) && cost >= 0 && typeof exact === "string" && /^(0|[1-9][0-9]{0,6})\.[0-9]{9}$/.test(exact) && Number(exact) === cost
+    { id: direct ? `settled-${input.expectedBiller}-estimated-cost` : "settled-openrouter-reported-cost", passed: run.status === (input.expectedRunStatus ?? "succeeded") && run.costAccountingPending === false && present(run.costAccountedAt)
+      && usage.accountingReceiptReady === true && usage.biller === input.expectedBiller && usage.billingType === "metered_api" && usage.costStatus === (direct ? "estimated" : "reported")
+      && provenance.source === (direct ? "rate_card" : "provider_reported") && provenance.version === expectedVersion
+      && (!direct || usage.provider === input.expectedBiller && usage.accountingUsageComplete === true && present(input.model) && usage.model === input.model)
+      && typeof exact === "string" && /^(0|[1-9][0-9]{0,6})\.[0-9]{9}$/.test(exact)
+      // Direct rate cards store the authoritative decimal without a rounded
+      // numeric duplicate. Provider-reported prices retain both representations.
+      && (direct && cost == null || typeof cost === "number" && Number.isFinite(cost) && cost >= 0 && Number(exact) === cost)
       && typeof usage.inputTokens === "number" && Number.isSafeInteger(usage.inputTokens) && usage.inputTokens >= 0
       && typeof usage.outputTokens === "number" && Number.isSafeInteger(usage.outputTokens) && usage.outputTokens >= 0 && usage.inputTokens + usage.outputTokens > 0 },
     { id: "budget-health-after-settlement", passed: company.status === "active" && agent.status === "idle" && agent.pauseReason === null
       && company.budgetMonthlyCents === HERMES_API_CONNECTION_BUDGET_CENTS && agent.budgetMonthlyCents === HERMES_API_CONNECTION_BUDGET_CENTS },
   ] };
+}
+
+/** Preserve the existing OpenRouter oracle's exact reported-price contract. */
+export function captureHermesOpenRouterSettlement(input: Omit<Parameters<typeof captureHermesApiSettlement>[0], "expectedBiller" | "model">) {
+  return captureHermesApiSettlement({ ...input, expectedBiller: "openrouter" });
 }
 
 /** Grade public run/account/model metadata; a model's completion claim cannot supply it. */
@@ -561,7 +568,7 @@ export function gradeHermesApiConnection(input: {
 /** Explicit authenticated catalog choices; none is a production default or live qualification. */
 export const hermesApiConnectionChoices = [
   { provider: "anthropic", credential: "ANTHROPIC_API_KEY", model: "claude-haiku-4-5-20251001" },
-  { provider: "openai", credential: "OPENAI_API_KEY", model: "gpt-5.6-luna" },
+  { provider: "openai", credential: "OPENAI_API_KEY", model: "gpt-6-luna" },
   { provider: "xai", credential: "XAI_API_KEY", model: "grok-4.7" },
   // Google restricts 2.5 models to prior users even when they appear in the catalog.
   // https://ai.google.dev/gemini-api/docs/deprecations
@@ -569,6 +576,6 @@ export const hermesApiConnectionChoices = [
 ] as const satisfies readonly { provider: string; credential: RunnerProfileFixture["credential"]; model: string }[];
 
 export const hermesApiConnectionDefinitionDigest = createHash("sha256").update(
-  ["hermes-api-connections.ts", "acpx-native-origin.ts", "native-local-fixtures.ts", "user-actions.ts", "live-fixtures.ts", "harness-env.ts", "runner.spec.ts"]
+  ["hermes-api-connections.ts", "hermes-image-glyphs.json", "acpx-native-origin.ts", "native-local-fixtures.ts", "user-actions.ts", "live-fixtures.ts", "harness-env.ts", "runner.spec.ts"]
     .map(file => readFileSync(new URL(`./${file}`, import.meta.url), "utf8")).join("\n"),
 ).digest("hex");

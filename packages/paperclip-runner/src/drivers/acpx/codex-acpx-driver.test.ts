@@ -361,7 +361,7 @@ describe("Codex ACPX harness driver", () => {
       `${turnId}:assistant-message`,
     ]);
     expect(assistantEvents.map((event) => event.payload.channel)).toEqual([
-      "unknown",
+      "progress",
       "final",
     ]);
     await expect(session.snapshot()).resolves.toMatchObject({
@@ -471,7 +471,7 @@ describe("Codex ACPX harness driver", () => {
       `${turnId}:assistant-message`,
     ]);
     expect(assistant.map((event) => event.payload.channel)).toEqual([
-      "unknown",
+      "progress",
       "final",
     ]);
     await session.close({ reason: "channel identity verified" });

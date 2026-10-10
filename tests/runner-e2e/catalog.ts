@@ -371,9 +371,16 @@ export const hermesApiConnectionProfiles: readonly RunnerProfileFixture[] = [
     credential: choice.credential, model: choice.model,
     modelQualification: {
       source: "candidate_runner_profile",
-      qualificationId: `hermes:v2026.9.24:${choice.provider}:api:catalog-2026-10-07:pending`,
+      qualificationId: `hermes:v2026.9.24:${choice.provider}:api:catalog-${choice.provider === "openai" ? "2026-10-09" : "2026-10-07"}:pending`,
     },
   })),
+];
+
+/** API-billed Claude/OpenAI milestone; broader connection qualification stays pending. */
+export const hermesBasicApiProfiles = hermesApiConnectionProfiles.filter(profile =>
+  profile.credential === "ANTHROPIC_API_KEY" || profile.credential === "OPENAI_API_KEY");
+const hermesNativeInteractionProfiles = [
+  extendedHarnessProfiles.find(profile => profile.qualificationCandidate === "hermes")!, ...hermesBasicApiProfiles,
 ];
 
 /** Region-bound Bedrock credentials enter only through a managed connection. */
@@ -1216,14 +1223,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: HERMES_NATIVE_INTERACTION_SUITE, label: "Hermes native interactions", manualOnly: true,
     description: "A native Hermes question batch receives exact answers through reconnect; browser Stop cancels an unanswered local callback and retires its owned process tree.",
-    groups: ["native"], profiles: [extendedHarnessProfiles.find(profile => profile.qualificationCandidate === "hermes")!],
+    groups: ["native"], profiles: hermesNativeInteractionProfiles,
     environments: runnerEnvironments, tasks: [hermesNativeQuestionTask, hermesNativeQuestionStopTask],
-    excludedExecutionIds: [`${HERMES_NATIVE_INTERACTION_SUITE}.runner-acpx-hermes.daytona.native-question-batch-stop`], expectedMatrixSize: 3,
+    excludedExecutionIds: hermesNativeInteractionProfiles.map(profile => `${HERMES_NATIVE_INTERACTION_SUITE}.${profile.id}.daytona.native-question-batch-stop`), expectedMatrixSize: 9,
     definitionMetadata: {
-      version: 8, qualification: "pending", scheduling: "explicit-only", accountMethod: "api_key", accountMode: "responsible_user",
+      version: 9, qualification: "pending", scheduling: "explicit-only", accountMethod: "api_key", accountMode: "responsible_user",
       providerTurns: 1, lifecycle: "per-turn", nativeMethod: "_hermes/ask_questions", maximumAttemptsPerCell: 1,
       objectiveAdmission: "production-delivery-guard-question-only",
-      budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, billing: "reported-cost-and-budget-health",
+      budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, billing: "reported-openrouter-or-estimated-direct-api-cost-and-budget-health",
       coverage: "native-question-batch-browser-reconnect-exact-delivery-and-local-stop",
       stopBoundary: "retained-unanswered-native-question-before-browser-click", stopProcessEvidence: "local-public-per-turn-owner-and-descendants-through-cleanup",
       remoteStopQualification: "pending-separate-remote-retirement-observer", sourceDigest: hermesApiConnectionDefinitionDigest,
@@ -1232,16 +1239,16 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: HERMES_IMAGE_INPUT_SUITE, label: "Hermes native image input", manualOnly: true,
     description: "An undisclosed image-only code passes through browser upload and the native Hermes prompt, with independent content and account checks.",
-    groups: ["native"], environments: runnerEnvironments, tasks: [hermesImageInputTask], expectedMatrixSize: 2,
+    groups: ["native"], environments: runnerEnvironments, tasks: [hermesImageInputTask], expectedMatrixSize: 6,
     profiles: [nativeProfile({
       id: "runner-acpx-hermes-vision", label: "Hermes vision (candidate)", provider: "acpx", acpxAgent: "hermes",
       qualificationCandidate: "hermes", credential: "OPENROUTER_API_KEY", model: HERMES_IMAGE_INPUT_MODEL,
       modelQualification: { source: "candidate_runner_profile", qualificationId: "hermes:v2026.9.24:openrouter:gemini-2.5-flash-lite:vision:catalog-2026-10-08:pending" },
-    })],
-    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", providerTurns: 1,
+    }), ...hermesBasicApiProfiles],
+    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", providerTurns: 1,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, lifecycle: "per-turn",
-      input: "browser-upload-authorized-native-image", oracle: "undisclosed-pixel-code-exact-bytes-no-file-tools",
-      billing: "per-run-reported-cost-and-budget-health", sourceDigest: hermesApiConnectionDefinitionDigest },
+      input: "browser-upload-authorized-native-image", renderer: "inter-500-112px-grayscale.v1", oracle: "undisclosed-pixel-code-exact-bytes-no-file-tools",
+      billing: "reported-openrouter-or-estimated-direct-api-cost-and-budget-health", sourceDigest: hermesApiConnectionDefinitionDigest },
   },
   {
     id: "hermes-api-connections", label: "Hermes managed API connections", manualOnly: true,
@@ -1250,10 +1257,10 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     tasks: [{ ...openRouterBreadthTasks.find(task => task.id === "hello-complete")!, automaticRetryPolicy: "single_attempt" }],
     expectedMatrixSize: 10,
     definitionMetadata: {
-      version: 4, qualification: "pending", scheduling: "explicit-only", authenticatedDiscoveryDate: "2026-10-07",
+      version: 5, qualification: "pending", scheduling: "explicit-only", authenticatedDiscoveryDate: "2026-10-07", openaiDiscoveryDate: "2026-10-09",
       accountMethod: "api_key", accountMode: "responsible_user", providerTurns: 1, expectedUserSource: "public-account-owner-before-task",
       budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, maximumAttemptsPerCell: 1,
-      coverage: "api-account-native-completion-only", sourceDigest: hermesApiConnectionDefinitionDigest,
+      coverage: "api-account-native-completion-only", basicApiBilling: "complete-wire-tokens-rate-card-estimate-and-budget-health", sourceDigest: hermesApiConnectionDefinitionDigest,
     },
   },
   {

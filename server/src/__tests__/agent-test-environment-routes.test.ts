@@ -511,6 +511,33 @@ describe("agent test-environment route", () => {
     }
   });
 
+  it("keeps native Hermes account qualification pending without probing another harness", async () => {
+    mockManagedRuntime("subscription");
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("paperclip_runner");
+    unregisterServerAdapter("paperclip_runner");
+    registerServerAdapter({ ...externalAdapter, type: "paperclip_runner" });
+    testEnvironmentSpy.mockResolvedValue({ adapterType: "paperclip_runner", status: "warn",
+      checks: [{ code: "acpx_candidate_qualification_only", level: "warn", message: "Pinned runtime verified; Hermes remains pending." }],
+      testedAt: new Date(0).toISOString() });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: { provider: "acpx", acpxAgent: "hermes", model: "hermes-qualification-fixture" },
+          aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" } });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("warn");
+      expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("hermes_connection_qualification_required");
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(mockValidateAiApiKey).not.toHaveBeenCalled();
+      expect(mockMarkAuthenticationFailed).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("paperclip_runner");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("passes one-shot provider credentials only to the probe, never persistence normalization", async () => {
     const app = await createApp();
     const res = await request(app)

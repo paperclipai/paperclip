@@ -110,8 +110,10 @@ single successful browser task do not establish that qualification.
 ## Remote verification
 
 Do not run Docker on a developer laptop when using remote verification. The
-`Docker Runner check` workflow offers maintainer-authorized manual EC2 image
-builds and broad source checks without provider credentials. It records the
+`Docker Runner check` workflow offers maintainer-authorized cloud image
+builds and broad source checks without provider credentials. Standard
+GitHub-hosted Linux is the default; select `execution_host=ec2` only when the
+workflow ref is authorized by the EC2 runner group. It records the
 source revision, resolved lock digest and immutable image reference. Paid
 Product E2E remains behind the protected default-branch workflow and environment.
 

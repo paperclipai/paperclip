@@ -310,6 +310,10 @@ OpenRouter also requires a settled provider-reported price with an exact USD
 amount and healthy company/agent budget state before fixture teardown. The
 oracle reads scoped public run, company and agent records; it never derives
 billing or health from the model's answer or the cleanup pause.
+Claude and OpenAI additionally require complete wire token receipts and a scoped
+rate-card estimate in the canonical exact decimal format. Missing or malformed
+prices fail; any numeric duplicate must agree. Healthy post-settlement budgets
+remain mandatory.
 
 `hermes-native-interactions` adds one native question-batch journey on local and
 Daytona. The original run remains active while Chromium reloads and answers the
@@ -401,8 +405,12 @@ gate and cannot pass from this local observation.
 
 `hermes-image-input` adds one local and one Daytona image-code cell using a
 separate vision-capable candidate profile. The existing UI helper uploads the
-PNG before creating the assigned task. The code is an eight-character challenge
-rendered only in pixels; prompt and filename disclose no answer. Independent
+PNG as part of task creation. The composer keeps executable work in Backlog until
+all uploads finish, then binds the selected receipts and activates the task in one
+mutation. The code is an eight-character challenge rendered only in pixels; prompt
+and filename disclose no answer. Image definition version 4 uses a checksum-pinned
+raster of the bundled Inter font; version 3 block-font failures remain historical
+failures. Exact-answer and attachment-authorization assertions are unchanged. Independent
 checks download the company/task-bound image and compare exact PNG bytes, MIME,
 size and SHA-256. Native tool history allows only semantic completion, task
 context, title and progress operations, rejecting file reads, shell/OCR and

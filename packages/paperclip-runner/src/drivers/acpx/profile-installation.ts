@@ -56,3 +56,9 @@ export async function probeAcpxCursorInstallation(model: string): Promise<void> 
   const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("cursor", model));
   await (await installation.openCommand()).close();
 }
+
+/** Verify the pinned Hermes distribution and host sandbox without credentials. */
+export async function probeAcpxHermesInstallation(model: string): Promise<void> {
+  const installation = await verifyHermesInstallation(resolveQualifiedAcpxProfile("hermes", model));
+  await (await installation.openCommand()).close();
+}

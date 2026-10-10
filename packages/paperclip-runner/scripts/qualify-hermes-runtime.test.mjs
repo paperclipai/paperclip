@@ -246,7 +246,10 @@ test("native Hermes permissions cover edits once, survive process restore, and s
 });
 
 test("pinned Hermes streams through the production ACPX host using a no-auth local connection", {
-  skip: process.env.PAPERCLIP_HERMES_QUALIFY !== "1", timeout: 180_000,
+  // The aggregate journey restores several provider processes and verifies
+  // each pinned closure. Slow hosted Mac filesystem checks must not consume
+  // the entire lifetime before the later control/policy assertions run.
+  skip: process.env.PAPERCLIP_HERMES_QUALIFY !== "1", timeout: 360_000,
 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-hermes-transport-"));
   const workspace = join(root, "workspace");
@@ -334,7 +337,7 @@ test("pinned Hermes streams through the production ACPX host using a no-auth loc
       PAPERCLIP_HERMES_CONFIG_JSON: JSON.stringify({ model: { provider: "custom:paperclip", default: "hermes-fixture" },
         providers: { paperclip: { base_url: endpoint, transport: "chat_completions", default_model: "hermes-fixture", api_key: "no-key-required" } },
         paperclip_auth: { protocol: "chat", style: "none" } }),
-    }, signal: AbortSignal.timeout(150_000),
+    }, signal: AbortSignal.timeout(300_000),
   };
   const dependencies = { openRuntime: openCodexAcpxRuntime, reportRetainedCleanupFailure: failure => t.diagnostic(String(failure.error)) };
   host = await AcpxRuntimeHost.open(options, dependencies);

@@ -256,6 +256,7 @@ fn acpx_projection_matches_shared_plan_question_final_and_terminal_identity() {
             },
             &AcpxProviderStateEvent::AssistantMessage {
                 turn_id: context.turn_id.clone(),
+                provider_item_id: None,
                 text: expected_final["text"]
                     .as_str()
                     .expect("final text")

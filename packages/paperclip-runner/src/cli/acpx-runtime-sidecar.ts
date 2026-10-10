@@ -18,6 +18,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, isHermesCommittedHumanInputCompletion, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { readProviderUsageBilling, type ProviderUsageBilling } from "../contracts/usage-billing.js";
+import { readProviderTokenAccounting, type ProviderTokenAccounting } from "../contracts/usage-tokens.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
 import { parseNativeUserAttachments, validateNativeUserMessageSize } from "../contracts/user-attachments.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
@@ -368,12 +369,17 @@ async function dispatch(
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
     let billing: ProviderUsageBilling | undefined;
+    let tokenAccounting: ProviderTokenAccounting | undefined;
     const extensions = bindAcpxExtensionTurn({
       adapter: createAcpxProfileExtensionAdapter(openParams!.agent, {
         workspacePath: openParams!.workingDirectory, sessionId: activeHost.identity().backendSessionId, turnId: currentTurnId,
         onBilling: receipt => {
           if (billing) throw new Error("Hermes supplied more than one terminal billing receipt");
           billing = receipt;
+        },
+        onTokenAccounting: receipt => {
+          if (tokenAccounting) throw new Error("Hermes supplied more than one token accounting receipt");
+          tokenAccounting = receipt;
         },
       }),
       active: () => turnId === currentTurnId && host === activeHost,
@@ -407,7 +413,7 @@ async function dispatch(
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, () => billing);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, () => billing, () => tokenAccounting);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     await runtimeTurn.promptStarted;
@@ -621,6 +627,7 @@ async function pumpTurn(
   activity: AcpxActivityAdapter,
   toolEvidence?: AcpxToolEvidence,
   readBilling?: () => ProviderUsageBilling | undefined,
+  readTokenAccounting?: () => ProviderTokenAccounting | undefined,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -662,6 +669,7 @@ async function pumpTurn(
         runtimeTurn.requestId,
         openParams?.agent,
         readBilling?.(),
+        readTokenAccounting?.(),
       );
       if (usage) {
         const estimate = acpxUsageEstimateNotice(usage, `${currentTurnId}:usage-estimate`);
@@ -1014,6 +1022,7 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
   }
   if (event.type === "status") {
     const billing = readProviderUsageBilling(record(event).billing);
+    const tokenAccounting = readProviderTokenAccounting(record(event).tokenAccounting);
     return boundedSidecarValue({
       type: "status",
       text: boundedOptionalText(event.text, "", 4_000),
@@ -1022,6 +1031,7 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       size: safeNonNegativeNumber(event.size),
       ...safeUsage(event.cost, event.breakdown),
       ...(billing ? { billing } : {}),
+      ...(tokenAccounting ? { tokenAccounting } : {}),
     });
   }
   if (event.type === "tool_call") {

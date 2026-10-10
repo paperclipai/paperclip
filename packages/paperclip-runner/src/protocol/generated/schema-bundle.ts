@@ -3004,6 +3004,9 @@ export const usageSchema = {
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
+    },
+    "tokenAccounting": {
+      "$ref": "#/$defs/tokenAccounting"
     }
   },
   "additionalProperties": false,
@@ -3101,7 +3104,141 @@ export const usageSchema = {
         }
       },
       "additionalProperties": false
+    },
+    "tokenAccounting": {
+      "type": "object",
+      "required": [
+        "schema",
+        "source",
+        "biller",
+        "model",
+        "protocol",
+        "complete",
+        "requestCount",
+        "reportedRequestCount",
+        "tokens",
+        "pricingContext"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.usage.tokens/v1"
+        },
+        "source": {
+          "const": "provider_wire"
+        },
+        "biller": {
+          "enum": [
+            "anthropic",
+            "openai"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "protocol": {
+          "enum": [
+            "messages",
+            "chat_completions",
+            "responses"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "requestCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reportedRequestCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "tokens": {
+          "type": "object",
+          "required": [
+            "inputTokens",
+            "outputTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens"
+          ],
+          "properties": {
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheReadTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheWriteTokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "additionalProperties": false
+        },
+        "pricingContext": {
+          "type": "object",
+          "required": [
+            "serviceTier",
+            "contextTier"
+          ],
+          "properties": {
+            "serviceTier": {
+              "const": "standard"
+            },
+            "contextTier": {
+              "const": "short"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "biller": {
+              "const": "anthropic"
+            },
+            "protocol": {
+              "const": "messages"
+            }
+          }
+        },
+        {
+          "properties": {
+            "biller": {
+              "const": "openai"
+            },
+            "protocol": {
+              "enum": [
+                "chat_completions",
+                "responses"
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
     }
+  },
+  "not": {
+    "required": [
+      "billing",
+      "tokenAccounting"
+    ]
   }
 } as const;
 
@@ -4489,7 +4626,16 @@ export const eventSchema = {
             "properties": {
               "billing": {
                 "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing"
+              },
+              "tokenAccounting": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting"
               }
+            },
+            "not": {
+              "required": [
+                "billing",
+                "tokenAccounting"
+              ]
             }
           }
         }
@@ -4529,6 +4675,53 @@ export const eventSchema = {
                   "billing": {
                     "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "kind",
+              "usage"
+            ],
+            "properties": {
+              "kind": {
+                "const": "usage"
+              },
+              "usage": {
+                "type": "object",
+                "required": [
+                  "tokenAccounting"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "tokenAccounting": {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "billing",
+                    "tokenAccounting"
+                  ]
                 }
               }
             }
@@ -5237,7 +5430,16 @@ export const eventV2Schema = {
             "properties": {
               "billing": {
                 "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing"
+              },
+              "tokenAccounting": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting"
               }
+            },
+            "not": {
+              "required": [
+                "billing",
+                "tokenAccounting"
+              ]
             }
           }
         }
@@ -5277,6 +5479,53 @@ export const eventV2Schema = {
                   "billing": {
                     "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/billing"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "kind",
+              "usage"
+            ],
+            "properties": {
+              "kind": {
+                "const": "usage"
+              },
+              "usage": {
+                "type": "object",
+                "required": [
+                  "tokenAccounting"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "tokenAccounting": {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/usage.schema.json#/$defs/tokenAccounting"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "billing",
+                    "tokenAccounting"
+                  ]
                 }
               }
             }

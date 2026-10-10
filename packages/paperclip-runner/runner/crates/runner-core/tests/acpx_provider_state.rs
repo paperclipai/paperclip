@@ -70,8 +70,9 @@ fn accumulates_assistant_text_preserves_reasoning_and_flushes_before_terminal() 
                 && event.payload["text"] == "Checking the result."
     ));
 
+    let mut assistant_item_id = None;
     for (sequence, text) in [(3, "Hello "), (4, "world")] {
-        state
+        let emitted = state
             .accept_event(&event(
                 sequence,
                 GeneratedAcpxSidecarEventType::RuntimeEvent,
@@ -79,6 +80,14 @@ fn accumulates_assistant_text_preserves_reasoning_and_flushes_before_terminal() 
                 json!({"type":"text_delta","text":text}),
             ))
             .unwrap();
+        let AcpxProviderStateEvent::Activity(activity) = &emitted[0] else {
+            panic!("an assistant delta must emit progress");
+        };
+        let item_id = activity.payload["itemId"].as_str().unwrap().to_owned();
+        if let Some(retained) = &assistant_item_id {
+            assert_eq!(retained, &item_id);
+        }
+        assistant_item_id = Some(item_id);
     }
     let terminal = state
         .accept_event(&event(
@@ -90,8 +99,8 @@ fn accumulates_assistant_text_preserves_reasoning_and_flushes_before_terminal() 
         .unwrap();
     assert!(matches!(
         &terminal[0],
-        AcpxProviderStateEvent::AssistantMessage { turn_id, text }
-            if turn_id == "turn-1" && text == "Hello world"
+        AcpxProviderStateEvent::AssistantMessage { turn_id, provider_item_id, text }
+            if turn_id == "turn-1" && provider_item_id == &assistant_item_id && text == "Hello world"
     ));
     assert!(matches!(
         &terminal[1],
@@ -138,6 +147,14 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
     let mut progress = Vec::new();
+    let context = AcpxEventProjectionContext {
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        provider_turn_id: None,
+        item_id: "item-1".to_owned(),
+    };
+    let mut projected_ids = Vec::new();
 
     for (sequence, message_id, text) in [
         (1, "message-1", "First paragraph."),
@@ -157,9 +174,14 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
             AcpxProviderStateEvent::Activity(event)
                 if event.payload["channel"] == "progress"
         ));
+        let projected = project_acpx_state_event(&context, &emitted[0]).unwrap();
+        assert_eq!(projected[0].payload["text"], text);
+        projected_ids.push(projected[0].payload["itemId"].clone());
         progress.push(emitted[0].clone());
     }
     assert_eq!(progress.len(), 3);
+    assert_ne!(projected_ids[0], projected_ids[1]);
+    assert_eq!(projected_ids[1], projected_ids[2]);
     let terminal = state
         .accept_event(&event(
             4,
@@ -170,9 +192,118 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
         .unwrap();
     assert!(matches!(
         &terminal[0],
-        AcpxProviderStateEvent::AssistantMessage { text, .. }
-            if text == "Second paragraph.\n\nStill final."
+        AcpxProviderStateEvent::AssistantMessage { provider_item_id, text, .. }
+            if provider_item_id.as_deref() == Some("message-2")
+                && text == "Second paragraph.\n\nStill final."
     ));
+    let projected_final = project_acpx_state_event(&context, &terminal[0]).unwrap();
+    assert_eq!(projected_final[0].payload["itemId"], projected_ids[2]);
+    assert_ne!(projected_final[0].payload["itemId"], projected_ids[0]);
+}
+
+#[test]
+fn an_unlabelled_continuation_keeps_the_current_message_identity() {
+    let context = AcpxEventProjectionContext {
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        provider_turn_id: None,
+        item_id: "item-1".to_owned(),
+    };
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let mut ids = Vec::new();
+    for (sequence, payload) in [
+        (
+            1,
+            json!({"type":"text_delta","text":"Unlabelled progress."}),
+        ),
+        (
+            2,
+            json!({"type":"text_delta","messageId":"message-1","text":"Hello "}),
+        ),
+        (3, json!({"type":"text_delta","text":"world"})),
+    ] {
+        let emitted = state
+            .accept_event(&event(
+                sequence,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                payload,
+            ))
+            .unwrap();
+        ids.push(
+            project_acpx_state_event(&context, &emitted[0]).unwrap()[0].payload["itemId"].clone(),
+        );
+    }
+    assert_eq!(ids[0], ids[1]);
+    assert_eq!(ids[1], ids[2]);
+    let terminal = state
+        .accept_event(&event(
+            4,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    let final_message = project_acpx_state_event(&context, &terminal[0]).unwrap();
+    assert_eq!(final_message[0].payload["itemId"], ids[2]);
+    assert_eq!(
+        final_message[0].payload["text"],
+        "Unlabelled progress.Hello world"
+    );
+}
+
+#[test]
+fn an_identified_message_after_an_adopted_prefix_gets_its_own_item() {
+    let context = AcpxEventProjectionContext {
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        provider_turn_id: None,
+        item_id: "item-1".to_owned(),
+    };
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let mut ids = Vec::new();
+    for (sequence, payload) in [
+        (1, json!({"type":"text_delta","text":"Preface. "})),
+        (
+            2,
+            json!({"type":"text_delta","messageId":"first","text":"Progress."}),
+        ),
+        (
+            3,
+            json!({"type":"text_delta","messageId":"second","text":"Final "}),
+        ),
+        (4, json!({"type":"text_delta","text":"response."})),
+    ] {
+        let emitted = state
+            .accept_event(&event(
+                sequence,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                payload,
+            ))
+            .unwrap();
+        ids.push(
+            project_acpx_state_event(&context, &emitted[0]).unwrap()[0].payload["itemId"].clone(),
+        );
+    }
+    assert_eq!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+    assert_eq!(ids[2], ids[3]);
+    let terminal = state
+        .accept_event(&event(
+            5,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    let final_message = project_acpx_state_event(&context, &terminal[0]).unwrap();
+    assert_eq!(final_message[0].payload["itemId"], ids[3]);
+    assert_eq!(final_message[0].payload["text"], "Final response.");
 }
 
 #[test]
@@ -266,9 +397,16 @@ fn pi_native_boundary_order_and_terminal_completeness_fail_closed() {
 
 #[test]
 fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
+    let context = AcpxEventProjectionContext {
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        provider_turn_id: None,
+        item_id: "item-1".to_owned(),
+    };
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
-    state
+    let prefix = state
         .accept_event(&event(
             1,
             GeneratedAcpxSidecarEventType::RuntimeEvent,
@@ -276,7 +414,7 @@ fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
             json!({"type":"text_delta","text":"Preface.\n\n"}),
         ))
         .unwrap();
-    state
+    let identified = state
         .accept_event(&event(
             2,
             GeneratedAcpxSidecarEventType::RuntimeEvent,
@@ -297,6 +435,14 @@ fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
         AcpxProviderStateEvent::AssistantMessage { text, .. }
             if text == "Preface.\n\nFinal response."
     ));
+    let prefix = project_acpx_state_event(&context, &prefix[0]).unwrap();
+    let identified = project_acpx_state_event(&context, &identified[0]).unwrap();
+    let final_message = project_acpx_state_event(&context, &terminal[0]).unwrap();
+    assert_eq!(prefix[0].payload["itemId"], identified[0].payload["itemId"]);
+    assert_eq!(
+        prefix[0].payload["itemId"],
+        final_message[0].payload["itemId"]
+    );
 }
 
 #[test]

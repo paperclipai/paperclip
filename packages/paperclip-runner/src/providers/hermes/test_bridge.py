@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from acp.schema import ClientCapabilities
 from bridge import ManagedHermesACPAgent, ManagedSessionManager, SessionPermissions, permission_scope, assigned_skill_identity, ChannelClient, native_answers, question_set, install_no_auth_transport, disable_background_title_inference, turn_usage, USAGE_COUNTERS
 from policy import authorize_tool
-from billing import TurnBilling
+from billing import TurnBilling, TokenBilling
 
 
 class Accounting(unittest.TestCase):
@@ -380,6 +380,25 @@ class Controls(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["billing"]["amountUsdExact"], "0.008400000")
         self.assertEqual(params["billing"]["reportedRequestCount"], 2)
         self.assertEqual(params["cost"], "unavailable")  # no smaller model-price estimate
+
+    async def test_direct_api_wire_usage_has_token_authority_without_a_dollar_claim(self):
+        self.state.agent = SimpleNamespace(**{"session_" + key: 0 for key in USAGE_COUNTERS},
+            _paperclip_usage_receipts=[True], _paperclip_cost_receipts=[True])
+        self.bridge._usage_before = dict.fromkeys(USAGE_COUNTERS, 100)
+        self.bridge._billing = TokenBilling("anthropic", "fixture-model", "messages")
+        for _ in range(2):
+            self.bridge._billing.begin().json(b'{"type":"message","usage":{"input_tokens":20,"output_tokens":5,"cache_read_input_tokens":3}}')
+        conn = SimpleNamespace(ext_notification=AsyncMock())
+        with patch("bridge.HermesACPAgent._finish_turn", new=AsyncMock(return_value=SimpleNamespace(usage=None))):
+            response = await self.bridge._finish_turn(self.state, "session", conn, {}, None, True)
+        self.assertEqual((response.usage.input_tokens, response.usage.output_tokens, response.usage.cached_read_tokens), (40, 10, 6))
+        params = conn.ext_notification.call_args.args[1]
+        self.assertEqual(params["turnToken"], "turn")
+        self.assertTrue(params["tokenAccounting"]["complete"])
+        self.assertEqual(params["tokenAccounting"]["requestCount"], 2)
+        self.assertNotIn("billing", params)
+        self.assertNotIn("estimatedUsd", params)
+        self.assertEqual(params["cost"], "unavailable")
 
     async def test_missing_wire_usage_cannot_fall_back_to_the_smaller_native_receipt(self):
         self.state.agent = SimpleNamespace(**{"session_" + key: 0 for key in USAGE_COUNTERS},

@@ -1,8 +1,9 @@
 # Hermes native runner implementation
 
-Status (updated 2026-10-07): implementation candidate; **not qualified**.
-Current branch: `codex/hermes-qualification`; stacked on
-`codex/hermes-native-runner` and `codex/hermes-routines`.
+Status (updated 2026-10-09): implementation candidate; basic API browser journeys
+pass locally; Daytona is blocked by host isolation support; **not qualified**.
+Current branch: `codex/hermes-release-qualification`; stacked on
+`codex/hermes-qualification`, `codex/hermes-native-runner` and `codex/hermes-routines`.
 
 ## Accepted outcome
 
@@ -20,9 +21,9 @@ Keep the existing Hermes local/gateway adapters compatible.
 - [x] Managed memory/skills, per-turn lifecycle and real routine-service binding.
 - [x] UI/configuration/contracts, documentation and package distribution.
 - [x] Focused TS/Python tests and production-path macOS execution with a deterministic model server.
-- [x] Complete final Rust/regression checks and resolve or classify failures.
+- [ ] Complete final Rust/regression checks and resolve or classify failures on the current source.
 - [ ] Browser acceptance, Linux/Daytona execution and connection-method qualification.
-- [x] Reviewable draft PR stack, green CI and fresh Greptile 5/5 on the implementation heads.
+- [ ] Reviewable draft PR stack, green CI and fresh Greptile 5/5 on the current implementation heads.
 - [x] Complete the final local aggregate test invocation and classify its failures.
 - [ ] Complete live release qualification.
 
@@ -1671,8 +1672,9 @@ when it has a session grant. The independently checked skill bytes stay intact.
 The reviewed Mac and Linux closure pins change only for the bridge source.
 Fresh cloud materialization, current-head native checks and PR verification are
 required. No local Docker or Rust build is used. Shared configuration adoption,
-routine completion and transcript UI patches remain unapplied outside the fixed
-PR file set. Hermes remains pending the full release qualification matrix.
+routine completion and transcript UI corrections are implementation work within
+the authorized release scope. The review-size split below replaces the earlier
+fixed-file-set interpretation. Hermes remains pending the full release matrix.
 
 ### 2026-10-08 active steering through the production transport
 
@@ -1718,3 +1720,605 @@ CI; a Mac skip is not Linux evidence. Candidate closure pins replace only
 match them before any runtime is admitted. The prior Linux failure remains
 recorded. Both existing PR file sets remain unchanged, and no local Docker or
 Rust build is used. Full provider, product and Daytona qualification is pending.
+
+### 2026-10-09 shared verification and completion corrections
+
+The repository requires each PR to contain fewer than 100 changed files. It
+does not require a frozen file list or extra approval for necessary shared fixes.
+The stack now retains the original public setup and execution-account cache
+tests in a small follow-up review. Their full contents match the pre-split
+snapshot. The original Cursor setup tests remain in the parent. No assertion is
+removed. The stack is #15434, #15435, #15436 and #15654.
+
+The test worker now makes only its private test-home directories writable
+before removal. It skips symbolic links. A real worker-exit check removes a
+read-only nested runtime bundle while leaving an outside link target unchanged.
+All 30 focused runtime-context and working-copy tests pass locally. Fresh Linux
+CI remains required; the earlier cleanup failure retains its verdict.
+
+The Daytona image identity now includes the three Hermes setup helpers. All 11
+image-contract tests pass, including a changed-source case for each helper.
+The public setup suite passes five tests and the account-cache suite passes four.
+These checks do not execute Docker or a model.
+
+Native status finalization now updates an originating routine firing in the
+same status-decision transaction. The real-database conformance suite passes
+34 tests, including completion replay and rollback with an unchanged firing.
+Hermes environment checks now verify its pinned local installation and return
+a pending-qualification warning. Remote checks admit Linux x64 and macOS arm64;
+unsupported platforms and unavailable installations fail. The adapter suite
+passes all 39 tests after adding the server's missing public probe export.
+The initial failed export tests remain recorded. Live routine and configuration
+journeys remain separate acceptance requirements.
+
+Shared transcript projection now preserves plain native results, uses actual
+process arguments for command previews and renders serialized arguments without
+JSON punctuation. Later arguments update the same tool row; overlapping tool
+IDs remain separate. Native output preserves newlines and failure details.
+Unrecognized structured results remain inspectable. All 166 transcript and
+boundary checks pass locally, and UI token gates pass. These are presentation
+contract checks; rendered browser acceptance remains required.
+
+The existing maintainer-only EC2 image workflow now has a closed `none`/`hermes`
+candidate selector. The image-only build has a 45-minute deadline. It verifies
+the selected immutable source, resolved lock, signed public image digest, OCI
+labels and pending Linux Hermes provider identity. No model secret is supplied.
+Cloud build results and actual Daytona namespace behavior still require live
+evidence; static workflow checks cannot qualify either.
+
+### 2026-10-09 native routine browser acceptance
+
+A normal public agent configuration save exposed a remaining projection error:
+the managed connection profile `hermes_runner` was treated as a CLI adapter.
+Hermes now retains its own verified-runtime and pending-account qualification
+state. The route suite passes 38 tests. The original public-save failure remains
+recorded; it occurred before any task or model request.
+
+The unchanged routine browser assertions pass all 47 checks on clean source
+`100465ac15524c6b21b5eab7ac66be1e1a31d7f2` on macOS arm64. Five native tasks
+create one self-assigned routine, pause and update it, resume it, and finish
+through the semantic completion path. Two actual wall-clock firings and one
+intentional API firing produce three distinct tasks and completed firing
+records. Create and completed-fire replays retain their original receipts.
+No scheduled work appears across an observed paused clock boundary.
+
+An independent audit of the five retained native event streams verifies seven
+routine mutations, company/run/agent identity, successful semantic terminals,
+managed save receipts and exact authorized artifact bytes. Six screenshots were
+visually inspected. The generated tasks show routine provenance and their
+creating parent. Tool groups remain collapsed in those screenshots; this journey
+does not qualify detailed tool display or live streaming. All 27 main model
+responses and five command reviews are scripted. No paid provider or real
+credential is used, and remote routine behavior remains unqualified.
+
+The owned server exits successfully. After empty open-file checks, only the two
+attempts' private Paperclip homes and Vite caches are removed, reclaiming
+477,714,228 logical file bytes. Proofs, screenshots, logs, native events and
+required Hermes runtime assets remain available. No Docker or Rust build runs
+locally.
+
+### 2026-10-09 current cloud verification limits
+
+The image-only cloud run `37896656417` captures source
+`1030fd6d3b0e74c8792355a1f9a2115004e4a5fd`. Authorization succeeds; the EC2
+image job remains queued at the latest recorded observation. No verified image
+or Daytona result is claimed. Its bounded reservation remains held, and no
+additional paid run is started.
+
+Fresh foundation CI tests merge `4cc3fb60f51ba91efee9828ae4792b2b0f2c50a5`
+against master `b9750b152fccaba51939fbf2b48e237087626f33`. It exposes two
+timeouts. Adapter-route imports now run after each mock reset in the existing
+30-second setup hook, outside the unchanged 15-second request test deadline.
+The real-PostgreSQL backup suite uses the same bounded 30-second deadline as
+its existing integration cases. All 45 route tests and eight local backup tests
+pass, and server/database TypeScript passes. The new master backup case remains
+a cloud verification requirement. Its assertions are unchanged. Previous CI
+failures retain their verdict; the next checks must run the changed source.
+
+Full paid account, subscription, credential lifecycle, attachment, browser
+interaction, published Linux package and actual Daytona qualification remain
+required. Hermes and all four PRs remain pending qualification.
+
+### 2026-10-09 assistant message boundaries and setup throttling
+
+The earlier native controls browser audit records distinct native assistant
+messages projected onto one canonical item. The final snapshot therefore
+suppresses initial streamed text. The reducer now carries the retained native
+message identity to completion, and projection uses assistant identity v2,
+scoped to the message and provider turn. Unlabelled providers retain their
+existing identity, and old PRP v1 events replay unchanged. Earlier commentary
+remains progress; the final snapshot still contains only the latest message.
+Rust regression assertions cover distinct messages, unlabelled continuations,
+opaque IDs and recovery. The production native steering fixture adds the same
+boundary and final-deduplication checks. These Rust/native assertions still
+require fresh cloud execution; no local Rust build is run.
+
+All 168 transcript/adapter/golden UI assertions pass, including preceding text
+retention and replacement behavior. UI TypeScript and token gates pass. This
+is fixture proof, not rendered browser acceptance of the new native binary.
+
+The current Mac CI job fails during source provisioning with GitHub HTTP 429.
+Setup now downloads the immutable codeload archive without GitHub API quota,
+retains the exact existing archive checksum, and retries transient responses
+at most three times with bounded `Retry-After` handling. A real unauthenticated
+download matches the existing SHA-256
+`b71f4b7d4fe5b158ed9bbbeb73f5eb107f2f05e54bd582d32c2d9f718b58d9b0`.
+All ten focused download/setup assertions pass. No runtime installation,
+Docker build, model call or credential transfer occurs in that download check.
+
+Foundation `7a0329466485b40f33f38889964da4baefb58ec7` and core qualification
+`4f40b5b6661b3fefa6e149b70f18ee42b4fc3ecd` have no failed current checks.
+Native `a8805d61af611574046139377801fcb07e35dc25` still needs diagnosis of a
+first-test route import timeout and a denied-retry browser failure; previous
+CI verdicts are retained. Full release qualification remains incomplete.
+
+### 2026-10-09 exact-retry browser repair and native fixture correction
+
+Native CI at `a8805d61af611574046139377801fcb07e35dc25` records a failed
+denied-retry browser assertion. Its screenshot has no retry denial. A controlled
+public API alias refresh reproduces the underlying unmount: the selected
+Retry button detaches while canonical agent data loads. The agent page now
+primes the company-scoped canonical cache from its authorized response before
+redirecting. The same delayed-response fixture then passes all original retry
+assertions. All nine queued, deferred and denied cases pass across the agent
+run, Inbox and Legacy Inbox. The denial screenshot is visually inspected; it
+shows one readable error on the original selected run while refresh is pending.
+This is shared UI proof with an isolated test database, not Hermes model proof.
+
+The serialized comment-wakeup suite's cold route imports now run in its
+bounded 30-second per-test setup hook after mock reset. All assertions and the
+15-second request deadline remain unchanged. All 36 tests and server TypeScript
+pass. The first local attempt is retained as a socket-permission failure. UI
+TypeScript and token gates pass. A separate browser attempt never starts its
+server because the temporary macOS socket path is too long; that failure is
+retained, and the successful nine-case run uses a shorter private path.
+
+Cloud native fixture run `37906431079` tests published source
+`17ce15bc44f75f33365b405967ffaffd67c198fe`. The new assertion reads message
+IDs from the payload instead of the canonical event envelope and fails with
+undefined identities. Its verdict remains failed. The fixture now requires
+string envelope identities, distinct initial/final messages, and exact final
+delta/snapshot identity. Fresh cloud execution is required before accepting
+this native fix. No previous fixture or browser pass closes that gate.
+
+After terminal server results and empty open-file checks, only the four owned
+browser scratch roots are removed. Logs, screenshots, failed attempts and
+required runtime assets remain available. No local Docker or Rust build runs,
+and no paid inference or credential transfer occurs in these browser checks.
+
+### 2026-10-09 prefix adoption and complete JSON tool output
+
+Native fixture run `37909868256` passes on Mac arm64 and Linux amd64 at
+`1af3bd2f102f74a3431b801950f92765813fe008`. It runs the production Hermes
+path against a deterministic loopback model without credentials. The same
+source fails the broader Rust suite's existing idless-prefix oracle. The
+reducer now retains the first normalized item identity while adopting native
+IDs for boundary detection. The original full-prefix text assertion remains
+unchanged. Additional assertions require prefix/continuation/final identity
+agreement and separate identity for a subsequent native message. Fresh cloud
+Rust and native execution are required for this changed source.
+
+The expandable tool detail now unwraps only the complete command-result
+shape. Arbitrary JSON, including `content` and extra fields, remains intact.
+Regression coverage includes a JSON string supplied through native command
+`output` and distinct output streams in a known command wrapper. All 173
+transcript/adapter/golden UI assertions pass. UI TypeScript and token gates
+pass. This does not replace fresh rendered native browser acceptance.
+
+The runtime-skills database teardown drains background executions before
+truncation instead of assuming a terminal row or a fixed delay means writes
+have stopped. Two route suites load their cold graph in 30-second setup hooks
+after mock reset; request deadlines and original assertions remain unchanged.
+All 40 focused server tests, including real PostgreSQL, and server TypeScript
+pass. Earlier CI failures retain their verdict. All four PRs remain draft;
+paid connection, subscription, credential lifecycle and actual Daytona proof
+remain required.
+
+### 2026-10-09 company-scoped canonical agent recovery
+
+An authorized UUID lookup can return an agent from another accessible company.
+The canonical cache now receives that agent only under its actual company,
+and the redirect uses that company's explicit prefix. Route and selection
+synchronization yield to an explicit organization switch. Company page memory
+waits for the canonical alias instead of retaining an unverified agent UUID;
+legacy remembered UUID paths fall back to the company dashboard.
+
+A real-app browser fixture opens company A's agent UUID under company B's
+prefix, follows the canonical redirect to A, switches back through the actual
+organization menu, and opens B's same-named agent. While B's authorized alias
+response is held, A's sentinel title must be absent. The released response
+must show B's title, selection and route. All ten browser cases pass, including
+the original nine exact-retry cases. The company-isolation and retry-denial
+screenshots are visually inspected. All 195 focused UI assertions, UI
+TypeScript and token gates pass. Inference is scripted; these checks use no
+model credentials and do not qualify paid Hermes behavior.
+
+Earlier failed browser attempts remain recorded. One server-start attempt
+fails because macOS's 32-segment shared-memory limit is reached. Only
+unattached 56-byte segments from this task's exited PostgreSQL processes are
+released. After closed-process and empty open-file checks, disposable test
+homes and caches are removed; logs, screenshots and required runtime assets
+remain. No local Docker or Rust build runs.
+
+### 2026-10-09 bounded manual selection and cold CLI checks
+
+Published source `59c74872981f26196672a21ef3b8cbc643609055` passes the full
+cloud Rust lane and native fixture run `37917225876` on Mac arm64 and Linux
+amd64. The original full-prefix oracle and the new subsequent-message identity
+case pass. The Rust subtree is `81c718891ec50eada31a03423dd2661f3eea4a9c`.
+This remains deterministic native proof without paid or Daytona execution.
+
+Fresh full-shard CI exposes an announcement covering the Agents link. The
+fixture now dismisses it through its normal button before navigation. Review
+also exposes a manual-selection guard that remains active on later history
+navigation. A new history oracle reproduces the sidebar/page mismatch. The
+guard now yields only on the render where manual selection changes. All ten
+browser cases then pass, including return navigation to the resolved company's
+agent. The final history-selection screenshot is visually inspected. Failed
+fixture and product attempts retain their original verdicts.
+
+The dense ZIP test constructs the same DEFLATE fixture with a CRC lookup
+table, avoiding eight per-byte loop iterations across the 64 MB input. Its
+original five-second deadline and all assertions remain. The cold source CLI's
+health wait is bounded at 45 seconds within its existing 60-second setup hook.
+All 18 focused CLI tests pass, including real PostgreSQL and CLI import/export.
+The earlier cloud cold-start and ZIP timeouts remain failed. A separate
+foundation signoff-policy cancellation/reconciliation failure still needs
+qualification; the other current stack heads pass that shard. Full CI, review,
+browser controls, paid credentials and actual Daytona remain required.
+
+### 2026-10-09 interrupted charges and steering commentary
+
+An authenticated OpenRouter usage frame can report a charge before the HTTP
+stream fails. The receipt now retains that verified charge in the known
+subtotal while keeping request completeness and token totals unavailable.
+The pinned SDK regression reproduces the original lost charge, then passes
+after the fix, including a subsequent successful request. Conflicting receipts
+remain unpriced. All 13 billing tests pass; the combined pinned Python suite
+passes 53 tests and skips one real-Linux bubblewrap test on Mac. The runtime
+manifests change only the reviewed `billing.py` entry. The derived Mac and Linux
+closure pins still require fresh cloud provisioning before accepting them as
+clean consumer or remote proof.
+
+The Mac native browser attempt using source `78c57ca` and the verified cloud
+daemon shows reasoning and text before completion, then delivers the actual
+Steer control to the same native turn. Native tools write the corrected file
+and its authorized download matches. The attempt fails when earlier commentary
+disappears after steering. Stored events retain that message; inspection finds
+lossy channel projection in the TypeScript paths. The direct ACPX driver's
+deltas now project as progress, matching the Rust normalizer, while the settled
+snapshot remains final. All 64 driver and 174 transcript assertions pass. Fresh native browser
+acceptance is still required; the failed attempt is not relabeled.
+
+The announcement can appear after the dashboard URL settles. The company
+navigation test now retries the ordinary sidebar click with a bounded deadline,
+dismissing the actual card through its normal control if it blocks navigation.
+All 29 cases in the chat messaging browser file pass. UI and Runner TypeScript,
+the TypeScript-only build, and UI token gates pass. No local Docker, local Rust
+build, provider credential or paid model call is used. Current cloud signoff
+shards pass; an isolated server Git-streaming fixture times out on one stack
+head and remains failed. Fresh full CI, review, paid connection and actual
+Daytona qualification remain open.
+
+### 2026-10-09 native notification channel preservation
+
+The `8a5af65` Mac browser attempt still loses the pre-steering message and
+remains failed. Its captured event contains the Rust-projected progress channel
+inside an update, but an unknown channel outside it. The native notification
+facade expects an item-start notification before assigning an assistant phase;
+Hermes can emit a delta without one. The facade now preserves the channel from
+validated canonical native deltas. Its process-local marker cannot be forged
+by provider JSON. Two regressions reproduce the original loss, then verify
+progress/final preservation and unchanged handling of unmarked provider input.
+All 19 driver event tests and four focused rehydration tests pass. The broader
+transport-suite attempt is interrupted and retained, not treated as a pass.
+
+Inspection also finds stale compiled modules in the server's vendored Runner.
+The TypeScript builds and vendor dependency check pass; six selected vendored
+modules, including the sidecar, match the freshly built Runner byte-for-byte.
+No local Rust or Docker build runs. Another native browser attempt is required
+against these verified artifacts before accepting rendered steering behavior.
+
+
+### 2026-10-09 native steering and queue browser acceptance
+
+A clean Mac production-path journey at `60aba2d58d79c0e8773f02bfe2de59df795fd9a9`
+passes all 38 checks and six visual inspections. Reasoning and assistant text
+reach the browser before completion. The canonical native event retains its
+progress channel. The real Steer button delivers the correction to the same
+active turn; the original commentary remains visible. A queued follow-up stays
+deferred across reload, then runs only after the first turn ends. Both native
+runs succeed with the same restored session. Authorized file downloads match,
+and expanded read output retains the corrected file contents after reload.
+The owned server exits cleanly.
+
+Evidence is retained in
+`/private/tmp/hermes-retry-qa-20261008/ctrl59c5/proof.json`, with the script,
+38-check evidence receipt, native events and six inspected screenshots beside
+it. The script SHA-256 is
+`170396b3f703d41194f6a3087c9e9f42712dbfea99a757a7cdcfc4eff6e4560f`.
+The cloud-built binary has exactly the current Rust subtree. Its older artifact
+closure and the independently verified current Mac materialization are recorded
+separately. Inference is scripted and credential-free; this is real browser and
+Runner-path proof, not paid-model or Daytona qualification. Earlier failures
+remain failed. In particular, attempt four completed both turns but used
+positional disclosure locators that shifted when panels opened. Attempt five
+uses the current first collapsed disclosure and preserves the same assertions.
+
+### 2026-10-09 bounded native controls and setup review fixes
+
+Early steering waits for the owning native turn acknowledgement, with a
+five-second timeout and immediate cancellation when the turn ends. Five new
+regressions reproduce the prior rejection, then cover delayed acknowledgement,
+foreign-session rejection, cancellation, stream closure, settlement and timeout.
+Question forms reserve ACPX's 256 KiB encoded response budget before publication.
+Their text limits account for all question/option IDs and worst-case JSON
+escaping. Canonical validation uses that same persisted limit. Three regressions
+reproduce oversized accepted responses, then prove all permitted text, custom
+and multiple-choice responses fit the transport bound. All 107 focused Runner
+assertions and Runner TypeScript pass.
+
+Source downloads keep one two-minute deadline across the request, body and
+bounded retries. A progressing download is no longer cut off at 30 seconds.
+Transport failures retry within the remaining budget; permanent failures and
+digest mismatches do not retry. All eight download assertions pass. The full
+messaging and legacy-continuation browser files pass 35 cases. Both sidebar
+links handle the optional announcement through its normal dismissal button;
+company isolation, history navigation and the original retry assertions remain.
+The legacy continuation CI failure remains a separate failed measurement.
+Current-head full CI, remaining review, paid/subscription credentials, clean
+consumer and actual Daytona qualification are still required. No local Docker
+or Rust build, provider credential or paid inference is used in these checks.
+
+
+Cloud native run [37924688522](https://github.com/paperclipai/paperclip/actions/runs/37924688522)
+passes both targets at PR head `84aa0fad11212f919c634ae68c2d90fc3f1d6e52` and
+actual checkout `c796716adf2fd9197e0e269ce5fb1005af6136fb`. Collected provenance
+verifies fresh Mac closure
+`fdf1369e1713fcf6dbaf43bb4a08e2cb819120bfef47d6047adfe6f7f47778a1`
+and Linux closure
+`62f0071c5be0b5d07088b0d1f9d280db64390f7aeab395a526059afaa3573135`.
+Only the small evidence files are extracted locally. The native controls and
+question-budget changes above follow that run and need their own fresh CI.
+This remains deterministic transport evidence, not paid or Daytona acceptance.
+
+### 2026-10-09 API-only delivery milestone and hosted cloud builds
+
+The user narrowed the immediate delivery milestone to Hermes with managed
+Anthropic and OpenAI API-key connections. Subscription login, Grok and Bedrock
+qualification are deferred. This changes the current qualification scope;
+earlier outcomes and the deferred connection requirements remain recorded.
+
+The remaining milestone covers real API-backed product behavior on Mac arm64
+and Linux/Daytona: streaming, tools and edits, image input, native questions,
+steering/queue/stop, strict restart recovery, persistent managed memory and
+learned skills, permissions, routine firing, token/cost attribution, and clean
+consumer installation. Successful scripted/native transport fixtures do not
+replace those live proofs. Existing unknown-cost reservations remain held.
+
+Read-only inspection of the AWS runner-group policy established that its Docker
+workflow allowlist names the Grok branch, with no Hermes branch entry. The
+Hermes image job was therefore not eligible for that group. The manual image
+workflow now defaults to standard GitHub-hosted Linux, preserving the explicit
+EC2 option, maintainer identity checks and immutable target checkout. Model
+credentials are excluded from both build paths. Cloud disk preparation is
+restricted to the disposable GitHub-hosted Linux job and unrelated preinstalled
+SDK directories. No local Docker or Rust build is required.
+
+The first hosted image build passed at source `8b5d075f0c36824599e9a342b5dad8639e45e6f6`:
+[cloud run 37942102345](https://github.com/paperclipai/paperclip/actions/runs/37942102345).
+It published `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:a63deaa768b2b6615497da6e996cd69839c8ceff500b80ea94c5cf1ff906f196`
+and verified its signature, labels and public provider-pack identity. This is
+build evidence, not Daytona execution proof. The previously ineligible EC2 job
+was cancelled without ever receiving a runner; its unknown-cost hold remains.
+
+### 2026-10-09 direct API usage settlement
+
+Native accepted-response counters do not cover all wire attempts, and a native
+model-price estimate is not billed USD. Direct API calls therefore need a
+separate negotiated `paperclip.usage.tokens/v1` receipt. The bridge observes the
+pinned synchronous SDK transport, binds requests to the exact staged key,
+endpoint/protocol/model, keeps disjoint token counts, and requires complete
+terminal usage from every attempt. Retries, truncation, background/async work,
+foreign routes, paid server tools, fast processing and long requests cannot
+silently certify a smaller or free total. Credentials and response content are
+excluded from receipts.
+
+TypeScript, Rust and the durable server path preserve this optional authority.
+The server requires selected biller/model and exact per-turn counters, aggregates
+queued turns without double-counting replay, and rejects unsafe totals or
+protocol switches. Complete direct API usage receives a labeled reviewed
+rate-card estimate. Missing totals remain unknown; provider-work settlement does
+not invent price or usage. OpenRouter's reported-dollar contract is preserved.
+The Anthropic card adds exact Haiku 4.5 and Sonnet 4.6 IDs and conservatively
+uses the one-hour cache-write rate. The OpenAI fixture now selects `gpt-6-luna`,
+confirmed by authenticated model discovery on October 9, with no inference call.
+
+Product E2E now requires correct estimated-cost provenance and healthy budgets
+after Claude/OpenAI API completion. Image and native question/reconnect/local
+Stop catalogs also include both direct API profiles. These are explicit, bounded
+pending cases; registering or unit-testing them is not live qualification.
+The next hosted image build exports its exact image-owned controller pack and
+Linux binary with checksums, avoiding any local Docker pull. The changed bridge
+closures and Rust binary require new independent cloud fixtures and live proof
+before credentials are admitted to the revised runtime.
+
+### 2026-10-09 native sidecar API accounting handoff
+
+Review exposed a production-path gap: the native sidecar advertised token
+receipts without supplying the owned receipt callback, and its event sanitizer
+also omitted that authority. A direct API turn could fail when draining the
+extension, or lose its verified counters at the native boundary. The sidecar
+now captures one receipt per turn, passes it into terminal accounting and
+preserves the closed receipt through sanitization.
+
+Six credential-free tests execute the production sidecar turn admission, pump
+and sanitizer with a deterministic native host. They cover complete and partial
+Claude/OpenAI receipts, duplicate rejection and exclusion of credential-bearing
+receipts. This is simulated boundary proof, not paid API qualification. The
+prior hosted build and clean npm consumer passed at `e025ff228`; that image
+predates this sidecar correction and must be replaced for live API admission.
+
+### 2026-10-09 bounded hosted Mac fixture lifetime
+
+Current-source PR CI passed all 47 jobs, automated review reached 5/5 with no
+open findings, and the Mac browser control replay passed 38 assertions with
+six visually inspected checkpoints. That replay used a cloud-built binary with
+identical current Rust/runtime source and the freshly compiled sidecar, against
+a scripted no-auth model. It does not qualify paid API behavior.
+
+Linux's revised native fixture passed. The hosted Mac run passed ten native
+checks, then its final aggregate multi-turn journey reached the 150-second
+dependency lifetime and remained in cleanup. This failed run is retained and
+is not counted as Mac qualification. The aggregate lifetime is now five minutes
+inside a six-minute test bound; all behavior/control assertions remain intact.
+A twelve-minute workflow step bound leaves time to retain provenance even
+when test cleanup hangs, within the existing thirty-minute job bound. These
+are verification-only changes; the corrected `cc1a98418` image/runtime source
+is unchanged.
+
+### 2026-10-09 paid Haiku receipt qualification
+
+The first paid direct Anthropic Product E2E cell at `85f701daa` completed its
+native task and all six completion matchers, but failed the healthy-budget
+settlement check: both observed requests had rejected usage, leaving the agent
+paused with an unpriced receipt. Cleanup passed. The original machine grade,
+screenshots and trace remain in campaign
+`hermes-paid-85f701-anthropic-local-hello-complete-20261009T220407Z`;
+this attempt is a failure, not API qualification.
+
+A separate eight-output-token, zero-retry diagnostic observed Haiku's standard
+usage with `inference_geo: "not_available"`. Anthropic documents this sentinel
+for models released before February 2026 and confirms those models retain
+standard prices even when an organization enables US-only inference:
+[usage documentation](https://platform.claude.com/docs/en/manage-claude/usage-cost-api),
+[organization pricing](https://support.claude.com/en/articles/15422948-enable-us-only-inference-for-your-organization).
+The validator now accepts that response value only for the exact reviewed
+`claude-haiku-4-5-20251001` model. Newer models with unavailable geography,
+regional premiums, priority tiers and fast-mode usage remain unpriced.
+Request credential, endpoint, protocol and model checks are unchanged.
+
+The regression uses the pinned SDK's actual Messages streaming manager with a
+mock HTTP transport and the observed usage fields, plus negative premium and
+model cases. The platform closures change only `billing.py`; all remaining
+execution bytes retain their verified pins. A corrected cloud image and live
+Product E2E rerun are required before either API path is qualified.
+
+### 2026-10-09 direct API rerun findings
+
+At `59853464f`, the paid Claude task completed, its two wire receipts were
+complete, its rate-card estimate settled at `0.072608100` USD, and the company
+and agent remained healthy. Its original test grade remains failed: the test
+incorrectly required a numeric duplicate of the canonical decimal estimate.
+Direct rate-card pricing intentionally stores the exact decimal only. The
+corrected oracle still rejects absent/malformed prices, conflicting duplicates,
+wrong provenance or scope, incomplete usage, pending accounting and unhealthy
+budgets. OpenRouter's dual reported-price contract remains unchanged.
+
+The OpenAI task at the same revision completed but lacked observed wire usage
+and paused under the existing unknown-cost budget rules. Pinned Hermes expands
+its `openai` alias to a `custom` runtime at the official OpenAI endpoint; the
+observer previously selected ledgers only by native provider name. It now
+recognizes that exact official HTTPS `/v1` route before applying the unchanged
+per-request credential, model, protocol and processing-tier checks. Proxy,
+lookalike, unauthenticated, regional or different-port routes do not acquire
+OpenAI billing authority. Tests use the pinned resolver and Responses SDK with
+mock transport; those are regression coverage, not paid qualification.
+
+Both failed campaigns and their costs remain retained. Corrected live browser
+reruns and a new cloud-built image are required; Hermes remains pending
+qualification until those and the remaining user journeys pass.
+
+### 2026-10-09 real basic API browser qualification
+
+The approved basic API scope now has eight retained paid macOS arm64 Product
+E2E passes, with cleanup and every selected-account, model, cost-settlement and
+budget-health matcher passing. These use real Chromium, the production
+server/database, Runnerd, ACPX and pinned native Hermes, with
+`claude-haiku-4-5-20251001` and `gpt-6-luna` through existing managed API accounts.
+
+| Journey | Claude API / local | OpenAI API / local | Daytona |
+| --- | --- | --- | --- |
+| Native completion and one final answer | Pass | Pass | Claude launch failed; OpenAI not run |
+| Authorized image bytes and exact undisclosed image answer | Pass | Pass | Not run |
+| Native question batch, browser reload and exactly-once answer | Pass | Pass | Not run |
+| Stop while a native question is pending | Pass | Pass | Not run |
+
+The completion passes record source `7ebcb0d5c5827121b706351d1faf88fbbed3fbce`.
+The other six passes record `a32d94cb1a2829d174d620aa83aaed53e5a1447a`.
+The latter adds the real task-file ordering/binding correction and a readable
+image fixture. All provider/server runtime bytes are unchanged between these
+controllers. This is retained compatible-source evidence, not sixteen passes
+on one final revision. Browser reload proves pending native-form continuity;
+it does not prove controller restart or remote restore.
+
+The task composer now saves executable tasks in Backlog until every selected
+file is uploaded. One existing atomic update binds the returned attachment IDs
+to the wake comment and activates the task. Failed uploads leave the saved task
+in Backlog. The earlier image attempts retain their original failing grades:
+after delivery was repaired, both models misread the block-letter test image.
+Image definition version 4 uses a checksum-pinned Inter glyph raster, retaining
+the exact undisclosed-code oracle and tool prohibitions. Both models pass it.
+
+The eight passing cells' public settlement receipts total `0.311362120` USD in
+reviewed rate-card estimates. These are not provider-reported charges or
+invoices. Unknown earlier costs remain fully reserved. The approved ceiling is
+35 USD; 32.90 USD remains reserved, including the bounded Daytona compute hold.
+No further paid attempt is running or authorized beyond that ceiling.
+
+[Hosted image build 37999413691](https://github.com/paperclipai/paperclip/actions/runs/37999413691)
+passed for runtime source `bed8374d8922fea4ba466ea13ede422eb4937278`, including
+signature/image identity, a verified exported provider pack, and the clean
+public npm consumer. The selected image is
+`ghcr.io/paperclipai/paperclip-daytona-runner@sha256:b832e856c5fd321cd8421523119de31526643dd382271da1327faf5cfd9c75aa`.
+The downloaded Linux binary and every provider-pack file were independently
+verified. Fresh source comparison confirms the tested controller has identical
+Runner/server production source. The Mac daemon is the verified cloud artifact
+from `85f701daa`, with unchanged Rust source. No Docker or Rust build ran locally.
+
+The first Daytona attempt failed during local plugin installation before any
+task or resource admission. Restoring the existing development SDK link and
+building the excluded plugin fixed that prerequisite; a credential-free public
+`POST /api/plugins/install` check passed. The next real browser attempt created
+one remote lease and reached Runnerd, then failed the unchanged Hermes command
+sandbox check. Its original failed grade and passed cleanup remain retained.
+A separate credential-free check against the identical image confirmed:
+`bwrap: setting up uid map: Permission denied`.
+That diagnostic sandbox was also deleted successfully.
+
+[Daytona supports Linux VM snapshots](https://www.daytona.io/docs/en/sandboxes/#vm-sandboxes),
+but this account's US API rejected the VM request because no Linux VM runners
+are configured there. EU rejected it because the organization lacks access.
+Both rejected requests were confirmed to have created no snapshot. The other
+seven cloud cells were not attempted. Namespace and protected-path checks are
+unchanged; cloud qualification needs a compatible Linux amd64 execution host.
+
+Canonical Product E2E reporting records **8/16 expected cells passing**: eight
+local passes, one actual cloud failure and seven unexecuted cloud cells. The
+earlier setup failure is retained separately. Sanitized original artifacts,
+native question screenshots, billing receipts and source/runtime attestations
+remain in the ignored results directory and private qualification report.
+No raw trace, credential material or native session history was published.
+
+[Source a32d94 CI](https://github.com/paperclipai/paperclip/actions/runs/38016040493)
+and [both native platform fixtures](https://github.com/paperclipai/paperclip/actions/runs/38016040503)
+passed. Those platform fixtures use a simulated model, independently of the
+paid browser evidence. Follow-up UI attachment-limit and activation-recovery
+changes pass 190 composer tests, UI typechecking and token gates. A separate
+real Chromium/server/database walkthrough verifies rejection of 21 attachments
+before any task write, acceptance of 20, saved-task discovery after a rejected
+start, and exactly one activation when its successful HTTP response is lost.
+It uses a paused process fixture and no model credentials or inference. The
+large-file validation message was initially outside the visible scrolled area;
+moving it beside the submit controls passes the browser visibility assertion.
+Screenshots of that correction and the saved-task warning were visually
+inspected. Earlier auxiliary setup/navigation attempts remain retained.
+This follow-up does not replace the paid native proofs with a simulated model.
+Automated review's existing attachment findings remain pending fresh review;
+no reviewer message or bot retrigger was sent.
+
+The broader release remains pending: actual cloud journeys, paid active
+steering/queue, controller/remote recovery, cross-task memory and learned
+skills, routine firing/deduplication, lower permission modes and credential
+lifecycle still need their required live proof. Subscriptions, Grok and Bedrock
+remain deferred under the user's API-only scope.

@@ -1,5 +1,5 @@
 import { runPlanTaskFlow } from "./plan-task-flow.js";
-import { captureHermesApiAccountOwner, captureHermesApiBudgets, captureHermesOpenRouterSettlement, gradeHermesApiConnection, isHermesConnectionSuite, isHermesOpenRouterWorkflow, hasExactHermesNativeQuestionResponse, hasHermesNativeQuestionBatch, hermesNativeAnswerText, runHermesNativeQuestionStop, HERMES_IMAGE_INPUT_SUITE, hermesImageChallenge, gradeHermesImageInput } from "./hermes-api-connections.js";
+import { captureHermesApiAccountOwner, captureHermesApiBudgets, captureHermesApiSettlement, captureHermesOpenRouterSettlement, gradeHermesApiConnection, isHermesConnectionSuite, isHermesOpenRouterWorkflow, hasExactHermesNativeQuestionResponse, hasHermesNativeQuestionBatch, hermesNativeAnswerText, runHermesNativeQuestionStop, HERMES_IMAGE_INPUT_SUITE, hermesImageChallenge, gradeHermesImageInput } from "./hermes-api-connections.js";
 import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
 import { isDeepStrictEqual } from "node:util";
 import { assertNativeCompletionSelection, NATIVE_COMPLETION_PREFLIGHT_ENV, verifyNativeCompletionPreflight } from "./native-completion-admission.js";
@@ -3055,20 +3055,21 @@ for (const execution of executions) {
             { id: "account-owner-preserved", passed: after.expectedResponsibleUserId === hermesApiAccountOwner.expectedResponsibleUserId });
           await writeSanitizedJson(snapshotsDir, "hermes-api-owner-after-execution.json", after, secrets);
         }
-        if (fixtures.aiConnection.binding.provider === "openrouter") {
+        const settlementBiller = fixtures.aiConnection.binding.provider;
+        if (settlementBiller === "openrouter" || !execution.profile.managedConnectionRouting && (settlementBiller === "anthropic" || settlementBiller === "openai")) {
           const settlementScope = { companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue.id,
             runId: selectedRuns[0]?.id ?? "missing" };
-          let receipt: Awaited<ReturnType<typeof captureHermesOpenRouterSettlement>> | undefined;
+          let receipt: Awaited<ReturnType<typeof captureHermesApiSettlement>> | undefined;
           try {
             await expect.poll(async () => {
-              receipt = await captureHermesOpenRouterSettlement({ api, ...settlementScope, expectedRunStatus });
+              receipt = await captureHermesApiSettlement({ api, ...settlementScope, expectedRunStatus, expectedBiller: settlementBiller, model: execution.profile.model });
               return receipt.checks.every(check => check.passed);
-            }, { timeout: 30_000, message: "OpenRouter billing must settle without pausing the agent before cleanup" }).toBe(true);
+            }, { timeout: 30_000, message: "API billing must settle without pausing the agent before cleanup" }).toBe(true);
           } finally {
             if (receipt) {
-              await writeSanitizedJson(snapshotsDir, "hermes-openrouter-settlement.json", receipt, secrets);
+              await writeSanitizedJson(snapshotsDir, settlementBiller === "openrouter" ? "hermes-openrouter-settlement.json" : "hermes-api-settlement.json", receipt, secrets);
               matcherResults.push(...receipt.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `hermesBilling.${check.id}`, expected: true },
-                passed: check.passed, detail: "Public reported cost and company/agent budget health must pass before teardown." })));
+                passed: check.passed, detail: "Public cost attribution, its reported/estimated provenance and company/agent budget health must pass before teardown." })));
             }
           }
         }

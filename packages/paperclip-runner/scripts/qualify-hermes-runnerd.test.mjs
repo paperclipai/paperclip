@@ -314,6 +314,19 @@ for (const { interactionKind, nativeQuestionAction, nativeSteering } of cases) t
     assert.equal(acknowledgements.length, 1, 'Steering must produce one canonical acknowledgement');
     assert.equal(acknowledgements[0].turnId, steeringTurnId);
     assert.equal(acknowledgements[0].payload.status, 'acknowledged');
+    const initial = events.find(event => event.eventType === 'item.delta'
+      && event.payload.kind === 'agentMessage' && event.payload.text.includes('NATIVE_RUNNER_STEER_READY'));
+    const final = events.find(event => event.eventType === 'item.completed'
+      && event.payload.kind === 'agentMessage' && event.payload.text.includes('Native Rust path completed.'));
+    assert.ok(initial && final, 'Both assistant messages must survive native steering');
+    assert.equal(typeof initial.itemId, 'string', 'The initial message must have a canonical envelope identity');
+    assert.equal(typeof final.itemId, 'string', 'The final message must have a canonical envelope identity');
+    assert.notEqual(initial.itemId, final.itemId,
+      'The final snapshot must not replace text from the preceding assistant message');
+    const finalDeltas = events.filter(event => event.eventType === 'item.delta'
+      && event.payload.kind === 'agentMessage' && event.itemId === final.itemId);
+    assert.equal(finalDeltas.map(event => event.payload.text).join(''), final.payload.text,
+      'The final snapshot must share the identity of its own streamed text');
     await assert.rejects(session.steer({ turnId: steeringTurnId,
       message: { role: 'user', text: 'STALE_NATIVE_STEER' }, correlationId: 'stale-native-steer' }), /terminal|active turn/i);
   }

@@ -100,4 +100,22 @@ describe("Hermes native extensions", () => {
     await expect(owned.notification("_hermes/usage", { version: 1, sessionId: "other", tokens: "reported", cost: "unavailable", billing })).rejects.toThrow();
     await expect(adapter().notification("_hermes/usage", { version: 1, sessionId: "session", tokens: "reported", cost: "unavailable", billing })).rejects.toThrow("not negotiated");
   });
+  it("negotiates direct API token receipts separately and rejects conflicting or unowned authority", async () => {
+    const receipts: unknown[] = [];
+    const owned = createAcpxProfileExtensionAdapter("hermes", { sessionId: "session", turnId: "turn", workspacePath: "/workspace",
+      onTokenAccounting: receipt => { receipts.push(receipt); } })!;
+    const tokenAccounting = { schema: "paperclip.usage.tokens/v1", source: "provider_wire", biller: "anthropic", model: "claude-haiku-4-5-20251001", protocol: "messages",
+      complete: true, requestCount: 2, reportedRequestCount: 2, tokens: { inputTokens: 20, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 },
+      pricingContext: { serviceTier: "standard", contextTier: "short" } };
+    const params = { version: 1, sessionId: "session", tokens: "reported", cost: "unavailable", tokenAccounting };
+    const events = await owned.notification("_hermes/usage", params);
+    events.forEach(validateAcpxRichEvent);
+    expect(receipts).toEqual([tokenAccounting]);
+    expect(events[0]?.payload.details).toContainEqual({ name: "Reported requests", value: "2/2" });
+    await expect(adapter().notification("_hermes/usage", params)).rejects.toThrow("not negotiated");
+    await expect(owned.notification("_hermes/usage", { ...params, sessionId: "other" })).rejects.toThrow();
+    const billing = { schema: "paperclip.usage.billing/v1", source: "provider_reported", biller: "openrouter", currency: "USD", complete: true,
+      requestCount: 1, reportedRequestCount: 1, amountUsd: 0, amountUsdExact: "0.000000000" };
+    await expect(owned.notification("_hermes/usage", { ...params, billing })).rejects.toThrow("conflicting");
+  });
 });

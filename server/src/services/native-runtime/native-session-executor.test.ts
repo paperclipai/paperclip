@@ -57,6 +57,8 @@ import {
 } from "../../vendor/paperclip-runner/index.js";
 import * as issueServiceModule from "../issues.js";
 import { NativePermissionDeclinedError } from "./native-permission-decline.js";
+import { priceAnthropicReceipt } from "../anthropic-pricing.js";
+import { priceCodexReceipt } from "../codex-pricing.js";
 import {
   createNativeHarnessBackupStamp,
   verifyNativeHarnessBackupStamp,
@@ -1041,6 +1043,78 @@ describe("native provider usage normalization", () => {
     expect(snapshot.usage).toMatchObject({ accountingCostUsdExact: "0.250000000", accountingCostIncomplete: true,
       billing: { complete: false, amountUsd: 0.25 } });
     expect(nativeUsageCostUsd(snapshot.usage, hermes, "openrouter")).toBe(0.25);
+  });
+  describe("selected-account direct API wire usage", () => {
+    const tokens = { inputTokens: 20, outputTokens: 5, cacheReadTokens: 3, cacheWriteTokens: 2 };
+    const receipt = { schema: "paperclip.usage.tokens/v1", source: "provider_wire", biller: "anthropic", model: "claude-haiku-4-5-20251001", protocol: "messages",
+      complete: true, requestCount: 2, reportedRequestCount: 2, tokens, pricingContext: { serviceTier: "standard", contextTier: "short" } };
+    const directHermes = { ...hermes, model: receipt.model } as NativeExecutionInput["provider"];
+    const event = (eventType: string, turnId: string, payload: object = {}, sourceSeq = 1) => ({
+      eventType, turnId, payload, sourceSeq, sourceInstanceId: "wire-provider",
+    }) as unknown as PrpEvent;
+    const usageEvent = (turnId: string, tokenAccounting: unknown, runDelta: object = tokens, sourceSeq = 2) =>
+      event("item.completed", turnId, { kind: "usage", usage: { runDelta, tokenAccounting } }, sourceSeq);
+    it.each(["anthropic", "openai"] as const)("settles %s tokens across replay and queued turns with an explicit estimate", biller => {
+      const model = biller === "anthropic" ? receipt.model : "gpt-6-luna";
+      const selected = { ...directHermes, model } as NativeExecutionInput["provider"];
+      const authority = { ...receipt, biller, model, protocol: biller === "anthropic" ? "messages" : "chat_completions" };
+      const accounting = createNativeTurnAccounting(selected, biller);
+      accounting.observe(event("turn.started", "first"));
+      const firstUsage = usageEvent("first", authority);
+      accounting.observe(firstUsage); accounting.observe(firstUsage);
+      expect(accounting.snapshot().complete).toBe(false);
+      accounting.observe(event("turn.completed", "first", {}, 3));
+      accounting.observe(event("turn.started", "second", {}, 4));
+      accounting.observe(usageEvent("second", authority, tokens, 5));
+      accounting.observe(event("turn.completed", "second", {}, 6));
+      const snapshot = accounting.snapshot();
+      expect(snapshot).toMatchObject({ complete: true, settlementReady: true, turnId: "second",
+        usage: { runDeltaComplete: true, accountingCostIncomplete: false, tokenAccounting: { complete: true, requestCount: 4, reportedRequestCount: 4,
+          tokens: { inputTokens: 40, outputTokens: 10, cacheReadTokens: 6, cacheWriteTokens: 4 } } } });
+      expect(nativeUsageCostUsd(snapshot.usage, selected, biller)).toBeUndefined();
+      const priced = priceAnthropicReceipt(priceCodexReceipt({ complete: true, usageBasis: "per_run", provider: biller, biller, billingType: "metered_api", model,
+        usage: normalizeNativeUsage(snapshot.usage), pricingContext: authority.pricingContext as { serviceTier: "standard"; contextTier: "short" } }));
+      expect(priced.costStatus).toBe("estimated");
+      expect(priced.pricingProvenance?.source).toBe("rate_card");
+      expect(Number(priced.costUsdExact)).toBeGreaterThan(0);
+    });
+    it.each([
+      undefined, { ...receipt, model: "other-model" }, { ...receipt, biller: "openai", protocol: "responses" },
+      { ...receipt, source: "agent_claim" }, { ...receipt, tokens: { ...tokens, outputTokens: 6 } },
+    ])("keeps unowned or legacy accepted-response counters incomplete (%j)", authority => {
+      const accounting = createNativeTurnAccounting(directHermes, "anthropic");
+      accounting.observe(event("turn.started", "turn"));
+      accounting.observe(usageEvent("turn", authority));
+      accounting.observe(event("turn.completed", "turn", {}, 3));
+      expect(accounting.snapshot()).toMatchObject({ complete: false, settlementReady: false,
+        usage: { runDeltaComplete: false, accountingCostIncomplete: true } });
+    });
+    it("settles owned interrupted work without pricing its known subset or a placeholder zero", () => {
+      const accounting = createNativeTurnAccounting(directHermes, "anthropic");
+      const partial = { ...receipt, complete: false, requestCount: 3, reportedRequestCount: 2 };
+      accounting.observe(event("turn.started", "turn"));
+      accounting.observe(usageEvent("turn", partial, {}));
+      accounting.observe(event("turn.cancelled", "turn", {}, 3));
+      expect(accounting.snapshot()).toMatchObject({ complete: false, settlementReady: true, turnId: "turn",
+        usage: { runDeltaComplete: false, accountingCostIncomplete: true, tokenAccounting: { complete: false, tokens } } });
+      expect(normalizeNativeUsage(accounting.snapshot().usage)).toBeUndefined();
+    });
+    it("refuses to certify an aggregate that switches protocol or overflows safe counters", () => {
+      for (const overflow of [false, true]) {
+        const model = "gpt-6-luna", selected = { ...hermes, model } as NativeExecutionInput["provider"];
+        const accounting = createNativeTurnAccounting(selected, "openai");
+        const counts = overflow ? { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } : tokens;
+        const authority = { ...receipt, biller: "openai", model, protocol: "chat_completions", tokens: counts };
+        accounting.observe(event("turn.started", "first"));
+        accounting.observe(usageEvent("first", authority, counts));
+        accounting.observe(event("turn.completed", "first", {}, 3));
+        accounting.observe(event("turn.started", "second", {}, 4));
+        accounting.observe(usageEvent("second", { ...authority, protocol: overflow ? "chat_completions" : "responses" }, counts, 5));
+        accounting.observe(event("turn.completed", "second", {}, 6));
+        expect(accounting.snapshot()).toMatchObject({ complete: false, usage: { runDeltaComplete: false } });
+        expect(accounting.snapshot().usage).not.toHaveProperty("tokenAccounting");
+      }
+    });
   });
   it.each([
     {}, { inputTokens: 1 }, { outputTokens: 1 },
@@ -5383,6 +5457,56 @@ describe("native startup restart detachment", () => {
 });
 
 describe("native terminal-turn accounting", () => {
+  it.each(["anthropic", "openai"].flatMap(biller => [false, true].flatMap(complete =>
+    [false, true].map(shutdown => ({ biller, complete, shutdown })))))("settles direct Hermes $biller wire usage (complete: $complete, shutdown: $shutdown)", async ({ biller, complete, shutdown }) => {
+    const model = biller === "anthropic" ? "claude-haiku-4-5-20251001" : "gpt-6-luna";
+    const previous = process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+    process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify([{ agent: "hermes", model }]);
+    try {
+      const onUsage = vi.fn(async (_receipt: import("@paperclipai/adapter-utils").AdapterUsageCheckpoint) => {});
+      const counts = { inputTokens: 12, outputTokens: 4, cacheReadTokens: 30, cacheWriteTokens: 20 };
+      const tokenAccounting = { schema: "paperclip.usage.tokens/v1", source: "provider_wire", biller, model,
+        protocol: biller === "anthropic" ? "messages" : "chat_completions", complete,
+        requestCount: 2, reportedRequestCount: complete ? 2 : 1, tokens: counts,
+        pricingContext: { serviceTier: "standard", contextTier: "short" } };
+      const notification = (await import("@paperclipai/paperclip-runner/live")).rehydrateRunnerdUsageNotification({
+        runDeltaAvailable: complete, runDelta: { ...counts, providerCostUsd: 0 }, tokenAccounting,
+      }, "session", "turn");
+      const usage: PrpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId: "provider",
+        sourceEventId: "provider:direct-usage:2", sourceSeq: 2, priority: 1, runId: execution.binding.runId,
+        normalizedSessionId: "session", turnId: "turn", eventType: "item.completed", emittedAt: new Date().toISOString(),
+        payload: { kind: "usage", usage: notification.tokenUsage } };
+      state.execute.mockReset().mockImplementationOnce(async () => {
+        await accountingEvents.committed!({ ...usage, eventType: "turn.started", sourceSeq: 1, sourceEventId: "provider:direct-usage:1", payload: {} });
+        if (!shutdown) {
+          await accountingEvents.committed!(usage);
+          await accountingEvents.committed!({ ...usage, eventType: "turn.completed", sourceSeq: 3, sourceEventId: "provider:direct-usage:3", payload: {} });
+        }
+        return { result: { summary: "Finished native work" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn", normalizedSessionId: "session",
+          providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: shutdown ? 1 : 3, highestContiguousSourceSeq: shutdown ? 1 : 3,
+          usage: null, ...(shutdown ? { settledUsageEvent: usage } : {}) };
+      });
+      const result = await executePaperclipNativeSession({ db: leaseDb(), runnerInstanceId: "runner", onUsage,
+        billingIdentity: { provider: biller, biller, billingType: "metered_api" }, execution: { ...execution,
+          provider: { kind: "acpx", agent: "hermes", model, permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.hermes } } as NativeExecutionInput });
+      expect(result).toMatchObject({ usageComplete: complete, costUsd: null, settlement: { providerWorkEnded: true, usageComplete: complete } });
+      const checkpoint = onUsage.mock.calls.at(-1)![0];
+      const priced = priceAnthropicReceipt(priceCodexReceipt(checkpoint));
+      if (complete) {
+        expect(checkpoint).toMatchObject({ complete: true, provider: biller, biller, model, pricingContext: tokenAccounting.pricingContext,
+          usage: { inputTokens: 32, outputTokens: 4, cachedInputTokens: 30, cacheWriteTokens: 20 } });
+        expect(priced.costStatus).toBe("estimated");
+        expect(priced.pricingProvenance?.source).toBe("rate_card");
+      } else {
+        expect(checkpoint).toMatchObject({ complete: false, costStatus: "unpriced" });
+        expect(checkpoint.usage).toBeUndefined();
+        expect(priced.costUsdExact).toBeUndefined();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+      else process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = previous;
+    }
+  });
   it.each([false, true])("prices only complete direct Claude API turn accounting (%s)", async complete => {
     const { rehydrateRunnerdUsageNotification } = await import("@paperclipai/paperclip-runner/live");
     const { priceAnthropicReceipt } = await import("../anthropic-pricing.js");
@@ -5616,12 +5740,14 @@ describe("native terminal-turn accounting", () => {
       const result = await executePaperclipNativeSession({ db: leaseDb(), runnerInstanceId: "runner", onUsage,
         billingIdentity: { provider: "deepseek", biller: scenario === "wrong_account" ? "anthropic" : "openrouter", billingType: "metered_api" },
         execution: { ...execution, provider: { kind: "acpx", agent: "hermes", model: "fixture-model", permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.hermes } } as NativeExecutionInput });
-      expect(result).toMatchObject({ usageComplete: !tokensMissing, costUsd: known ? amount : null,
+      // A foreign biller cannot certify the direct API's attempt tokens.
+      const tokensComplete = !tokensMissing && scenario !== "wrong_account";
+      expect(result).toMatchObject({ usageComplete: tokensComplete, costUsd: known ? amount : null,
         costStatus: known && !partialPrice ? "reported" : "unpriced" });
-      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: !tokensMissing, costUsd: result.costUsd, costStatus: result.costStatus }));
+      expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: tokensComplete, costUsd: result.costUsd, costStatus: result.costStatus }));
       if (known) expect(result.settlement).toEqual({ schema: "paperclip.accounting.settlement/v1", providerWorkEnded: true, usageComplete: !tokensMissing });
       else expect(result.settlement).toBeUndefined();
-      if (tokensMissing) expect(result.usage).toBeUndefined();
+      if (!tokensComplete) expect(result.usage).toBeUndefined();
       if (known) expect(result.pricingProvenance).toMatchObject({ source: "provider_reported", version: "hermes-openrouter-wire/v1" });
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
@@ -5660,9 +5786,12 @@ describe("native terminal-turn accounting", () => {
       const result = await executePaperclipNativeSession({ db: leaseDb(), runnerInstanceId: "runner", onUsage,
         billingIdentity: { provider: "deepseek", biller: scenario === "wrong_biller" ? "anthropic" : "openrouter", billingType: "metered_api" },
         execution: { ...execution, provider: { kind: "acpx", agent: "hermes", model: "fixture-model", permissionMode: "approve-all", profile: QUALIFIED_ACPX_PROFILES.hermes } } as NativeExecutionInput });
-      expect(result).toMatchObject({ usageComplete: true, costUsd: scenario === "wrong_biller" ? null : 0.25,
-        costStatus: scenario === "wrong_biller" ? "unpriced" : "reported", usage: { inputTokens: 31, outputTokens: 7 } });
-      expect(onUsage.mock.calls.at(-1)![0]).toMatchObject({ costUsd: result.costUsd, complete: true });
+      const tokensComplete = scenario !== "wrong_biller";
+      expect(result).toMatchObject({ usageComplete: tokensComplete, costUsd: scenario === "wrong_biller" ? null : 0.25,
+        costStatus: scenario === "wrong_biller" ? "unpriced" : "reported" });
+      if (tokensComplete) expect(result.usage).toMatchObject({ inputTokens: 31, outputTokens: 7 });
+      else expect(result.usage).toBeUndefined();
+      expect(onUsage.mock.calls.at(-1)![0]).toMatchObject({ costUsd: result.costUsd, complete: tokensComplete });
       if (scenario === "wrong_biller") expect(result.settlement).toBeUndefined();
       else expect(result.settlement).toMatchObject({ providerWorkEnded: true, usageComplete: true });
     } finally {
