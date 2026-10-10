@@ -47,6 +47,35 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+function utcOffsetMinutesAt(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(date);
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const wallClockAsUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second),
+  );
+  return Math.round((wallClockAsUtc - date.getTime()) / 60_000);
+}
+
+// Morocco moved from UTC+1 to UTC+0 on 2026-09-20 (tzdata 2026c). Older ICU/tzdata
+// snapshots do not include the change, so only run the transition regression there.
+const casablancaOffsetChangeAvailable =
+  utcOffsetMinutesAt(new Date("2026-09-19T12:00:00.000Z"), "Africa/Casablanca") === 60 &&
+  utcOffsetMinutesAt(new Date("2026-09-21T12:00:00.000Z"), "Africa/Casablanca") === 0;
+
 describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -2740,6 +2769,156 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(3);
     const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
     expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T09:00:00.000Z"));
+  });
+
+  it("realigns a stale stored occurrence without dispatching it twice", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 8 * * *",
+      timezone: "UTC",
+    }, {});
+
+    // A stored occurrence that no longer matches the cron (for example after the
+    // schedule was edited) must be re-aligned instead of dispatched.
+    const staleOccurrence = new Date("2026-10-01T07:30:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(staleOccurrence)).toEqual({ triggered: 0 });
+
+    const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(realigned?.nextRunAt).toEqual(new Date("2026-10-01T08:00:00.000Z"));
+
+    // The re-aligned occurrence fires exactly once, and not again for the same instant.
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:00:00.000Z"))).toEqual({ triggered: 1 });
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:00:00.000Z"))).toEqual({ triggered: 0 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it.skipIf(!casablancaOffsetChangeAvailable)(
+    "fires exactly once per Africa/Casablanca occurrence across the 2026-09-20 +01 -> +00 transition",
+    async () => {
+      const { routine, svc } = await seedFixture();
+      const { trigger } = await svc.createTrigger(routine.id, {
+        kind: "schedule",
+        cronExpression: "0 8 1 * *",
+        timezone: "Africa/Casablanca",
+      }, {});
+
+      // Under the pre-transition UTC+1 rule, local 2026-10-01 08:00 was 07:00Z.
+      const staleOccurrence = new Date("2026-10-01T07:00:00.000Z");
+      await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+      // Under the new UTC+0 rule that instant is local 07:00 and no longer matches
+      // `0 8 ...`; the tick re-aligns to 08:00Z without firing.
+      expect(await svc.tickScheduledTriggers(staleOccurrence)).toEqual({ triggered: 0 });
+
+      const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+      expect(realigned?.nextRunAt).toEqual(new Date("2026-10-01T08:00:00.000Z"));
+
+      // The re-aligned occurrence fires once, and never a second time for the same
+      // local occurrence (the pre-fix duplicate).
+      expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:00:00.000Z"))).toEqual({ triggered: 1 });
+      expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:00:00.000Z"))).toEqual({ triggered: 0 });
+
+      const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.status).toBe("issue_created");
+    },
+  );
+
+  it("fires a stale occurrence once when the scheduler tick arrives after its corrected instant", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 8 * * *",
+      timezone: "UTC",
+    }, {});
+
+    const staleOccurrence = new Date("2026-10-01T07:30:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+    // The scheduler runs late, after the corrected 08:00Z instant. The occurrence must
+    // still fire exactly once instead of being dropped by the re-alignment.
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:30:00.000Z"))).toEqual({ triggered: 1 });
+
+    const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(realigned?.nextRunAt).toEqual(new Date("2026-10-02T08:00:00.000Z"));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T08:30:00.000Z"))).toEqual({ triggered: 0 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("fires the offset-transition occurrence once using widely available tzdata", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 8 * * *",
+      timezone: "America/New_York",
+    }, {});
+
+    // US DST ends on 2026-11-01. Before the change local 08:00 was 12:00Z (EDT); after
+    // it local 08:00 is 13:00Z (EST). The stored 12:00Z occurrence is stale after the
+    // transition. It must re-align to 13:00Z and still fire exactly once.
+    const staleOccurrence = new Date("2026-11-01T12:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(staleOccurrence)).toEqual({ triggered: 0 });
+
+    const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(realigned?.nextRunAt).toEqual(new Date("2026-11-01T13:00:00.000Z"));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-11-01T13:00:00.000Z"))).toEqual({ triggered: 1 });
+    expect(await svc.tickScheduledTriggers(new Date("2026-11-01T13:00:00.000Z"))).toEqual({ triggered: 0 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("replays missed occurrences from the corrected instant for a stale catch-up trigger", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({ catchUpPolicy: "enqueue_missed_with_cap" }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+
+    // The stale stored instant realigns to 07:00Z, then the catch-up walk replays the
+    // 07:00Z, 08:00Z and 09:00Z occurrences and claims 10:00Z.
+    const staleOccurrence = new Date("2026-10-01T06:30:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T09:05:00.000Z"))).toEqual({ triggered: 3 });
+
+    const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(realigned?.nextRunAt).toEqual(new Date("2026-10-01T10:00:00.000Z"));
+  });
+
+  it("waits for the corrected instant of a stale sub-hourly catch-up occurrence", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({ catchUpPolicy: "enqueue_missed_with_cap" }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * *",
+      timezone: "UTC",
+    }, {});
+
+    // 09:55Z is not a `*/10` tick, so it is stale. The corrected instant is 10:00Z, and the
+    // tick at 09:56Z must wait for it instead of firing early and double-firing at 10:00Z.
+    const staleOccurrence = new Date("2026-10-01T09:55:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: staleOccurrence }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T09:56:00.000Z"))).toEqual({ triggered: 0 });
+
+    const realigned = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(realigned?.nextRunAt).toEqual(new Date("2026-10-01T10:00:00.000Z"));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-10-01T10:00:00.000Z"))).toEqual({ triggered: 1 });
   });
 
   it("coalesces sub-hourly schedules restricted to weekdays", async () => {

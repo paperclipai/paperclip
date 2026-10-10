@@ -3222,21 +3222,66 @@ export function routineService(
         const automaticEligibility = await getAutomaticRoutineDispatchEligibility(row.routine, worktreeActivation);
         const worktreeSuppressed = !automaticEligibility.eligible;
 
+        // A stored occurrence can go stale when the zone rules change between the time it was
+        // computed and the time it fires (for example a timezone offset change). Under the new
+        // rules the stored UTC instant may no longer be a valid cron occurrence, and re-claiming
+        // from "now" can point back at the same local occurrence, producing a duplicate dispatch.
+        const staleOccurrence = !matchesCronMinute(
+          row.trigger.cronExpression,
+          row.trigger.timezone,
+          row.trigger.nextRunAt,
+        );
+
+        // The occurrence this tick processes. For a live trigger it is the stored instant; for a
+        // stale one it is the first valid cron tick at or after the stored instant, which is the
+        // instant that occurrence now maps to after the zone-rules change.
+        const dueCursor = staleOccurrence
+          ? nextCronTickInTimeZone(
+            row.trigger.cronExpression,
+            row.trigger.timezone,
+            new Date(row.trigger.nextRunAt.getTime() - 60_000),
+          )
+          : row.trigger.nextRunAt;
+        if (!dueCursor) continue;
+
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+            if (dueCursor.getTime() <= now.getTime()) {
+              runCount = 1;
+              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+            } else {
+              // Stale sub-hourly occurrence not due yet: wait for its corrected instant.
+              runCount = 0;
+              claimedNextRunAt = dueCursor;
+            }
           } else {
-            let cursor: Date | null = row.trigger.nextRunAt;
+            // Replay every due occurrence from the cursor, including the corrected instant of a
+            // stale occurrence. Starting at the corrected instant (not the stale one) keeps the
+            // same occurrence from firing again on the next tick.
+            let cursor: Date | null = dueCursor;
             runCount = 0;
+            claimedNextRunAt = dueCursor;
             while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
               runCount += 1;
               claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
               cursor = claimedNextRunAt;
             }
           }
+        } else if (!staleOccurrence) {
+          // Live occurrence without backfill: fire once and advance past now.
+          runCount = 1;
+          claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        } else if (dueCursor.getTime() <= now.getTime()) {
+          // Stale occurrence already due without backfill: fire once and advance past now.
+          runCount = 1;
+          claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        } else {
+          // Stale occurrence not due yet: claim the corrected instant without firing.
+          runCount = 0;
+          claimedNextRunAt = dueCursor;
         }
 
         const claimed = await db
@@ -3256,6 +3301,11 @@ export function routineService(
           .returning({ id: routineTriggers.id })
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
+
+        if (runCount === 0) {
+          // A stale occurrence that is not due yet was re-aligned above; nothing to dispatch.
+          continue;
+        }
 
         if (projectPaused || worktreeSuppressed) {
           await recordSuppressedAutomaticRun({
