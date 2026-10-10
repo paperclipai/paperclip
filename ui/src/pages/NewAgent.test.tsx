@@ -345,7 +345,9 @@ describe("New agent setup", () => {
     const model = adapterType === "paperclip_runner" ? "grok-4.7" : "grok-code-fast-1";
     await fill("Model", model);
     await click("Run test");
-    const binding = { provider: "xai", method, mode: "responsible_user" };
+    const binding = method === "api_key"
+      ? { provider: "xai", method, mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" }
+      : { provider: "xai", method, mode: "responsible_user" };
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", adapterType, expect.objectContaining({
       environmentId: "sandbox-1",
       adapterConfig: expect.objectContaining({ model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) }),
@@ -536,7 +538,7 @@ describe("New agent setup", () => {
     await click(provider + "API key");
     await fill("API key", "connection-key");
     await click("Connect");
-    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "responsible_user" };
+    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
     expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
     expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
@@ -634,7 +636,7 @@ describe("New agent setup", () => {
     await fill("API key", "new-api-credential");
     await click("Connect");
     await click("Finish setup");
-    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "api_key", mode: "responsible_user" });
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" });
   });
   it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
