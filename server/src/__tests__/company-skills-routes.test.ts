@@ -18,6 +18,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockCompanySkillService = vi.hoisted(() => ({
   list: vi.fn(),
   categoryCounts: vi.fn(),
+  coverage: vi.fn(),
   detail: vi.fn(),
   listVersions: vi.fn(),
   getVersion: vi.fn(),
@@ -247,6 +248,18 @@ describe("company skill mutation permissions", () => {
     mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCompanySkillService.list.mockResolvedValue([]);
     mockCompanySkillService.categoryCounts.mockResolvedValue([]);
+    mockCompanySkillService.coverage.mockResolvedValue({
+      skills: [],
+      agents: [],
+      cells: [],
+      summary: {
+        agentCount: 0,
+        skillCount: 0,
+        desiredCellCount: 0,
+        gapCount: 0,
+        unsupportedAgentCount: 0,
+      },
+    });
     mockCompanySkillService.detail.mockResolvedValue(null);
     mockCompanySkillService.listVersions.mockResolvedValue([]);
     mockCompanySkillService.getVersion.mockResolvedValue(null);
@@ -1607,6 +1620,313 @@ describe("company skill mutation permissions", () => {
 
     await request(app).get("/api/companies/company-1/skills/categories").expect(200);
     expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("reads company skill coverage without capturing coverage as a skill id", async () => {
+    const payload = {
+      skills: [{
+        id: "00000000-0000-4000-8000-000000000001",
+        key: "github-pr-workflow",
+        name: "GitHub PR workflow",
+        slug: "github-pr-workflow",
+      }],
+      agents: [],
+      cells: [],
+      summary: {
+        agentCount: 0,
+        skillCount: 1,
+        desiredCellCount: 0,
+        gapCount: 0,
+        unsupportedAgentCount: 0,
+      },
+    };
+    mockCompanySkillService.coverage.mockResolvedValue(payload);
+    const app = await createApp({ type: "board", source: "local_implicit" });
+
+    const res = await request(app)
+      .get("/api/companies/company-1/skills/coverage?q=cto&missingOnly=true")
+      .expect(200);
+
+    expect(res.body).toEqual(payload);
+    expect(mockCompanySkillService.coverage).toHaveBeenCalledWith("company-1", {
+      q: "cto",
+      missingOnly: true,
+    });
+    expect(mockCompanySkillService.detail).not.toHaveBeenCalled();
+  });
+
+  it("allows same-company agents to read coverage and denies other companies", async () => {
+    const allowed = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).get("/api/companies/company-1/skills/coverage");
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+
+    const denied = await request(await createApp({
+      type: "agent",
+      agentId: "agent-2",
+      companyId: "company-2",
+    })).get("/api/companies/company-1/skills/coverage");
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+
+    const missingCompany = await request(await createApp({
+      type: "board",
+      source: "session",
+      companyIds: ["company-2"],
+      userId: "user-1",
+    })).get("/api/companies/company-1/skills/coverage");
+    expect(missingCompany.status, JSON.stringify(missingCompany.body)).toBe(403);
+
+    const anonymous = await request(await createApp({ type: "none" }))
+      .get("/api/companies/company-1/skills/coverage");
+    expect(anonymous.status, JSON.stringify(anonymous.body)).toBe(401);
+    expect(mockCompanySkillService.detail).not.toHaveBeenCalled();
+  });
+
+  it("hides other agents' desired skills from a same-company agent key", async () => {
+    const selfId = "55555555-5555-4555-8555-555555555555";
+    const peerId = "66666666-6666-4666-8666-666666666666";
+    const peerVersionId = "77777777-7777-4777-8777-777777777777";
+    mockCompanySkillService.coverage.mockResolvedValue({
+      skills: [
+        { id: "skill-self", key: "self-skill", name: "Self Skill", slug: "self-skill" },
+        { id: "skill-peer", key: "peer-skill", name: "Peer Skill", slug: "peer-skill" },
+      ],
+      agents: [
+        {
+          id: selfId,
+          name: "Self",
+          urlKey: "self",
+          role: "engineer",
+          adapterType: "cursor",
+          syncMode: "persistent",
+        },
+        {
+          id: peerId,
+          name: "Peer",
+          urlKey: "peer",
+          role: "engineer",
+          adapterType: "cursor",
+          syncMode: "persistent",
+        },
+      ],
+      cells: [
+        {
+          agentId: selfId,
+          skillKey: "self-skill",
+          desired: true,
+          versionId: null,
+          actualState: null,
+          syncMode: "persistent",
+        },
+        {
+          agentId: selfId,
+          skillKey: "peer-skill",
+          desired: false,
+          versionId: null,
+          actualState: null,
+          syncMode: "persistent",
+        },
+        {
+          agentId: peerId,
+          skillKey: "peer-skill",
+          desired: true,
+          versionId: peerVersionId,
+          actualState: null,
+          syncMode: "persistent",
+        },
+      ],
+      summary: {
+        agentCount: 2,
+        skillCount: 2,
+        desiredCellCount: 2,
+        gapCount: 1,
+        unsupportedAgentCount: 0,
+      },
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      resource?: { type?: string; agentId?: string };
+    }) => {
+      if (input.action === "agent:read") return { allowed: true };
+      if (
+        input.action === "agent_config:read"
+        && input.resource?.type === "agent"
+        && input.resource.agentId === selfId
+      ) {
+        return { allowed: true };
+      }
+      return { allowed: false };
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: selfId,
+      companyId: "company-1",
+    })).get("/api/companies/company-1/skills/coverage");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(peerId);
+    expect(JSON.stringify(res.body)).not.toContain(peerVersionId);
+    expect(res.body.agents.map((agent: { id: string }) => agent.id)).toEqual([selfId]);
+    expect(res.body.cells).toEqual([
+      expect.objectContaining({ agentId: selfId, skillKey: "self-skill", desired: true }),
+      expect.objectContaining({ agentId: selfId, skillKey: "peer-skill", desired: false }),
+    ]);
+    expect(res.body.summary).toEqual({
+      agentCount: 1,
+      skillCount: 2,
+      desiredCellCount: 1,
+      gapCount: 1,
+      unsupportedAgentCount: 0,
+    });
+  });
+
+  it("counts visible desired skills when missingOnly already dropped those cells", async () => {
+    const selfId = "55555555-5555-4555-8555-555555555555";
+    const peerId = "66666666-6666-4666-8666-666666666666";
+    const coverage = {
+      skills: [
+        { id: "skill-self", key: "self-skill", name: "Self Skill", slug: "self-skill" },
+        { id: "skill-peer", key: "peer-skill", name: "Peer Skill", slug: "peer-skill" },
+      ],
+      agents: [
+        {
+          id: selfId,
+          name: "Self",
+          urlKey: "self",
+          role: "engineer",
+          adapterType: "cursor",
+          syncMode: "persistent",
+        },
+        {
+          id: peerId,
+          name: "Peer",
+          urlKey: "peer",
+          role: "engineer",
+          adapterType: "cursor",
+          syncMode: "persistent",
+        },
+      ],
+      cells: [
+        {
+          agentId: selfId,
+          skillKey: "peer-skill",
+          desired: false,
+          versionId: null,
+          actualState: null,
+          syncMode: "persistent",
+        },
+        {
+          agentId: peerId,
+          skillKey: "self-skill",
+          desired: false,
+          versionId: null,
+          actualState: null,
+          syncMode: "persistent",
+        },
+      ],
+      summary: {
+        agentCount: 2,
+        skillCount: 2,
+        desiredCellCount: 5,
+        gapCount: 2,
+        unsupportedAgentCount: 0,
+      },
+      desiredCellCountByAgentId: {
+        [selfId]: 1,
+        [peerId]: 4,
+      },
+    };
+    mockCompanySkillService.coverage.mockResolvedValue(coverage);
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      resource?: { type?: string; agentId?: string };
+    }) => {
+      if (input.action === "agent:read") return { allowed: true };
+      if (
+        input.action === "agent_config:read"
+        && input.resource?.type === "agent"
+        && input.resource.agentId === selfId
+      ) {
+        return { allowed: true };
+      }
+      return { allowed: false };
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: selfId,
+      companyId: "company-1",
+    })).get("/api/companies/company-1/skills/coverage?missingOnly=true");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.coverage).toHaveBeenCalledWith("company-1", { missingOnly: true });
+    expect(JSON.stringify(res.body)).not.toContain(peerId);
+    expect(res.body.desiredCellCountByAgentId).toBeUndefined();
+    expect(res.body.cells.every((cell: { desired: boolean }) => cell.desired === false)).toBe(true);
+    expect(res.body.summary.desiredCellCount).toBeGreaterThan(0);
+    expect(res.body.summary).toEqual({
+      agentCount: 1,
+      skillCount: 1,
+      desiredCellCount: 1,
+      gapCount: 1,
+      unsupportedAgentCount: 0,
+    });
+
+    const board = await request(await createApp({
+      type: "board",
+      source: "local_implicit",
+    })).get("/api/companies/company-1/skills/coverage?missingOnly=true");
+
+    expect(board.status, JSON.stringify(board.body)).toBe(200);
+    expect(board.body.summary).toEqual(coverage.summary);
+    expect(board.body.desiredCellCountByAgentId).toBeUndefined();
+    expect(board.body.agents).toHaveLength(2);
+  });
+
+  it.each(["self", "peer", null])("counts visible desired skills with missingOnly gap agent %s", async (gapAgentId) => {
+    const agents = gapAgentId ? [{
+      id: gapAgentId, name: gapAgentId, urlKey: gapAgentId, role: "engineer",
+      adapterType: "cursor", syncMode: "persistent",
+    }] : [];
+    mockCompanySkillService.coverage.mockResolvedValue({
+      skills: gapAgentId ? [{ id: "skill", key: "skill", name: "Skill", slug: "skill" }] : [],
+      agents,
+      cells: gapAgentId ? [{
+        agentId: gapAgentId, skillKey: "skill", desired: false,
+        versionId: null, actualState: null, syncMode: "persistent",
+      }] : [],
+      summary: {
+        agentCount: agents.length, skillCount: agents.length, desiredCellCount: 5,
+        gapCount: agents.length, unsupportedAgentCount: 0,
+      },
+      desiredCellCountByAgentId: { self: 2, peer: 3 },
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string; resource?: { type?: string; agentId?: string };
+    }) => ({
+      allowed: input.action === "agent:read"
+        || (input.action === "agent_config:read" && input.resource?.agentId === "self"),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent", agentId: "self", companyId: "company-1",
+    })).get("/api/companies/company-1/skills/coverage?missingOnly=true");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.summary).toEqual({
+      agentCount: gapAgentId === "self" ? 1 : 0,
+      skillCount: gapAgentId === "self" ? 1 : 0,
+      desiredCellCount: 2,
+      gapCount: gapAgentId === "self" ? 1 : 0,
+      unsupportedAgentCount: 0,
+    });
+    expect(res.body.desiredCellCountByAgentId).toBeUndefined();
+    if (gapAgentId !== "self") {
+      expect(res.body).toMatchObject({ agents: [], skills: [], cells: [] });
+    }
   });
 
   it("accepts category updates and logs the skill mutation", async () => {

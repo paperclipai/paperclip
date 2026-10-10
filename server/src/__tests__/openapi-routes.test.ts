@@ -294,6 +294,13 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents missingOnly as an optional boolean defaulting to false", () => {
+    const document = buildOpenApiSpec() as any;
+    const parameter = document.paths["/api/companies/{companyId}/skills/coverage"].get.parameters
+      .find((entry: { name: string; in: string }) => entry.name === "missingOnly" && entry.in === "query");
+    expect(parameter).toMatchObject({ required: false, schema: { type: "boolean", default: false } });
+  });
+
   it("documents only writable agent update fields and lifecycle status requests", () => {
     const document = buildOpenApiSpec() as any;
     const properties = document.paths["/api/agents/{id}"].patch.requestBody.content["application/json"].schema.properties;

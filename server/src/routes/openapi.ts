@@ -169,6 +169,8 @@ import {
   skillSourcePreviewSchema,
   skillSourceCreateSchema,
   skillSourceSelectionSchema,
+  companySkillCoverageQuerySchema,
+  companySkillCoverageResponseSchema,
   companySkillCreateSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
@@ -1854,6 +1856,14 @@ function applyDocumentFixups(document: any): any {
         applyOperationStatusOverride(operation, "200", "202");
       }
     }
+  }
+
+  const coverageParameters = document.paths?.["/api/companies/{companyId}/skills/coverage"]?.get?.parameters;
+  const missingOnly = coverageParameters?.find((parameter: { name?: string; in?: string }) =>
+    parameter.name === "missingOnly" && parameter.in === "query");
+  if (missingOnly) {
+    missingOnly.required = false;
+    missingOnly.schema = { type: "boolean", default: false };
   }
 
   return document;
@@ -8376,6 +8386,28 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skills/coverage",
+  tags: ["skills"],
+  summary: "Get company skill coverage across readable agents",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      q: companySkillCoverageQuerySchema.shape.q,
+      missingOnly: z.boolean().optional().default(false),
+      skillKey: companySkillCoverageQuerySchema.shape.skillKey,
+      agentId: companySkillCoverageQuerySchema.shape.agentId,
+    }),
+  },
+  responses: {
+    200: r.ok(companySkillCoverageResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({

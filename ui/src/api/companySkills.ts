@@ -7,6 +7,8 @@ import type {
   CompanySkillComment,
   CompanySkillCommentCreateRequest,
   CompanySkillCommentUpdateRequest,
+  CompanySkillCoverageQuery,
+  CompanySkillCoverageResponse,
   CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
@@ -61,6 +63,17 @@ export const companySkillsApi = {
   },
   categories: (companyId: string) =>
     api.get<CompanySkillCategoryCount[]>(`/companies/${encodeURIComponent(companyId)}/skills/categories`),
+  coverage: (companyId: string, query: CompanySkillCoverageQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.q) params.set("q", query.q);
+    if (query.missingOnly) params.set("missingOnly", "true");
+    if (query.skillKey) params.set("skillKey", query.skillKey);
+    if (query.agentId) params.set("agentId", query.agentId);
+    const search = params.toString();
+    return api.get<CompanySkillCoverageResponse>(
+      `/companies/${encodeURIComponent(companyId)}/skills/coverage${search ? `?${search}` : ""}`,
+    );
+  },
   detail: (companyId: string, skillId: string) =>
     api.get<CompanySkillDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,

@@ -21,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { findActiveServerAdapter } from "../adapters/index.ts";
 import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 import { folderService } from "../services/folders.js";
 
@@ -3465,5 +3466,156 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await expect(fs.stat(revisionCacheRoot)).rejects.toMatchObject({ code: "ENOENT" });
 
     await expect(fs.stat(oldRuntimeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("builds desired-state coverage for agents and installed skills without probing adapters", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const alphaId = randomUUID();
+    const betaId = randomUUID();
+    const adaId = randomUUID();
+    const beaId = randomUUID();
+    const zedId = randomUUID();
+    const alphaKey = `company/${companyId}/alpha`;
+    const betaKey = `company/${companyId}/beta`;
+    const alphaDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-coverage-alpha-"));
+    const betaDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-coverage-beta-"));
+    cleanupDirs.add(alphaDir);
+    cleanupDirs.add(betaDir);
+    await fs.writeFile(path.join(alphaDir, "SKILL.md"), "---\nname: Alpha\n---\n\n# Alpha\n", "utf8");
+    await fs.writeFile(path.join(betaDir, "SKILL.md"), "---\nname: Beta\n---\n\n# Beta\n", "utf8");
+    await db.insert(companySkills).values([
+      {
+        id: alphaId,
+        companyId,
+        key: alphaKey,
+        slug: "alpha",
+        name: "Alpha",
+        description: null,
+        markdown: "# Alpha\n",
+        sourceType: "local_path",
+        sourceLocator: alphaDir,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+      {
+        id: betaId,
+        companyId,
+        key: betaKey,
+        slug: "beta",
+        name: "Beta",
+        description: null,
+        markdown: "# Beta\n",
+        sourceType: "local_path",
+        sourceLocator: betaDir,
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: adaId,
+        companyId,
+        name: "Ada",
+        role: "engineer",
+        adapterType: "cursor",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [alphaKey] },
+        },
+      },
+      {
+        id: beaId,
+        companyId,
+        name: "Bea",
+        role: "pm",
+        status: "paused",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+      {
+        id: zedId,
+        companyId,
+        name: "Zed",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "cursor",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [alphaKey] },
+        },
+      },
+    ]);
+
+    const cursorAdapter = findActiveServerAdapter("cursor");
+    const listSkills = cursorAdapter?.listSkills
+      ? vi.spyOn(cursorAdapter, "listSkills")
+      : vi.fn();
+
+    try {
+      const result = await svc.coverage(companyId);
+
+      expect(listSkills).not.toHaveBeenCalled();
+    expect(result.agents.map((agent) => agent.name)).toEqual(["Ada", "Bea"]);
+    expect(result.skills.map((skill) => skill.key)).toEqual(expect.arrayContaining([alphaKey, betaKey]));
+    expect(result.cells).toHaveLength(result.agents.length * result.skills.length);
+    expect(result.cells.every((cell) => cell.actualState === null)).toBe(true);
+    expect(result.cells).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: adaId,
+        skillKey: alphaKey,
+        desired: true,
+        syncMode: "persistent",
+      }),
+      expect.objectContaining({
+        agentId: adaId,
+        skillKey: betaKey,
+        desired: false,
+        syncMode: "persistent",
+      }),
+      expect.objectContaining({
+        agentId: beaId,
+        skillKey: alphaKey,
+        desired: false,
+        syncMode: "unsupported",
+      }),
+    ]));
+    expect(result.summary).toEqual({
+      agentCount: 2,
+      skillCount: result.skills.length,
+      desiredCellCount: 1,
+      gapCount: result.cells.length - 1,
+      unsupportedAgentCount: 1,
+    });
+
+    const missing = await svc.coverage(companyId, { missingOnly: true });
+    expect(missing.cells.every((cell) => cell.desired === false)).toBe(true);
+    expect(missing.cells).toHaveLength(result.cells.length - 1);
+    expect(missing.summary).toEqual(result.summary);
+    expect(missing.agents.map((agent) => agent.name)).toEqual(["Ada", "Bea"]);
+    } finally {
+      if ("mockRestore" in listSkills) listSkills.mockRestore();
+    }
+  });
+
+  it("refreshes the skill inventory before building coverage", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Ada",
+      role: "engineer",
+      adapterType: "cursor",
+      adapterConfig: {},
+    });
+
+    const result = await svc.coverage(companyId);
+    const listed = await svc.list(companyId);
+
+    expect(result.skills.some((skill) => skill.key.startsWith("paperclipai/paperclip/"))).toBe(true);
+    expect(result.skills.map((skill) => skill.key).sort()).toEqual(listed.map((skill) => skill.key).sort());
+    expect(result.agents).toHaveLength(1);
+    expect(result.cells).toHaveLength(result.skills.length);
   });
 });
