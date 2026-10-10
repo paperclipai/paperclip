@@ -5430,6 +5430,7 @@ function nativeSessionConfigDigest(
         provider: execution.provider,
         driverKind: execution.session.driverKind,
         lifecyclePolicy: execution.session.lifecyclePolicy,
+        workMode: execution.task.workMode,
         executionMode:
           "executionMode" in execution ? execution.executionMode : "default",
         runtimeContextDigest:
@@ -10249,6 +10250,16 @@ export function assertRemoteRunnerBuildMetadata(
   }
 }
 
+export function nativeComputerToolForExecution(
+  execution: NativeExecutionInput,
+  target: AdapterExecutionTarget | null | undefined,
+): AdapterComputerExecutionTarget["computerTool"] | undefined {
+  if (target?.kind !== "remote" || target.transport !== "computer" ||
+      execution.task.workMode !== "standard" ||
+      ("executionMode" in execution && execution.executionMode === "plan")) return undefined;
+  return target.computerTool;
+}
+
 export async function stageRemoteRunnerFile(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -10298,6 +10309,25 @@ export async function stageRemoteRunnerFile(input: {
   }
 }
 
+const REMOTE_ARTIFACT_UPLOAD_CONCURRENCY = 8;
+let activeRemoteArtifactUploads = 0;
+const remoteArtifactUploadWaiters: Array<() => void> = [];
+
+async function withRemoteArtifactUploadSlot(operation: () => Promise<void>): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (activeRemoteArtifactUploads < REMOTE_ARTIFACT_UPLOAD_CONCURRENCY) {
+      activeRemoteArtifactUploads++;
+      resolve();
+    } else remoteArtifactUploadWaiters.push(resolve);
+  });
+  try { await operation(); }
+  finally {
+    const next = remoteArtifactUploadWaiters.shift();
+    if (next) next();
+    else activeRemoteArtifactUploads--;
+  }
+}
+
 async function uploadRemoteRunnerFileChunks(input: {
   sourcePath: string;
   remotePath: string;
@@ -10323,9 +10353,11 @@ async function uploadRemoteRunnerFileChunks(input: {
       completedBytes += chunk.length;
       // Disjoint fixed offsets permit bounded parallel upload and idempotent
       // writes. The final digest rejects missing, duplicated, or partial bytes.
-      pending.push(run(`base64 -d | dd of=${quote(remotePath)} bs=4194304 seek=${chunkIndex++} conv=notrunc 2>/dev/null`,
-        chunk.toString("base64")).catch((error) => { uploadError ??= error; }));
-      if (pending.length === 4) {
+      const offset = chunkIndex++;
+      pending.push(withRemoteArtifactUploadSlot(() => run(
+        `base64 -d | dd of=${quote(remotePath)} bs=4194304 seek=${offset} conv=notrunc 2>/dev/null`,
+        chunk.toString("base64"))).catch((error) => { uploadError ??= error; }));
+      if (pending.length === REMOTE_ARTIFACT_UPLOAD_CONCURRENCY) {
         await Promise.all(pending);
         pending.length = 0;
         if (uploadError) throw uploadError;
@@ -13451,7 +13483,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
         externallySandboxed: adapterExecutionTargetIsCommandBacked(remoteTarget),
-        computerTool: remoteTarget?.transport === "computer" ? remoteTarget.computerTool : undefined,
+        computerTool: nativeComputerToolForExecution(input.execution, remoteTarget),
         persistentAgentHome: remoteTarget?.transport === "computer" ? remoteTarget.fileAuthority.agentHome : undefined,
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")

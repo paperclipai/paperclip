@@ -368,6 +368,7 @@ import {
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
   stageRemoteRunnerFile,
+  nativeComputerToolForExecution,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -2466,6 +2467,17 @@ describe("remote provider checkpoint snapshots", () => {
   });
 });
 
+describe("computer tool execution authority", () => {
+  it.each(["standard", "planning", "ask"] as const)("only installs mutation-capable desktop tools for standard work (%s)", (workMode) => {
+    const tool = { command: "cua-driver", args: ["mcp"] };
+    const target = { kind: "remote", transport: "computer", computerTool: tool } as never;
+    const input = { task: { workMode }, executionMode: "default" } as NativeExecutionInput;
+    expect(nativeComputerToolForExecution(input, target)).toBe(workMode === "standard" ? tool : undefined);
+    expect(nativeComputerToolForExecution({ ...input, executionMode: "plan" } as NativeExecutionInput, target)).toBeUndefined();
+    expect(nativeComputerToolForExecution(input, { kind: "remote", transport: "sandbox" } as never)).toBeUndefined();
+  });
+});
+
 describe("remote provider checkpoint restores", () => {
   it("budgets artifact upload time and retains redacted staging diagnostics", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runner-file-"));
@@ -2514,11 +2526,36 @@ describe("remote provider checkpoint restores", () => {
         expect(await readFile(targetPath, "utf8")).toBe("previous verified binary");
       } else {
         await stage;
-        expect(await readFile(targetPath)).toEqual(bytes);
+        expect((await readFile(targetPath)).equals(bytes)).toBe(true);
         expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);
       }
       expect(maxInFlight).toBe(3);
       expect((await readdir(root)).some((name) => name.includes(".upload-"))).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("shares eight upload slots across concurrent artifact transfers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-runner-upload-slots-"));
+    const sourcePath = join(root, "source");
+    await writeFile(sourcePath, randomBytes(20 * 1024 * 1024));
+    let active = 0;
+    let peak = 0;
+    const execute = vi.fn(async (request: { command: string; args: string[]; stdin?: string }) => {
+      if (request.stdin) { active++; peak = Math.max(peak, active); }
+      try {
+        if (request.stdin) await new Promise((resolve) => setTimeout(resolve, 25));
+        execFileSync(request.command, request.args, { input: request.stdin });
+        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+      } finally { if (request.stdin) active--; }
+    });
+    try {
+      await Promise.all(["one", "two"].map(target => stageRemoteRunnerFile({
+        target: { kind: "remote", transport: "computer" } as never,
+        runner: { execute } as never, sourcePath, targetPath: join(root, target), mode: 0o700,
+      })));
+      expect(peak).toBe(8);
+      expect(active).toBe(0);
+      expect((await readFile(join(root, "one"))).equals(await readFile(join(root, "two")))).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -7559,7 +7596,7 @@ describe("native warm session supervision", () => {
     await closeWarmNativeSessionsForRun({ runId: owners[1]!.runId, reason: "fixture cleanup" });
   });
 
-  it.each(["model", "credential", "tools"])("replaces a computer warm runner after %s configuration admits a fresh owner", async (change) => {
+  it.each(["model", "credential", "tools", "read-only"])("replaces a computer warm runner after %s configuration admits a fresh owner", async (change) => {
     const name = `computer-config-change-${change}`;
     const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
       session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
@@ -7580,7 +7617,8 @@ describe("native warm session supervision", () => {
     });
     await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never,
       managedAiCredentialIdentity: "credential-before" });
-    const next = { ...current, binding: { ...current.binding, runId: `${name}-two` }, provider: change === "model" ? { ...current.provider, model: "changed-model" } : current.provider } as NativeExecutionInputV1;
+    const next = { ...current, binding: { ...current.binding, runId: `${name}-two` }, provider: change === "model" ? { ...current.provider, model: "changed-model" } : current.provider,
+      task: { ...current.task, workMode: change === "read-only" ? "ask" : "standard" } } as NativeExecutionInputV1;
     await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
       managedAiCredentialIdentity: change === "credential" ? "credential-after" : "credential-before",
       refreshTools: change === "tools",
