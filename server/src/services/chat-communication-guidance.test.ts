@@ -22,6 +22,17 @@ describe("initial medium communication guidance", () => {
     expect(buildChatCommunicationGuidance({ provider: "slack", isDirectMessage: true })).toContain("direct conversation");
   });
 
+  it("keeps voice presentation concise without cancelling work on hangup or granting approvals", () => {
+    const guidance = buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true });
+    expect(guidance).toContain("Communication by voice");
+    expect(guidance).toContain("Keep your existing identity, runtime, tools, and task assignment");
+    expect(guidance).toContain("one focused clarification");
+    expect(guidance).toContain("durable Paperclip continuation");
+    expect(guidance).toContain("Delivery to Speko does not prove an answer was spoken");
+    expect(guidance).toContain("does not cancel work");
+    expect(guidance).toContain("Protected approvals must be completed in Paperclip");
+  });
+
   it.each([false, true])("requires public links for created Slack tasks (DM: %s)", (isDirectMessage) => {
     const guidance = buildChatCommunicationGuidance({ provider: "slack", isDirectMessage });
     expect(guidance).toContain("include a clickable link to each created task");
@@ -31,7 +42,7 @@ describe("initial medium communication guidance", () => {
     expect(guidance).toContain("If no public task URL is available, say that the link is unavailable");
   });
 
-  it.each(CHAT_PROVIDERS.filter((provider) => provider !== "slack"))("leaves %s unchanged", (provider) => {
+  it.each(CHAT_PROVIDERS.filter((provider) => provider !== "slack" && provider !== "speko"))("leaves %s unchanged", (provider) => {
     expect(buildChatCommunicationGuidance({ provider, isDirectMessage: false, communicationInstructions: "Ignored" })).toBeNull();
   });
 

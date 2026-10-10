@@ -1,9 +1,11 @@
+import { SPEKO_COMMUNICATION_GUIDANCE } from "./voice/speko-skill.js";
 import type { ChatProvider } from "@paperclipai/shared";
 import { slackTaskUpdateGuidance } from "./connectors/slack/task-update-guidance.js";
 
 // Presentation guidance only. Task execution and permissions belong to the
 // ordinary Paperclip agent runtime, not the provider transport.
 const providerGuidance: Partial<Record<ChatProvider, string>> = {
+  speko: SPEKO_COMMUNICATION_GUIDANCE,
   slack: [
     "This task began in Slack. Write replies for the person talking with you there.",
     ...slackTaskUpdateGuidance,
@@ -24,7 +26,7 @@ export function buildChatCommunicationGuidance(input: {
   if (!guidance) return null;
   const additional = input.communicationInstructions?.trim();
   return [
-    "## Communication in Slack",
+    input.provider === "speko" ? "## Communication by voice" : "## Communication in Slack",
     guidance,
     input.isDirectMessage
       ? "This is a direct conversation. A conversational exchange is welcome; keep each reply focused."

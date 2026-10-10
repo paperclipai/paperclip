@@ -1,3 +1,5 @@
+import { SPEKO_SKILL } from "./voice/speko-skill.js";
+import { spekoAssignedResources } from "./voice/speko-agent-tools.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { slackAssignedResource, executeGovernedSlackTool } from "./connectors/slack.js";
 import { promises as fs } from "node:fs";
@@ -67,6 +69,11 @@ const connectors: ConnectorDefinition[] = [
       try { return await getAssignedMcpGateway(db).browserUseResources(binding); } catch { return []; }
     },
     async execute() { throw forbidden("Use Browser Use Cloud through the connection tool gateway."); },
+  },
+  { key: "speko", label: "Speko", skillName: "speko", skillMarkdown: SPEKO_SKILL,
+    tools: [], // Native phone tools keep their existing governed gateway transport.
+    resolve: spekoAssignedResources,
+    async execute() { throw forbidden("Use Speko through the connection tool gateway."); },
   },
   { key: "slack", label: "Slack", skillName: "slack",
     tools: SLACK_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
@@ -236,12 +243,12 @@ export async function prepareConnectorSkillDelivery(
       ["codex_local", "claude_local", "kimi_local"].includes(adapterType));
   if (scopedFiles) {
     // Runner models with semantic tools cannot necessarily read staged skill
-    // files. Supply the Slack contract and verified source IDs in their input;
+    // files. Supply Slack and Speko contracts and verified source IDs in their input;
     // keep the staged bundle for CLI-capable engines and compatibility hashing.
-    const slack = adapterType === "paperclip_runner"
-      ? config.paperclipRuntimeSkills.filter(entry => entry.key === "paperclipai/paperclip/slack")
+    const promptSkills = adapterType === "paperclip_runner"
+      ? config.paperclipRuntimeSkills.filter(entry => ["paperclipai/paperclip/slack", "paperclipai/paperclip/speko"].includes(entry.key))
       : [];
-    const instructions = (await Promise.all(slack.map(entry =>
+    const instructions = (await Promise.all(promptSkills.map(entry =>
       fs.readFile(path.join(entry.source, "SKILL.md"), "utf8")))).join("\n\n");
     return { config, instructions };
   }

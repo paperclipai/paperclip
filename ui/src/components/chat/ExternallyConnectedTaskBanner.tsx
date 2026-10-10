@@ -32,6 +32,7 @@ import {
 } from "./board-send-draft";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",

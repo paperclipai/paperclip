@@ -292,6 +292,7 @@ import {
 } from "@paperclipai/shared";
 
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
+import { liveVoiceExecutionGuidance } from "./voice/voice-execution-guidance.js";
 import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 
 import {
@@ -3094,6 +3095,9 @@ export function heartbeatService(
       );
       // Always replace caller-supplied context with the immutable, company-scoped
       // conversation snapshot. It belongs only to the endpoint's assigned agent.
+      const liveVoiceGuidance = issueContext?.chatAssignedAgentId === agent.id && issueContext.chatProvider === "speko"
+        ? await liveVoiceExecutionGuidance(db, { companyId: agent.companyId, issueId: issueContext.id, agentId: agent.id })
+        : null;
       context.paperclipTaskCommunicationGuidance =
         issueContext?.chatAssignedAgentId === agent.id
           ? issueContext.chatCommunicationGuidance
@@ -3162,18 +3166,21 @@ export function heartbeatService(
             exposeLowTrustRaw,
           })
         : null;
-      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
-      let taskMarkdownAssignment = buildPaperclipTaskMarkdown({
+      // Unlike the frozen initial communication preferences, live-call context
+      // must also reach resumed turns. Rebuild it from server records each wake.
+      const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
+      let taskMarkdown = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
+      let taskMarkdownAssignment = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeWakeComments: false,
       }) + chatCompletionInstruction(context);
-      const taskMarkdownCompact = buildPaperclipTaskMarkdown({
+      const taskMarkdownCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
       }) + chatCompletionInstruction(context);
-      const taskMarkdownAssignmentCompact = buildPaperclipTaskMarkdown({
+      const taskMarkdownAssignmentCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
@@ -3350,6 +3357,8 @@ export function heartbeatService(
         ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
         : null;
       const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
         agentDefaultEnvironmentId: agent.defaultEnvironmentId,
         instanceDefaultEnvironmentId:
           resolvedInstanceSettings.defaultEnvironmentId ?? null,
