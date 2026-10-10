@@ -205,6 +205,9 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
                         "-e",
                         "console.log('stop fixture ready'); setInterval(() => console.log('working'), 200);",
                       ],
+                      // The child only runs this script; server-only fixture
+                      // loaders must not follow NODE_OPTIONS into the adapter.
+                      env: { NODE_OPTIONS: "" },
                       graceSec: 1,
                     }
                   : { provider: "codex", model: "gpt-5.1-codex-mini" },
