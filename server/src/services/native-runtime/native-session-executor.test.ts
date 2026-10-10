@@ -1,3 +1,4 @@
+import { nativeSessionBootstrapTimeoutMs } from "./native-session-executor.js";
 import { prepareHeartbeatGitHubLaunchers } from "../heartbeat-github-launchers.js";
 import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
@@ -13765,4 +13766,19 @@ it.each([
       new NativeProviderTerminalFailure(code, false),
     ),
   ).toBe("native_event_replay_conflict");
+});
+
+
+describe("computer provider-pack bootstrap policy", () => {
+  it.each([
+    ["acpx", "computer", 1_800_000],
+    ["codex", "computer", undefined],
+    ["opencode", "computer", undefined],
+    ["acpx", "sandbox", undefined],
+    ["acpx", "ssh", undefined],
+    ["acpx", "local", undefined],
+  ] as const)("bounds only %s on %s", (provider, transport, expected) => {
+    const target = transport === "local" ? undefined : { kind: "remote" as const, transport };
+    expect(nativeSessionBootstrapTimeoutMs(provider, target)).toBe(expected);
+  });
 });

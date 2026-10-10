@@ -7497,6 +7497,19 @@ export async function renewNativeSessionExecutionLease(input: {
   if (!updated) throw new Error("native_session_lease_lost");
 }
 
+/** Computer ACPX cold starts stage the complete qualified Linux provider pack.
+ * Measured 1.1 GiB transfers plus compression/verification need about 24 minutes;
+ * this finite admission budget does not extend warm leases or turn execution.
+ */
+export function nativeSessionBootstrapTimeoutMs(
+  providerKind: NativeExecutionInput["provider"]["kind"],
+  target?: Pick<Extract<AdapterExecutionTarget, { kind: "remote" }>, "kind" | "transport"> | { kind: "local" } | null,
+): number | undefined {
+  return providerKind === "acpx" && target?.kind === "remote" && target.transport === "computer"
+    ? 30 * 60 * 1_000
+    : undefined;
+}
+
 function startNativeSessionExecutionLeaseRenewal(input: {
   db: Db;
   runId: string;
@@ -8802,6 +8815,7 @@ async function executePaperclipNativeSessionWithinScope(
             input: runnerExecution,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
             turnTimeoutMs: input.turnTimeoutMs,
+            bootstrapTimeoutMs: nativeSessionBootstrapTimeoutMs(input.execution.provider.kind, input.runnerExecutionTarget),
             backend:
               input.backend ??
               runnerdBackend ??

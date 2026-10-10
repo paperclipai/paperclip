@@ -207,6 +207,8 @@ export interface ExecuteNativeSessionOptions {
   remoteCleanupScope?: string;
   /** Operation bound; explicit values also preserve the legacy turn bound. */
   timeoutMs?: number;
+  /** Initial/replacement provider creation only; leaves recovery, turns and finalization unchanged. */
+  bootstrapTimeoutMs?: number;
   /** Total turn duration. Zero or no configured bound allows long-running work. */
   turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
@@ -2094,8 +2096,8 @@ export async function executeNativeSession(
         workingDirectory: input.workspace.cwd ?? undefined,
       };
       session = await runAbortableOperationWithin({
-        timeoutMs: recoveryTimeoutMs,
-        timeoutMessage: `native session replacement bootstrap timed out after ${recoveryTimeoutMs}ms`,
+        timeoutMs: options.bootstrapTimeoutMs ?? recoveryTimeoutMs,
+        timeoutMessage: `native session replacement bootstrap timed out after ${options.bootstrapTimeoutMs ?? recoveryTimeoutMs}ms`,
         operation: (signal) => {
           const abortableReplacementInput = { ...replacementInput, signal };
           return options.backend.openReplacementSession
@@ -2121,7 +2123,7 @@ export async function executeNativeSession(
     // A fresh provider session is part of admission. Prove that it exists
     // before opening durable run state because ControlPlanePort intentionally
     // exposes no rollback for an admitted run.
-    const bootstrapTimeoutMs = options.timeoutMs ?? 900_000;
+    const bootstrapTimeoutMs = options.bootstrapTimeoutMs ?? options.timeoutMs ?? 900_000;
     const bootstrapInput = {
       identity,
       workingDirectory: input.workspace.cwd ?? undefined,
