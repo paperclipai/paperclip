@@ -30,6 +30,7 @@ import {
   setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
+import { vi } from "vitest";
 
 const execFile = promisify(execFileCallback);
 
@@ -56,6 +57,7 @@ describe("git workspace sync", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     setExpensiveWorkspaceGitExecutor(null);
     for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
     while (cleanupDirs.length > 0) {
@@ -259,11 +261,17 @@ describe("git workspace sync", () => {
     });
   });
 
-  it.skipIf(process.platform === "win32")("preserves nested repository symlinks after the temporary clone is removed", async () => {
+  it.skipIf(process.platform === "win32").each([false, true])("preserves nested repository symlinks after the temporary clone is removed (empty template: %s)", async (emptyTemplate) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-nested-links-"));
     cleanupDirs.push(rootDir);
+    if (emptyTemplate) {
+      const template = path.join(rootDir, "empty-template");
+      await mkdir(template);
+      vi.stubEnv("GIT_TEMPLATE_DIR", template);
+    }
     const repo = await createRepo(rootDir);
     const nested = await createRepo(path.join(repo, ".paperclip-repositories"));
+    await mkdir(path.join(repo, ".git/info"), { recursive: true });
     await writeFile(path.join(repo, ".git/info/exclude"), ".paperclip-repositories/\n");
     await mkdir(path.join(nested, "skills", "demo"), { recursive: true });
     await mkdir(path.join(nested, ".claude", "skills"), { recursive: true });
@@ -281,6 +289,7 @@ describe("git workspace sync", () => {
     expect(snapshot?.repositories).toHaveLength(1);
 
     await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      expect(await git(cloneDir, ["status", "--porcelain"])).toBe("");
       // The nested clone's callback has already returned and deleted its temp
       // directory. Relative links must keep their repository meaning here.
       const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
