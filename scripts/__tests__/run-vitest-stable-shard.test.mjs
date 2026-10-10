@@ -107,10 +107,12 @@ test("general shards retain scripts and route-named suites outside the serialize
   ]) assert.ok(general.selectedGeneralServerSuites.includes(file), `missing configured server suite: ${file}`);
 });
 
-test("shard flags are rejected for the workspaces-b group", () => {
-  const result = dryRun(["--mode", "general", "--group", "general-workspaces-b", "--shard-index", "0", "--shard-count", "3"]);
-  assert.notEqual(result.status, 0, "workspaces-b must not accept shard flags");
-});
+for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
+  test(`shard flags are rejected for the ${group} group`, () => {
+    const result = dryRun(["--mode", "general", "--group", group, "--shard-index", "0", "--shard-count", "3"]);
+    assert.notEqual(result.status, 0, `${group} must not accept shard flags`);
+  });
+}
 
 test("workspace lanes cover every non-server project in the root Vitest configuration", () => {
   const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
@@ -118,9 +120,27 @@ test("workspace lanes cover every non-server project in the root Vitest configur
   assert.ok(roots.includes("server"), "expected the explicit root Vitest project list");
   const expected = roots.filter(root => root !== "server")
     .map(root => JSON.parse(readFileSync(path.join(repoRoot, root, "package.json"), "utf8")).name).sort();
-  const actual = ["general-workspaces-a", "general-workspaces-b"]
+  const actual = ["general-workspaces-a", "general-workspaces-b", "general-workspaces-c"]
     .flatMap(group => dryRunJson(["--mode", "general", "--group", group]).workspaceProjects).sort();
   assert.deepEqual(actual, expected, "no configured project may be silently omitted or run twice");
+});
+
+test("workspaces-c runs the db project alone and workspaces-b no longer carries it", () => {
+  // The db project was 168-250s of the 436-513s workspaces-b vitest time
+  // (PR runs 38084171761, 38083084276 and 38083020834, 2026-10-10), so it
+  // runs in its own lane. The PR and release matrices both carry that lane.
+  const workspacesC = dryRunJson(["--mode", "general", "--group", "general-workspaces-c"]);
+  assert.deepEqual(workspacesC.workspaceProjects, ["@paperclipai/db"]);
+  assert.equal(workspacesC.workspacesVitestShard, null);
+  const workspacesB = dryRunJson(["--mode", "general", "--group", "general-workspaces-b"]);
+  assert.ok(!workspacesB.workspaceProjects.includes("@paperclipai/db"), "db must not run twice");
+  assert.ok(workspacesB.workspaceProjects.length > 0, "workspaces-b must still run its other projects");
+  for (const workflow of ["pr-trusted.yml", "release-verify.yml"]) {
+    const text = readFileSync(path.join(repoRoot, ".github", "workflows", workflow), "utf8");
+    for (const group of ["general-workspaces-b", "general-workspaces-c"]) {
+      assert.match(text, new RegExp(`- group: ${group}\\n\\s+group_label: [^\\n]+\\n(?!\\s+shard_)`), `${workflow} must run ${group} unsharded`);
+    }
+  }
 });
 
 test("workspaces-a shards map to Vitest native --shard slices over a stable project list", () => {
