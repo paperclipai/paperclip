@@ -1111,8 +1111,16 @@ export function TaskChatComposer({
     }
   }
 
+  // Reconcile each confirmed attempt once. StrictMode replays this effect with
+  // the same stale submission, and slicing the already-trimmed body again would
+  // cut the newer draft down to its tail (the IssueChatThread fix from #14332).
+  const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
   useEffect(() => {
     if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    const { attemptId } = uncertainSubmission;
+    const reconciled = reconciledSubmissionRef.current;
+    if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
+    reconciledSubmissionRef.current = { draftKey, attemptId };
     const nextDraft = uncertainSubmission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
