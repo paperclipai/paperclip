@@ -328,7 +328,11 @@ export function createPostgresRunDispatchAdapter(
       : agentInvokability.invalidOrgChain;
     if (!facts.agentInvokable) return { agentFound: true, facts };
 
-    facts.heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
+    const timerQuotaHold =
+      retryReason === "provider_quota_hold" &&
+      readNonEmptyString(input.contextSnapshot.wakeSource) === "timer";
+    facts.heartbeatWakeOnDemandEnabled =
+      timerQuotaHold || isHeartbeatWakeOnDemandEnabled(agent);
     if (!facts.heartbeatWakeOnDemandEnabled) return { agentFound: true, facts };
 
     if (!issueId) return { agentFound: true, facts };

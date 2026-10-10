@@ -17,8 +17,10 @@ import {
   deferQueuedRunForProviderQuotaHold,
   providerQuotaResetAtFromRun,
   providerQuotaScopeForAgent,
+  providerQuotaScopeForRun,
   recordProviderQuotaDispatchHold,
 } from "./provider-quota-dispatch-hold.js";
+import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 
 const detectedAt = new Date("2026-10-10T12:00:00.000Z");
 const resetAt = new Date("2026-10-15T16:00:00.000Z");
@@ -68,6 +70,27 @@ describe("provider quota dispatch hold parsing", () => {
         adapterType: "paperclip_runner",
         adapterConfig: { provider: "claude" },
       } as unknown as typeof agents.$inferSelect).scopeKey,
+    );
+  });
+
+  it("uses the run's concrete router selection for both capture and dispatch", () => {
+    const routedRun = {
+      contextSnapshot: {
+        aiRouterSelection: {
+          runtimeConfig: { provider: "acpx", acpxAgent: "claude" },
+        },
+      },
+    } as Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot">;
+    const savedAgent = {
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+    } as unknown as typeof agents.$inferSelect;
+
+    expect(providerQuotaScopeForRun(routedRun, savedAgent)).toEqual(
+      providerQuotaScopeForAgent({
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "acpx", acpxAgent: "claude" },
+      } as unknown as typeof agents.$inferSelect),
     );
   });
 });
@@ -140,10 +163,11 @@ describe.skipIf(!support.supported)("provider quota dispatch hold database bound
   async function queuedRun(
     companyId: string,
     agentId: string,
+    values: Partial<typeof heartbeatRuns.$inferInsert> = {},
   ) {
     return db
       .insert(heartbeatRuns)
-      .values({ companyId, agentId, status: "queued" })
+      .values({ companyId, agentId, status: "queued", ...values })
       .returning()
       .then((rows) => rows[0]!);
   }
@@ -192,6 +216,7 @@ describe.skipIf(!support.supported)("provider quota dispatch hold database bound
       scheduledRetryAt: resetAt,
       startedAt: null,
     });
+    expect(executionFailureRetryCount(deferred!.run)).toBe(0);
     expect(await db.select().from(providerQuotaDispatchHolds)).toHaveLength(1);
 
     const unrelatedRun = await queuedRun(f.company.id, f.otherProviderAgent.id);
@@ -218,5 +243,37 @@ describe.skipIf(!support.supported)("provider quota dispatch hold database bound
         .where(eq(providerQuotaDispatchHolds.id, hold!.id))
         .then((rows) => rows[0]),
     ).toMatchObject({ releaseReason: "reset_elapsed" });
+  });
+
+  it("does not turn a promoted subscription wait into failure retries", async () => {
+    const f = await fixture();
+    await recordProviderQuotaDispatchHold(db, {
+      run: f.sourceRun,
+      agent: f.sourceAgent,
+      now: detectedAt,
+    });
+    const peerRun = await queuedRun(f.company.id, f.peerAgent.id, {
+      scheduledRetryAttempt: 5,
+      scheduledRetryReason: "ai_connection_busy",
+      contextSnapshot: {
+        failureRetriesBeforeAiConnectionWait: 0,
+        executionRetryAccounting: {
+          version: 1,
+          failureRetries: 0,
+          maxTurnContinuations: 0,
+        },
+      },
+    });
+
+    const deferred = await deferQueuedRunForProviderQuotaHold(db, {
+      run: peerRun,
+      agent: f.peerAgent,
+      now: detectedAt,
+    });
+
+    expect(deferred?.run.contextSnapshot).toMatchObject({
+      failureRetriesBeforeProviderQuotaHold: 0,
+    });
+    expect(executionFailureRetryCount(deferred!.run)).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
@@ -25,6 +25,31 @@ import type {
 
 type WakeRow = typeof agentWakeupRequests.$inferSelect;
 type RunRow = typeof heartbeatRuns.$inferSelect;
+const PROVIDER_QUOTA_HOLD_RETRY_REASON = "provider_quota_hold";
+
+function mutableQueuedRunWhere(queueRunId: string, companyId: string) {
+  return and(
+    eq(heartbeatRuns.id, queueRunId),
+    eq(heartbeatRuns.companyId, companyId),
+    or(
+      eq(heartbeatRuns.status, "queued"),
+      and(
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        eq(heartbeatRuns.scheduledRetryReason, PROVIDER_QUOTA_HOLD_RETRY_REASON),
+        isNull(heartbeatRuns.startedAt),
+      ),
+    ),
+  );
+}
+
+function isMutableQueuedRun(row: RunRow) {
+  return (
+    row.status === "queued" ||
+    (row.status === "scheduled_retry" &&
+      row.scheduledRetryReason === PROVIDER_QUOTA_HOLD_RETRY_REASON &&
+      row.startedAt === null)
+  );
+}
 
 function toWakeRow(row: WakeRow): QueuedCommentWakeRow {
   return { id: row.id, agentId: row.agentId, status: row.status, runId: row.runId, payload: parseObject(row.payload) };
@@ -75,7 +100,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
       const row = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: withQueuedCommentIdsInRunContext(contextSnapshot, ids), updatedAt })
-        .where(and(eq(heartbeatRuns.id, queueRunId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")))
+        .where(mutableQueuedRunWhere(queueRunId, companyId))
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toRunRow(row) : null;
@@ -101,7 +126,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
       const row = await tx
         .update(heartbeatRuns)
         .set({ status: "cancelled", finishedAt: now, error: reason, errorCode: "queued_comment_discarded", updatedAt: now })
-        .where(and(eq(heartbeatRuns.id, queueRunId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")))
+        .where(mutableQueuedRunWhere(queueRunId, companyId))
         .returning({ id: heartbeatRuns.id })
         .then((rows) => rows[0] ?? null);
       return row ? { id: row.id } : null;
@@ -271,7 +296,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
             .for("update")
             .limit(1)
             .then((rows) => rows[0] ?? null);
-          if (!queueRunRow || queueRunRow.status !== "queued") {
+          if (!queueRunRow || !isMutableQueuedRun(queueRunRow)) {
             throw new QueuedCommentMutationError(
               "queued_comment_already_dispatching",
               "The queued message is already being dispatched",

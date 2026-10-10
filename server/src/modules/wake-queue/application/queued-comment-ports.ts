@@ -103,7 +103,7 @@ export interface QueuedCommentQueueTransaction {
     ids: string[];
     updatedAt: Date;
   }): Promise<QueuedCommentWakeRow>;
-  /** Guarded on the run's current `queued` status. Returns `null` when a concurrent writer already moved the run off `queued`. */
+  /** Guarded on an unstarted mutable queue state (`queued` or provider quota hold). Returns `null` after dispatch starts. */
   updateQueueRunCommentIds(input: {
     queueRunId: string;
     /** The run's own context snapshot, as already read under lock; the rewrite is derived from this base. */
@@ -118,8 +118,8 @@ export interface QueuedCommentQueueTransaction {
   }): Promise<IssueComment | null>;
   cancelWake(input: { wakeId: string; reason: string; now: Date }): Promise<void>;
   /**
-   * Guarded on the run's current `queued` status. Returns `null` when a
-   * concurrent writer already moved the run off `queued`; returns just the
+   * Guarded on an unstarted mutable queue state. Returns `null` when a
+   * concurrent writer already began dispatch; returns just the
    * cancelled run's id, which is all a post-commit telemetry emission needs.
    */
   cancelQueueRun(input: {

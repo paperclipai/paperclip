@@ -5,6 +5,7 @@ import {
   heartbeatRuns,
   providerQuotaDispatchHolds,
 } from "@paperclipai/db";
+import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 
 type Agent = typeof agents.$inferSelect;
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -47,6 +48,23 @@ export function providerQuotaScopeForAgent(agent: Pick<Agent, "adapterType" | "a
   return { scopeKey, provider };
 }
 
+/** Prefer the concrete provider selected for this run over the agent's saved
+ * router configuration. Completion and later dispatch checks must name the
+ * same provider scope even when a connection pool rewrote the runtime config. */
+export function providerQuotaScopeForRun(
+  run: Pick<HeartbeatRun, "contextSnapshot">,
+  agent: Pick<Agent, "adapterType" | "adapterConfig">,
+) {
+  const context = objectValue(run.contextSnapshot);
+  const selection = objectValue(context.aiRouterSelection);
+  const runtimeConfig = objectValue(selection.runtimeConfig);
+  return providerQuotaScopeForAgent({
+    adapterType: agent.adapterType,
+    adapterConfig:
+      Object.keys(runtimeConfig).length > 0 ? runtimeConfig : agent.adapterConfig,
+  });
+}
+
 export function providerQuotaResetAtFromRun(
   run: Pick<HeartbeatRun, "errorCode" | "resultJson">,
   now = new Date(),
@@ -73,7 +91,7 @@ export async function recordProviderQuotaDispatchHold(
   const now = input.now ?? new Date();
   const holdUntil = providerQuotaResetAtFromRun(input.run, now);
   if (!holdUntil) return null;
-  const scope = providerQuotaScopeForAgent(input.agent);
+  const scope = providerQuotaScopeForRun(input.run, input.agent);
   const evidence = {
     sourceRunId: input.run.id,
     errorCode: input.run.errorCode,
@@ -129,7 +147,7 @@ export async function deferQueuedRunForProviderQuotaHold(
   input: { run: HeartbeatRun; agent: Agent; now?: Date },
 ) {
   const now = input.now ?? new Date();
-  const scope = providerQuotaScopeForAgent(input.agent);
+  const scope = providerQuotaScopeForRun(input.run, input.agent);
   return db.transaction(async (tx) => {
     const hold = await tx
       .select()
@@ -167,6 +185,8 @@ export async function deferQueuedRunForProviderQuotaHold(
         contextSnapshot: {
           ...objectValue(input.run.contextSnapshot),
           providerQuotaHoldUntil: hold.holdUntil.toISOString(),
+          failureRetriesBeforeProviderQuotaHold:
+            executionFailureRetryCount(input.run),
         },
         resultJson: {
           ...objectValue(input.run.resultJson),

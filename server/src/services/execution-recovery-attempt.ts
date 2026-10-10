@@ -36,13 +36,17 @@ function historicalFailureCount(run: RetryRun): number {
     const saved = count(run.contextSnapshot?.failureRetriesBeforeWorkspaceWait);
     if (saved !== null) return saved;
   }
+  if (run.scheduledRetryReason === "provider_quota_hold") {
+    const saved = count(run.contextSnapshot?.failureRetriesBeforeProviderQuotaHold);
+    if (saved !== null) return saved;
+  }
   // Historical ambiguous counters remain conservative rather than resetting.
   return count(run.scheduledRetryAttempt) ?? 0;
 }
 
 export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccounting {
   const saved = savedAccounting(run);
-  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"].includes(run.scheduledRetryReason ?? "");
+  const nonFailureLane = ["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "provider_quota_hold"].includes(run.scheduledRetryReason ?? "");
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
