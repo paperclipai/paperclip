@@ -25,6 +25,95 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
   building custom versions.
 - `ctx.assets` is not supported in the current runtime.
 
+## Idle sleep
+
+An enabled worker blocks automatic idle sleep unless it implements
+`onIdleDrain(signal): Promise<"none" | "present" | "unknown">`. This is a live
+runtime handshake, not a manifest or version exemption. Older SDKs remain
+blockers. Manual shutdown keeps its existing behavior.
+
+The host checks the exact owned, expiring task-drain hold. It closes new worker
+admission and checks outstanding RPCs in both directions and live terminal
+routes. The SDK also counts accepted handlers and notifications until they
+actually finish. Caller timeouts do not count as completion. An unconfirmed
+write, missing worker, crash, invalid reply, or expired hold prevents sleep.
+
+The hook must return `none` only when plugin-owned timers, sockets, detached
+operations, and cleanup are settled and cannot start work until `signal`
+aborts. Do not cancel useful work to make a worker idle. Return `present` while
+work remains and `unknown` when completion cannot be proved. The SDK closes
+ordinary RPC admission while the hook runs and until the matching hold releases
+or expires. Release aborts the signal; expiry does so without another request.
+Hooks that suspend autonomous work must arrange its safe resumption on abort.
+
+The handshake does not exempt database work. Enabled jobs, deliveries,
+schedules, external ingress, and other persisted work still block sleep until
+they have their own safe wake contract. An installed plugin without a matching
+live worker receipt also blocks sleep.
+
+Daytona currently opts in only before its worker has contacted the provider.
+After provider access it remains a blocker for that process lifetime, even if
+the visible operation finishes. Its timeout and terminal cleanup paths need
+stronger completion receipts before that restriction can be relaxed. Restarting
+does not bypass the separate persisted lease and recovery checks.
+
+## Required agent lifecycle work
+
+Use `onAgentLifecycle` for resources that must be ready before an agent works or
+removed before termination completes. Declare both `agentLifecycle: true` and
+`agents.lifecycle.manage` in the manifest. The host calls the plugin after the
+lifecycle command commits. The lifecycle module owns admission, progress, and
+retries; a plugin does not need a readiness data handler or a polling job.
+
+```ts
+import { definePlugin } from "@paperclipai/plugin-sdk";
+import { reconcileResources } from "./resources.js";
+
+export default definePlugin({
+  async setup() {},
+  async onAgentLifecycle(request) {
+    // Provider code must persist revision fences and tolerate repeated calls.
+    const complete = await reconcileResources(request);
+    return {
+      operationId: request.operationId,
+      version: request.version,
+      status: complete ? "complete" : "pending",
+    };
+  },
+});
+```
+
+`reconcileResources` above is plugin-owned provider code, not an SDK function.
+Use `companyId` and `agentId` from the request to scope resources.
+Request `agents.read` separately if the handler needs `ctx.agents.get`.
+Lifecycle authority does not grant agent configuration writes or secret access.
+
+| Phase | Resource action |
+| --- | --- |
+| `preparing` | Create or reconcile the agent's resources and wait for readiness. |
+| `verifying` | Complete any remaining checks after the host tests the saved harness. |
+| `pausing` | Stop resources after the host confirms execution has stopped. |
+| `resuming` | Start resources and wait for readiness. |
+| `terminating` | Stop resources after the host revokes keys and confirms execution has stopped. |
+| `cleaning_up` | Remove owned resources and wait until removal completes. |
+
+Return `pending` while an external operation continues. Return `complete` only
+when its effect is confirmed; accepting a deletion request is not completion.
+Throw on failure. The host records a fixed error without provider error text.
+The agent page shows the phase and offers Retry for failed work.
+
+Calls can repeat, including after a timeout or restart. Retain the highest
+version per company and agent, reject older requests, and serialize external
+effects or clean up late results. The host's revision fence protects its state;
+it cannot cancel a provider request that has already left the process.
+
+The host saves required plugin IDs at first selection. Company-disabled plugins
+are excluded then. Disabling or removing a selected plugin blocks progress;
+restore it to complete the step. Later installations do not backfill existing
+agents. The durable event inbox below is separate: acknowledging an event does
+not complete required lifecycle work. See [Agent lifecycle](../AGENT-LIFECYCLE.md)
+for phase ordering, recovery, and existing-installation limits.
+
 ## Durable resource lifecycle inbox
 
 Plugins with `events.subscribe` can read durable, company-scoped resource hooks

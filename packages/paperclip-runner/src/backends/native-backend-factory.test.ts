@@ -1,11 +1,11 @@
-import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
-import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
+import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
 
 const contextRoots: string[] = [];
 afterEach(() => { for (const root of contextRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -316,6 +316,29 @@ describe("native backend factory", () => {
     await session.close({ reason: "test complete" });
   });
 
+  it("supplies freshly composed instructions before the transport can read a recovered thread", async () => {
+    const prepared = preparedExecution(execution());
+    if (!("runtimeContext" in prepared)) throw new Error("fixture requires runtime context");
+    const input = { ...acpxExecution("codex"), runtimeContext: prepared.runtimeContext };
+    writeFileSync(join(input.runtimeContext.instructions.bundle.rootPath, "AGENTS.md"), "Updated custom entry.");
+    const transport = new FakeCodexTransport();
+    let captured: string | undefined;
+    const backend = createNativeSessionBackend(input, {
+      codexTransportFactory: (context) => {
+        expect(transport.calls).toHaveLength(0);
+        captured = context?.baseInstructions;
+        return transport;
+      },
+      environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const session = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: WORKSPACE,
+    });
+    expect(captured).toBe(composeNativeSystemInstructions(input.runtimeContext, "Updated custom entry."));
+    await session.close({ reason: "test complete" });
+  });
+
   it("does not allow remote workspace authority without runnerd", () => {
     expect(() =>
       createNativeSessionBackend(execution(), {
@@ -496,7 +519,16 @@ describe("native backend factory", () => {
     },
   );
 
-  it.each(["pi", "copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+  it("constructs the qualified Pi backend without a diagnostic opt-in or provider launch", async () => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
+    Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
+    const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+  });
+
+  it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const model = "explicit-fixture-model";
@@ -507,13 +539,39 @@ describe("native backend factory", () => {
     })).toThrow("ACPX candidate direct execution requires completed qualification");
   });
 
-  it("constructs the qualified Cursor backend without candidate admission", async () => {
+  it.each([
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v14-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v13-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v14-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v18-identity.json"],
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v9-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v7-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v9-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v10-identity.json"],
+    ["copilot", "../../test/fixtures/copilot-profile-v11-identity.json"],
+    ["pi", "../../test-fixtures/pi-acp/profile-v9-identity.json"],
+  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, path) => {
+    const historical = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
-    const model = "explicit-cursor-model";
-    Object.assign(input.provider, { agent: "cursor", model, mode: "agent", profile: resolveQualifiedAcpxProfile("cursor", model) });
-    const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime", acpxEnvironment: { CURSOR_API_KEY: "explicit-fixture" } });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "custom/explicit-test-model" : "explicit-fixture-model");
+    Object.assign(input.provider, { agent, model: current.qualificationModel, profile: { ...current,
+      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
+    input.provider.profile.agentProfileVersion = current.agentProfileVersion;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified commandDigest");
+  });
+
+  it.each([1, 2] as const)("rejects a Pi version %s warm snapshot after the rich ACP upgrade", version => {
+    const input = acpxExecution("pi");
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    input.provider.profile.agentProfileVersion = version;
+    expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
+      .toThrow("does not match the qualified agentProfileVersion");
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {

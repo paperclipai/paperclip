@@ -28,9 +28,9 @@ function ClientOrigin({ origin }: { origin: string }) {
   </div>;
 }
 
-export function McpConnectPage() {
+export function McpConnectPage({ agentPairingOnly = false }: { agentPairingOnly?: boolean } = {}) {
   const { id = "" } = useParams();
-  return <McpConnectRequest key={id} id={id} />;
+  return <McpConnectRequest key={id} id={id} agentPairingOnly={agentPairingOnly} />;
 }
 
 export function McpDevicePage({ initialCode }: { initialCode?: string } = {}) {
@@ -45,24 +45,25 @@ export function McpDevicePage({ initialCode }: { initialCode?: string } = {}) {
     </form></Card></div>;
 }
 
-function McpConnectRequest({ id, device = false, onEditCode }: { id: string; device?: boolean; onEditCode?: () => void }) {
+function McpConnectRequest({ id, device = false, agentPairingOnly = false, onEditCode }: { id: string; device?: boolean; agentPairingOnly?: boolean; onEditCode?: () => void }) {
+  const requestPrefix = agentPairingOnly ? "/dot-mcp/requests" : "/mcp/requests";
   const [companyId, setCompanyId] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [pairingPreview, setPairingPreview] = useState<McpDotPairingPreview | null>(null);
   const [pairingPreviewError, setPairingPreviewError] = useState("");
   const [writeEnabled, setWriteEnabled] = useState(true);
   const [deviceResult, setDeviceResult] = useState<"approved" | "denied" | null>(null);
-  const request = useQuery({ queryKey: [device ? "mcp-device" : "mcp-request", id], queryFn: () => api.get<McpConnectionRequest>(device ? `/mcp/device?user_code=${encodeURIComponent(id)}` : `/mcp/requests/${encodeURIComponent(id)}`), retry: false });
+  const request = useQuery({ queryKey: [device ? "mcp-device" : agentPairingOnly ? "dot-mcp-request" : "mcp-request", id], queryFn: () => api.get<McpConnectionRequest>(device ? `/mcp/device?user_code=${encodeURIComponent(id)}` : `${requestPrefix}/${encodeURIComponent(id)}`), retry: false });
   const data = request.data;
   useEffect(() => {
     setPairingPreview(null); setPairingPreviewError("");
     if (!data?.agentConnection || device || !/^[A-Za-z0-9_-]{32}$/.test(pairingCode.trim())) return;
     let current = true;
-    void api.post<McpDotPairingPreview>(`/mcp/requests/${encodeURIComponent(id)}/dot-pairing/preview`, { pairingCode: pairingCode.trim() })
+    void api.post<McpDotPairingPreview>(`${requestPrefix}/${encodeURIComponent(id)}/dot-pairing/preview`, { pairingCode: pairingCode.trim() })
       .then(preview => { if (current) setPairingPreview(preview); })
       .catch(error => { if (current) setPairingPreviewError(error instanceof Error ? error.message : "Unable to verify this pairing code."); });
     return () => { current = false; };
-  }, [id, device, data?.agentConnection, pairingCode]);
+  }, [id, device, requestPrefix, data?.agentConnection, pairingCode]);
   const selectedCompanyId = data?.requestedCompanyId ?? (companyId || data?.companies[0]?.id || "");
   // Pin the default once loaded so a refetch cannot silently switch organizations.
   useEffect(() => {
@@ -80,11 +81,11 @@ function McpConnectRequest({ id, device = false, onEditCode }: { id: string; dev
     onSuccess: ({ redirectUrl, status }) => { if (device && status) setDeviceResult(status); else if (redirectUrl) window.location.assign(redirectUrl); },
   });
   const pairDot = useMutation({
-    mutationFn: () => api.post<{ redirectUrl: string }>(`/mcp/requests/${encodeURIComponent(id)}/dot-pairing`, { pairingCode: pairingCode.trim() }),
+    mutationFn: () => api.post<{ redirectUrl: string }>(`${requestPrefix}/${encodeURIComponent(id)}/dot-pairing`, { pairingCode: pairingCode.trim() }),
     onSuccess: ({ redirectUrl }) => { setPairingCode(""); window.location.assign(redirectUrl); },
   });
   if (deviceResult) return <div className="mx-auto max-w-xl py-10"><Card className="block space-y-4 p-6"><Paperclip className="size-8" /><h1 className="text-xl font-semibold">{deviceResult === "approved" ? "Access approved" : "Connection declined"}</h1><p className="text-sm">{deviceResult === "approved" ? "Return to your assistant. It will finish connecting automatically." : "No access was granted. You can start a new connection from your assistant."}</p><Button variant="outline" asChild><Link to="/">Back to Paperclip</Link></Button></Card></div>;
-  const returnPath = device ? `/mcp-device?user_code=${encodeURIComponent(id)}` : `/mcp-connect/${id}`;
+  const returnPath = device ? `/mcp-device?user_code=${encodeURIComponent(id)}` : `${agentPairingOnly ? "/dot-connect" : "/mcp-connect"}/${id}`;
   return <div className="mx-auto max-w-xl py-10">
     <Card className="block space-y-4 p-6">
       <div className="flex items-center gap-3">

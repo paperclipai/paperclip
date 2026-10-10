@@ -119,6 +119,7 @@ export interface ChatEndpoint {
   botExternalId?: string | null;
   photonAllocation?: "dedicated" | "shared";
   allowDirectMessages?: boolean;
+  requireAtMention?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople: boolean;
   replyMode?: "subscribed" | "mention_each_reply" | null;

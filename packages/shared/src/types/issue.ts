@@ -1242,6 +1242,8 @@ export interface PaperclipQuestionSetQuestion {
   helpText?: string;
   required: boolean;
   answerMode: "single_select" | "multi_select" | "text";
+  /** Editable starting text, never an implicit or submitted answer. Text mode only. */
+  initialText?: string;
   options?: PaperclipQuestionSetOption[];
   customAnswer?: {
     enabled: true;

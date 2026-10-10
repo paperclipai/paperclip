@@ -1,3 +1,4 @@
+import { captureEnvironmentAcquisitionDiagnostic } from "../environment-acquisition-diagnostics.js";
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
 import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
@@ -7,6 +8,79 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("reports only private acquisition observations for the exact failed setup run", () => {
+    const scope = { companyId: "company-fixture", environmentId: "environment-fixture", runId: "run-fixture" };
+    const diagnostic = { phase: "workspace", elapsedMs: 100, budgetMs: 2_000 } as const;
+    const error = Object.freeze(new Error("Acquisition failed"));
+    const properties = Object.getOwnPropertyDescriptors(error);
+    captureEnvironmentAcquisitionDiagnostic(error, scope, diagnostic);
+    const fixture = run({ id: scope.runId, companyId: scope.companyId, errorCode: "setup_failed" });
+    const collectSetup = (failure: unknown, record = fixture) => collectRunFailureDiagnostics(record, { error: failure, phase: "setup" }).execution;
+    expect(collectSetup(new Error("Cleanup confirmed", { cause: error }))).toMatchObject({
+      environmentAcquisitionPhase: "workspace", environmentAcquisitionElapsedMs: 100, environmentAcquisitionBudgetMs: 2_000,
+    });
+    expect(collectSetup(error, run({ ...fixture, id: "another-run" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectSetup(error, run({ ...fixture, companyId: "another-company" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectSetup(error, run({ ...fixture, errorCode: "adapter_failed" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectRunFailureDiagnostics(fixture, { error, phase: "execute" }).execution).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(Object.getOwnPropertyDescriptors(error)).toEqual(properties);
+    captureEnvironmentAcquisitionDiagnostic(error, scope, null);
+    expect(collectSetup(error)).not.toHaveProperty("environmentAcquisitionPhase");
+  });
+
+  it("ignores forged acquisition fields and persisted JSON without private producer evidence", () => {
+    const acquisitionDiagnostic = { phase: "shell", elapsedMs: 2_000, budgetMs: 2_000 };
+    const error = Object.assign(new Error("Acquisition failed"), { acquisitionDiagnostic,
+      data: { schema: "paperclip/environment-creation-cleanup/v1", acquisitionDiagnostic },
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "setup_failed", resultJson: { acquisitionDiagnostic,
+      environmentAcquisitionPhase: "shell", environmentAcquisitionElapsedMs: 2_000,
+    } }), { error, phase: "setup" }).execution).toEqual({ failurePhase: "setup" });
+  });
+
+  it("exports only bounded workspace base-ref observations without treating them as proof", () => {
+    const resultJson = { configurationIncomplete: { reason: "workspace_base_ref_unresolved",
+      requestedRef: "private-ref", fetchError: "private-stderr", baseRefDiagnostic: {
+        schemaVersion: 1, remoteLookup: "resolved", authLookup: "failed", fetch: "failed", fetchExitCode: 128,
+        fetchFailureKind: "authentication_failed", refResolution: "failed", refExitCode: 128,
+        repoUrl: "https://private.example.invalid", stderr: "private-token", credential: "private-credential",
+      } } };
+    const execution = collectRunFailureDiagnostics(run({ errorCode: "configuration_incomplete", resultJson }), {}).execution;
+    expect(execution).toEqual({ workspaceBaseRefRemoteLookup: "resolved", workspaceBaseRefAuthLookup: "failed",
+      workspaceBaseRefFetch: "failed", workspaceBaseRefFetchExitCode: 128, workspaceBaseRefFetchFailureKind: "authentication_failed",
+      workspaceBaseRefRefResolution: "failed", workspaceBaseRefRefExitCode: 128 });
+    expect(JSON.stringify(execution)).not.toContain("private");
+    expect(collectRunFailureDiagnostics(run({ errorCode: "setup_failed", resultJson }), {}).execution).toEqual({});
+    expect(collectRunFailureDiagnostics(run({ errorCode: "configuration_incomplete", resultJson: {
+      configurationIncomplete: { ...resultJson.configurationIncomplete, reason: "other" },
+    } }), {}).execution).toEqual({});
+  });
+
+  it.each([null, -1, 256, Infinity, NaN, 1.5, "private-value", {}])("omits invalid base-ref process codes (%j)", code => {
+    const execution = collectRunFailureDiagnostics(run({ errorCode: "configuration_incomplete", resultJson: {
+      configurationIncomplete: { reason: "workspace_base_ref_unresolved", baseRefDiagnostic: {
+        schemaVersion: 1, remoteLookup: "resolved", authLookup: "not_requested", fetch: "failed", fetchExitCode: code,
+        refResolution: "failed", refExitCode: code, fetchFailureKind: "private-value",
+      } },
+    } }), {}).execution;
+    expect(execution).not.toHaveProperty("workspaceBaseRefFetchExitCode");
+    expect(execution).not.toHaveProperty("workspaceBaseRefRefExitCode");
+    expect(execution).not.toHaveProperty("workspaceBaseRefFetchFailureKind");
+  });
+
+  it("rejects forged or unknown base-ref shapes without reading accessor payloads", () => {
+    const base = { schemaVersion: 1, remoteLookup: "resolved", authLookup: "not_requested", fetch: "failed" };
+    let reads = 0;
+    const accessor = Object.defineProperty({}, "schemaVersion", { get() { reads++; throw new Error("private-accessor"); } });
+    for (const baseRefDiagnostic of [null, {}, [], accessor, Object.create(base), { ...base, schemaVersion: 2 },
+      { ...base, remoteLookup: "private-url" }, { ...base, authLookup: "private-token" }, { ...base, fetch: "private-command" }]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "configuration_incomplete", resultJson: {
+        configurationIncomplete: { reason: "workspace_base_ref_unresolved", baseRefDiagnostic },
+      } }), {}).execution).toEqual({});
+    }
+    expect(reads).toBe(0);
+  });
+
   it("exports only fixed workspace validation codes and bounded inspection evidence", () => {
     const resultJson = { workspaceValidation: { reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed",
       worktreePath: "/private/path", executionWorkspaceId: "private-id", repository: "private-url", message: "private-message",
@@ -341,4 +415,34 @@ describe("run failure diagnostics", () => {
     expect(JSON.stringify(result)).not.toContain("private prose");
     expect(collectRunFailureDiagnostics(run({ startedAt: new Date(NaN), finishedAt: new Date() }), {}).execution).not.toHaveProperty("durationMs");
   });
+});
+
+
+it("revalidates persisted transfer evidence and excludes arbitrary nested payloads", () => {
+  for (const known of [true, false]) {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: {
+        phase: "workspace", step: "workspace_transfer", errorCode: "unknown",
+        transferStep: known ? "archive_create" : "private-command",
+        transferFailureKind: known ? "command_failed" : "private-output", rpcCode: known ? -32003 : -12345,
+        command: "private-command", cause: { message: "private-nested-message" },
+      },
+    } }), {}));
+    expect(result.execution.workspaceRestoreTransferStep).toBe(known ? "archive_create" : undefined);
+    expect(result.execution.workspaceRestoreTransferFailureKind).toBe(known ? "command_failed" : undefined);
+    expect(result.execution.workspaceRestoreRpcCode).toBe(known ? -32003 : undefined);
+    expect(JSON.stringify(result)).not.toContain("private-");
+  }
+});
+
+it("does not project transfer fields into an unrelated restore step", () => {
+  const result = collectRunFailureDiagnostics(run({ resultJson: {
+    workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: {
+      phase: "workspace", step: "git_import", errorCode: "unknown",
+      transferStep: "archive_create", transferFailureKind: "command_failed", rpcCode: -32003,
+    },
+  } }), {});
+  expect(result.execution).not.toHaveProperty("workspaceRestoreTransferStep");
+  expect(result.execution).not.toHaveProperty("workspaceRestoreTransferFailureKind");
+  expect(result.execution).not.toHaveProperty("workspaceRestoreRpcCode");
 });

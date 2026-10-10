@@ -1,3 +1,4 @@
+import { parseObject } from "../adapters/utils.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
@@ -315,7 +316,7 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -3384,14 +3385,6 @@ export function issueRoutes(
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
     >;
-    feedbackExportService?: {
-      flushPendingFeedbackTraces(input?: {
-        companyId?: string;
-        traceId?: string;
-        limit?: number;
-        now?: Date;
-      }): Promise<unknown>;
-    };
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
@@ -3647,7 +3640,6 @@ export function issueRoutes(
   const treeControlSvc = issueTreeControlFactory?.(db) ?? {
     getActivePauseHoldGate: async () => null,
   };
-  const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
 
   async function queueTaskWatchdogEvaluation(
@@ -9449,11 +9441,17 @@ export function issueRoutes(
         sourceIssueStatus,
         resolutionNote,
         executionReconciliation,
+        workspaceBaseRef,
       } = req.body;
       if (outcome === "false_positive" || outcome === "cancelled") {
         assertBoard(req);
       }
 
+      if (workspaceBaseRef) {
+        assertBoard(req);
+        const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
       const postCommitActivityPublications: ActivityPublication[] = [];
@@ -9573,6 +9571,51 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        let repairedWorkspaceSettings: Record<string, unknown> | undefined;
+        if (workspaceBaseRef) {
+          const currentSettings = parseObject(lockedIssue.executionWorkspaceSettings);
+          const currentStrategy = parseObject(currentSettings.workspaceStrategy);
+          const sourceRunId = activeRecoveryAction.evidence.latestRunId;
+          if (typeof sourceRunId !== "string" || !isUuidLike(sourceRunId)) throw conflict("The failed run is unavailable. Refresh the task before repairing its branch.");
+          const [failedRun] = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot, resultJson: heartbeatRuns.resultJson,
+            agentId: heartbeatRuns.agentId, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, lockedIssue.companyId),
+              eq(heartbeatRuns.id, sourceRunId),
+            ));
+          const failure = parseObject(parseObject(failedRun?.resultJson).configurationIncomplete);
+          if (lockedIssue.status !== "blocked" || activeRecoveryAction.status !== "active"
+            || activeRecoveryAction.cause !== "configuration_incomplete"
+            || activeRecoveryAction.returnOwnerAgentId !== lockedIssue.assigneeAgentId
+            || !lockedIssue.assigneeAgentId || failedRun?.agentId !== lockedIssue.assigneeAgentId
+            || parseObject(failedRun?.contextSnapshot).issueId !== lockedIssue.id
+            || (parseObject(failedRun?.contextSnapshot).projectId ?? null) !== (lockedIssue.projectId ?? null)
+            || (currentStrategy.type && currentStrategy.type !== "git_worktree")
+            || failedRun?.errorCode !== "configuration_incomplete" || failure.reason !== "workspace_base_ref_unresolved"
+            || failure.requestedRef !== workspaceBaseRef.requestedRef
+            || (typeof currentStrategy.baseRef === "string" && currentStrategy.baseRef.trim() && currentStrategy.baseRef !== workspaceBaseRef.requestedRef)
+            || workspaceBaseRef.branch === workspaceBaseRef.requestedRef) {
+            throw conflict("This branch repair no longer matches the task. Refresh before retrying.");
+          }
+          // Materialize the currently effective strategy before adding a task
+          // override, so agent defaults retain their setup and workspace layout.
+          const repairOwner = await agentsSvc.getById(lockedIssue.assigneeAgentId);
+          const repairProject = lockedIssue.projectId ? await projectsSvc.getById(lockedIssue.projectId) : null;
+          const effectiveStrategy = parseObject(buildExecutionWorkspaceAdapterConfig({
+            agentConfig: parseObject(repairOwner?.adapterConfig),
+            projectPolicy: parseProjectExecutionWorkspacePolicy(repairProject?.executionWorkspacePolicy),
+            issueSettings: parseIssueExecutionWorkspaceSettings(currentSettings),
+            mode: "isolated_workspace", legacyUseProjectWorkspace: null,
+          }).workspaceStrategy);
+          // This failure is emitted only by Git worktree preparation. With no
+          // strategy object, the runtime used its default Git worktree strategy.
+          if (!effectiveStrategy.type) effectiveStrategy.type = "git_worktree";
+          if (effectiveStrategy.type !== "git_worktree"
+            || (typeof effectiveStrategy.baseRef === "string" && effectiveStrategy.baseRef.trim() && effectiveStrategy.baseRef !== workspaceBaseRef.requestedRef)) {
+            throw conflict("The workspace configuration changed. Refresh before repairing its branch.");
+          }
+          repairedWorkspaceSettings = { ...currentSettings, workspaceStrategy: { ...effectiveStrategy, baseRef: workspaceBaseRef.branch } };
+        }
+
         if (outcome === "restored" && activeRecoveryAction.cause === "native_workspace_sync_out_unsafe_archive") {
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
         }
@@ -9588,12 +9631,12 @@ export function issueRoutes(
         if (
           outcome === "restored" &&
           sourceIssueStatus === "todo" &&
-          activeRecoveryAction.kind === "deliberate_wait_without_target"
+          (activeRecoveryAction.kind === "deliberate_wait_without_target" || workspaceBaseRef)
         ) {
           if (
             lockedIssue.status !== "blocked" ||
             activeRecoveryAction.ownerType !== "board" ||
-            activeRecoveryAction.wakePolicy?.type !== "board_escalation" ||
+            (!workspaceBaseRef && activeRecoveryAction.wakePolicy?.type !== "board_escalation") ||
             !activeRecoveryAction.returnOwnerAgentId ||
             lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
           ) {
@@ -9775,6 +9818,7 @@ export function issueRoutes(
 
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,
+            ...(repairedWorkspaceSettings ? { executionWorkspaceSettings: repairedWorkspaceSettings } : {}),
           };
           if (!safeHandBack) {
             await assertInReviewReviewPath({
@@ -9936,6 +9980,7 @@ export function issueRoutes(
           outcome: result.recoveryAction.outcome,
           sourceIssueStatus: sourceIssueStatus ?? null,
           resolutionNote: result.recoveryAction.resolutionNote,
+          ...(workspaceBaseRef ? { workspaceBaseRef } : {}),
         },
       });
 
@@ -13328,6 +13373,14 @@ export function issueRoutes(
     "/issues/:id",
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
+      // Snapshot-guarded writes are policy-only. Do not admit task-control
+      // actions that can stop execution before the service takes its row lock.
+      if (req.body.expectedExecutionPolicy !== undefined && (
+        req.body.executionPolicy === undefined ||
+        Object.keys(req.body).some((key) => key !== "executionPolicy" && key !== "expectedExecutionPolicy")
+      )) {
+        throw unprocessable("expectedExecutionPolicy requires a policy-only update");
+      }
       const id = req.params.id as string;
       const existing = await getAccessibleResource(
         req,
@@ -13414,6 +13467,7 @@ export function issueRoutes(
         interrupt: interruptRequested,
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
+        expectedExecutionPolicy,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13811,6 +13865,13 @@ export function issueRoutes(
           lastDecisionId: decisionId,
         };
       }
+      if (expectedExecutionPolicy !== undefined && (
+        (transition.patch.status !== undefined && transition.patch.status !== existing.status) ||
+        (transition.patch.assigneeAgentId !== undefined && transition.patch.assigneeAgentId !== existing.assigneeAgentId) ||
+        (transition.patch.assigneeUserId !== undefined && transition.patch.assigneeUserId !== existing.assigneeUserId)
+      )) {
+        throw unprocessable("Snapshot-guarded policy updates cannot change task status or ownership");
+      }
       Object.assign(updateFields, transition.patch);
 
       const nextStatus = updateFields.status ?? existing.status;
@@ -14133,6 +14194,7 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
+        expectedExecutionPolicy,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -19005,21 +19067,8 @@ export function issueRoutes(
         );
       }
 
-      if (result.sharingEnabled && result.traceId && feedbackExportService) {
-        try {
-          await feedbackExportService.flushPendingFeedbackTraces({
-            companyId: issue.companyId,
-            traceId: result.traceId,
-            limit: 1,
-          });
-        } catch (err) {
-          logger.warn(
-            { err, issueId: issue.id, traceId: result.traceId },
-            "failed to flush shared feedback trace immediately",
-          );
-        }
-      }
-
+      // saveIssueVote has committed the export and notified its worker.
+      // Return the saved vote without waiting for an upload or backlog.
       res.status(201).json(result.vote);
     },
   );

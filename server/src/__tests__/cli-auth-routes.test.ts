@@ -91,7 +91,7 @@ async function createApp(actor: any, db: any = {} as any) {
 }
 
 describe("cli auth routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/authz.js");
@@ -99,6 +99,9 @@ describe("cli auth routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    // Cold route transforms are fixture setup, not HTTP request latency.
+    // Use the hook budget while preserving the request tests' normal timeout.
+    await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
   });
 
   it("creates a CLI auth challenge with approval metadata", async () => {

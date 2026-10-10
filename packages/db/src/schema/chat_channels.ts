@@ -68,6 +68,7 @@ export const chatEndpoints = pgTable(
     allowDirectMessages: boolean("allow_direct_messages")
       .notNull()
       .default(true),
+    requireAtMention: boolean("require_at_mention").notNull().default(false),
     allowGroupChats: boolean("allow_group_chats").notNull().default(false),
     allowUnlinkedPeople: boolean("allow_unlinked_people")
       .notNull()

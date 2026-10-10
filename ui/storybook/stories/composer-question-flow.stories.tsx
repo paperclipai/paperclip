@@ -120,3 +120,18 @@ export const AnswersSubmitted: Story = {
     await expect(canvas.getByText("Sign in, Search", { exact: true })).toBeVisible();
   },
 };
+
+
+function EditableDraftQuestion() {
+  const [response, setResponse] = useState<PaperclipQuestionResponse | null>(null);
+  const questionSet: PaperclipQuestionSet = { schema: "paperclip.question_set.v1", questions: [{
+    id: "draft", prompt: "Edit the release note", required: true, answerMode: "text",
+    initialText: "Draft release note\n\nDescribe what changed and how it was verified.",
+  }] };
+  return response
+    ? <QuestionResponseSummary questionSet={questionSet} response={response} />
+    : <QuestionForm id="editable-draft" draftKey="storybook:editable-initial-text" questionSet={questionSet} onSubmit={setResponse} />;
+}
+
+/** Provider-supplied starting text stays editable and needs explicit submission. */
+export const EditableInitialText: Story = { render: () => <EditableDraftQuestion /> };

@@ -1,7 +1,7 @@
 import { compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, gte, inArray, lt, ne, sql, or, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { recordAgentStatusEvent } from "./resource-lifecycle-events.js";
+
 import {
   agents,
   approvals,
@@ -225,7 +225,7 @@ function observedBlocks(policy: PolicyRow, observed: Awaited<ReturnType<typeof c
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
   return compareCents(observed.totalExact, policy.amount) >= 0 || (observed.pendingRunCount - observed.recoveringRunCount) > 0 || (policy.unpricedUsagePolicy !== "allow" && observed.unpricedEventCount > 0);
 }
-async function policyBlocks(db: Db, policy: PolicyRow) {
+export async function policyBlocks(db: Db, policy: PolicyRow) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
   return observedBlocks(policy, await computeObservedSpend(db, policy));
 }
@@ -282,18 +282,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   const recordActivity = (input: LogActivityInput) => logActivity(db, input, publications);
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
-    if (policy.scopeType === "agent") {
-      await db.transaction(async tx => {
-        const [agent] = await tx.select().from(agents)
-          .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId))).for("update");
-        if (agent && ["active", "idle", "running", "error"].includes(agent.status)) {
-          await tx.update(agents).set({ status: "paused", pauseReason: "budget", pausedAt: now, updatedAt: now })
-            .where(eq(agents.id, agent.id));
-          await recordAgentStatusEvent(tx as unknown as Db, agent.companyId, agent.id, agent.status, "paused");
-        }
-      });
-      return;
-    }
+    if (policy.scopeType === "agent") return;
 
     if (policy.scopeType === "project") {
       await db
@@ -334,18 +323,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (await policyBlocks(db, candidate)) return;
     }
     const now = new Date();
-    if (policy.scopeType === "agent") {
-      await db.transaction(async tx => {
-        const [agent] = await tx.select().from(agents)
-          .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId))).for("update");
-        if (agent?.status === "paused" && agent.pauseReason === "budget") {
-          await tx.update(agents).set({ status: "idle", pauseReason: null, pausedAt: null, updatedAt: now })
-            .where(eq(agents.id, agent.id));
-          await recordAgentStatusEvent(tx as unknown as Db, agent.companyId, agent.id, agent.status, "idle");
-        }
-      });
-      return;
-    }
+    if (policy.scopeType === "agent") return;
 
     if (policy.scopeType === "project") {
       await db
@@ -993,7 +971,10 @@ export async function withCurrentBudgetEnforcement<T>(db: Db, scope: BudgetEnfor
 
 /** Cancellation is an at-least-once external effect. A failed delivery never
  * rolls back committed spend, and its version remains pending for recovery. */
-export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks, companyId?: string) {
+export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks, companyId?: string, agentId?: string | null) {
+  const { createAgentLifecycle } = await import("./agent-lifecycle.js");
+  // Global recovery uses the bounded lifecycle sweep for policy holds.
+  if (companyId) await createAgentLifecycle(db).reconcilePolicyHolds(companyId, agentId);
   if (!hooks.cancelWorkForScope) return;
   const pending = await db.select().from(budgetPolicies).where(and(
     sql`${budgetPolicies.enforcementVersion} > ${budgetPolicies.enforcementDeliveredVersion}`,
@@ -1017,9 +998,9 @@ export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks
 
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   const reads = budgetServiceInTransaction(db);
-  async function mutate<T>(companyId: string, work: (service: ReturnType<typeof budgetServiceInTransaction>) => Promise<T>) {
+  async function mutate<T>(companyId: string, work: (service: ReturnType<typeof budgetServiceInTransaction>) => Promise<T>, agentId?: string | null) {
     const result = await withAccountingTransaction(db, companyId, (tx, publications) => work(budgetServiceInTransaction(tx, publications)));
-    await deliverBudgetEnforcement(db, hooks, companyId);
+    await deliverBudgetEnforcement(db, hooks, companyId, agentId);
     return result;
   }
   return {
@@ -1044,7 +1025,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     evaluateCostEvent: (event: typeof costEvents.$inferSelect) =>
       mutate(event.companyId, (service) => service.evaluateCostEvent(event)),
     getInvocationBlock: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
-      mutate(companyId, (service) => service.getInvocationBlock(companyId, agentId, context)),
+      mutate(companyId, (service) => service.getInvocationBlock(companyId, agentId, context), agentId),
     resolveIncident: (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) =>
       mutate(companyId, (service) => service.resolveIncident(companyId, incidentId, input, actorUserId)),
   };

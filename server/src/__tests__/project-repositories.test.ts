@@ -26,10 +26,10 @@ describe("project repository access", () => {
   });
   it("deduplicates by provider id across personal and shared connections", () => {
     const repos = new Map<string, ProjectRepository>();
-    mergeProjectRepository(repos, { id: "10", fullName: "org/old", private: true }, "Personal");
-    mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", private: true }, "Company");
-    mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", private: true }, "Company");
-    expect([...repos.values()]).toEqual([{ id: "10", fullName: "org/renamed", url: "https://github.com/org/renamed", private: true, connections: ["Personal", "Company"] }]);
+    mergeProjectRepository(repos, { id: "10", fullName: "org/old", ownerType: "organization", private: true }, "Personal");
+    mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", ownerType: "organization", private: true }, "Company");
+    mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", ownerType: "organization", private: true }, "Company");
+    expect([...repos.values()]).toEqual([{ id: "10", fullName: "org/renamed", ownerType: "organization", url: "https://github.com/org/renamed", private: true, connections: ["Personal", "Company"] }]);
   });
   it("refreshes retained selections from discovery, falls back only for unavailable existing IDs, and rejects new unavailable IDs", () => {
     const existing = [{ name: "old/name", repoUrl: "https://github.com/old/name", metadata: { githubRepositoryId: "1" } }];
@@ -39,9 +39,9 @@ describe("project repository access", () => {
     expect(() => resolveProjectRepositorySelection(["2"], [], existing)).toThrow("no longer available");
   });
   it("loads every PAT repository page and never follows provider-supplied URLs", async () => {
-    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, full_name: "org/a" }]), { headers: { link: '<https://evil.test/steal>; rel="next"' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 2, full_name: "org/b", private: true }])));
-    expect(await loadGitHubTokenRepositories({ Authorization: "Bearer fixture" }, request)).toEqual([{ id: "1", fullName: "org/a" }, { id: "2", fullName: "org/b", private: true }]);
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, full_name: "org/a", owner: { type: "Organization" } }]), { headers: { link: '<https://evil.test/steal>; rel="next"' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 2, full_name: "octocat/b", owner: { type: "User" }, private: true }])));
+    expect(await loadGitHubTokenRepositories({ Authorization: "Bearer fixture" }, request)).toEqual([{ id: "1", fullName: "org/a", ownerType: "organization" }, { id: "2", fullName: "octocat/b", ownerType: "personal", private: true }]);
     expect(request.mock.calls.map(([url]) => String(url))).toEqual([
       "https://api.github.com/user/repos?per_page=100&page=1", "https://api.github.com/user/repos?per_page=100&page=2",
     ]);

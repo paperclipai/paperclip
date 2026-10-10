@@ -891,6 +891,21 @@ type Story = StoryObj<typeof meta>;
 
 export const FullSurfaceMatrix: Story = {};
 
+export const IssuePropertiesUnavailablePolicy: Story = {
+  name: "IssueProperties - unavailable execution policy",
+  render: () => (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <IssueProperties
+          issue={{ ...primaryIssue, executionPolicy: { stages: {} } as unknown as Issue["executionPolicy"] }}
+          onUpdate={() => undefined}
+          inline
+        />
+      </div>
+    </StorybookData>
+  ),
+};
+
 export const IssuePropertiesLongValuesDesktop: Story = {
   name: "IssueProperties - long values desktop pane",
   render: () => <IssuePropertiesLongValuePane />,

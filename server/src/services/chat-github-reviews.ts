@@ -1,3 +1,5 @@
+import { githubRunReplyState } from "./chat-run-publications.js";
+import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
 import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
@@ -6,6 +8,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
 import { createHash } from "node:crypto";
+import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -27,6 +30,7 @@ import {
 } from "@paperclipai/db";
 import {
   githubCommitSchema,
+  type GitHubAutomaticEventContext,
   type GitHubReviewEventContext,
   type GitHubReviewPolicy,
 } from "@paperclipai/shared";
@@ -208,14 +212,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     );
     if (!access?.allowed)
       throw forbidden("The initiating GitHub person is no longer authorized");
-    const automatic = source.delivery.normalizedEvent.githubAutomatic as
-      { context: GitHubReviewEventContext } | undefined;
+    const automatic = (source.delivery.normalizedEvent.githubAutomatic ?? source.delivery.normalizedEvent.githubIssue) as
+      { context: GitHubAutomaticEventContext } | undefined;
     if (
       automatic &&
       !(await githubAutomaticAdmission(db, source.endpoint, automatic.context))
         ?.allowed
     )
-      throw forbidden("Automatic review authority is no longer available");
+      throw forbidden("Automatic GitHub task authority is no longer available");
     const repositoryId = String(
       source.resource.metadata?.providerRepositoryId ?? "",
     );
@@ -527,11 +531,11 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ) {
     const source = await scope(session);
     const api = await client(source);
-    if (name === "comment") {
+    if (name === "comment" || name === "update_comment") {
       const parsed = commentSchema.parse(input);
       const actionId = await stage(
         source,
-        "comment",
+        name,
         parsed,
         parsed.idempotencyKey,
         invocationId,
@@ -1004,7 +1008,18 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           )
             throw forbidden("GitHub publication context changed");
           await assertPublicationAuthority(source, action);
-          const api = await client(source, lease.fetch);
+          const providerApi = await client(source, lease.fetch);
+          const api: typeof providerApi = { ...providerApi, request: async (path, options) => {
+            if (options?.method && ["POST", "PATCH"].includes(options.method) && /\/(?:comments|reviews)(?:\/|$)/.test(path)) {
+              // Persist uncertainty before transport. A stale head or lost
+              // authority after a write cannot prove the comment never arrived.
+              await lease.commit(async tx => {
+                await tx.update(chatActions).set({ result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || '{"replyWriteStarted":true}'::jsonb`, updatedAt: new Date() })
+                  .where(eq(chatActions.id, action.id));
+              });
+            }
+            return providerApi.request(path, options);
+          } };
           const publicationMarker = marker(
             "publication",
             action.providerActionId,
@@ -1061,25 +1076,12 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           };
           const operation = action.payload.operation;
           let receipt: Record<string, unknown>;
-          if (operation === "comment") {
-            const body = `${projectSafeChatPublicationText(String(action.payload.body))}\n\n${publicationMarker}`;
-            const route = source.replyId
-              ? `/pulls/${source.number}/comments`
-              : `/issues/${source.number}/comments`;
-            const prior = await findByMarker(route, publicationMarker);
-            await assertPublicationAuthority(
-              await scope(session, true),
-              action,
-            );
-            const posted =
-              prior ??
-              (await api.request<{ id: number; html_url: string }>(
-                source.replyId
-                  ? `/pulls/${source.number}/comments/${source.replyId}/replies`
-                  : route,
-                { method: "POST", body: { body } },
-              ));
-            receipt = { id: String(posted.id), url: posted.html_url };
+          if (operation === "comment" || operation === "update_comment") {
+            receipt = await writeGitHubResponseComment(db, source, api, lease, {
+              body: String(action.payload.body), final: operation === "comment", versionAt: action.createdAt,
+            }, async () => assertPublicationAuthority(await scope(session, true), action));
+            if (operation === "comment") await githubResponseCommentService(db, fetchImpl).finishRun({ companyId: session.companyId, issueId: source.issue.id, runId: source.run.id, endpointId: source.endpoint.id }, source,
+              receipt as { id: string; url: string }, api, lease, async () => assertPublicationAuthority(await scope(session, true), action));
           } else if (operation === "formal_review") {
             const parsed = formalSchema.parse({
               body: action.payload.body,
@@ -1163,27 +1165,26 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               "review",
               `${source.endpoint.id}:${source.repositoryId}:${source.number}`,
             );
+            const receipts = { ...review.publicationReceipts };
             let summaryReceipt: { id: number; html_url: string } | null = null;
             if (source.policy.publishSummary) {
-              const previous = await findByMarker(
-                `/issues/${source.number}/comments`,
-                summaryMarker,
-              );
               const currentSummarySource = await currentHead(review.headSha);
               if (!currentSummarySource.policy.publishSummary)
                 throw forbidden("Summary publication is disabled");
-              summaryReceipt = await api.request(
-                previous
-                  ? `/issues/comments/${previous.id}`
-                  : `/issues/${source.number}/comments`,
-                {
-                  method: previous ? "PATCH" : "POST",
-                  body: { body: `${summary}\n\n${summaryMarker}` },
-                },
-              );
+              const published = await writeGitHubResponseComment(db, source, api, lease, {
+                body: `${summary}\n\n${summaryMarker}`, final: true, versionAt: action.createdAt,
+              }, async () => { await currentHead(review.headSha); });
+              summaryReceipt = { id: Number(published.id), html_url: published.url };
+              receipts.summary = { id: published.id, url: published.url, digest: hash(summary) };
+              await lease.commit(async tx => {
+                await tx.update(chatGitHubReviews).set({ summaryId: published.id, summaryUrl: published.url,
+                  publicationReceipts: receipts, updatedAt: new Date() }).where(eq(chatGitHubReviews.id, review.id));
+              });
+              await githubResponseCommentService(db, fetchImpl).finishRun({ companyId: session.companyId, issueId: source.issue.id, runId: source.run.id, endpointId: source.endpoint.id }, source, published, api, lease,
+                async () => { await currentHead(review.headSha); });
             }
+            let firstInlineReceipt: { id: string; url: string } | null = null;
             const severity = { info: 0, warning: 1, error: 2 };
-            const receipts = { ...review.publicationReceipts };
             if (source.policy.publishInline)
               for (const finding of assessment.findings) {
                 if (
@@ -1259,12 +1260,19 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     })
                     .onConflictDoNothing();
                 });
-                receipts[key] = {
-                  id: String(posted.id),
-                  url: posted.html_url,
-                  digest: hash(finding),
-                };
+                receipts[key] = { id: String(posted.id), url: posted.html_url, digest: hash(finding) };
+                firstInlineReceipt ??= { id: String(posted.id), url: posted.html_url };
+                await lease.commit(async tx => {
+                  await tx.update(chatGitHubReviews).set({ publicationReceipts: receipts, updatedAt: new Date() })
+                    .where(eq(chatGitHubReviews.id, review.id));
+                });
               }
+            if (!source.policy.publishSummary && firstInlineReceipt) {
+              await githubResponseCommentService(db, fetchImpl).finishRun({
+                companyId: session.companyId, issueId: source.issue.id, runId: source.run.id,
+                endpointId: source.endpoint.id, closePrimary: true,
+              }, source, firstInlineReceipt, api, lease, async () => { await currentHead(review.headSha); });
+            }
             await currentHead(review.headSha);
             const checks = await api.request<{
               check_runs: Array<{
@@ -1333,6 +1341,33 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                 updatedAt: new Date(),
               })
               .where(eq(chatActions.id, action.id));
+            // A confirmed tool reply completes the acknowledgement even while
+            // the model continues its turn. Commit cleanup in the same outbox
+            // transaction; a restart or failed removal is retried independently.
+            if (
+              (await githubRunReplyState(tx as unknown as Db, {
+                companyId: action.companyId,
+                endpointId: action.endpointId,
+                issueId: source.issue.id,
+                runId: source.run.id,
+              })) === "confirmed"
+            ) {
+              await stageReceiptReactionRemovals(tx as unknown as Db, {
+                endpoint: source.endpoint,
+                binding: {
+                  companyId: action.companyId,
+                  endpointId: action.endpointId,
+                  conversationId: source.conversation.id,
+                  issueId: source.issue.id,
+                },
+                runId: source.run.id,
+                runtimeContext: source.delivery.normalizedEvent
+                  .runtimeContext as {
+                  generation: number;
+                  credentialFingerprint: string;
+                },
+              });
+            }
             await logActivity(tx as unknown as Db, {
               companyId: action.companyId,
               actorType: "agent",
@@ -1368,7 +1403,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               .update(chatActions)
               .set({
                 status: superseded || denied ? "cancelled" : "failed",
-                result: {
+                result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || ${JSON.stringify({
                   attempts,
                   retryable: !superseded && !denied && attempts < 8,
                   retryAt: new Date(
@@ -1379,7 +1414,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     : denied
                       ? "authorization_changed"
                       : "publication_failed",
-                },
+                })}::jsonb`,
                 updatedAt: new Date(),
               })
               .where(eq(chatActions.id, action.id));

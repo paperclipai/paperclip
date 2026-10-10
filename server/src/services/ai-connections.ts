@@ -39,6 +39,7 @@ import {
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -266,15 +267,9 @@ export function aiConnectionService(db: Db) {
         input.acpxAgent,
       )
     )
-      throw unprocessable(
-        "Select an AI connection compatible with this harness and model",
-        { code: "ai_connection_incompatible" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select an AI connection compatible with this harness and model");
     if (binding.mode === "responsible_user" && !userId)
-      throw unprocessable(
-        "This run needs a responsible user to select an AI connection",
-        { code: "ai_connection_responsible_user_missing" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_responsible_user_missing", "This run needs a responsible user to select an AI connection");
     if (userId && !(await membership(companyId, userId)))
       throw forbidden("The responsible user is not an active company member");
     const defaultRow =
@@ -298,10 +293,7 @@ export function aiConnectionService(db: Db) {
         ? defaultRow?.grantId
         : binding.grantId;
     if (!grantId)
-      throw unprocessable(
-        "Connect an account and choose your personal default",
-        { code: "ai_connection_default_missing" },
-      );
+      throw aiConnectionConfigurationFailure("ai_connection_default_missing", "Connect an account and choose your personal default");
     const row = (await rows(companyId)).find(
       (r) =>
         r.grant.id === grantId &&
@@ -309,9 +301,7 @@ export function aiConnectionService(db: Db) {
           r.connection.id === binding.connectionId),
     );
     if (!row)
-      throw unprocessable("The selected AI connection is unavailable", {
-        code: "ai_connection_missing",
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_missing", "The selected AI connection is unavailable");
     const { connection, grant } = row;
     const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
     if (
@@ -320,13 +310,9 @@ export function aiConnectionService(db: Db) {
       (binding.mode !== "responsible_user" && metadata.data.method !== binding.method) ||
       !isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent)
     )
-      throw unprocessable("The selected AI connection is incompatible", {
-        code: "ai_connection_incompatible",
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The selected AI connection is incompatible");
     if (aiSubscriptionNeedsIsolatedLogin(connection.config))
-      throw unprocessable("Reconnect this subscription with a separate sign-in to protect your existing terminal login.", {
-        code: "ai_connection_unavailable", connectionId: connection.id,
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect this subscription with a separate sign-in to protect your existing terminal login.", { connectionId: connection.id });
     if (
       grant.status !== "active" ||
       !connection.enabled ||
@@ -337,10 +323,7 @@ export function aiConnectionService(db: Db) {
           connection.config.aiLegacyAdoption === true
         ))
     )
-      throw unprocessable("Reconnect or validate the selected AI account", {
-        code: "ai_connection_unavailable",
-        connectionId: connection.id,
-      });
+      throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect or validate the selected AI account", { connectionId: connection.id });
     if (
       grant.kind === "user" &&
       !(await membership(companyId, grant.subjectUserId))
@@ -366,8 +349,12 @@ export function aiConnectionService(db: Db) {
       ));
     // The existing human-access permission is authoritative for every binding,
     // including old explicit personal selections. Agent delegation cannot bypass it.
-    if (!canUseCredential(grant, userId, audience))
+    if (!canUseCredential(grant, userId, audience)) {
+      // Membership was checked above. A known user's sharing choice is an
+      // operator action; absent identity must remain an unclassified denial.
+      if (userId) throw aiConnectionCredentialNotSharedFailure({ connectionName: connection.name, grantId: grant.id });
       throw forbidden("This credential is not shared with the responsible user");
+    }
     const installs = await db
       .select()
       .from(toolConnectionInstalls)
@@ -1097,15 +1084,15 @@ export function aiConnectionService(db: Db) {
   }
   // A quota read uses the same credential audience as execution. Operator status
   // alone never grants access to another member's personal subscription.
-  async function quotaAccounts(companyId: string, userId: string) {
+  async function quotaAccounts(companyId: string, userId: string, includeOtherProviders = false) {
     if (!(await membership(companyId, userId))) return [];
     const visible = await list(companyId, userId);
     const accounts = await rows(companyId);
     return accounts.flatMap(row => {
       const summary = visible.find(item => item.id === row.connection.id && item.grantId === row.grant.id);
-      if (!summary || summary.method !== "subscription" || !["openai", "anthropic"].includes(summary.provider)) return [];
+      if (!summary || summary.method !== "subscription" || !(includeOtherProviders ? ["openai", "anthropic", "xai"] : ["openai", "anthropic"]).includes(summary.provider)) return [];
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, quotaAccounts, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

@@ -636,6 +636,18 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(releasedImpact?.reusableSandboxLeaseCount).toBe(1);
     expect(await svc.removeIfDeletable(environmentId)).toBeNull();
 
+    // A failed run can release its reusable sandbox successfully without
+    // destroying it. The provider handle still needs environment-scoped cleanup.
+    await svc.releaseLease(lease.id, "failed", {
+      failureReason: "adapter_or_run_failure",
+      cleanupStatus: "success",
+    });
+    const failedImpact = await svc.getDeleteBlastRadius(environmentId);
+    expect.soft(failedImpact?.canDelete).toBe(false);
+    expect.soft(failedImpact?.deleteBlockedReasons).toContain("reusable_sandbox_lease");
+    expect.soft(failedImpact?.reusableSandboxLeaseCount).toBe(1);
+    expect(await svc.removeIfDeletable(environmentId)).toBeNull();
+
     const rows = await db.select().from(environments).where(eq(environments.id, environmentId));
     expect(rows).toHaveLength(1);
     const storedLease = await svc.getLeaseById(lease.id);

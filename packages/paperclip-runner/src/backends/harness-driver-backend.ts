@@ -507,7 +507,7 @@ class HarnessNativeSession implements NativeSession {
     let sourceInstanceId: string | null = null;
     let lastSourceSequence = 0;
     let sawTerminal = false;
-    let synthesizedDurableWait = false;
+    let synthesizedProviderFailure = false;
     let streamFailure: unknown = null;
     const observedPendingInputs = new Map<string, Record<string, unknown>>();
     try {
@@ -630,7 +630,7 @@ class HarnessNativeSession implements NativeSession {
         this.#rethrowProtocolIntegrity(error);
         return null;
       });
-      let governedWaitTurnId: string | undefined;
+      let providerLossTurnId: string | undefined;
       for (const request of observedPendingInputs.values()) {
         const sourceSeq =
           Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
@@ -638,7 +638,7 @@ class HarnessNativeSession implements NativeSession {
         const requestId = String(request.requestId);
         const turnId =
           typeof request.turnId === "string" ? request.turnId : undefined;
-        governedWaitTurnId ??= turnId;
+        providerLossTurnId ??= turnId;
         const itemId =
           typeof request.itemId === "string" ? request.itemId : requestId;
         yield {
@@ -670,16 +670,18 @@ class HarnessNativeSession implements NativeSession {
           },
         };
       }
-      if (governedWaitTurnId) {
+      if (providerLossTurnId) {
+        // Expiring input preserves its durable human fallback. The unexpected
+        // transport loss remains a failed provider execution, never a yield.
         const sourceSeq =
           Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
         lastSourceSequence = sourceSeq;
-        synthesizedDurableWait = true;
+        synthesizedProviderFailure = true;
         sawTerminal = true;
         this.#terminal = {
           schema: "paperclip.prp.terminal.v1",
-          turnTerminalState: "interrupted",
-          runTerminalState: "cancelled",
+          turnTerminalState: "failed",
+          runTerminalState: "failed",
           reportedWorkDisposition: "yielded",
         };
         yield {
@@ -690,16 +692,16 @@ class HarnessNativeSession implements NativeSession {
           sourceKind: "runner",
           runId: this.#input.identity.runId,
           normalizedSessionId: this.#input.identity.sessionId,
-          turnId: governedWaitTurnId,
-          eventType: "turn.interrupted",
+          turnId: providerLossTurnId,
+          eventType: "turn.failed",
           schemaVersion: 1,
           priority: 0,
           emittedAt: new Date().toISOString(),
-          payload: { status: "interrupted", reason: "provider_process_lost" },
+          payload: { status: "failed", reason: "provider_process_lost" },
         };
       }
     }
-    if (streamFailure && !synthesizedDurableWait) throw streamFailure;
+    if (streamFailure && !synthesizedProviderFailure) throw streamFailure;
   }
 
   async startTurn(input: Parameters<HarnessSession["startTurn"]>[0]) {

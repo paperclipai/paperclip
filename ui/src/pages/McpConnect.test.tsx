@@ -33,12 +33,12 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function setup(device = false) {
+function setup(device = false, agentPairingOnly = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  const render = () => flushSync(() => root.render(<QueryClientProvider client={client}>{device ? <McpDevicePage initialCode="MIST-YPED" /> : <McpConnectPage />}</QueryClientProvider>));
+  const render = () => flushSync(() => root.render(<QueryClientProvider client={client}>{device ? <McpDevicePage initialCode="MIST-YPED" /> : <McpConnectPage agentPairingOnly={agentPairingOnly} />}</QueryClientProvider>));
   render();
   return {
     client, container, render,
@@ -61,10 +61,10 @@ it("lets a person correct an invalid device code without reloading", async () =>
   } finally { page.cleanup(); }
 });
 
-it("lets Dot use the operator pairing capability without signing into a board account", async () => {
+it.each([false, true])("lets Dot use the operator pairing capability without signing into a board account (dedicated=%s)", async dedicated => {
   Object.assign(route, { agentConnection: true, requiresSignIn: true });
   vi.mocked(api.post).mockImplementationOnce(async () => ({ company: { id: "company-one", name: "Dot Test Drive" }, agent: { id: "agent-one", name: "Dot" }, permissions: "Assigned work only", accessDuration: "Ongoing until revoked", pairingExpiresAt: new Date(Date.now() + 60000).toISOString() }) as never);
-  const page = setup();
+  const page = setup(false, dedicated);
   try {
     await vi.waitFor(() => expect(page.container.querySelector("#dot-pairing-code")).not.toBeNull());
     const input = page.container.querySelector<HTMLInputElement>("#dot-pairing-code")!;
@@ -80,7 +80,7 @@ it("lets Dot use the operator pairing capability without signing into a board ac
     expect(page.container.textContent).toContain("Ongoing until revoked");
     expect(connect.disabled).toBe(false);
     flushSync(() => connect.click());
-    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/mcp/requests/request-one/dot-pairing", { pairingCode: "x".repeat(32) }));
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(`${dedicated ? "/dot-mcp" : "/mcp"}/requests/request-one/dot-pairing`, { pairingCode: "x".repeat(32) }));
   } finally { page.cleanup(); }
 });
 

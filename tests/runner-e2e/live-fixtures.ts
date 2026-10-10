@@ -1,3 +1,4 @@
+import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import path from "node:path";
 import { installedReleaseDaytonaPlugin } from "./installed-release.js";
@@ -115,10 +116,9 @@ export async function setupLiveFixtures(input: {
     registry.register<PluginRecord>({
       id: "sandbox-provider",
       async setup() {
+        const installed = await verifyInstalledDaytonaPlugin(process.env, [execution]);
         return api.post<PluginRecord>("/api/plugins/install", {
-          packageName: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI
-            ? installedReleaseDaytonaPlugin(process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI, process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN, process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_VERSION)
-            : path.resolve(
+          packageName: installed?.packageRoot ?? path.resolve(
             import.meta.dirname,
             "../../packages/plugins/sandbox-providers/daytona",
           ),

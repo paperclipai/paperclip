@@ -10,11 +10,14 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  connectionGrants,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
   issueAccessGrants,
   issues,
+  toolApplications,
+  toolConnections,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -313,6 +316,35 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       const linkedIssues = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/issues`);
       expect(linkedIssues.status).toBe(200);
       expect(linkedIssues.body[0]).toMatchObject({ issueId: fixture.issueId, title: "Confidential email triage" });
+    }
+  });
+
+  it("filters credential diagnostics in full-run and history responses by viewer", async () => {
+    const fixture = await seedFixture();
+    const readerId = `reader-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: readerId, name: "Task reader", email: `${readerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user", principalId: readerId, status: "active", membershipRole: "operator" });
+    await db.update(issues).set({ visibility: "open", privacyRootIssueId: null }).where(eq(issues.id, fixture.issueId));
+    const applicationId = randomUUID(), connectionId = randomUUID(), grantId = randomUUID();
+    await db.insert(toolApplications).values({ id: applicationId, companyId: fixture.companyId, name: "AI fixture", type: "rest_api" });
+    await db.insert(toolConnections).values({ id: connectionId, companyId: fixture.companyId, applicationId, name: "Owner's API key", uid: "credential-fixture", connectionPurpose: "ai", transport: "runtime_auth" });
+    await db.insert(connectionGrants).values({ id: grantId, companyId: fixture.companyId, connectionId, kind: "user", subjectUserId: fixture.ownerUserId });
+    await db.update(heartbeatRuns).set({ status: "failed", responsibleUserId: fixture.otherUserId,
+      errorCode: "configuration_incomplete", error: "This credential is not shared with the responsible user",
+      resultJson: { configurationIncomplete: { selectionFailure: "ai_connection_credential_not_shared",
+        credentialAccess: { connectionName: "Owner's API key", grantId } } },
+    }).where(eq(heartbeatRuns.id, fixture.privateRunId));
+    for (const userId of [fixture.ownerUserId, fixture.otherUserId, readerId]) {
+      const app = createBoardApp(fixture.companyId, userId);
+      const detail = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+      const history = await request(app).get(`/api/companies/${fixture.companyId}/heartbeat-runs`);
+      expect(detail.status).toBe(200);
+      expect(history.status).toBe(200);
+      const expected = userId === readerId ? {} : { connectionName: "Owner's API key" };
+      expect(detail.body.resultJson.configurationIncomplete.credentialAccess).toEqual(expected);
+      expect(JSON.stringify(detail.body)).not.toContain(grantId);
+      expect(JSON.stringify(history.body)).not.toContain(grantId);
+      if (userId === readerId) expect(JSON.stringify(history.body)).not.toContain("Owner's API key");
     }
   });
 

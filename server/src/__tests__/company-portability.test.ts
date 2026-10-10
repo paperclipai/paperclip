@@ -122,6 +122,13 @@ vi.mock("../services/agents.js", () => ({
   agentService: () => agentSvc,
 }));
 
+vi.mock("../services/agent-lifecycle.js", () => ({
+  createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => agentSvc.create(...args),
+    pauseAgent: vi.fn(),
+  }),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => accessSvc,
 }));
@@ -1727,20 +1734,30 @@ describe("company portability", () => {
     expect(exported.warnings.filter((warning) => warning.includes("could not be exported portably"))).toHaveLength(1);
   });
 
-  it("round-trips the saved visual persona through the portable bundle", async () => {
+  it.each([undefined, "22222222-2222-4222-8222-222222222222"])("round-trips the preset without private avatar references (%s)", async customAvatarAssetId => {
     const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "arctic-blue" };
     const source = await agentSvc.list();
-    agentSvc.list.mockResolvedValue(source.map((agent: Record<string, unknown>) => ({ ...agent, appearance })));
+    agentSvc.list.mockResolvedValue(source.map((agent: Record<string, unknown>) => ({ ...agent, appearance: { ...appearance, ...(customAvatarAssetId ? { customAvatarAssetId } : {}) } })));
     const portability = companyPortabilityService({} as any);
     const include = { company: true, agents: true, projects: false, issues: false, skills: false };
     const exported = await portability.exportBundle("company-1", { include });
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("arctic-blue");
+    const extensionText = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extensionText).not.toContain("customAvatarAssetId");
+    if (customAvatarAssetId) {
+      expect(exported.warnings.some(warning => warning.includes("uploaded avatar was omitted"))).toBe(true);
+      // Even a hand-edited package must not carry another agent's private asset into import.
+      exported.files[".paperclip.yaml"] = extensionText.replace(/^(\s*)paletteId:.*$/gm,
+        match => `${match}\n${match.match(/^\s*/)?.[0]}customAvatarAssetId: ${customAvatarAssetId}`);
+      expect(asTextFile(exported.files[".paperclip.yaml"])).toContain(customAvatarAssetId);
+    }
+
     agentSvc.list.mockResolvedValue([]);
     agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ ...input, id: `imported-${input.name}` }));
     await portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
       target: { mode: "new_company", newCompanyName: "Imported personas" }, collisionStrategy: "rename", agents: "all" }, "user-1");
     expect(agentSvc.create).toHaveBeenCalled();
-    for (const [, input] of agentSvc.create.mock.calls) expect(input).toMatchObject({ appearance });
+    for (const [, input] of agentSvc.create.mock.calls) expect(input.appearance).toEqual(appearance);
   });
 
   it("reads env inputs back from .paperclip.yaml during preview import", async () => {

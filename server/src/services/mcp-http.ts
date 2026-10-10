@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
 //
 // The MCP Streamable HTTP spec requires the client to advertise that it accepts
@@ -72,18 +73,18 @@ export async function initializeMcpHttpSession(input: {
     }),
   });
   if (!initializeResponse.ok) {
-    throw new McpHttpInitializationError(
+    throw markMcpHttpResponseFailure(initializeResponse, new McpHttpInitializationError(
       `Remote MCP initialization returned HTTP ${initializeResponse.status}`,
       "initialize",
       initializeResponse.status,
       initializeResponse,
-    );
+    ));
   }
   let payload: unknown;
   try {
-    payload = await readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`);
-  } catch {
-    throw new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null);
+    payload = await withMcpConnectionFailure(() => readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`));
+  } catch (error) {
+    throw retainMcpConnectionFailure(error, new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null));
   }
   const result = payload && typeof payload === "object" && "result" in payload
     ? (payload as { result?: unknown }).result
@@ -109,11 +110,11 @@ export async function initializeMcpHttpSession(input: {
     }),
   });
   if (!initializedResponse.ok) {
-    throw new McpHttpInitializationError(
+    throw markMcpHttpResponseFailure(initializedResponse, new McpHttpInitializationError(
       `Remote MCP initialized notification returned HTTP ${initializedResponse.status}`,
       "initialized_notification",
       initializedResponse.status,
-    );
+    ));
   }
   return sessionHeaders;
 }

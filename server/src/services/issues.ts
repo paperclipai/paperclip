@@ -9,6 +9,7 @@ import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
+import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { isExplicitContinuationRetryClaim } from "./explicit-continuation-retry-claim.js";
 import { markdownToPlainText, parseMarkdown } from "chat";
@@ -25,6 +26,7 @@ import {
   isNull,
   like,
   lt,
+  lte,
   ne,
   notExists,
   notInArray,
@@ -7951,35 +7953,64 @@ export function issueService(db: Db) {
     },
     dbOrTx: any = db,
   ) {
-    const now = new Date();
-    const [row] = await dbOrTx
-      .insert(issueInboxArchives)
-      .values({
-        companyId,
-        issueId,
-        userId,
-        archivedByActorType: attribution?.archivedByActorType ?? "user",
-        archivedByAgentId: attribution?.archivedByAgentId ?? null,
-        archivedByRunId: attribution?.archivedByRunId ?? null,
-        archivedAt,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [
-          issueInboxArchives.companyId,
-          issueInboxArchives.issueId,
-          issueInboxArchives.userId,
-        ],
-        set: {
-          archivedAt,
+    const runArchive = async (tx: typeof dbOrTx) => {
+      // Completion locks the issue before archiving. Take the FK's parent lock
+      // first too, or an insert can hold the archive key while waiting on that
+      // issue and deadlock with completion's archive UPSERT. SHARE also holds
+      // companyId stable; different users can still archive concurrently.
+      const [issue] = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .for("share");
+      if (!issue) throw notFound("Issue not found");
+
+      const now = new Date();
+      const [row] = await tx
+        .insert(issueInboxArchives)
+        .values({
+          companyId,
+          issueId,
+          userId,
           archivedByActorType: attribution?.archivedByActorType ?? "user",
           archivedByAgentId: attribution?.archivedByAgentId ?? null,
           archivedByRunId: attribution?.archivedByRunId ?? null,
+          archivedAt,
           updatedAt: now,
-        },
-      })
-      .returning();
-    return row;
+        })
+        .onConflictDoUpdate({
+          target: [
+            issueInboxArchives.companyId,
+            issueInboxArchives.issueId,
+            issueInboxArchives.userId,
+          ],
+          set: {
+            archivedAt,
+            archivedByActorType: attribution?.archivedByActorType ?? "user",
+            archivedByAgentId: attribution?.archivedByAgentId ?? null,
+            archivedByRunId: attribution?.archivedByRunId ?? null,
+            updatedAt: now,
+          },
+          // A request that waited behind completion must not replace the newer
+          // archive with its earlier request time and resurface the done task.
+          setWhere: lte(issueInboxArchives.archivedAt, archivedAt),
+        })
+        .returning();
+      if (row) return row;
+      // ON CONFLICT holds this row lock even when setWhere skips the update.
+      // Return the newer state, including its matching actor attribution.
+      const [existing] = await tx
+        .select()
+        .from(issueInboxArchives)
+        .where(and(
+          eq(issueInboxArchives.companyId, companyId),
+          eq(issueInboxArchives.issueId, issueId),
+          eq(issueInboxArchives.userId, userId),
+        ));
+      if (!existing) throw new Error("Inbox archive conflict row missing");
+      return existing;
+    };
+    return dbOrTx === db ? db.transaction(runArchive) : runArchive(dbOrTx);
   }
 
   const service = {
@@ -10803,6 +10834,7 @@ export function issueService(db: Db) {
         actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10850,6 +10882,7 @@ export function issueService(db: Db) {
         actorRunStopId,
         actorUserId,
         companyGuard,
+        expectedExecutionPolicy,
         ...issueData
       } = data;
       // An explicit edit claims the title, even if it keeps the same text.
@@ -11142,6 +11175,14 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (expectedExecutionPolicy !== undefined && !isDeepStrictEqual(
+          receiptExisting.executionPolicy ?? null,
+          expectedExecutionPolicy,
+        )) {
+          throw conflict("The task execution settings changed. Try cancelling the monitor again.", {
+            code: "execution_policy_changed",
+          });
+        }
         if (changesPrivacy) {
           const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : receiptExisting.projectId;
           const [privacyProject] = nextProjectId ? await tx.select().from(projects)

@@ -11,6 +11,8 @@ import {
 } from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
+import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
+import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -44,6 +46,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+/** An owned AI selection rejection before dispatch, not its broad catch wrapper. */
+function isAiConnectionSelectionBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  // Resumed native input may already have provider effects, even during preparation.
+  if (run.runtimeMode === "native" && asRecord(run.runnerProfileJson)?.nativeExecutionInput !== undefined) return false;
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === "ai_connection_unavailable" &&
+    isAiConnectionConfigurationReason(configuration.selectionFailure) &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
 /** A known owner action before dispatch, not a secret-provider or runtime failure. */
@@ -103,6 +121,49 @@ function isLocalPathWorkspaceConfigurationBlocker(run: HeartbeatRun, options: Ru
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
+/** Only the managed-clone producer can attach this bounded pre-dispatch evidence. */
+function isGitConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  const connection = readConnectionFailure(run.resultJson?.connectionFailure);
+  if (connection?.provider !== "git" || run.status !== "failed" || run.executionStage !== "preparing" ||
+      options.phase !== "setup" || run.exitCode != null || run.signal != null) return false;
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  if (recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false) return false;
+  const validation = asRecord(run.resultJson?.workspaceValidation);
+  if (run.errorCode === "setup_failed") return !validation;
+  if (run.errorCode !== "workspace_validation_failed" || validation?.reason !== "git_worktree_base_materialization_failed") return false;
+  const failures = validation.materializationFailures;
+  return Array.isArray(failures) && failures.length > 0 && failures.every((failure) => {
+    const marker = readConnectionFailure(asRecord(failure)?.connectionFailure);
+    return marker?.provider === "git";
+  }) && readConnectionFailure(asRecord(failures[0])?.connectionFailure)?.reason === connection.reason;
+}
+
+const hermesTransportReasons = new Set([
+  "connection_refused", "dns_failure", "network_unreachable", "connection_reset", "connection_timeout", "tls_failure",
+]);
+
+/** An adapter result remains failed; this only excludes its proven external cause. */
+function isHermesConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions, adapterType: string | undefined): boolean {
+  if (adapterType !== "hermes_gateway" || run.status !== "failed" || run.exitCode !== 1 || run.signal != null || options.phase === "setup") return false;
+  const connection = readConnectionFailure(run.resultJson?.connectionFailure);
+  if (connection?.provider !== "hermes_gateway") return false;
+  const code = run.errorCode;
+  if (connection.operation === "configuration") {
+    const codes: Record<Extract<ConnectionFailure, { provider: "hermes_gateway"; operation: "configuration" }>["reason"], string> = {
+      endpoint_missing: "hermes_gateway_api_base_url_missing",
+      endpoint_invalid: "hermes_gateway_api_base_url_invalid",
+      insecure_transport: "hermes_gateway_plain_http_remote_denied",
+      credentials_missing: "hermes_gateway_api_key_missing",
+    };
+    return code === codes[connection.reason];
+  }
+  if (hermesTransportReasons.has(connection.reason)) return code === "hermes_gateway_connect_failed" || code === "hermes_gateway_protocol_error";
+  return (connection.reason === "authentication_failed" && code === "hermes_gateway_auth_failed") ||
+    (connection.reason === "endpoint_not_found" && code === "hermes_gateway_runs_unsupported") ||
+    (connection.reason === "rate_limited" && code === "hermes_gateway_rate_limited") ||
+    (connection.reason === "remote_unavailable" && code === "hermes_gateway_upstream_error");
+}
+
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
  * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
@@ -118,7 +179,9 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isAiConnectionSelectionBlocker(run, options)) return Promise.resolve();
   if (isLocalPathWorkspaceConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isGitConnectionFailure(run, options)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);
@@ -146,6 +209,8 @@ async function captureTerminalRunFailure(
       .from(agents)
       .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+
+    if (isHermesConnectionFailure(run, options, agent?.adapterType)) return;
 
     const taskId = readTaskId(run);
     if (!taskId) {

@@ -7,7 +7,7 @@ individual action descriptions are in
 
 ## Coverage and gaps
 
-[`cases.json`](cases.json) defines eleven neutral user prompts with fixtures,
+[`cases.json`](cases.json) defines twelve neutral user prompts with fixtures,
 independent expected outcomes, required evidence, and related deterministic
 regressions. These are **manual model acceptance probes**, not registered Runner
 or Product E2E workflows. Running the regressions does not run those prompts,
@@ -26,10 +26,12 @@ contract; its pass does not establish the probe's complete outcome.
 | Destructive changes and invitations | Honor the saved action policy and approval decision. | `approval-decline` |
 | Canvases and lists | Use advertised capabilities; explain plan/scope limitations without inventing success. | `canvas-list-availability` |
 | Task links | Use the server-provided public URL. | `task-link` |
+| People joining | Give the saved bot command, personal confirmation flow, and company-access approval. Channel invitations do not grant Paperclip access. | `invite-person` |
 
 Pins, bookmarks, channel topics, invitations, list edits, and channel creation
 have tool descriptions and transport fixtures but no dedicated model probe here
-yet. The canvas probe does not qualify list editing. Automatic app creation,
+yet. Those provider channel invitations are distinct from the `invite-person`
+account-linking guidance probe. The canvas probe does not qualify list editing. Automatic app creation,
 OAuth, setup navigation, and installation recovery are a separate onboarding
 surface covered by the existing setup and browser tests.
 

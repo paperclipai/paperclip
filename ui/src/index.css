@@ -234,6 +234,7 @@
      `in_queue` is the BLOCKED shape recoloured to the in_progress blue
      (replaces the bespoke teal "covered" state). Light values here; the
      `.dark` block below overrides the hues that need a mode-specific value. */
+  --sz-protocol-notice-icon: calc(var(--spacing) * 3.5);
   --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
   --status-task-icon-in_progress: var(--color-blue-600); /* matches nav dots and live labels */
@@ -3356,6 +3357,10 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   width: calc(var(--agent-setup-logo-size) * 3 + var(--agent-setup-logo-overlap) * 2);
   height: var(--agent-setup-logo-size);
   margin-left: auto;
+}
+
+.agent-setup-trigger-logos[data-single="true"] {
+  width: var(--agent-setup-logo-size);
 }
 .agent-setup-logos { display: inline-flex; isolation: isolate; }
 .agent-setup-logos[data-hidden="true"] { visibility: hidden; }

@@ -6,9 +6,10 @@ owns the assignment lifecycle and durable tool receipts. Dot uses Paperclip's
 existing agent permissions and task tools, including document writes and
 completion feedback.
 
-This first version supports a self-hosted instance with a local Runner
-controller and a stable public HTTPS origin. Hosted agent-broker and remote
-controller deployments are not qualified. The feature is off by default.
+Dot supports a self-hosted instance with a local Runner controller and a stable
+public HTTPS origin, or a Cloud instance with a managed sandbox Runner and the
+tenant Dot ingress. The feature is off by default. Cloud requires the native
+Runner setting in addition to Dot and Assistant connections (MCP).
 
 ## Enable and pair
 
@@ -48,6 +49,16 @@ controller deployments are not qualified. The feature is off by default.
 Only the operator's one-use pairing code is displayed. OAuth tokens and callback
 signing secrets stay on the server and never enter the Runner descriptor,
 task prompt or saved adapter config. Pairing codes expire after 15 minutes.
+Once paired, the connection has no Paperclip inactivity expiry, including existing
+valid connections upgraded by migration `0319_heavy_captain_midlands.sql`. Access tokens
+still last 15 minutes and are renewed with rotating, non-expiring refresh tokens;
+revocation, replay detection, and current company/agent permissions still apply.
+This does not control any independent OpenAI-side connection policy.
+
+In **Invite an external agent → Dot**, the prompt preview closes automatically
+as soon as Paperclip observes the connection. The footer shows **Connecting…**
+while Dot subscribes, then **Confirming connection…** during the event check.
+After the round trip succeeds, **Done** closes the invitation dialog.
 
 The dedicated connection uses the merged MCP gateway's PKCE browser and device
 flows, including verified client metadata documents and organization hints.
@@ -333,12 +344,13 @@ Mailbox `follow_up` entries reference new comments on an accepted assignment. Re
 
 ## Tool inventory
 
-The top-level MCP catalog contains these 15 transport and lifecycle tools:
+The top-level MCP catalog contains these 16 transport, lifecycle, and profile tools:
 `paperclip_dot_capabilities`, `paperclip_dot_request_turn`, `paperclip_dot_tasks`,
 `paperclip_dot_request_work`, `paperclip_dot_pair`, `paperclip_dot_inbox`,
 `paperclip_dot_read`, `paperclip_dot_accept`, `paperclip_dot_tool`,
 `paperclip_dot_progress`, `paperclip_dot_finish`, `paperclip_dot_operation_status`,
-`paperclip_dot_confirm_event`, `paperclip_dot_renew`, `paperclip_dot_control_ack`.
+`paperclip_dot_confirm_event`, `paperclip_dot_renew`, `paperclip_dot_control_ack`,
+`paperclip_dot_set_avatar`.
 
 After accepting work, use `paperclip_dot_tool` with a name from the assignment's
 actual catalog. Availability depends on work mode, permissions, assigned apps,
@@ -383,7 +395,77 @@ read tools. Raw asset reads and uploads are limited to API captures and output
 artifacts from the current run. API uploads from workspace paths require the
 workspace grant and the same confined root as workspace tools.
 
+### Dot's own tools and task scope
+
+Dot should use its own available tools, apps, plugins, skills, and capabilities to complete each Paperclip assignment or message, then return the result to Paperclip. For example, Dot can use a Slack connection already available in ChatGPT even when Slack is absent from the Paperclip agent's assigned app catalog. The assignment catalog governs Paperclip calls through `paperclip_dot_tool`; it does not enumerate or disable Dot's native tools. Each tool retains its own permissions and approval requirements. Paperclip company, agent, task, and denial boundaries remain in force. Native tools cannot substitute another Paperclip identity or bypass a denied Paperclip operation.
+
+Setup and qualification restrictions are local to their stated scope. Test prompts should say, for example, "For this qualification task only, send Paperclip operations through this test connection. After this test, use your normal available tools and connections for later requests." Avoid "use only this plugin" without naming the task and duration. Do not carry a completed test's restriction into later comments or messages. The copy prompts, external-agent onboarding document, Dot event and capability instructions, and Runner assignment instructions all make this distinction.
+
 A plugin upgraded during a running Dot conversation can retain an old top-level
 tool catalog. Refresh its tools in ChatGPT plugin settings and reattach it.
 Inspect the real exposed actions before claiming new idle or lease actions
 are available. The assignment catalog is read on each new assignment.
+
+## Cloud direction and external-agent invitation UX
+
+The [2026-10-08 cloud Runner and invitation decision](plans/2026-10-08-cloud-dot-runner-and-external-invitations.md) keeps remote agents on the new Runner infrastructure. In addition to shared assignment lifecycle handling, this preserves a sandbox boundary for future tools that may access Paperclip workspaces. The first cloud version gives Dot no Paperclip workspace file or command tools; Dot works on its own computer.
+
+The entry is **New Agent → Invite an external agent → Dot / Hermes / Other**. Dot receives a copyable setup prompt and live connection checks, with readiness requiring a confirmed event round trip. The same components have Storybook journeys with fixture data. Cloud assignments use the selected managed sandbox Runner; idle MCP traffic does not allocate a sandbox. Hermes continues to use the existing external-agent invitation prompt.
+
+## Agent avatar
+
+After pairing, Dot can call `paperclip_dot_set_avatar` without an active assignment or completed event test. It changes only the Paperclip agent bound to that live connection. It requires the Dot and Assistant connections experimental flags, an active operator membership, and a non-revoked grant and binding.
+
+Input is `{ "imageBase64": "<raw base64 image bytes>" }`. PNG, JPEG and WebP are supported, up to 512 KiB and 16 megapixels; animations and SVG are rejected. Paperclip re-encodes the image as a metadata-free PNG at most 512 pixels on either side. Sending the same image again is safe and does not create another asset. Send `{ "imageBase64": null }` to restore the existing Paperclip character and palette.
+
+The same capability is available to agents via `PUT /api/companies/:companyId/agents/:agentId/avatar` with the same body and normal agent bearer authentication. An agent can update only itself; board users need the same `agent_config:update` permission as other agent configuration changes. Task bridge and skill test credentials cannot change avatars. Returned `appearance.customAvatarAssetId` and `avatarUrl` propagate through existing agent views. The image is a company-scoped private asset served through authenticated `/api/assets/:assetId/content`, not a public image URL for third-party embeds. Previous assets remain available for configuration history. Company exports retain the preset character and palette and warn that uploaded avatar assets must be uploaded again after import; private asset IDs are never portable. Activity records contain asset metadata, never image bytes.
+
+The setup prompt asks Dot to upload its own current image only if it can obtain it. We have not verified a supported OpenAI avatar-export API. Avatar availability must never block pairing; Dot may call the tool later. This capability does not add workspace access or change Runner assignment execution.
+
+
+### Invite from the agent picker
+
+A new Dot remains in hire preparation until pairing and the event check finish.
+Setup can issue its prompt during preparation and verification; the compatibility
+status `paused` does not require an operator resume in these states. The live
+checks continue until the binding and agent lifecycle are both ready. A manual
+pause or pending hire approval still blocks setup.
+
+Enable **OpenAI Dot** and **Assistant connections (MCP)**, then choose **New Agent → Invite an external agent → Dot**. Copy the setup prompt into your Dot. Paperclip creates a scoped Runner agent and watches connection, event subscription, and a harmless event round trip. If your company requires hire approval, approve the agent before copying its pairing prompt. The test event is sent automatically after the callback is verified; Retry test event remains available if confirmation times out.
+
+Reopening setup resumes the operator's unfinished invitation. Pairing codes are not stored in browser persistence. After refreshing or when an open prompt expires, setup automatically prepares a fresh prompt to copy. It first checks current connection state and replaces only the pending capability, without revoking an established connection. A failed renewal offers a retry rather than looping. If another browser window replaces the prompt, the current window asks before replacing it again. Hermes and Other continue to use the ordinary external-agent invitation flow.
+
+Cloud instances require a managed sandbox environment and the current Runner artifact. Dot cannot fall back to a process on the control-plane host or to the legacy session backend. The control plane retains OAuth, signed events, mailbox state, and authorization. One sandbox owns an admitted assignment, including later messages and tool operations; completion and cancellation use the existing managed lease cleanup. Dot-initiated work creates a visible task and follows the same admission path.
+
+The first managed version does not expose Paperclip workspace tools, even when the Runner itself has a sandbox directory. Keep `dotWorkspaceAccess` off. Assigned app tools still execute through their existing control-plane gateway and scoped grants. The Runner receives no OpenAI credential.
+
+The Cloud front door must forward the dedicated `/mcp/runner` protocol endpoints, OAuth discovery/authorization/token routes, and `/dot-connect/:requestId` pairing page without requiring a browser stack session. The page uses `/api/dot-mcp/requests/:requestId` for read and one-use pairing preview/approval. These aliases reject personal assistant request IDs. Regular `/mcp-connect` consent and assistant connection management retain normal sign-in. Deploy the corresponding Cloud ingress change with the tenant app; upgrading only the UI is insufficient.
+
+Remote startup checks `externalProviderCapabilities` for `openai_dot_mcp`, verifies the artifact digest, and uses the existing authenticated Runner transport. Before dispatch, it also requires the sandbox process marker and Linux boot/start fingerprint; a connected transport alone is insufficient. A pre-Dot artifact is rejected before dispatch. Linux controllers use their packaged Linux artifact; a development controller on another platform must set `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to a current binary built for the sandbox platform.
+
+Recovery reads the checkpoint from the owning execution target and validates run/session/turn authority before retaining a controller copy. Missing state after dispatch fails closed for reconciliation. It never creates a replacement OpenAI Dot thread. See [the cloud Runner plan](plans/2026-10-08-cloud-dot-runner-and-external-invitations.md).
+
+An active managed Dot bridge allows a five-minute controller reconnect gap. Recovery must still prove the same sandbox lease, Runner process generation, durable session, and assignment; it cannot substitute a new process or Dot conversation. A verified shutdown receipt is authoritative even when the remote process monitor has no exit code. Remote process birth comes from the sandbox, never a colliding PID on the controller.
+
+A normal task comment for an accepted Dot assignment is recorded once in its durable mailbox and its wake receipt points to the existing run. The receipt stays deferred until Dot receives a successful `get_task_history` result containing that exact comment ID. A webhook or inbox reference alone does not consume it. If the assignment finishes first, normal queued admission preserves the unread comment for the next turn, including after controller recovery. Comments already read during the assignment do not execute again. Explicit fresh-session requests, interactions, and idle task admission retain their existing wake policy.
+
+### Managed qualification
+
+`server/src/__tests__/dot-runner.test.ts` includes an opt-in private Daytona test using the actual Rust Runner and authenticated preview ingress. It covers signed readiness, no workspace catalog, assigned app tools, task-document writes, duplicate receipts, normal completion, and sandbox deletion. The ordinary suite also covers OAuth revocation, membership loss, budget and ownership fences, admission, and local Rust recovery.
+
+To run the live test, install/build the bundled Daytona plugin dependencies, supply `DAYTONA_API_KEY`, set `PAPERCLIP_DOT_DAYTONA_LIVE=1`, and set `PAPERCLIP_DOT_DAYTONA_IMAGE` to an immutable image digest. Optionally set `PAPERCLIP_DOT_DAYTONA_RUNNER_BINARY` to a current Linux Runner artifact and `PAPERCLIP_DOT_DAYTONA_EVIDENCE` to a local evidence output path. Then run:
+
+```sh
+pnpm exec vitest run server/src/__tests__/dot-runner.test.ts -t 'private Daytona Rust'
+```
+
+The fixture creates a private, bounded sandbox and deletes it in `finally`. Default tests do not contact Daytona. This test uses a scripted MCP client; a separate real OpenAI Dot walkthrough is required to qualify provider behavior.
+
+### Public Cloud consent
+
+The Dot consent page is intentionally accessible without a Paperclip board
+session. Background UI probes may receive `tenant_session_required` or
+`tenant_session_invalid` there; they must not reload the public consent document.
+The public request and pairing endpoints still enforce the OAuth request and
+one-use pairing code. Normal board routes retain Cloud session recovery, and
+archived stacks still redirect through a document reload.

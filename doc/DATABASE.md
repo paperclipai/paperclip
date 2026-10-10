@@ -19,6 +19,17 @@ That's it. On first start the server:
 
 Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
 
+Subscription reporting adds `ai_subscriptions` (company-scoped account identity),
+`ai_subscription_prices` (immutable price revisions), and
+`ai_subscription_connections` (selected grant-to-account bindings). New managed
+subscription receipts also have a nullable `cost_events.subscription_id`.
+Migration `0322_reflective_kree.sql` is replay-safe and leaves existing cost
+amounts and receipts untouched. No historical account attribution is inferred.
+Deleting a connection removes its binding but retains subscription price history;
+disconnecting is not proof that provider billing ended. See
+[subscription cost reporting](connections/AI-CONNECTIONS.md#subscription-cost-reporting)
+for the reporting and ownership rules.
+
 If you need to apply pending migrations manually, run:
 
 ```sh
@@ -681,3 +692,46 @@ and are atomically deleted before code exchange. The `code_verifier` column hold
 this non-secret binding for this namespace; Slack bot installation does not use
 PKCE. Removal and manual recovery invalidate outstanding attempts under the same
 credential-mutation lease used by configuration.
+
+
+## Transaction-aware delivery work signals
+
+Five existing delivery queues use process-local work signals to avoid empty
+polling. Register work **before** writing a queue row, on that row's transaction:
+
+```ts
+await db.transaction(async tx => {
+  await signalDatabaseWork(tx, "queue-topic");
+  await tx.insert(existingQueueTable).values(row);
+});
+```
+
+`createDb` instruments transaction callbacks and nested savepoints. Subscribers
+receive intent immediately and settlement only after the outer transaction
+finishes. Caller-owned transactions therefore need no extra post-commit wrapper.
+Dedicated clients from `withDedicatedDbConnection` share the owner's signal
+scope. No schema changes, triggers, dedicated listener connection, or periodic
+queries are installed by this API.
+
+The first registered write in a transaction fetches `pg_current_xact_id()`.
+Awaiting registration is required: a failure at that point must prevent the
+queue write. Unrelated transactions add no queries. If the transaction rejects,
+the coordinator probes `pg_xact_status(xid)` through the root pool before scanning
+the queue. An in-progress transaction remains unresolved even when the queue
+currently looks empty. Committed/aborted results permit reconciliation; NULL
+means PostgreSQL has discarded an old, no-longer-active transaction's outcome.
+The existing durable queue supplies the work in either case. Probe failures
+retain the idle hold and schedule another attempt. Work signals never replay
+queries or convert a failed database operation into success.
+
+This uses PostgreSQL's transaction-information functions (this path requires
+PostgreSQL 14+; embedded PostgreSQL uses 18). See the
+[PostgreSQL transaction information documentation](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-PG-SNAPSHOT).
+The process-local intent survives coordinator replacement, but not process exit.
+Startup scans recover committed queue rows. Independent DB clients, other
+processes, late transactions from an old process, and database failover need an
+explicit ownership/wake protocol; these signals are not cross-process messaging.
+Use the same root client for in-process writers. New queue insertion paths must
+register before writing, or they can remain unseen until the next startup or
+another notification. Tests should verify both the producer and its outer
+transaction boundary.

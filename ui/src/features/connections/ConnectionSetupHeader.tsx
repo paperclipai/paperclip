@@ -73,4 +73,3 @@ export function StepHeader({
     </div>
   );
 }
-

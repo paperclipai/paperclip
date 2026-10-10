@@ -1,6 +1,9 @@
 import { DecisionHistory } from "../components/decision-models/DecisionHistory";
+import { SubscriptionCostCard, SubscriptionTokenUsage } from "../components/SubscriptionCostCard";
+import { subscriptionsApi } from "../api/subscriptions";
 import { useSearchParams } from "@/lib/router";
 import { CostEstimateLabel } from "../components/CostEstimateLabel";
+import { CostAmount } from "../components/CostAmount";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
@@ -227,6 +230,23 @@ export function Costs({
   // boundary. Rolling windows retain identity as their lower bound advances.
   const reportQueryFrom = ["custom", "mtd", "ytd"].includes(preset) ? from || undefined : undefined;
   const reportQueryTo = preset === "custom" ? to || undefined : preset;
+
+  const subscriptionKey = ["cost-subscriptions", companyId, reportQueryFrom, reportQueryTo];
+  const { data: subscriptions, error: subscriptionError } = useQuery({
+    queryKey: subscriptionKey,
+    queryFn: () => subscriptionsApi.report(companyId, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady && showSummaryChrome,
+    refetchInterval: 30_000,
+  });
+  const invalidateSubscriptions = () => { void queryClient.invalidateQueries({ queryKey: ["cost-subscriptions", companyId] }); };
+  const discoveryCompany = useRef<string | null>(null);
+  const discoverSubscriptions = useMutation({ mutationFn: (id: string) => subscriptionsApi.refresh(id),
+    onSuccess: (_data, id) => { void queryClient.invalidateQueries({ queryKey: ["cost-subscriptions", id] }); } });
+  useEffect(() => {
+    if (!selectedCompanyId || !showSummaryChrome || !subscriptions?.canRefresh || discoveryCompany.current === selectedCompanyId) return;
+    discoveryCompany.current = selectedCompanyId;
+    discoverSubscriptions.mutate(selectedCompanyId);
+  }, [selectedCompanyId, showSummaryChrome, subscriptions?.canRefresh, discoverSubscriptions.mutate]);
 
   const { data: budgetData, isLoading: budgetLoading, error: budgetError } = useQuery({
     queryKey: queryKeys.budgets.overview(companyId),
@@ -558,12 +578,6 @@ export function Costs({
     ];
   }, [byBiller]);
 
-  const inferenceTokenTotal =
-    (spendData?.byAgent ?? []).reduce(
-      (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
-      0,
-    );
-
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -631,13 +645,17 @@ export function Costs({
               Finance headline totals are USD only. Other currencies are listed separately; no exchange-rate conversion is applied.
             </p>
           )}
-          <div className="grid gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <MetricTile
-              label="Inference spend"
-              value={spendData ? formatCents(spendData.summary.spendCents) : "—"}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              label="API spend"
+              value={subscriptions ? subscriptions.api.unpricedEventCount === subscriptions.api.eventCount && subscriptions.api.eventCount > 0 ? "—" : formatCents(Number(subscriptions.api.costCents)) : "—"}
+              subtitle={subscriptions ? <div className="space-y-1">
+                <CostEstimateLabel eventCount={subscriptions.api.eventCount} estimatedEventCount={subscriptions.api.estimatedEventCount} />
+                <div><SubscriptionTokenUsage usage={subscriptions.api} /></div>
+              </div> : subscriptionError ? "API usage is unavailable" : "API usage is loading"}
               icon={DollarSign}
             />
+            <SubscriptionCostCard key={companyId} companyId={companyId} report={subscriptions} error={subscriptionError} onChanged={invalidateSubscriptions} />
             <MetricTile
               label="Budget"
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
@@ -672,6 +690,14 @@ export function Costs({
               icon={ArrowUpRight}
             />
           </div>
+          {subscriptions && Number(subscriptions.subscription.costCents) > 0 && <p className="text-sm text-muted-foreground">Subscription accounts also have {formatCents(Number(subscriptions.subscription.costCents))} in recorded usage charges for this period, separate from monthly fees.</p>}
+          {subscriptions && subscriptions.unknown.eventCount > 0 && <p className="text-sm text-muted-foreground">{formatTokens(subscriptions.unknown.inputTokens + subscriptions.unknown.cachedInputTokens + subscriptions.unknown.outputTokens)} tokens have other or unknown billing types{Number(subscriptions.unknown.costCents) > 0 ? `, with ${formatCents(Number(subscriptions.unknown.costCents))} in recorded charges` : ""}. They remain in the inference ledger.</p>}
+          {subscriptionError && subscriptions && <p role="status" className="text-sm text-muted-foreground">Showing the last loaded API and subscription usage. Updates will resume automatically.</p>}
+          {discoverSubscriptions.error && <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <p>Connected accounts could not be checked. Existing subscription estimates are still shown.</p>
+            {subscriptions?.canRefresh && <Button variant="outline" size="sm" disabled={discoverSubscriptions.isPending}
+              onClick={() => discoverSubscriptions.mutate(companyId)}>Retry account check</Button>}
+          </div>}
           {spendData?.summary.pricingComplete === false && (
             <div role="status" className="space-y-1 text-sm text-muted-foreground">
               {spendData.summary.unpricedEventCount > 0 && (
@@ -704,14 +730,16 @@ export function Costs({
       {incidentMutation.error && <p role="alert" className="text-sm text-destructive">Could not update the budget. Check any pending runs or unpriced usage shown on this page, then try again.</p>}
       <Tabs value={mainTab} onValueChange={(value) => { setMainTab(value as typeof mainTab); setSearchParams(current => { const next = new URLSearchParams(current); next.set("tab", value); return next; }, { replace: true }); }}>
         {!lockTab ? (
-          <TabsList variant="line" className="justify-start">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            {!hideBudgetsTab ? <TabsTrigger value="budgets">Budgets</TabsTrigger> : null}
-            <TabsTrigger value="providers">Providers</TabsTrigger>
-            <TabsTrigger value="billers">Billers</TabsTrigger>
-            <TabsTrigger value="finance">Finance</TabsTrigger>
-            <TabsTrigger value="decisions">Decisions</TabsTrigger>
-          </TabsList>
+          <div className="max-w-full overflow-x-auto pb-2">
+            <TabsList variant="line" className="justify-start">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              {!hideBudgetsTab ? <TabsTrigger value="budgets">Budgets</TabsTrigger> : null}
+              <TabsTrigger value="providers">Providers</TabsTrigger>
+              <TabsTrigger value="billers">Billers</TabsTrigger>
+              <TabsTrigger value="finance">Finance</TabsTrigger>
+              <TabsTrigger value="decisions">Decisions</TabsTrigger>
+            </TabsList>
+          </div>
         ) : null}
 
         <TabsContent value="decisions" className="mt-4">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <DecisionHistory companyId={companyId} from={from} to={to} />}</TabsContent>
@@ -756,10 +784,7 @@ export function Costs({
                                   {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                                 </div>
                                 <div className="text-right text-sm tabular-nums">
-                                  <div className="flex flex-wrap items-center justify-end gap-2 font-medium">
-                                    <span>{formatCents(row.costCents)}</span>
-                                    <CostEstimateLabel eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
-                                  </div>
+                                  <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
                                   <div className="text-xs text-muted-foreground">
                                     in {formatTokens(row.inputTokens + row.cachedInputTokens)} ({formatTokens(row.cachedInputTokens)} cached) · out {formatTokens(row.outputTokens)}
                                   </div>
@@ -796,13 +821,12 @@ export function Costs({
                                           </div>
                                         </div>
                                         <div className="text-right tabular-nums">
-                                          <div className="flex flex-wrap items-center justify-end gap-2 font-medium">
-                                            <span>
-                                              {formatCents(modelRow.costCents)}
-                                              <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
-                                            </span>
-                                            <CostEstimateLabel eventCount={modelRow.eventCount} estimatedEventCount={modelRow.estimatedEventCount} />
-                                          </div>
+                                          <CostAmount
+                                            costCents={modelRow.costCents}
+                                            eventCount={modelRow.eventCount}
+                                            estimatedEventCount={modelRow.estimatedEventCount}
+                                            suffix={<span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>}
+                                          />
                                           <div className="text-muted-foreground">
                                             {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
                                           </div>
@@ -841,7 +865,7 @@ export function Costs({
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
                           </div>
                         ))
                       )}

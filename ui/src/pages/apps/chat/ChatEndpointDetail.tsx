@@ -1,4 +1,3 @@
-import { AgentAvatar } from "@/components/AgentAvatar";
 import { deriveInitials } from "@/components/Identity";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
@@ -10,12 +9,16 @@ import { SlackAvatarSettings } from "./SlackAvatarStep";
 import { agentsApi } from "@/api/agents";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { resolveAgentAppearance } from "@paperclipai/shared";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { ChatConversationList } from "./ChatConversationList";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
+import { GitHubBotMention, GitHubAppIdentityActions } from "./GitHubAppIdentity";
+import { GitHubConnectionComplete, type GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 import { EmailEndpointSettings } from "./EmailEndpointSetup";
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
 import { emailApi } from "@/api/email";
 import { toolsApi } from "@/api/tools";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -59,7 +62,7 @@ import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { Link, Navigate, useNavigate, useParams } from "@/lib/router";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 
 const tabs = ["settings", "access", "reviews", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
@@ -230,12 +233,17 @@ export function connectionHealthPresentation(
 }
 
 export function ChatEndpointDetail() {
-  const { endpointId = "", tab = "settings" } = useParams<{
+  const { endpointId = "", tab: routeTab, reviewId } = useParams<{
     endpointId: string;
     tab?: string;
+    reviewId?: string;
   }>();
+  const tab = reviewId ? "reviews" : (routeTab ?? "settings");
   const activeTab = tabs.includes(tab as ChatTab) ? (tab as ChatTab) : null;
   const navigate = useNavigate();
+  const location = useLocation();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const completion = (location.state as GitHubConnectionCompleteLocationState | null)?.githubConnectionComplete;
   const { setBreadcrumbs } = useBreadcrumbs();
   const endpointQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.detail(endpointId),
@@ -248,6 +256,11 @@ export function ChatEndpointDetail() {
         : false,
   });
   const endpoint = endpointQuery.data;
+  const avatarAgent = useQuery({
+    queryKey: queryKeys.agents.detail(endpoint?.assignedAgentId ?? ""),
+    queryFn: () => agentsApi.get(endpoint!.assignedAgentId),
+    enabled: endpoint?.provider === "github",
+  });
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const agentQuery = useQuery({
     queryKey: queryKeys.agents.detail(endpoint?.assignedAgentId ?? ""),
@@ -263,14 +276,14 @@ export function ChatEndpointDetail() {
         label: `${endpoint.assignedAgentName} · ${providerNames[endpoint.provider]}`,
         href: `/apps/chat/${endpoint.id}/settings`,
       },
-      {
+      ...(reviewId ? [{ label: "Reviews", href: `/apps/chat/${endpoint.id}/reviews` }, { label: "Review" }] : [{
         label:
           tabItems.find((item) => item.value === activeTab)?.label ??
           "Settings",
-      },
+      }]),
     ]);
     return () => setBreadcrumbs([]);
-  }, [activeTab, endpoint, setBreadcrumbs]);
+  }, [activeTab, endpoint, reviewId, setBreadcrumbs]);
 
   if (!activeTab)
     return <Navigate replace to={`/apps/chat/${endpointId}/settings`} />;
@@ -306,15 +319,18 @@ export function ChatEndpointDetail() {
     <div className="max-w-5xl space-y-6 pb-12">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <AgentAvatar agent={agentQuery.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={48} />
-          <div>
-          <h1 className="text-xl font-bold">
-            {endpoint.assignedAgentName}
+          <AgentAvatar agent={agentQuery.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={endpoint.provider === "github" ? 64 : 48} />
+          <div className="min-w-0">
+          <h1 ref={heading} tabIndex={-1} className="text-xl font-bold">
+            {endpoint.provider === "github" ? (endpoint.botLabel ?? endpoint.assignedAgentName) : endpoint.assignedAgentName}
           </h1>
-          <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-            <AppLogo name={providerNames[endpoint.provider]} brandKey={endpoint.provider} size={16} compact />
-            {endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            {endpoint.provider === "github" ? <><AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" /><Link to={`/agents/${endpoint.assignedAgentId}`} className="hover:underline">{endpoint.assignedAgentName}</Link>{endpoint.providerAccountLabel && <span>· {endpoint.providerAccountLabel}</span>}</> : endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
           </p>
+          {endpoint.provider === "github" && <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <GitHubBotMention endpoint={endpoint} />
+            <GitHubAppIdentityActions endpoint={endpoint} avatarUrl={avatarAgent.data ? agentAvatarUrl(resolveAgentAppearance(avatarAgent.data.appearance, endpoint.assignedAgentId), 512, 1, "rest") : undefined} />
+          </div>}
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
               <span>{endpoint.botExternalId}</span>
@@ -325,7 +341,7 @@ export function ChatEndpointDetail() {
               <span role="status" className="text-muted-foreground">{copyStatus}</span>
             </div>
           )}
-        </div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
@@ -344,14 +360,11 @@ export function ChatEndpointDetail() {
           {["paused", "attention", "revoked"].includes(endpoint.status) && <StatusBadge status={endpoint.status} />}
         </div>
       </header>
-      {activeTab === "settings" && (
-        <>
-{endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="settings" />}
-{endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
-</>
-      )}
-      {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} />}
-{activeTab === "access" && endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="access" />}
+      {endpoint.provider === "github" && <div hidden={activeTab !== "settings" && activeTab !== "access"}>
+        <GitHubBotManagement key={endpoint.id} endpoint={endpoint} view={activeTab === "access" ? "access" : "settings"} />
+      </div>}
+      {activeTab === "settings" && endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
+      {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} reviewId={reviewId} />}
 {activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
 {activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
         <Access
@@ -365,6 +378,19 @@ export function ChatEndpointDetail() {
       )}
       {activeTab === "activity" && (
         <Activity endpointId={endpoint.id} endpoint={endpoint} />
+      )}
+      {endpoint.provider === "github" && activeTab === "settings" && endpoint.status === "active" &&
+        endpoint.setup?.step === "complete" && completion?.endpointId === endpoint.id && (
+        <GitHubConnectionComplete
+          endpoint={endpoint}
+          agent={avatarAgent.data}
+          runtimeChecks={completion.runtimeChecks}
+          onClose={() => {
+            const { githubConnectionComplete: _complete, ...rest } = location.state as GitHubConnectionCompleteLocationState;
+            navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: rest });
+          }}
+          onCloseAutoFocus={() => heading.current?.focus()}
+        />
       )}
     </div>
   );
@@ -533,6 +559,17 @@ function Settings({
               updateEndpoint.mutate({ allowDirectMessages })
             }
           />
+          {endpoint.provider === "slack" && (
+            <SettingToggle
+              label="Require at-mention"
+              detail="Only respond to messages that @mention this bot, including thread replies and direct messages. Direct messages must also be allowed above."
+              checked={endpoint.requireAtMention ?? false}
+              pending={updateEndpoint.isPending}
+              onChange={(requireAtMention) =>
+                updateEndpoint.mutate({ requireAtMention })
+              }
+            />
+          )}
           {endpoint.provider === "microsoft-teams" && (
             <SettingToggle
               label="Allow group chats"
@@ -799,41 +836,14 @@ function Conversations({
     queryFn: () => chatEndpointsApi.listConversations(endpointId),
     ...liveChatQueryOptions,
   });
-  const rows = query.data ?? [];
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">Conversations</h2>
-      </div>
       {query.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading conversations…</p> : query.isError ? (
         <div className="space-y-3">
           <p role="alert" className="text-sm text-destructive">Conversations could not be loaded.</p>
           <Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>
         </div>
-      ) : rows.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-          {provider === "agentmail"
-            ? "No email conversations yet. Send an email to this agent’s address to start one."
-            : "No conversations yet. Message the agent to start one."}
-        </p>
-      ) : (
-        <ul aria-label="Conversations" className="divide-y divide-border overflow-x-auto border-y border-border">
-          {rows.map((row) => (
-            <li key={row.id} className="flex flex-wrap items-center gap-3 px-2 py-3 text-sm transition-colors hover:bg-accent/50">
-              <AppLogo name={providerNames[provider]} brandKey={provider} compact className="size-5! rounded-sm bg-transparent" />
-              <div className="flex min-w-0 max-w-56 items-center gap-2">
-                {row.externalUrl ? <a href={row.externalUrl} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 font-medium hover:underline"><span className="truncate">{row.externalLabel}</span><ExternalLink className="size-3 shrink-0" /></a> : <span className="truncate font-medium">{row.externalLabel}</span>}
-              </div>
-              <span aria-hidden="true" className="hidden text-muted-foreground sm:inline">·</span>
-              <div className="order-last flex min-w-0 basis-full items-center gap-2 pl-8 sm:order-none sm:flex-1 sm:basis-0 sm:pl-0">
-                {row.issueId ? <Link to={`/issues/${row.issueId}`} className="line-clamp-2 hover:underline sm:truncate" title={row.issueTitle ?? undefined}>{row.issueTitle ?? row.issueIdentifier ?? "View task"}</Link> : <span className="truncate text-muted-foreground">Waiting for task</span>}
-              </div>
-              <span className="hidden shrink-0 text-xs text-muted-foreground xl:inline">{row.issueIdentifier}</span>
-              {row.state !== "active" && <StatusBadge status={row.state} />}
-            </li>
-          ))}
-        </ul>
-      )}
+      ) : <ChatConversationList rows={query.data} provider={provider} />}
     </section>
   );
 }

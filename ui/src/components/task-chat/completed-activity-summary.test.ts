@@ -1,3 +1,4 @@
+import { AlertTriangle, Info } from "lucide-react";
 import { describe, expect, it } from "vitest";
 import { completedActivitySummary } from "./completed-activity-summary";
 import type {
@@ -141,4 +142,48 @@ describe("completedActivitySummary", () => {
       completedActivitySummary([tool("mcp__github__get_pull_request")]).label,
     ).toBe("Used connected tools");
   });
+  it("shows the preserved pricing estimate as informational, not a billing receipt", () => {
+    const summary = "Pi estimates this turn at $0.000617 from its model prices. Billing cost is unverified.";
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "informational"), summary,
+      details: [{ label: "Severity", value: "info" }],
+    }])).toEqual({ label: summary, fullLabel: summary, icon: Info });
+  });
+  it.each(["warning", "error", undefined])("retains warning/error icons and safe notice text (%s)", (severity) => {
+    const summary = "Provider request needs attention.";
+    const result = completedActivitySummary([{
+      ...provider("provider_notice", severity === "error" ? "failed" : "informational"),
+      details: [
+        { label: "Summary", value: summary },
+        ...(severity ? [{ label: "Severity", value: severity }] : []),
+      ],
+    }]);
+    expect(result).toEqual({ label: summary, fullLabel: summary, icon: AlertTriangle });
+  });
+  it("uses a generic fallback without promoting arbitrary detail fields", () => {
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "informational"), summary: "  ",
+      details: [{ label: "Raw input", value: "private-command-or-path" }],
+    }]).label).toBe("Received a provider update");
+  });
+  it("does not hide a failed notice behind informational metadata", () => {
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "failed"), summary: "Provider failed.",
+      details: [{ label: "Severity", value: "info" }],
+    }]).icon).toBe(AlertTriangle);
+  });
+
+  it("groups distinct notices and keeps a later error visible beside actual work", () => {
+    const notices = ["info", "info", "warning", "error"].map((severity, index) => ({
+      ...provider("provider_notice", "informational"),
+      id: `notice-${index}`,
+      summary: `Distinct provider message ${index}`,
+      details: [{ label: "Severity", value: severity }],
+    }));
+    const result = completedActivitySummary([tool("bash"), ...notices]);
+    expect(result.label).toBe("Provider error reported, ran commands");
+    expect(result.fullLabel).toBe(result.label);
+    expect(result.label).not.toContain("Distinct provider message");
+  });
+
 });

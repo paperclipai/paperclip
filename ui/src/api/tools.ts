@@ -87,6 +87,8 @@ export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = {
   apps: AppDefinition[];
+  /** Server-authoritative OAuth callback URI, omitted when this deployment has no supported browser origin. */
+  oauthCallbackUrl?: string;
   capabilities: ToolConnectionCreateCapabilities;
   credentialSources: {
     vercelConnect: {
