@@ -40,7 +40,9 @@ See [controlled recovery tests](../runner-recovery/README.md).
 The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
 `claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
-on Daytona: eight cells. Remote runner-process killing is not supported. For remote controller
+on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,
+for 52 cells total. Hiring/reuse and delegation have one attempt and a
+1,000-cent company and lead-agent hard stop. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.
@@ -236,3 +238,25 @@ revision, harness digest, and existing usage/cost evidence accompany each attemp
 routing, incorrect ordering, early calls, duplicate questions, and fabricated reads.
 Run a single `everyday-workflows.runner-codex-mini.local.provider-decline` cell
 first; do not treat these fixtures as live provider compatibility tests.
+
+### Connection-guidance observation boundaries
+
+The explicit `native-connection-guidance` suite keeps one attempt per cell.
+For decline cases, Done and a succeeded run are insufficient: settlement waits
+within the existing cell deadline for a saved reply attributed by run ID to the
+lead agent's final successful run on this task. Readiness checks storage and
+identity, not favorable wording. A missing reply times out; an incorrect reply
+settles and fails the independent explanation check. Both decline explanation
+checks use the same bounded matcher, including unavailable/rejected access and
+“wasn't able to pull” wording. This is textual evidence, not proof of cognition.
+
+An executed approval or a recorded tool-action rejection with `wake_assignee`
+may precede its continuation run. Only a response bound to the same task, company,
+agent, and completed source run can defer the stranded-blocker check, and only
+within the original deadline. A failed execution, unrelated card, or already
+consumed response cannot extend that wait.
+
+`connection-guidance-decline-grade.json` and the workflow's
+`declineGradeEvidence` retain the exact cloned assertion input and original
+checks. Later final-state or cleanup observations cannot overwrite that input.
+Earlier campaign grades remain unchanged when the evaluator is corrected.

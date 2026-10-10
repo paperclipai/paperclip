@@ -64,7 +64,17 @@ export class CodexHarnessSession
     this.transport.setServerRequestHandler((request) =>
       handleServerRequest(this, request),
     );
-    initializeCodexSessionEvents(this, input);
+    const restored = this.transport.takeRestoredRuntimeRequests?.() ?? [];
+    const restoredIds = new Set(restored.map(request => String(request.id)));
+    initializeCodexSessionEvents(this, {
+      ...input,
+      stalePendingRuntimeRequests: input.stalePendingRuntimeRequests?.filter(request => !restoredIds.has(request.requestId)),
+    });
+    for (const request of restored) {
+      void handleServerRequest(this, request, { restored: true }).catch(error => this.failProtocol(
+        "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
+      ));
+    }
     if (this.terminal) {
       this.eventQueue.close();
     } else {

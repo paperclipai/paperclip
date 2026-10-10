@@ -99,12 +99,48 @@ describe("stopped task recovery notice", () => {
     expect(link.getAttribute("href")).toBe("/agents/agent/runs/failed-run");
     expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
   });
+  it("keeps workspace repair guidance and inspection without offering the legacy Retry fallback", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "repair", runId: "failed-run", agentId: "agent", cause: "legacy_execution_requires_reconciliation",
+        workspaceRepairRequired: true, canRetry: false, canContinue: false,
+        nextAction: "The original sandbox is retained. Recover the missing files and record workspace repair evidence.",
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).toContain("Recover the missing files");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("Inspect run");
+    expect(agentsApi.retryFailedRun).not.toHaveBeenCalled();
+  });
+
   it("retries the exact failed run and refreshes the task", async () => {
     vi.mocked(agentsApi.retryFailedRun).mockResolvedValue({} as never);
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
     expect(agentsApi.retryFailedRun).toHaveBeenCalledWith("agent", "failed-run", "company");
     expect(onRetried).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+    "The selected model is not supported by the current ChatGPT connection. Choose a supported model or a compatible AI connection.",
+  ])("shows the model rejection and repair action without expanding run logs: %s", async (runError) => {
+    vi.mocked(activityApi.runsForIssue).mockResolvedValue([{ runId: "model-run", agentId: "agent",
+      status: "failed", errorCode: "native_provider_model_rejected" }] as never);
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="model-task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "model-run", agentId: "agent",
+        cause: "native_continuation_requires_reconciliation", canRetry: true,
+        runError,
+        nextAction: "Inspect the original failure before continuing.",
+      }} />
+    </QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(container.textContent).toContain("Model unavailable.");
+    expect(container.textContent).toContain(runError);
+    expect(container.textContent).toContain("clear the task's model override, then retry");
+    expect(container.textContent).toContain("Inspect the original failure before continuing.");
+    expect(container.querySelector("button")?.textContent).toBe("Retry");
   });
 
   it.each(["native_continuation_requires_reconciliation", "uncertain_external_action"])("offers Retry for a server-admitted native failure: %s", async cause => {

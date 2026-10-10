@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expectTaskPanelTab } from "./helpers/task-panel-tabs";
 
 async function json(response: Awaited<ReturnType<APIRequestContext["get"]>>) {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(true);
@@ -46,10 +47,15 @@ for (const mobile of [false, true]) {
       await page.getByRole("button", { name: "Show properties", exact: true }).click();
     }
     const panel = mobile ? page.getByTestId("mobile-task-side-panel") : page.locator("aside").filter({ has: page.getByRole("tab", { name: "Artifacts", exact: true }) });
-    const artifacts = panel.getByRole("tab", { name: "Artifacts", exact: true });
+    if (mobile) await panel.getByRole("button", { name: /^Switch tabs, \d+ open$/ }).click();
+    const artifacts = mobile
+      ? page.getByRole("dialog", { name: "Open tabs", exact: true }).getByRole("button", { name: "Artifacts", exact: true })
+      : panel.getByRole("tab", { name: "Artifacts", exact: true });
     await expect(artifacts).toBeVisible();
-    await expect(artifacts).toHaveAttribute("aria-selected", "false");
+    if (mobile) await expect(artifacts).not.toHaveAttribute("aria-current", "true");
+    else await expect(artifacts).toHaveAttribute("aria-selected", "false");
     await artifacts.click();
+    await expectTaskPanelTab(panel, mobile, "Artifacts");
     await expect(panel.getByRole("heading", { name: "Arriving report", level: 2, exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("artifact-opened-by-user.png"), fullPage: true });
   });

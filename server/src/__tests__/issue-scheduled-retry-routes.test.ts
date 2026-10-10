@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -9,6 +9,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
@@ -302,6 +304,37 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       .where(and(eq(heartbeatRuns.retryOfRunId, first.body.scheduledRetry.retryOfRunId), eq(heartbeatRuns.companyId, companyId)));
     expect(retryRuns).toHaveLength(1);
     expect(retryRuns[0]).toMatchObject({ id: retryRunId, status: "queued" });
+  });
+
+  it("reports cleanup waits with the saved schedule and promotes the same retry after release", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns)
+      .set({ resultJson: { conversationContinuation: "continue_conversation_v1" } })
+      .where(inArray(heartbeatRuns.id, [f.sourceRunId, f.retryRunId]));
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.sourceRunId,
+      status: "pending_cleanup", cleanupStatus: "failed",
+    }).returning();
+    const app = createApp(boardActor(f.companyId));
+    for (let click = 0; click < 2; click++) {
+      const before = Date.now();
+      const res = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ outcome: "waiting", scheduledRetry: {
+        runId: f.retryRunId, status: "scheduled_retry", scheduledRetryAttempt: 2,
+      } });
+      expect(res.body.message).toContain("Waiting for execution cleanup");
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+      expect(res.body.scheduledRetry.scheduledRetryAt).toBe(saved!.scheduledRetryAt!.toISOString());
+      expect(saved!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(before + 30_000);
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId))).toHaveLength(1);
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, lease!.id));
+    const resumed = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+    expect(resumed.body).toMatchObject({ outcome: "promoted", scheduledRetry: {
+      runId: f.retryRunId, status: "queued", scheduledRetryAttempt: 2,
+    } });
   });
 
   it("returns a clear no-op response when there is no scheduled retry", async () => {

@@ -166,10 +166,10 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { routineRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-  ]);
+  // Load the route after its mocks are installed. Concurrent importActual
+  // calls through the middleware barrel can cache unmocked dependencies.
+  const { errorHandler } = await import("../middleware/error-handler.js");
+  const { routineRoutes } = await import("../routes/routines.js");
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
@@ -681,6 +681,21 @@ describe("routine routes", () => {
       userId: "board-user",
       runId: null,
     });
-    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    try {
+      expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    } catch (error) {
+      // Report mock wiring without importing modules again or changing timing.
+      console.error("Routine creation telemetry mock diagnostic", {
+        clientGetterCalls: mockGetTelemetryClient.mock.calls.length,
+        clientGetterResults: mockGetTelemetryClient.mock.results.slice(-4).map(result => ({
+          type: result.type,
+          truthy: Boolean(result.value),
+        })),
+        trackingCalls: mockTrackRoutineCreated.mock.calls.length,
+        createCalls: mockRoutineService.create.mock.calls.length,
+        activityCalls: mockLogActivity.mock.calls.length,
+      });
+      throw error;
+    }
   });
 });

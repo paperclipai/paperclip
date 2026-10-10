@@ -247,7 +247,7 @@ export async function buildMcpInventory(repoRoot) {
 
 export function validateInventories(inventories) {
   const errors = [];
-  const expectedCounts = { capabilities: 160, evaluations: 106, legacyMcpAliases: 42 };
+  const expectedCounts = { capabilities: 162, evaluations: 106, legacyMcpAliases: 42 };
   const normativeNames = ["capabilities", "evaluations"];
   const normativeRows = new Map();
   const globalNormativeIds = new Set();

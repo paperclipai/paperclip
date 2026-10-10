@@ -152,6 +152,10 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
+[feature-map/README.md](feature-map/README.md) is an optional reference for user
+entry points, verification recipes, and coverage gaps. The map records coverage
+scope, not proof that a live journey passed.
+
 Default local/agent test path:
 
 ```sh

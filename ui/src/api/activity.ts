@@ -16,6 +16,8 @@ export interface RunForIssue {
   invocationSource: string;
   responsibleUserId?: string | null;
   errorCode?: string | null;
+  /** Bounded model rejection or the fixed credential-sharing denial message. */
+  error?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;

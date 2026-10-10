@@ -47,6 +47,44 @@ test("the ACPX sidecar schema accepts each versioned message family", () => {
   }
 });
 
+test("Pi session admission requires an explicit supported thinking level including recovery", () => {
+  const open = (params) => ({ protocolVersion, id: 1, command: "session.open", params });
+  for (const piThinkingLevel of ["off", "low", "high", "max"]) {
+    assert.equal(validate(open({ agent: "pi", piThinkingLevel })), true, JSON.stringify(validate.errors));
+    assert.equal(validate(open({ agent: "pi", piThinkingLevel, expectedIdentity: null })), true);
+    assert.equal(validate(open({ agent: "pi", piThinkingLevel, expectedIdentity: { piThinkingLevel } })), true);
+  }
+  for (const piThinkingLevel of [undefined, null, "medium", "minimal", "xhigh", " LOW ", 1]) {
+    assert.equal(validate(open({ agent: "pi", piThinkingLevel })), false);
+    assert.equal(validate(open({ agent: "pi", piThinkingLevel: "low", expectedIdentity: { piThinkingLevel } })), false);
+  }
+  for (const agent of ["claude", "codex", "grok", "cursor", "copilot"]) {
+    assert.equal(validate(open({ agent })), true);
+    assert.equal(validate(open({ agent, expectedIdentity: null })), true);
+    assert.equal(validate(open({ agent, piThinkingLevel: "low" })), false);
+    assert.equal(validate(open({ agent, expectedIdentity: { piThinkingLevel: "low" } })), false);
+  }
+});
+
+test("public Pi descriptors preserve effective thinking levels without invalidating historical replay", async () => {
+  const descriptorSchema = JSON.parse(await readFile(new URL("../protocol/schemas/provider-descriptor.schema.json", import.meta.url), "utf8"));
+  const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);
+  const historical = {
+    provider: "acpx", driver: "acpx_runtime", model: "model", executionKind: "local_process",
+    providerVersion: "0.13.1", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
+    agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", acpxRecordId: null, agentProcessId: null,
+  };
+  assert.equal(validateDescriptor(historical), true, JSON.stringify(validateDescriptor.errors));
+  for (const piThinkingLevel of ["off", "low", "high", "max"]) {
+    assert.equal(validateDescriptor({ ...historical, piThinkingLevel }), true);
+  }
+  for (const piThinkingLevel of ["medium", null, "xhigh", 1]) {
+    assert.equal(validateDescriptor({ ...historical, piThinkingLevel }), false);
+  }
+  assert.equal(validateDescriptor({ ...historical, agent: "copilot", piThinkingLevel: "low" }), false);
+  assert.equal(validateDescriptor({ ...historical, provider: "codex", driver: "codex_app_server", piThinkingLevel: "low" }), false);
+});
+
 test("the ACPX sidecar schema shares the durable stable-identity boundary", () => {
   const longestTurnId = "t".repeat(240);
   assert.equal(validate({ ...messages[2], turnId: longestTurnId }), true);
@@ -133,5 +171,18 @@ test("turn control schema preserves explicit modes and rejects open-ended dispat
   for (const params of [ { ...message.params, mode: "cancel" }, { ...message.params, method: "arbitrary" },
     { ...message.params, controlId: "" }, { ...message.params, turnId: "wrong turn" }, { ...message.params, mode: undefined } ]) {
     assert.equal(validate({ ...message, params }), false);
+  }
+});
+
+// Runtime payloads are provider-owned; the sidecar envelope stays closed.
+// Pi validates native provenance before creating these boundary/history fields.
+test("Pi native empty message boundaries and replay history fit the strict sidecar envelope", () => {
+  for (const payload of [
+    { type: "text_delta", stream: "output", text: "", messageId: "message-1", piMessageBoundary: { phase: "start" } },
+    { type: "text_delta", stream: "output", text: "", messageId: "message-1", piMessageBoundary: { phase: "end", stopReason: "toolUse" } },
+    { type: "text_delta", stream: "output", text: "Prior assistant reply", messageId: "history-1", piMessageHistory: true },
+  ]) {
+    assert.equal(validate({ ...messages[2], payload }), true, JSON.stringify(validate.errors));
+    assert.equal(validate({ ...messages[2], payload, piMessageBoundary: { phase: "start" } }), false);
   }
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, FlaskConical, Lock, Play } from "lucide-react";
 import type {
@@ -18,6 +18,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Link } from "@/lib/router";
 
 type WorktreeRunExecutionDisplayState =
   | { kind: "off" }
@@ -81,7 +82,7 @@ function ExperimentalToggleCard({
 }: {
   title: string;
   description: string;
-  footnote?: string;
+  footnote?: ReactNode;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   disabled: boolean;
@@ -306,6 +307,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Assistant connections (MCP)"
+          description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
+          footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}
+          checked={experimentalQuery.data?.enablePublicMcp === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enablePublicMcp: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enablePublicMcp"
+          managed={managedKeys.enablePublicMcp}
+          ariaLabel="Toggle assistant connections experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Beta skills"
           description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
           checked={enableBetaSkills}
@@ -341,8 +354,8 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Chat connectors"
-          description="Connect agents to Slack, GitHub, Discord, Microsoft Teams, and Telegram conversations."
-          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub tools, and other tool connectors stay available."
+          description="Connect agents to Slack, Discord, Microsoft Teams, and Telegram conversations."
+          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are controlled separately."
           checked={enableChatConnectors}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
           disabled={toggleMutation.isPending}
@@ -445,6 +458,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="GitHub review bots"
+          description="Connect agents to GitHub with their own App identity to review pull requests and respond to issues."
+          footnote="Independent of Chat connectors. Turning this off hides setup and management; existing bots keep running. GitHub tool connections stay available."
+          checked={experimentalQuery.data?.enableGitHubReviewBots === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableGitHubReviewBots: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGitHubReviewBots"
+          managed={managedKeys.enableGitHubReviewBots}
+          ariaLabel="Toggle GitHub review bots experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Memory connectors"
           description="Connect Mem0, Zep, Supermemory, Cognee, and Honcho for long-term memory and context."
           footnote="Turning this off hides setup for these connectors. Existing connections keep running."
@@ -454,6 +479,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMemoryConnectors"
           managed={managedKeys.enableMemoryConnectors}
           ariaLabel="Toggle memory connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="OpenAI Dot"
+          description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
+          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          checked={experimentalQuery.data?.enableOpenAiDot === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableOpenAiDot"
+          managed={managedKeys.enableOpenAiDot}
+          ariaLabel="Toggle OpenAI Dot experimental setting"
         />
 
         <ExperimentalToggleCard

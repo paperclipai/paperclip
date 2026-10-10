@@ -36,6 +36,8 @@ export type HealthStatus = {
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
+  /** The unclaimed Cloud app is ready; this response did not probe SQL. */
+  warmStandby?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
   };

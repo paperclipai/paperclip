@@ -12,6 +12,7 @@ const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockLoggerInfo = vi.hoisted(() => vi.fn());
 const mockGetEnvironment = vi.hoisted(() => vi.fn());
+const mockGetLease = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -30,6 +31,7 @@ vi.mock("../services/environments.js", () => ({
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,
+    getLeaseById: mockGetLease,
     acquireLease: vi.fn(),
     releaseLease: vi.fn(),
     updateLeaseMetadata: mockUpdateLeaseMetadata,
@@ -813,5 +815,58 @@ describe("admitted native lifecycle recovery", () => {
     });
     expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(expectedReuse);
     expect(environment.config.reuseLease).toBe(false);
+  });
+});
+
+describe("live remote runner lease reattachment", () => {
+  const input = {
+    companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
+    adapterType: "paperclip_runner", admittedLifecycleMode: "per_turn" as const,
+    issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+    persistedExecutionWorkspace: { id: "ew-1", mode: "shared_workspace" as const },
+    executionWorkspaceSettings: null,
+    reattachRemoteLease: { leaseId: "lease-1", providerLeaseId: "original-sandbox", remoteCwd: "/remote/workspace" },
+  };
+  const originalLease = () => makeLease({
+    provider: "daytona", providerLeaseId: "original-sandbox", issueId: "task-1", executionWorkspaceId: "ew-1",
+    metadata: { agentId: "agent-1", remoteCwd: "/remote/workspace",
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "original-sandbox" } },
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEnvironment.mockResolvedValue({ ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } });
+    mockGetLease.mockResolvedValue(originalLease());
+  });
+  it("reattaches the original active ephemeral lease without acquiring or resuming a sandbox", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const runtime = makeMockRuntime();
+    const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+    expect(mockGetLease).toHaveBeenCalledWith("lease-1");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(result.lease).toEqual(savedLease);
+    expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
+    expect(result.environment.config.reuseLease).toBe(false);
+  });
+  it.each([
+    { companyId: "foreign" }, { environmentId: "foreign" }, { heartbeatRunId: "another-run" },
+    { issueId: "another-task" }, { executionWorkspaceId: "another-workspace" },
+    { providerLeaseId: "replacement" }, { provider: "another-provider" },
+    { status: "released" }, { expiresAt: new Date(0) }, { releasedAt: new Date() }, { cleanupStatus: "pending" },
+    { metadata: { agentId: "another-agent", remoteCwd: "/remote/workspace" } },
+    { metadata: { agentId: "agent-1", remoteCwd: "/other/workspace" } },
+  ] as Partial<EnvironmentLease>[])("fails closed before provider acquisition for a mismatched lease %j", async (override) => {
+    mockGetLease.mockResolvedValue({ ...originalLease(), ...override });
+    const runtime = makeMockRuntime();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
+  it("never replaces a missing original lease", async () => {
+    mockGetLease.mockResolvedValue(null);
+    const runtime = makeMockRuntime();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
 });

@@ -13,11 +13,12 @@ import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import { openCodeProxyTaskEnvelope } from "./opencode-proxy-task-envelope.js";
 import {
   openCodeProxyItemNotification,
+  openCodeProxyToolNotification,
   openCodeProxyTerminalNotification,
   shouldAnnounceOpenCodeProxyTurn,
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
-import { enqueueOpenCodeProxyInput } from "./opencode-proxy-input.js";
+import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -40,8 +41,9 @@ type RpcMessage = {
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const pending = new Map<
   string,
-  { resolve(value: unknown): void; reject(error: Error): void }
+  { resolve(value: unknown): void; reject(error: Error): void; retainEnvelope: boolean }
 >();
+let controllerInputClosed = false;
 let nextServerRequestId = 1;
 let driver: OpenCodeServerDriver | null = null;
 let session: HarnessSession | null = null;
@@ -57,11 +59,12 @@ function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-function requestController(method: string, params: unknown): Promise<unknown> {
+function requestController(method: string, params: unknown, retainEnvelope = false): Promise<unknown> {
+  if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
   const id = `opencode-${nextServerRequestId++}`;
   send({ id, method, params });
   return new Promise((resolveValue, reject) =>
-    pending.set(id, { resolve: resolveValue, reject }),
+    pending.set(id, { resolve: resolveValue, reject, retainEnvelope }),
   );
 }
 
@@ -126,6 +129,7 @@ async function open(
     ),
     runtimeContext,
     dynamicTools,
+    completionFeedback: openCodeProxyCompletionFeedback((method, params) => requestController(method, params, true)),
     dynamicToolHandler: async (call) =>
       requestController("item/tool/call", {
         threadId: session?.ids().driverSessionId ?? "opening",
@@ -189,7 +193,11 @@ function announceTurnStarted(opened: HarnessSession, turnId: string): void {
 async function pumpEvents(opened: HarnessSession): Promise<void> {
   for await (const event of opened.events()) {
     const payload = record(event.payload);
-    if (event.eventType === "turn.started") {
+    const toolActivity = openCodeProxyToolNotification({ eventType: event.eventType,
+      threadId: opened.ids().driverSessionId, turnId: event.turnId, payload });
+    if (toolActivity) {
+      send(toolActivity);
+    } else if (event.eventType === "turn.started") {
       if (typeof event.turnId === "string")
         announceTurnStarted(opened, event.turnId);
     } else if (
@@ -319,7 +327,7 @@ async function handle(message: RpcMessage): Promise<void> {
     else {
       const contentItems = record(message.result).contentItems;
       waiter.resolve(
-        Array.isArray(contentItems)
+        !waiter.retainEnvelope && Array.isArray(contentItems)
           ? (contentItems[0] ?? message.result)
           : message.result,
       );
@@ -333,7 +341,7 @@ async function handle(message: RpcMessage): Promise<void> {
     case "initialize":
       result = {
         user: { sessionId: "opencode" },
-        serverInfo: { name: "opencode", version: "1.18.32" },
+        serverInfo: { name: "opencode", version: "1.18.34" },
       };
       break;
     case "thread/start":
@@ -410,6 +418,12 @@ input.on("line", (line) => {
     process.stderr.write(`Invalid JSON-RPC input: ${String(error)}\n`);
     return;
   }
+  if (message.method === undefined && message.id !== undefined) {
+    // A command may await this bound response. Queueing the response behind
+    // that command would deadlock completion, interruption and shutdown.
+    void handle(message).catch(failProxy);
+    return;
+  }
   pendingInput = enqueueOpenCodeProxyInput(
     pendingInput,
     async () => {
@@ -460,6 +474,12 @@ function shutdown(exitCode = 0): Promise<void> {
 }
 
 input.on("close", () => {
+  controllerInputClosed = true;
+  for (const waiter of pending.values())
+    waiter.reject(new Error("OpenCode controller input closed before its response"));
+  pending.clear();
+  // Preserve command order and the bootstrap drain. A queued command cannot
+  // create a new unanswered controller request after EOF.
   void pendingInput.then(() => shutdown());
 });
 process.on("SIGTERM", () => {

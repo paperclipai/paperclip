@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   companies,
@@ -54,6 +55,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(completionContracts);
     await db.delete(issues);
@@ -109,6 +111,31 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
     return { companyId, agentId, failedRunId, runningRunId };
   }
+
+  it.each([true, false])("preserves explicit retry ownership when finalization wins the sweep write (settler: %s)", async withSettler => {
+    const { companyId, agentId, runningRunId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Retry finalization race",
+      status: "in_progress", assigneeAgentId: agentId, executionRunId: runningRunId });
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000,
+      contextSnapshot: { issueId, explicitUserContinuation: { previousRunId: failedRunId, commentId: randomUUID() } },
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    const beforeOrphanedRunTerminalWrite = vi.fn(async () => {
+      await db.update(heartbeatRuns).set({ status: "timed_out", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runningRunId));
+    });
+    const settleExplicitContinuationRetry = vi.fn(async () => {});
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn(), beforeOrphanedRunTerminalWrite,
+      ...(withSettler ? { settleExplicitContinuationRetry } : {}),
+    }).sweepStaleIssueLocks();
+    expect(beforeOrphanedRunTerminalWrite).toHaveBeenCalledOnce();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(settleExplicitContinuationRetry).toHaveBeenCalledTimes(withSettler ? 1 : 0);
+    if (withSettler) expect(settleExplicitContinuationRetry).toHaveBeenCalledWith(expect.objectContaining({
+      id: runningRunId, status: "timed_out",
+    }));
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.executionRunId).toBe(runningRunId);
+  });
 
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {
     const { companyId, agentId, failedRunId } = await seed();

@@ -15,6 +15,7 @@ import {
   chatEndpointResources,
   chatEndpoints,
   chatExternalPrincipals,
+  chatGitHubConfigurations,
   chatIdentityLinks,
   chatMessageLinks,
   chatPublications,
@@ -35,6 +36,7 @@ import {
   statusDecisions,
   toolApplications,
   toolConnections,
+  chatVoiceSessions, chatVoiceReplies, chatVoiceToolCalls,
   workspaceOperations,
 } from "@paperclipai/db";
 import type {
@@ -61,11 +63,13 @@ import {
   resolveExternalChatResponseWaitAuthorization,
 } from "./chat-attachment-reuse.js";
 import { attestReviewedExternalChatRun, buildPaperclipWakePayload } from "../heartbeat.js";
+import { voiceCredentialFingerprint } from "../voice/voice-session-store.js";
+import { nativeSha256 } from "./canonical.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { materializeExternalChatQuestionResponseInput } from "./external-chat-question-response-input.js";
 import * as nativeInteractionBridge from "./native-interaction-bridge.js";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import { defaultGitHubReviewPolicy, type AskUserQuestionsInteraction } from "@paperclipai/shared";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
@@ -1114,6 +1118,80 @@ describe("native external-chat response wait", () => {
     },
   );
 
+  it.each((["native", "legacy"] as const).flatMap(sourceRuntime => (["voice", "board"] as const).map(answerRoute => ({sourceRuntime, answerRoute}))))("authorizes $sourceRuntime Speko question continuation from its exact $answerRoute answer", async ({sourceRuntime, answerRoute}) => {
+    const f = await seedAnsweredChatTurn();
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    const [connection] = await db.update(toolConnections).set({ transport: "voice", status: "active", enabled: true }).where(eq(toolConnections.id, endpoint.connectionId)).returning();
+    await db.update(chatEndpoints).set({ provider: "speko", setup: { step: "complete", runtimeGeneration: 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, f.endpointId));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const sourceContext = JSON.parse(JSON.stringify(source.contextSnapshot).replaceAll("chat:telegram", "chat:speko").replaceAll('"telegram"', '"speko"'));
+    await db.update(heartbeatRuns).set({ contextSnapshot: sourceContext, runtimeMode: sourceRuntime, nativeIssueId: sourceRuntime === "native" ? f.issueId : null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const resolve = () => resolveExternalChatQuestionResponse(db, f, f.context, "read", true);
+    expect(await resolve()).toBeNull();
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.interactionId));
+    const sessionId = randomUUID();
+    await db.insert(chatVoiceSessions).values({ id: sessionId, companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, assignedAgentId: f.agentId, callerId: f.userId, callerAuthority: "member",
+      mode: "browser", state: "ended", providerSessionId: randomUUID(), generation: 1, credentialFingerprint: voiceCredentialFingerprint(connection.credentialSecretRefs),
+      toolTokenHash: "a".repeat(64), idempotencyKey: randomUUID(), requestFingerprint: "fixture", expiresAt: new Date(Date.now() + 60000) });
+    await db.insert(chatVoiceReplies).values({ companyId: f.companyId, sessionId, publicationId: f.publicationId, cursor: 1,
+      deliveredAt: new Date(interaction.resolvedAt!.getTime() - 1) });
+    const [receipt] = answerRoute === "voice" ? await db.insert(chatVoiceToolCalls).values({ companyId: f.companyId, sessionId, providerToolCallId: randomUUID(),
+      webhookId: randomUUID(), fingerprint: "signed-tool-fingerprint", tool: "answer_question",
+      response: { status: "answered", interactionId: f.interactionId, resultSha256: nativeSha256(interaction.result) } }).returning() : [];
+    if (answerRoute === "board") {
+      await db.update(chatExternalPrincipals).set({ provider: "speko", externalId: `voice:${sessionId}` }).where(eq(chatExternalPrincipals.id, f.principalId));
+      await db.insert(chatVoiceToolCalls).values({companyId: f.companyId, sessionId, providerToolCallId: randomUUID(),
+        webhookId: randomUUID(), fingerprint: "accepted-source-request", tool: "submit_request", response: {status: "accepted"}});
+    }
+    // The answer also publishes a terminal acknowledgment. It cannot compete
+    // with the pre-answer presentation as authority for the continuation.
+    const [terminal] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published",
+      payload: { text: "Answered: High.", interactionId: f.interactionId } }).returning();
+    await db.insert(chatVoiceReplies).values({ companyId: f.companyId, sessionId, publicationId: terminal.id, cursor: 2 });
+    expect(await resolve()).toMatchObject({ provider: "speko", marker: { interactionId: f.interactionId } });
+    // Voice authority is the authenticated session, not a synthetic provider
+    // identity link. Exercise the real native run attestation and recheck path.
+    await db.update(chatExternalPrincipals).set({ provider: "speko", externalId: `voice:${sessionId}` }).where(eq(chatExternalPrincipals.id, f.principalId));
+    await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.principalId, f.principalId));
+    await attestAnswer(f);
+    expect(await authorizeChatConversationForBoundRun(db, f, f.context, "read")).toMatchObject({ conversationId: f.conversationId });
+    await db.update(companyMemberships).set({ status: "removed" }).where(eq(companyMemberships.principalId, f.userId));
+    await expect(authorizeChatConversationForBoundRun(db, f, f.context, "read")).rejects.toThrow(answerRoute === "board" ? "paperclip_runner_chat_attachment_binding_denied" : "paperclip_runner_chat_attachment_principal_denied");
+    await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, f.userId));
+    if (receipt) await db.update(chatVoiceToolCalls).set({ response: { ...receipt.response, resultSha256: "different-answer" } }).where(eq(chatVoiceToolCalls.id, receipt.id));
+    else await db.update(issueComments).set({authorUserId: randomUUID()}).where(eq(issueComments.id, f.commentId));
+    expect(await resolve()).toBeNull();
+  });
+  it.each(["valid", "wrong_task", "revoked_identity", "wrong_answer_actor"] as const)(
+    "attests legacy Slack question continuations only with the durable source binding: %s",
+    async (condition) => {
+      const fixture = await seedAnsweredChatTurn("slack");
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.sourceRunId));
+      const context = source!.contextSnapshot as Record<string, unknown>;
+      await db.update(heartbeatRuns).set({
+        runtimeMode: "legacy", nativeIssueId: null,
+        contextSnapshot: { ...context, paperclipWake: {
+          ...(context.paperclipWake as Record<string, unknown>),
+          issue: { id: condition === "wrong_task" ? randomUUID() : fixture.issueId },
+        } },
+      }).where(eq(heartbeatRuns.id, fixture.sourceRunId));
+      if (condition === "revoked_identity") {
+        await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.principalId, fixture.principalId));
+      }
+      if (condition === "wrong_answer_actor") {
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "another-user" }).where(eq(agentWakeupRequests.id, fixture.wakeId));
+      }
+      expect(await attestReviewedExternalChatRun({ db, ...fixture, contextSnapshot: fixture.context })).toBe(condition === "valid");
+      if (condition === "valid") {
+        expect(fixture.context.paperclipExternalChatQuestionResponse).toMatchObject({ interactionId: fixture.interactionId });
+      } else {
+        expect(fixture.context.paperclipExternalChatQuestionResponse).toBeUndefined();
+      }
+    },
+  );
+
   async function attestAnswer(
     fixture:
       | Awaited<ReturnType<typeof seedAnsweredChatTurn>>
@@ -2088,11 +2166,13 @@ describe("native external-chat response wait", () => {
           .update(agentWakeupRequests)
           .set({ requestedByActorId: "another-user" })
           .where(eq(agentWakeupRequests.id, parent.wakeId));
-      if (kind === "different_parent_issue")
-        await db
-          .update(heartbeatRuns)
-          .set({ nativeIssueId: fixture.sourceRunId })
-          .where(eq(heartbeatRuns.id, parent.runId));
+      if (kind === "different_parent_issue") {
+        // Deliberately corrupt historical data; normal writes reject this rebind.
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`set local session_replication_role = replica`);
+          await tx.update(heartbeatRuns).set({ nativeIssueId: fixture.sourceRunId }).where(eq(heartbeatRuns.id, parent.runId));
+        });
+      }
       if (kind === "source_cycle") {
         const [wake] = await db
           .select()
@@ -3807,6 +3887,24 @@ describe("native external-chat response wait", () => {
       const fixture = await seedWaitTurn(
         provider as Parameters<typeof seedWaitTurn>[0],
       );
+      if (provider === "github") {
+        // Only upgraded GitHub bots keep the selected final internal. Legacy
+        // connection fixtures retain their automatic presentation behavior.
+        await db.insert(chatGitHubConfigurations).values({
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          configuration: {
+            version: 1,
+            toolsEnabled: true,
+            responsibleUserId: fixture.userId,
+            memberAccess: "all_linked",
+            people: [],
+            defaults: defaultGitHubReviewPolicy(),
+            repositories: {},
+          },
+          updatedByUserId: fixture.userId,
+        });
+      }
       await placeWaitTurnInSetupTest(fixture, { generation });
 
       await expect(
@@ -3836,9 +3934,11 @@ describe("native external-chat response wait", () => {
         .select({ resultJson: heartbeatRuns.resultJson })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, fixture.runId));
+      const authorizationReason = provider === "github"
+        ? "internal_agent_write" : "allow_chat_run_presentation";
       await expect(
         resolveChatRunPresentationAuthorizationReason(db, fixture),
-      ).resolves.toBe("allow_chat_run_presentation");
+      ).resolves.toBe(authorizationReason);
       const response = resolveHeartbeatRunResponse({
         resultJson: finalizedRun!.resultJson,
         preferFinalResponseOverExistingComment: true,
@@ -3854,14 +3954,14 @@ describe("native external-chat response wait", () => {
         fixture.issueId,
         response.text!,
         { agentId: fixture.agentId, runId: fixture.runId },
-        { authorizationReason: "allow_chat_run_presentation" },
+        { authorizationReason },
       );
       await expect(
         db
           .select()
           .from(chatPublications)
           .where(eq(chatPublications.commentId, comment.id)),
-      ).resolves.toEqual([
+      ).resolves.toEqual(provider === "github" ? [] : [
         expect.objectContaining({
           conversationId: fixture.conversationId,
           endpointId: fixture.endpointId,

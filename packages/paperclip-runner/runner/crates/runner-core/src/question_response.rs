@@ -272,6 +272,15 @@ fn validate_text_constraints(
 }
 
 fn validate_persisted_question(question: &Value) -> Result<(), LocalRunnerError> {
+    if question
+        .get("initialText")
+        .and_then(Value::as_str)
+        .is_some_and(|text| text.chars().count() > 100_000)
+    {
+        return Err(LocalRunnerError::invalid(
+            "persisted initial text exceeds its Unicode code-point bound",
+        ));
+    }
     let question_id = question
         .get("id")
         .and_then(Value::as_str)

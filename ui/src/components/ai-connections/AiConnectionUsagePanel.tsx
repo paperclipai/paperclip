@@ -68,24 +68,25 @@ function usageError(usage: AiConnectionUsage) {
     case "invalid_response": return "Couldn’t read usage. Try again.";
     case "connection_unavailable": return "Reconnect to check usage.";
     case "unsupported": return "Usage unavailable.";
-    default: return usage.message;
+    default: return usage.message ?? "Usage unavailable.";
   }
 }
 
-export function AiConnectionUsagePanel({ account }: { account: AiManagedConnectionSummary }) {
+export function AiConnectionUsagePanel({ account, observation, cachedOnly = false }: { account: AiManagedConnectionSummary; observation?: AiConnectionUsage; cachedOnly?: boolean }) {
   const probe = useMutation({
     mutationFn: () => aiConnectionsApi.probeUsage(account.companyId, account.id, account.grantId),
   });
   const supported = supportsAiConnectionUsage(account.provider, account.method);
-  const usage = probe.isSuccess ? probe.data : undefined;
+  const usage = cachedOnly ? observation : probe.isSuccess ? probe.data : undefined;
   return (
     <section aria-label="Account usage limits" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Usage</h3>
-        {supported && <Button variant="outline" size="sm" disabled={probe.isPending || account.status !== "connected"} onClick={() => probe.mutate()}>
+        {supported && !cachedOnly && <Button variant="outline" size="sm" disabled={probe.isPending || account.status !== "connected"} onClick={() => probe.mutate()}>
           {probe.isPending ? "Checking…" : usage?.status === "ok" ? "Refresh" : "Check usage"}
         </Button>}
       </div>
+      {cachedOnly && !usage && <p className="text-xs text-muted-foreground">Usage not observed.</p>}
       {!supported && <p className="text-xs text-muted-foreground">Unavailable for this sign-in method.</p>}
       {probe.error && <p role="alert" className="text-sm text-destructive">{probe.error.message}</p>}
       {usage && usage.status !== "ok" && <p role={usage.status === "unsupported" ? "status" : "alert"} className="text-sm text-muted-foreground">{usageError(usage)}</p>}

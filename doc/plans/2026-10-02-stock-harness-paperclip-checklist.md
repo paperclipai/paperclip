@@ -1,17 +1,25 @@
 # Stock harness, with Paperclip: working checklist
 
-Created: 2026-10-02. Status: item 1 merged for native Codex app-server in
-[PR #14920](https://github.com/paperclipai/paperclip/pull/14920). Item 2's default
-hire manual is reduced to identity only, and common legacy startup/resume
-instructions are in [PR #14948](https://github.com/paperclipai/paperclip/pull/14948).
-GitHub live qualification retains earlier document-delivery failures; the latest
-focused OpenCode comparison passes both cases in both variants but still exposes
-deficient original-case handoff links. PR #14948 remains draft. The original
-[live report](2026-10-02-stock-harness-live-comparison.md), completed
-[skill repair](2026-10-02-legacy-document-skill-repair.md) and latest
-[stock-selection/link comparison](2026-10-02-opencode-skill-routing-link-qualification.md)
-retain their separate sources and limitations. Additional carriers and fixed
-native instructions remain open; hiring templates are being reduced separately.
+Created: 2026-10-02. Status refreshed locally: 2026-10-06.
+
+Native Codex base preservation (#14920), the tiny default manual/common legacy
+prompts (#14948), general hiring templates (#14985), native completion tool
+guidance (#14961), evaluator accounting repairs (#15007), and native completion
+constraint/final-answer corrections (#15151) are merged. Dotta confirmed the
+latest merge; GitHub records #15151 merged on 2026-10-05. The detailed sections
+below retain historical stages and failures; this status supersedes their old
+draft/pending descriptions. The saved master checklist had lagged behind the
+implementation and evidence notes and is reconciled here. Native-tool measurement
+(#15218) and the smaller planning skills (#15296) are also merged; the
+2026-10-06 entry below records their scope and the next repair.
+
+Remaining work: deferred legacy carriers (2.2), uncommon native fixed-prompt
+procedures beyond the completed completion slice (2.3), specialized agent
+contracts (3.4), repository context (4), broader runtime bookkeeping (5), and
+the full harness/configuration audit (6). Completed evals qualify their bounded
+cases, not general coding quality or every configuration. The prepared final
+#15151 PR body/eval summary was not published before the human merged it;
+publication remains separate from implementation completion.
 
 Goal: keep the agent's stock harness behavior and add only what it needs to work
 with Paperclip. Apply this across legacy adapters, the new Runner, and their
@@ -26,7 +34,7 @@ For every change, record its executable test/eval coverage before continuing.
 Distinguish coverage setup, deterministic results, and measured live results;
 configured cells alone do not qualify behavior.
 
-**Current item: 2 — reduce the default operating manual and shared prompt layers.**
+**Current item: repair and qualify the native delegation handoff before further procedure reduction.**
 
 ## Agreed direction and boundaries
 
@@ -106,8 +114,10 @@ This replaces 602 words with eight. The shared loader supplies this default
 across instruction-bundle-capable adapters for non-CEO hires without explicit
 instructions. Existing saved bundles retain their content; CEO, first-agent,
 and role/team templates remain separate work under item 3. The common
-prompt/wake reduction is complete locally below; additional carriers, native
-instructions, and skill/reference corrections remain open.
+  prompt/wake reduction and legacy delivery repairs are merged in #14948;
+  additional carriers and uncommon native procedures remain open. Native
+  completion documentation and constraint/final-answer corrections are merged
+  separately in #14961 and #15151.
 
 Verification: the existing agent-skills route suite passed all 54 tests,
 including default creation, custom bundles, and CEO/first-agent paths. The
@@ -134,6 +144,123 @@ and existing-test update.
   native tool-documentation slice on 2026-10-02 in a separate worktree. Native
   `paperclip_finish`/`paperclip_block` guidance must not leak into legacy
   completion paths, which use the operational skill and API.
+- [x] **2.3 completion slice.** Improve native finish/block documentation
+  (#14961), consolidate repeated completion constraints, and preserve useful
+  final replies, blocker explanations and working document links (#15151).
+  Native Codex, ACPX Claude and OpenCode have bounded live outcome coverage;
+  scripted start/resume/continuation and compatibility checks remain distinct
+  from live resume qualification.
+- [ ] **2.3 remaining procedures.** Review the fixed hiring, dependencies and
+  connection guidance; improve discoverable tool documentation and measure any
+  further reduction. #15151 intentionally did not change the fixed prompt.
+  Hiring/dependency relocation failed both corrected and readiness comparisons.
+  #15218 now retains measurement and eval coverage with production unchanged;
+  see [the comparison report](2026-10-05-native-procedure-guidance.md).
+  Connection procedures remain a separate follow-up.
+- [x] **2.3 full-catalog measurement.** PR #15218 measures all 39 supplied
+  native tools and schemas with fixed instructions at start/resume/continuation.
+  The rejected corrected candidate reduced the normalized standing projection by 460 bytes
+  (48,781 to 48,321 in the paid context; 49,200 to 48,740 after master integration),
+  not a token/cost or upstream truncation claim. The rejected readiness repair
+  restored explicit delegation/review guidance and saved only 125 bytes.
+  Its larger unqualified controller repair increased the full projection.
+  Final #15218 restores production to baseline: 49,200 bytes, identical across
+  all 36 normalized components of nine scripted deliveries and the MCP catalog.
+- [ ] **2.3 hiring/dependency behavior qualification.** The original six-pair
+  campaign exposed three new overall failures, including Claude omitting
+  dependency recording and finalization. Preserve original grades and control
+  bugs. Corrected v7 candidate and a baseline with matching credential/budget
+  repairs completed: baseline 5/6 PASS, candidate 3/6 PASS; two new failures,
+  zero new passes, three unchanged passes and one unchanged failure. Codex's
+  parent remained blocked after the replacement deliverable. OpenCode hiring
+  exceeded the deadline before the revised delivery settled. Both OpenCode
+  delegation variants lacked parent review of the final child revision. Two
+  interrupted candidate cells had one bounded recovery each; incomplete
+  original accounting is retained. No rerolls of these completed source pairs.
+  After the human requested readiness fixes, candidate
+  `aba7ec219b588de02cf323b4ebca559a105e6d01` restores assigned-worker revisions
+  and latest-child review, returns actual dependency readiness, and separates
+  cancelled dependencies from tasks that can complete. Its 23 database-backed
+  tool tests and fresh 5/5 review pass. New candidate campaign `37348723829`
+  and integrated baseline `37348764875` completed with unchanged oracles and
+  bounds: candidate 3 PASS / 3 FAIL; baseline 3 PASS / 2 FAIL / one setup cell
+  without a behavioral grade. The five comparable pairs have two new failures,
+  two new passes and one unchanged pass; one pair remains uncomparable. The
+  new failures include parent completion before the latest child revision and
+  OpenCode credential persistence. The Codex candidate also lacks parent
+  continuation. Keep this item open. The final #15218 excludes the production
+  change, retains every failure, and adds measurement and eval coverage only.
+  Unqualified runtime fixes are preserved locally for separate follow-up.
+
+### Remaining fixed-prompt audit — 2026-10-05
+
+Read-only inspection verified the prompt, semantic catalog, shared connection
+guidance, production tool authority and payload-measurement file against their
+exact blobs on merged master `a386a599983519eb1d399f8b770bfccdb2a74762`.
+The fixed prompt is 262 whitespace-separated words / 1,713 UTF-8 bytes: 34
+general context, 123 hiring/delegation/dependencies, 98 connections and seven
+finishing words. These are source-text counts, not provider token/billing data.
+
+The hiring recipe still mandates `search_api`/`call_api`, although the available
+`hire_agent` tool already creates persistent native teammates and documents
+runtime inheritance/reuse. Hiring and API fallback tools share the API-tool
+availability gate. Update the discovery/selection guidance to prefer an
+available dedicated tool and keep configuration-specific fallback in its own
+documentation; provider helper threads must remain distinct from company hires.
+
+`create_task` documents creation but omits the assigned-worker/review boundary.
+`set_dependencies` describes replacement only; preserving existing blocker IDs
+and releasing the workspace are still carried by the fixed prompt. Improve
+these tool contracts before removing the corresponding prompt procedure.
+Connection tools already document discovery, recorded provider choices, setup
+cards and yielding. Keep a small discovery trigger for explicit setup requests;
+put state-specific retry/decline/continuation instructions in tool descriptions
+and actual result guidance. These are reduction proposals, not implemented or
+behaviorally qualified changes.
+
+Measure the complete delivered prompt, constraints and granted tool descriptions
+together. The existing scripted capture selects only core semantic tools, so it
+omits these optional hiring/dependency tools and the connection tools. Moving
+words into descriptions alone does not demonstrate lower total instruction load.
+Keep prompt revision/digest and incompatible-session checks explicit.
+
+Candidate coverage includes the existing Product E2E `hire-reuse`,
+`delegate-feedback`, service approval/decline and connection-routing stories.
+Those stories cover Codex/Claude; corresponding OpenCode qualification and exact
+blocker-preservation/workspace-yield assertions still need review. Some decline
+fixtures explicitly restate the no-retry rule, so they cannot alone measure its
+discovery from shipped guidance. Previous completion-only passes do not qualify
+these procedures. Prefer hiring as the first bounded slice, then matched
+before/after outcomes with common fixture/model/auth/permission/budget controls.
+
+### Follow-up 2.3 merged completion slice — 2026-10-05
+
+#15151 merged as `a386a599983519eb1d399f8b770bfccdb2a74762` from final source
+`16ef1a5744b23bb043a8b286e6288921da1de98f`. The shortened completion contract
+now retains an explicit blocker cause/owner/action and a canonical clickable
+document handoff. Runtime feedback, OpenCode acceptance/settlement and proxy
+ordering corrections preserve the final provider response rather than treating
+an accepted terminal tool call as sufficient delivery.
+
+The six scoped corrective cases pass: four Codex/Claude cases measured at
+`3a7349ddc60142283c394121882288f2db07b215`, and two OpenCode cases measured at
+the final source. The intervening production delta is confined to OpenCode;
+the shared instructions, server feedback and UI paths are byte-identical.
+These are explicitly mixed-source observations, not six live runs on the final
+head. Document cases open the actual saved revision and original marker from
+the final reply; blocker cases retain the missing-access reason, exact owner,
+unblock action and task-wide scope. Final-head CI is green and fresh review is
+5/5 with all review threads resolved.
+
+Original paired grades and every corrective failure remain preserved. Passing
+totals had concealed weak blocker explanations and missing document links;
+the subsequent oracle explicitly checks those behaviors. Single trials do not
+prove broad equivalence, cognitive skill consumption, general coding quality,
+live resume behavior, or speed/cost trends. See the
+[constraint plan](2026-10-03-native-completion-consolidation.md) and
+[final-answer correction history](2026-10-04-native-completion-answer-fix.md)
+for the preserved setup and behavior failures; their initial hold statements
+are historical and superseded by this merged status.
 
 ### Follow-up 2.1 implementation and verification
 
@@ -328,6 +455,10 @@ isolation is approved and should remain.
 
 ## 5. Let the runtime own bookkeeping
 
+- [x] **Native completion delivery slice.** Persist and present meaningful final
+  answers, saved document links and blocker details; settle accepted/rejected
+  OpenCode completion feedback correctly. Merged in #15151. This does not finish
+  the wider checkout, waiting, recovery and legacy ownership audit below.
 - [ ] Map which runtime owns checkout, status transitions, completion comments,
   artifacts, waiting/review states, and recovery; identify manual duplicates.
 - [ ] Keep one valid completion path per runtime and preserve meaningful user
@@ -369,6 +500,10 @@ does not apply.
 
 ## Verification and evals — apply to each item
 
+- [x] Repair strict retained-run accounting in #15007 and add bounded native
+  completion/final-answer coverage for #14961/#15151. Keep original failures;
+  ACPX host/provider action attribution and hiring source-read coverage remain
+  explicitly uncomparable where no authoritative mapping/receipt exists.
 - [x] Map existing coverage for all implemented changes before adding cases;
   see the SH-1–SH-3 map below and [doc/evals.md](../evals.md).
   Keep Runner protocol evals and Product E2E evals distinct.
@@ -462,6 +597,7 @@ will address them. Record intentional behavior explicitly rather than as a bug.
 
 | Date | Decision / outcome | Evidence / follow-up |
 | --- | --- | --- |
+| 2026-10-05 | Dotta merged #15151; reconcile the saved roadmap with completed implementation/evidence notes. | Native completion slice complete; general hiring reductions and common legacy prompts also merged. 2.2, remaining fixed native procedures, 3.4 and the broader 4–6 audits stay open. Preserve old failures and bounded qualification limits; no new model run or public report publication in this checklist update. |
 | 2026-10-02 | Dotta approved preserving stock instructions, smaller defaults/templates, minimal coordination, runtime bookkeeping, and coverage across harnesses. | Implementation details to work through one item at a time. |
 | 2026-10-02 | Paperclip-owned MCP isolation and configuration changes/session resets are acceptable. | Preserve Paperclip auth and assigned skills while fixing repository context. |
 | 2026-10-02 | Dotta requested implementation and a PR for item 1. Native app-server paths now use additive developer instructions. | 139 targeted TypeScript tests and 91 Rust provider tests passed; repository typecheck/build passed. Remaining test/review results to record. |
@@ -489,3 +625,48 @@ will address them. Record intentional behavior explicitly rather than as a bug.
 
 For each completed item, add the chosen behavior, changed paths, verification
 results, remaining exceptions, and follow-ups here before checking it off.
+
+
+### 2026-10-05 final PR #15218 scope
+
+- [x] Preserve all three experimental cohorts and failed original grades.
+- [x] Reject the unqualified procedure relocation; final production bytes match master a65ca0950834a85bb93bcc4b4042ecacdebfef53.
+- [x] Keep complete native-tool measurement, explicit workflow coverage, selected-provider credentials and budget guards.
+- [x] Full local typecheck/build and 1,252 eval-support + 128 Node tests pass.
+- [x] Final head 2e7cef78eef7cdfe02265e0dcb03e855b8e50bd8: all 47 CI jobs pass; one initial annotation-test timeout retained and one targeted retry passed. Fresh Greptile 5/5, three threads resolved, published body verified, both ready-transition security scans pass, MERGEABLE and no longer draft.
+- [x] PR #15218 merged on 2026-10-06 at 01:03 UTC. The preceding approval hold is historical; the final merged scope is measurement and eval coverage with production unchanged.
+- [ ] Section 2.3 procedure relocation remains unshipped; the trials do not justify it. Runtime follow-up preserved separately and unqualified.
+
+
+### 2026-10-06 roadmap update
+
+- [x] **#15218 merged:** complete native-tool measurement and explicit hiring/delegation eval coverage. The proposed production procedure relocation failed qualification and was excluded. Original failures remain recorded.
+- [x] **#15296 merged:** shrink the runtime and bundled plan-to-tasks skills while retaining their installation keys and accepted-plan wiring. GitHub records the merge at 14:36 UTC. The detailed completed comparison report remains local pending its separate publication consent; merging the implementation does not publish that report.
+- [ ] **Next bounded repair:** a reopened native child must notify its parent after its new completion, even when the first notification has already been consumed. Replaying the same committed completion must not create another wake. Work is on `codex/delegation-handoff`, based on master `0fe47882cfcb12082035113c59ca96091c46ebfc`.
+- [x] **#15372 implemented and deterministically verified:** ordinary native child completion wakes include the durable decision ID; exact watchdog behavior and replay deduplication are preserved. Both ordinary regressions fail on baseline, and all 20 database-backed cases pass with the repair. Current head `a2ae2324ce7692e704fc43e99904b076d6246fee` has full green CI and fresh 5/5 review; it remains draft because the completed live comparison contains a new failure.
+- [ ] **#15372 live qualification failed; keep draft:** Codex PASS → FAIL, Claude FAIL → PASS. One new failure, one new pass, no pending pairs; equal totals do not prove non-regression. Four completed cells contain 17 actual agent runs, no retries, cleanup passed. Candidate Codex's revised child completion wakes coalesced into an active parent, which later ended Blocked using an outdated child-running view; no later parent execution is retained. A later backstop log reports repair but does not prove eventual completion. That cell never reached the independent ZIP oracle. The unstarted candidate Codex queue job was cancelled with no runner/steps before its first actual trial in campaign `37513070706`. Four earlier composer setup failures had zero agent runs and remain preserved. Original grades are unchanged; no causal attribution or reroll.
+- [ ] **Latest child delivery/review remains open:** both Claude parent finals point to an earlier parent ZIP while the original oracle checks the revised child's ZIP. The candidate's passing grade does not qualify delivery/review of that latest artifact. Parent ZIP bytes were not retained, so a different hash alone is not proof of missing functionality. This is separate from the consumed-wake regression. Preserve original grades.
+- [ ] Revisit hiring/dependency instruction reduction only after the bounded behavior is qualified. Premature parent completion, discarded unfinished dependencies and broader latest-child review remain separate open behavior questions.
+- [ ] Audit connection procedures separately, then return to the remaining 2.2 / 3.4 / 4–6 work.
+
+#### #15372 reporting disposition — 2026-10-06
+
+The complete original comparison and diagnosis are saved privately at
+[immutable evidence archive](https://github.com/paperclipai/paperclip-evals/blob/a3fdf327907816c22c4097da8839db4f472d5e9c/experiments/2026-10-native-delegation-handoff/README.md).
+The prepared public body is `/private/tmp/delegation-handoff-pr-body.md`.
+The human explicitly authorized publication and requested fixing the failures.
+The prepared summary was published normally to PR #15372; the earlier automatic
+review hold is resolved for this summary. The original comparison remains unchanged.
+
+#### #15372 active-parent repair — 2026-10-06
+
+- [x] Implement durable delivery of ordinary native child completions to a fresh parent turn when the parent is already running; preserve exact watchdog behavior.
+- [x] Keep a parent non-terminal while a newer native child result remains queued or deferred, with a commit-time recheck. Preserve terminal cancellation and governance authority; do not create a second continuation.
+- [x] Provider-free verification: 67 focused scheduler/native-conformance/authority tests and repository typecheck pass. The scheduler regression holds the parent open, dispatches/replays the child result, then verifies exactly one sequential continuation with the latest summary. Pending, consumed and current-run delivery identities have native finalization coverage.
+- [ ] Freeze and measure the corrected source in the same two original live cases, one attempt each. Do not reroll the original baseline or regrade the failed candidate.
+- [ ] Verify the latest source head in CI/review and inspect final parent artifact delivery before claiming readiness. Keep draft until these gates pass.
+
+- [x] Preserve intermediate campaign `37518652522` as two cancelled, ungraded attempts on `3c1cf68`; provider activity/charges and cleanup are unverified because only invocation policies survived. These are separate from the original 17 actual runs.
+- [x] Audit the concurrency review finding with a real database barrier and distinct agents. Existing implicit locking serializes this tested ordering; make the parent lock explicit before child status writes. Do not claim a newly reproduced live defect.
+- [ ] Finish fresh source checks/review, then qualify the corrected source against the frozen baseline and inspect latest-artifact delivery.
+- [x] Explicit-lock revision: 68 focused tests and full repository typecheck pass. Fresh build, CI/review and live checks remain pending.

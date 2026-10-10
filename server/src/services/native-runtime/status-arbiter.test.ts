@@ -44,6 +44,27 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
+    const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Explicit continuation needed", idempotencyKey: "cursor-plan-wait:event" } });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true })).toMatchObject({
+      toStatus: "in_progress", reasonCode: "native_plan_accepted_waiting_for_continuation", effects: [],
+    });
+    expect(arbitrate({ assessment: passive })).toMatchObject({
+      toStatus: "in_progress",
+      reasonCode: "completion_evidence_incomplete",
+      effects: [expect.objectContaining({
+        kind: "enqueue_continuation",
+        continuationKind: "same_agent",
+        idempotencyKey: "native-completion-incomplete",
+      })],
+    });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, terminalState: "failed" }).reasonCode).not.toBe("native_plan_accepted_waiting_for_continuation");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, priorIssueStatus: "cancelled" }).toStatus).toBe("cancelled");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, governanceGate: { kind: "interaction", id: "pending" } }).toStatus).toBe("in_review");
+  });
+
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -99,7 +120,7 @@ describe("native status authority", () => {
       toStatus: "in_review",
       effects: [expect.objectContaining({ kind: "create_interaction" })],
     });
-    for (const kind of ["same_agent", "retry", "monitor"] as const) {
+    for (const kind of ["same_agent", "retry"] as const) {
       expect(
         arbitrate({
           assessment: {
@@ -511,7 +532,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v7",
+        policyVersion: "phase6-v11",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

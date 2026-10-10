@@ -1,10 +1,22 @@
+import type { RestartRunnerIdentity } from "./process-tree-owner.js";
+import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runPiControlsFlow } from "./pi-controls-flow.js";
+import { runCursorNativeFlow } from "./cursor-native-flow.js";
+import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
+import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
+import { runPiNativeFlow } from "./pi-native-flow.js";
+import { seedPiFile, collectPiFileEvidence } from "./pi-file-evidence.js";
+import { runPlanTaskFlow } from "./plan-task-flow.js";
 import { assertNativeCompletionSelection, NATIVE_COMPLETION_PREFLIGHT_ENV, verifyNativeCompletionPreflight } from "./native-completion-admission.js";
+import { assertNativeInstructionSelection, verifyNativeInstructionPreflight, NATIVE_INSTRUCTION_PREFLIGHT_ENV, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_DEFAULT_SHA256 } from "./native-instruction-consolidation.js";
 import { captureNativeDefault, gradeNativeDefault, nativeCompletionWorkspaceDigest } from "./native-completion-defaults.js";
-import { gradeNativeCompletion } from "./native-completion-scoring.js";
+import { gradeNativeCompletion, gradeNativeCompletionFinalAnswer } from "./native-completion-scoring.js";
 import { assertNativeBlockerReply } from "./native-blocker-visible.js";
 import { warmManagedFileEvidence } from "./warm-managed-files.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
+import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
+import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
@@ -32,12 +44,15 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
+import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
+import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
 import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, persistedFinalRunMessage, type MatcherResult } from "./matchers.js";
+import { readRegisteredArtifacts } from "./registered-artifact.js";
 import {
   acceptedPlanSessionResetFailures,
   collectRunEvents,
@@ -60,6 +75,7 @@ import {
   findSecretLeakInJsonValues,
   normalizedSecrets,
   sanitizeJson,
+  browserDiagnosticUrl,
 } from "./redaction.js";
 import {
   CREDENTIAL_NAMES,
@@ -225,6 +241,7 @@ async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
   deadlineAt: number;
+  preserveRunner?: RestartRunnerIdentity;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -235,7 +252,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId }),
+    JSON.stringify({ requestId: input.requestId, ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}) }),
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryRequestPath, requestPath);
@@ -549,6 +566,10 @@ for (const execution of executions) {
         ? deadlineMs
         : deadlineMs + 90_000,
     );
+    // Remote allocation uncertainty survives a worker crash before publication.
+    if (mayAllocateRemoteResources(execution.environment.id)) {
+      await writeFile(path.join(privateRoot, "resource-admission-started"), "started\n", { mode: 0o600 });
+    }
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
@@ -562,10 +583,16 @@ for (const execution of executions) {
       assertNativeCompletionSelection([execution]);
       verifyNativeCompletionPreflight(process.env[NATIVE_COMPLETION_PREFLIGHT_ENV]);
     }
+    if (execution.suite.id === NATIVE_INSTRUCTION_SUITE) {
+      assertNativeInstructionSelection([execution]);
+      verifyNativeInstructionPreflight(process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV]);
+    }
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp"].includes(execution.task.flow);
+    const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
+    let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     const pageLifecycleDiagnostics: Array<Record<string, unknown>> = [];
@@ -580,6 +607,7 @@ for (const execution of executions) {
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
+    let piFileSeed: Awaited<ReturnType<typeof seedPiFile>> | undefined;
     const completionQuality: CompletionQualityRecord[] = [];
     const completionEvidence = async (name: string, data: unknown) => {
       await writeSanitizedJson(snapshotsDir, name, data, secrets);
@@ -611,6 +639,16 @@ for (const execution of executions) {
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
+    const cleanupAssertions: CleanupAssertion[] = [];
+    const beforeEnvironmentTeardownAssertions: CleanupAssertion[] = [];
+    const registerCleanupAssertion = (assertion: CleanupAssertion) => {
+      if (cleanupAssertions.length >= 8) throw new Error("Cleanup assertion bound exceeded");
+      cleanupAssertions.push(assertion);
+    };
+    const registerBeforeEnvironmentTeardownAssertion = (assertion: CleanupAssertion) => {
+      if (beforeEnvironmentTeardownAssertions.length >= 8) throw new Error("Remote cleanup assertion bound exceeded");
+      beforeEnvironmentTeardownAssertions.push(assertion);
+    };
 
     const capturePrivateScreenshot = async (id: string, file: string) => {
       const screenshotPath = path.join(privateDir, file);
@@ -788,7 +826,7 @@ for (const execution of executions) {
         consoleDiagnostics.push({
           type: message.type(),
           text: message.text(),
-          location: message.location(),
+          location: { ...message.location(), url: browserDiagnosticUrl(message.location().url) },
         });
       }
     });
@@ -797,21 +835,21 @@ for (const execution of executions) {
         type: "pageerror",
         message: error.message,
         stack: error.stack ?? null,
-        url: page.url(),
+        url: browserDiagnosticUrl(page.url()),
       });
     });
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame())
         pageLifecycleDiagnostics.push({
           type: "navigation",
-          url: frame.url(),
+          url: browserDiagnosticUrl(frame.url()),
           at: new Date().toISOString(),
         });
     });
     page.on("requestfailed", (requestEvent) => {
       networkDiagnostics.push({
         method: requestEvent.method(),
-        url: requestEvent.url(),
+        url: browserDiagnosticUrl(requestEvent.url()),
         failure: requestEvent.failure()?.errorText ?? null,
       });
     });
@@ -819,7 +857,7 @@ for (const execution of executions) {
       if (response.status() >= 400) {
         networkDiagnostics.push({
           method: response.request().method(),
-          url: response.url(),
+          url: browserDiagnosticUrl(response.url()),
           status: response.status(),
           statusText: response.statusText(),
         });
@@ -827,6 +865,7 @@ for (const execution of executions) {
     });
 
     try {
+      if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
         await writeSanitizedJson(snapshotsDir, "stock-harness-preflight.json", receipt, secrets);
@@ -845,6 +884,11 @@ for (const execution of executions) {
       });
       expect(experimental.enableNativeRunner).toBe(true);
 
+      if (execution.suite.id === "extended-harnesses" && execution.profile.qualificationCandidate === "pi" && execution.task.id === "file-edit-validate") {
+        piFileSeed = await seedPiFile(workspacePath, nonce);
+        await writeSanitizedJson(snapshotsDir, "pi-file-seed.json", piFileSeed, secrets);
+      }
+
       if (execution.suite.id === "daytona-git-streaming") {
         await setupGitStreamingWorkspace(workspacePath);
       }
@@ -859,9 +903,9 @@ for (const execution of executions) {
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
       });
 
-      if (execution.suite.id === "native-completion") {
+      if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {
         const receipt = await captureNativeDefault({ api, agentId: fixtures.agent.id, companyId: fixtures.company.id });
-        const grade = gradeNativeDefault(receipt);
+        const grade = gradeNativeDefault(receipt, execution.suite.id === NATIVE_INSTRUCTION_SUITE ? NATIVE_INSTRUCTION_DEFAULT_SHA256 : undefined);
         await writeSanitizedJson(snapshotsDir, "native-default-before-execution.json", { receipt, grade }, secrets);
         if (!grade.passed) throw new Error("Native production-default hire admission failed before execution");
         const [issues, agents, workspaceDigest] = await Promise.all([
@@ -870,6 +914,17 @@ for (const execution of executions) {
         ]);
         nativeInitial = { issueIds: issues.map(value => value.id), agentIds: agents.map(value => value.id), workspaceDigest };
       }
+      const remoteBootstrap = execution.environment.id === "daytona"
+        && ["pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
+        ? createRemoteNativeBootstrap({
+          api, daytona: await createRemoteFixtureClient(credentials.DAYTONA_API_KEY ?? ""),
+          companyId: fixtures.company.id, environmentId: fixtures.environment.id, agentId: fixtures.agent.id,
+          image: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE ?? "",
+          nodeSha256: process.env.PAPERCLIP_E2E_DAYTONA_NODE_SHA256 ?? "",
+          runnerdSha256: process.env.PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256 ?? "",
+          deadlineAt: startedAtMs + deadlineMs,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        }) : undefined;
 
       if (execution.suite.id === "stock-harness") {
         const hire = await captureStockHarness({ api, companyId: fixtures.company.id,
@@ -927,7 +982,26 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "blocker_guidance") {
+      if (execution.task.flow === "public_mcp") {
+        const journey = await runPublicMcpFlow({
+          page, api, fixtures, execution, nonce, secrets, userId: publicMcpUserId,
+          credential: credentials[execution.profile.credential]!, usage: publicMcpUsage!, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, runs) => { issue = currentIssue; selectedRuns = runs; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = journey.issue; selectedRuns = journey.runs;
+        matcherResults = journey.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `publicMcp.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "plan_task_guidance") {
+        const planning = await runPlanTaskFlow({ page, api, fixtures, execution, nonce, workspacePath,
+          deadlineAt: startedAtMs + deadlineMs - 30_000,
+          observe: (currentIssue, currentRuns, checks) => {
+            issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[];
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `planning.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          }, capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = planning.issue as IssueRecord; selectedRuns = planning.runs as RunRecord[];
+      } else if (execution.task.flow === "blocker_guidance") {
         const blocker = await runBlockerFlow({ page, api, fixtures, execution, nonce, workspacePath,
           deadlineAt: startedAtMs + deadlineMs - 30_000,
           observe: (currentIssue, currentRuns, checks) => {
@@ -950,6 +1024,64 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
+      } else if (execution.task.flow === "pi_controls") {
+        const story = await runPiControlsFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piControls.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "native_provider_loss") {
+        const story = await runNativeProviderLossFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeProviderLoss.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "native_active_stop") {
+        const story = await runNativeActiveStopFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeActiveStop.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "cursor_native") {
+        const story = await runCursorNativeFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "pi_native") {
+        const story = await runPiNativeFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          restart: preserveRunner => restartIsolatedPaperclipServer({ api, requestId: `pi-native-${nonce}`, deadlineAt: startedAtMs + deadlineMs, preserveRunner }),
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion: remoteBootstrap ? registerBeforeEnvironmentTeardownAssertion : registerCleanupAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "copilot_protection") {
+        const story = await runCopilotProtectionFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `copilotProtection.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "instruction_persistence") {
         const story = await runInstructionPersistenceFlow({
           page, api, fixtures, execution, nonce, secrets, deadlineAt: startedAtMs + deadlineMs,
@@ -1015,9 +1147,9 @@ for (const execution of executions) {
             matcherResults = evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
           },
           createOrdinary: async (taskTitle, taskPrompt) => {
-            await createTaskThroughUi({ page, issuePrefix: fixtures!.company.issuePrefix!, agentName: fixtures!.agent.name, title: taskTitle, prompt: taskPrompt, workMode: "standard" });
+            const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures!.company.issuePrefix!, agentName: fixtures!.agent.name, title: taskTitle, prompt: taskPrompt, workMode: "standard" });
             const created = await pollUntil({ label: "ordinary UI-created task", deadlineAt: startedAtMs + deadlineMs,
-              load: async () => (await api.get<IssueRecord[]>(`/api/companies/${fixtures!.company.id}/issues?limit=100`)).find(row => row.title === taskTitle), accept: row => Boolean(row) });
+              load: async () => (await api.get<IssueRecord[]>(`/api/companies/${fixtures!.company.id}/issues?limit=100`)).find(row => row.id === createdTask.issueId), accept: row => Boolean(row) });
             if (!created) throw new Error("Missing ordinary task");
             return created;
           },
@@ -1042,8 +1174,7 @@ for (const execution of executions) {
           { timeout: Math.max(1, startedAtMs + deadlineMs - Date.now()) })
           .catch((cause: unknown) => new Error("Could not capture task creation response", { cause }))
         : null;
-      turnSubmissionTimesMs.push(
-        await createTaskThroughUi({
+      const createdTask = await createTaskThroughUi({
           page,
           issuePrefix,
           agentName: fixtures.agent.name,
@@ -1051,8 +1182,9 @@ for (const execution of executions) {
           prompt,
           workMode: execution.task.workMode,
           projectName: fixtures.project?.name,
-        }),
-      );
+          requireExplicitTitle: execution.suite.id === "task-titles" && Boolean(title),
+        });
+      turnSubmissionTimesMs.push(createdTask.submittedAtMs);
 
       const deadlineAt = startedAtMs + deadlineMs;
       if (titleCreationResponse) {
@@ -1067,9 +1199,9 @@ for (const execution of executions) {
         deadlineAt,
         load: async () => {
           const issues = await api.get<IssueRecord[]>(
-            `/api/companies/${fixtures!.company.id}/issues?q=${encodeURIComponent(title)}&limit=50`,
+            `/api/companies/${fixtures!.company.id}/issues?limit=50`,
           );
-          return issues.find((candidate) => candidate.title === title);
+          return issues.find((candidate) => candidate.id === createdTask.issueId);
         },
         accept: (candidate): candidate is IssueRecord => Boolean(candidate),
       });
@@ -1572,7 +1704,7 @@ for (const execution of executions) {
               (execution.task.turnTimeoutMs ?? 10 * 60_000),
           );
           const waitingState = await pollUntil({
-            label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
+            label: `warm ${execution.environment.id} turn ${completedTurn} review state for issue ${issue.id}`,
             deadlineAt: turnDeadlineAt,
             load: loadTaskState,
             accept: ({ currentIssue, taskRuns, interactions }) => {
@@ -1631,78 +1763,81 @@ for (const execution of executions) {
           const completedRunIds = new Set(
             chronologicalRuns.map((candidate) => candidate.id),
           );
-          const retainedTurnLeases = await pollUntil({
-            label: `retained Daytona leases after warm turn ${completedTurn}`,
-            deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
-            intervalMs: 500,
-            load: () =>
-              api.get<EnvironmentLeaseRecord[]>(
-                `/api/environments/${fixtures!.environment.id}/leases`,
-              ),
-            accept: (leases) => {
-              const runOrder = new Map(
-                chronologicalRuns.map((candidate, index) => [
-                  candidate.id,
-                  index,
-                ]),
-              );
-              const completed = leases
-                .filter(
-                  (lease) =>
-                    lease.heartbeatRunId &&
-                    completedRunIds.has(lease.heartbeatRunId),
-                )
-                .sort(
-                  (left, right) =>
-                    (runOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-                    (runOrder.get(right.heartbeatRunId ?? "") ?? 0),
+          let completedLeases: EnvironmentLeaseRecord[] = [];
+          if (execution.environment.id === "daytona") {
+            const retainedTurnLeases = await pollUntil({
+              label: `retained Daytona leases after warm turn ${completedTurn}`,
+              deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
+              intervalMs: 500,
+              load: () =>
+                api.get<EnvironmentLeaseRecord[]>(
+                  `/api/environments/${fixtures!.environment.id}/leases`,
+                ),
+              accept: (leases) => {
+                const runOrder = new Map(
+                  chronologicalRuns.map((candidate, index) => [
+                    candidate.id,
+                    index,
+                  ]),
                 );
-              return (
-                completed.length === completedTurn &&
-                completed
-                  .slice(0, -1)
-                  .every(
+                const completed = leases
+                  .filter(
                     (lease) =>
-                      lease.status === "expired" &&
-                      lease.cleanupStatus === "success",
-                  ) &&
-                completed.at(-1)?.status === "retained" &&
-                completed.every(
-                  (lease) =>
-                    lease.leasePolicy === "reuse_by_environment" &&
-                    typeof lease.providerLeaseId === "string" &&
-                    record(lease.metadata).sandboxState === "started",
-                ) &&
-                completed
-                  .slice(1)
-                  .every(
-                    (lease) =>
-                      record(lease.metadata).resumedFromState === "started",
+                      lease.heartbeatRunId &&
+                      completedRunIds.has(lease.heartbeatRunId),
                   )
+                  .sort(
+                    (left, right) =>
+                      (runOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                      (runOrder.get(right.heartbeatRunId ?? "") ?? 0),
+                  );
+                return (
+                  completed.length === completedTurn &&
+                  completed
+                    .slice(0, -1)
+                    .every(
+                      (lease) =>
+                        lease.status === "expired" &&
+                        lease.cleanupStatus === "success",
+                    ) &&
+                  completed.at(-1)?.status === "retained" &&
+                  completed.every(
+                    (lease) =>
+                      lease.leasePolicy === "reuse_by_environment" &&
+                      typeof lease.providerLeaseId === "string" &&
+                      record(lease.metadata).sandboxState === "started",
+                  ) &&
+                  completed
+                    .slice(1)
+                    .every(
+                      (lease) =>
+                        record(lease.metadata).resumedFromState === "started",
+                    )
+                );
+              },
+            });
+            const turnRunOrder = new Map(
+              chronologicalRuns.map((candidate, index) => [candidate.id, index]),
+            );
+            completedLeases = retainedTurnLeases
+              .filter(
+                (lease) =>
+                  lease.heartbeatRunId &&
+                  completedRunIds.has(lease.heartbeatRunId),
+              )
+              .sort(
+                (left, right) =>
+                  (turnRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                  (turnRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
               );
-            },
-          });
-          const turnRunOrder = new Map(
-            chronologicalRuns.map((candidate, index) => [candidate.id, index]),
-          );
-          const completedLeases = retainedTurnLeases
-            .filter(
-              (lease) =>
-                lease.heartbeatRunId &&
-                completedRunIds.has(lease.heartbeatRunId),
-            )
-            .sort(
-              (left, right) =>
-                (turnRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-                (turnRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
-            );
-          if (
-            new Set(completedLeases.map((lease) => lease.providerLeaseId))
-              .size !== 1
-          ) {
-            throw new Error(
-              `Warm turn ${completedTurn} replaced its Daytona sandbox`,
-            );
+            if (
+              new Set(completedLeases.map((lease) => lease.providerLeaseId))
+                .size !== 1
+            ) {
+              throw new Error(
+                `Warm turn ${completedTurn} replaced its Daytona sandbox`,
+              );
+            }
           }
           const journalEvidence = execution.suite.id === "daytona-journal-continuity" && completedTurn === 1
             ? await largeJournalEvidence({
@@ -1727,9 +1862,31 @@ for (const execution of executions) {
             `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
             { waitUntil: "domcontentloaded" },
           );
+          // Navigation commits before React has loaded the task. Bind the
+          // screenshot to this turn's visible reply and exact pending review,
+          // rather than capturing a spinner after DOMContentLoaded.
+          const reviewUiTimeout = () => {
+            const remaining = turnDeadlineAt - Date.now();
+            if (remaining <= 0) throw new Error(`Warm turn ${completedTurn} UI deadline elapsed`);
+            return Math.min(30_000, remaining);
+          };
+          await expect(page.getByTestId("issue-detail-header").getByRole("button", {
+            name: "Change status (current: In Review)", exact: true,
+          })).toBeVisible({ timeout: reviewUiTimeout() });
+          const turnReply = page.getByTestId("task-chat-thread")
+            .getByTestId("task-chat-agent-bubble")
+            .filter({ hasText: `PAPERCLIP_E2E_WARM_T${completedTurn}_${nonce}` }).last();
+          await expect(turnReply).toBeVisible({ timeout: reviewUiTimeout() });
+          const pendingReview = waitingState.interactions.find(isPendingWarmConfirmation)!;
+          const reviewCard = page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`);
+          await expect(reviewCard).toBeVisible({ timeout: reviewUiTimeout() });
+          await expect(reviewCard.getByRole("button", { name: "Continue work", exact: true }))
+            .toBeEnabled({ timeout: reviewUiTimeout() });
+          await expect(page.getByTestId("task-chat-history-loading"))
+            .toHaveCount(0, { timeout: reviewUiTimeout() });
           await captureScreenshot(
             `warm-turn-${completedTurn}`,
-            `Warm Daytona turn ${completedTurn} awaiting review`,
+            `Warm ${execution.environment.id} turn ${completedTurn} awaiting review`,
             `warm-turn-${completedTurn}.png`,
           );
           turnSubmissionTimesMs.push(
@@ -1769,17 +1926,24 @@ for (const execution of executions) {
         terminal = await pollUntil({
           label: `final agent comment for issue ${issue.id}`,
           deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
-          load: loadTaskState,
+          load: async () => {
+            const state = await loadTaskState();
+            const finalRun = sortRunsChronologically(state.taskRuns).at(-1);
+            if (!finalRun) return state;
+            // The compact run list omits the native presentation receipt.
+            // Poll its public detail together with comments so an earlier
+            // deliverable-preparation comment cannot settle this wait.
+            const detailed = await api.get<RunRecord>(`/api/heartbeat-runs/${finalRun.id}`);
+            return { ...state, taskRuns: state.taskRuns.map(run => run.id === detailed.id ? detailed : run) };
+          },
           accept: ({ taskRuns, comments }) => {
             if (!matchesRunCount(execution.task, taskRuns.length)) {
               return false;
             }
             const finalRun = sortRunsChronologically(taskRuns).at(-1);
-            return comments.some(
-              (comment) =>
-                comment.createdByRunId === finalRun?.id &&
-                comment.authorAgentId === fixtures!.agent.id,
-            );
+            return Boolean(finalRun && persistedFinalRunMessage(
+              comments.filter(comment => comment.authorAgentId === fixtures!.agent.id), finalRun,
+            ).trim());
           },
           reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
         }).catch(() => terminal);
@@ -2074,6 +2238,15 @@ for (const execution of executions) {
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
         if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
       }
+      if (piFileSeed) {
+        const proof = await collectPiFileEvidence({ page, api, nonce, companyId: fixtures.company.id,
+          issueId: issue.id, agentId: fixtures.agent.id, run: finalRun,
+          events: runEventsByRun.find(entry => entry.runId === finalRun.id)?.events ?? [],
+          seed: piFileSeed, workspace: workspacePath,
+          environment: execution.environment.id === "daytona" ? "daytona" : "local", environmentId: fixtures.environment.id,
+          evidence: data => writeSanitizedJson(snapshotsDir, "pi-file-observation.json", data, secrets) });
+        await writeSanitizedJson(snapshotsDir, "pi-file-evidence.json", proof, secrets);
+      }
       if (execution.suite.id === "task-titles") {
         const titleEvidence = gradeTaskTitle({
           initial: titleCreation?.issue, submitted: titleCreation?.submitted,
@@ -2144,11 +2317,17 @@ for (const execution of executions) {
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
         await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
       }
+      const registeredArtifacts = await readRegisteredArtifacts(api, issue.id, run.id,
+        taskMatchers.filter(matcher => matcher.kind === "artifact_exact").map(matcher => matcher.name));
+      if (registeredArtifacts.length > 0) {
+        await writeSanitizedJson(snapshotsDir, "downloaded-registered-artifacts.json", registeredArtifacts, secrets);
+      }
       matcherResults = await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
             ...matcherObservation,
             files: fileObservations,
+            artifacts: registeredArtifacts,
             // Multi-run tasks intentionally retain earlier waiting/revision
             // replies. Exact completion text belongs to the chronological
             // final run, while occurrence checks still span every agent
@@ -2232,22 +2411,24 @@ for (const execution of executions) {
         const executionWorkspaceIds = selectedRuns.map(
           (candidate) => record(candidate.contextSnapshot).executionWorkspaceId,
         );
-        if (
-          leaseIds.some(
-            (leaseId) => typeof leaseId !== "string" || leaseId.length === 0,
-          )
-        ) {
-          invariantFailures.push(
-            `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
-          );
-        }
-        if (
-          JSON.stringify(acquisitionOutcomes) !==
-          JSON.stringify(["created", "resumed", "resumed"])
-        ) {
-          invariantFailures.push(
-            `expected warm lease outcomes created,resumed,resumed; observed ${JSON.stringify(acquisitionOutcomes)}`,
-          );
+        if (execution.environment.id === "daytona") {
+          if (
+            leaseIds.some(
+              (leaseId) => typeof leaseId !== "string" || leaseId.length === 0,
+            )
+          ) {
+            invariantFailures.push(
+              `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
+            );
+          }
+          if (
+            JSON.stringify(acquisitionOutcomes) !==
+            JSON.stringify(["created", "resumed", "resumed"])
+          ) {
+            invariantFailures.push(
+              `expected warm lease outcomes created,resumed,resumed; observed ${JSON.stringify(acquisitionOutcomes)}`,
+            );
+          }
         }
         if (
           !fixtures.project?.primaryWorkspace?.id ||
@@ -2330,71 +2511,76 @@ for (const execution of executions) {
             `warm turn timing data was incomplete or exceeded its structural deadline: ${JSON.stringify(turnTimings)}`,
           );
         }
-        const retainedLeases = await pollUntil({
-          label: `terminal warm Daytona lease history for issue ${issue.id}`,
-          deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
-          intervalMs: 500,
-          load: () =>
-            api.get<EnvironmentLeaseRecord[]>(
-              `/api/environments/${fixtures!.environment.id}/leases`,
-            ),
-          accept: (leases) => {
-            const warmLeases = leases.filter(
+        let warmLeases: EnvironmentLeaseRecord[] = [];
+        let providerLeaseIds: Array<string | null | undefined> = [];
+        let resumedFromStates: unknown[] = [];
+        if (execution.environment.id === "daytona") {
+          const retainedLeases = await pollUntil({
+            label: `terminal warm Daytona lease history for issue ${issue.id}`,
+            deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+            intervalMs: 500,
+            load: () =>
+              api.get<EnvironmentLeaseRecord[]>(
+                `/api/environments/${fixtures!.environment.id}/leases`,
+              ),
+            accept: (leases) => {
+              const warmLeases = leases.filter(
+                (lease) =>
+                  lease.issueId === issue!.id &&
+                  selectedRuns.some(
+                    (candidate) => candidate.id === lease.heartbeatRunId,
+                  ),
+              );
+              return (
+                warmLeases.length === 3 &&
+                warmLeases.every((lease) => {
+                  const runIndex = selectedRuns.findIndex(
+                    (candidate) => candidate.id === lease.heartbeatRunId,
+                  );
+                  return (
+                    lease.status ===
+                      (runIndex === selectedRuns.length - 1
+                        ? "retained"
+                        : "expired") &&
+                    lease.cleanupStatus === "success" &&
+                    lease.leasePolicy === "reuse_by_environment" &&
+                    typeof lease.providerLeaseId === "string" &&
+                    record(lease.metadata).sandboxState === "started"
+                  );
+                })
+              );
+            },
+          });
+          const selectedRunOrder = new Map(
+            selectedRuns.map((candidate, index) => [candidate.id, index]),
+          );
+          warmLeases = retainedLeases
+            .filter(
               (lease) =>
                 lease.issueId === issue!.id &&
-                selectedRuns.some(
-                  (candidate) => candidate.id === lease.heartbeatRunId,
-                ),
+                selectedRunOrder.has(lease.heartbeatRunId ?? ""),
+            )
+            .sort(
+              (left, right) =>
+                (selectedRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                (selectedRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
             );
-            return (
-              warmLeases.length === 3 &&
-              warmLeases.every((lease) => {
-                const runIndex = selectedRuns.findIndex(
-                  (candidate) => candidate.id === lease.heartbeatRunId,
-                );
-                return (
-                  lease.status ===
-                    (runIndex === selectedRuns.length - 1
-                      ? "retained"
-                      : "expired") &&
-                  lease.cleanupStatus === "success" &&
-                  lease.leasePolicy === "reuse_by_environment" &&
-                  typeof lease.providerLeaseId === "string" &&
-                  record(lease.metadata).sandboxState === "started"
-                );
-              })
+          providerLeaseIds = warmLeases.map(
+            (lease) => lease.providerLeaseId,
+          );
+          resumedFromStates = warmLeases
+            .slice(1)
+            .map((lease) => record(lease.metadata).resumedFromState);
+          if (
+            new Set(providerLeaseIds).size !== 1 ||
+            typeof providerLeaseIds[0] !== "string" ||
+            JSON.stringify(resumedFromStates) !==
+              JSON.stringify(["started", "started"])
+          ) {
+            invariantFailures.push(
+              `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
             );
-          },
-        });
-        const selectedRunOrder = new Map(
-          selectedRuns.map((candidate, index) => [candidate.id, index]),
-        );
-        const warmLeases = retainedLeases
-          .filter(
-            (lease) =>
-              lease.issueId === issue!.id &&
-              selectedRunOrder.has(lease.heartbeatRunId ?? ""),
-          )
-          .sort(
-            (left, right) =>
-              (selectedRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
-              (selectedRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
-          );
-        const providerLeaseIds = warmLeases.map(
-          (lease) => lease.providerLeaseId,
-        );
-        const resumedFromStates = warmLeases
-          .slice(1)
-          .map((lease) => record(lease.metadata).resumedFromState);
-        if (
-          new Set(providerLeaseIds).size !== 1 ||
-          typeof providerLeaseIds[0] !== "string" ||
-          JSON.stringify(resumedFromStates) !==
-            JSON.stringify(["started", "started"])
-        ) {
-          invariantFailures.push(
-            `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
-          );
+          }
         }
         warmLifecycleEvidence = {
           ...(warmLifecycleEvidence ?? {}),
@@ -2615,7 +2801,7 @@ for (const execution of executions) {
         await expect(proofLink).toHaveAttribute("href", `/api/attachments/${downloadedResponseProof!.attachmentId}/content`);
       } else if (execution.suite.id === "task-titles") {
         await expect(visibleAgentReplies.filter({ hasText: marker }).last()).toBeVisible({ timeout: 30_000 });
-      } else if (execution.suite.id === "native-completion" && execution.task.id === "native-blocked-report") {
+      } else if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id) && execution.task.id === "native-blocked-report") {
         await assertNativeBlockerReply(visibleAgentReplies, marker);
       } else if (execution.task.flow === "warm_three_turn") {
         // Prove the persisted user-facing response is visible, independently
@@ -2676,7 +2862,7 @@ for (const execution of executions) {
         );
       }
       }
-      if (execution.suite.id === "native-completion") {
+      if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {
         if (!issue || !nativeInitial) throw new Error("Missing native qualification issue or pre-execution receipt");
         const [currentIssue, companyRuns, issues, agents, comments, documents, interactions, workspaceDigest] = await Promise.all([
           api.get<IssueRecord>(`/api/issues/${issue.id}`),
@@ -2694,12 +2880,39 @@ for (const execution of executions) {
           companyId: fixtures.company.id, agentId: fixtures.agent.id, issue: currentIssue as unknown as Record<string, unknown>,
           runs: detailedRuns as unknown as Record<string, unknown>[], comments: comments as unknown as Record<string, unknown>[], events: events as unknown as Record<string, unknown>[],
           initial: nativeInitial, state: { issueIds: issues.map(value => value.id), agentIds: agents.map(value => value.id), documentCount: documents.length, interactionCount: interactions.length },
-          workspaceChanged: workspaceDigest !== nativeInitial.workspaceDigest, marker };
-        const grade = gradeNativeCompletion(observation);
+          workspaceChanged: workspaceDigest !== nativeInitial.workspaceDigest, marker,
+          documentLinkContext: { appOrigin: new URL(page.url()).origin, issuePrefix: fixtures.company.issuePrefix ?? "",
+            issueIdentifier: currentIssue.identifier ?? "", documents } };
+        const grade = execution.suite.id === NATIVE_INSTRUCTION_SUITE
+          ? gradeNativeCompletionFinalAnswer(observation) : gradeNativeCompletion(observation);
         const integrity = detailedRuns.flatMap(candidate => nativeRunEventIntegrityFailures(candidate, events));
         await writeSanitizedJson(snapshotsDir, "native-completion.json", { observation, grade, integrity }, secrets);
         matcherResults.push(...grade.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeCompletion.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
-        if (!grade.passed || integrity.length) throw new Error(`Native completion qualification failed: ${[...grade.checks.filter(check => !check.passed).map(check => check.id), ...integrity].join("; ")}`);
+        if (!grade.passed || integrity.length) throw new Error(`Native completion matcher failure: ${[...grade.checks.filter(check => !check.passed).map(check => check.id), ...integrity].join("; ")}`);
+        if (execution.suite.id === NATIVE_INSTRUCTION_SUITE && execution.task.id === "assigned-skill-explicit-invocation") {
+          const document = documents[0]!;
+          const href = `/${encodeURIComponent(fixtures.company.issuePrefix!)}/issues/${encodeURIComponent(currentIssue.identifier!)}#document-${encodeURIComponent(document.key)}`;
+          let opened = false;
+          try {
+            const link = page.getByTestId("task-chat-agent-bubble").locator(`a[href=${JSON.stringify(href)}]`).last();
+            await expect(link).toBeVisible({ timeout: 30_000 });
+            await link.click();
+            await expect(page).toHaveURL(new URL(href, observation.documentLinkContext.appOrigin).href);
+            const target = page.locator([
+              `[id=${JSON.stringify(`document-${document.key}`)}]:visible`,
+              `[id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`,
+            ].join(", "));
+            await expect(target).toHaveCount(1);
+            await expect(target).toBeVisible();
+            await expect(target).toContainText(marker);
+            opened = true;
+            await captureScreenshot("document-final-link", "Final reply link opens the saved document", "document-final-link.png");
+          } finally {
+            matcherResults.push({ matcher: { kind: "json_path", path: "nativeCompletion.visible-document-navigation", expected: true }, passed: opened,
+              detail: "The rendered final reply link opens this task's saved document and shows its original content marker." });
+            await writeSanitizedJson(snapshotsDir, "native-document-navigation.json", { href, documentKey: document.key, revisionId: document.latestRevisionId, opened }, secrets);
+          }
+        }
       }
       if (runsCompletionUpdateProbe(execution) && credentials.OPENAI_API_KEY) {
         const qualification = completionQualityStatus(completionQuality);
@@ -2776,31 +2989,40 @@ for (const execution of executions) {
           });
         });
         try {
-          await cancelActiveRunsForCleanup();
-          if (companyRunFlow) {
-            const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
-            selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
-            await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
-          }
-          if (execution.suite.id === "stock-harness") {
-            try {
-              const stock = await captureStockHarness({ api, companyId: fixtures.company.id,
-                agentId: fixtures.agent.id, generation: execution.profile.generation,
-                runIds: selectedRuns.map(run => run.id) });
-              const checks = gradeStockHarness(stock);
-              matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const,
-                path: `stockHarness.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
-              await writeSanitizedJson(snapshotsDir, "stock-harness.json", { ...stock, checks }, secrets);
-              const failures = checks.filter(check => !check.passed);
-              if (failures.length && !primaryError) primaryError = new Error(`Stock harness matcher failures: ${failures.map(check => check.id).join(", ")}`);
-            } catch (error) {
-              await writeSanitizedJson(snapshotsDir, "stock-harness-evidence-error.json", {
-                error: error instanceof Error ? error.message : String(error),
-              }, secrets);
-              if (!primaryError) primaryError = error;
-            }
-          }
-          await fixtures.teardown();
+          const verification = await runCleanupWithObservers({
+            retireRuns: async () => {
+              await cancelActiveRunsForCleanup();
+              if (companyRunFlow) {
+                const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`);
+                selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+                await writeSanitizedJson(snapshotsDir, execution.task.flow === "first_task" ? "first-task-final-run-ledger.json" : "chat-final-run-ledger.json", selectedRuns, secrets);
+              }
+              if (execution.suite.id === "stock-harness") {
+                try {
+                  const stock = await captureStockHarness({ api, companyId: fixtures!.company.id,
+                    agentId: fixtures!.agent.id, generation: execution.profile.generation,
+                    runIds: selectedRuns.map(run => run.id) });
+                  const checks = gradeStockHarness(stock);
+                  matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const,
+                    path: `stockHarness.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
+                  await writeSanitizedJson(snapshotsDir, "stock-harness.json", { ...stock, checks }, secrets);
+                  const failures = checks.filter(check => !check.passed);
+                  if (failures.length && !primaryError) primaryError = new Error(`Stock harness matcher failures: ${failures.map(check => check.id).join(", ")}`);
+                } catch (error) {
+                  await writeSanitizedJson(snapshotsDir, "stock-harness-evidence-error.json", {
+                    error: error instanceof Error ? error.message : String(error),
+                  }, secrets);
+                  if (!primaryError) primaryError = error;
+                }
+              }
+            },
+            assertions: beforeEnvironmentTeardownAssertions,
+            teardown: () => fixtures!.teardown(),
+          });
+          matcherResults.push(...verification.checks.map(check => ({
+            matcher: { kind: "json_path" as const, path: `remoteCleanup.${check.id}`, expected: true }, passed: check.passed, detail: check.detail,
+          })));
+          if (verification.errors.length) throw new AggregateError(verification.errors, "Cleanup or remote retirement verification failed");
           cleanup = "passed";
         } catch (error) {
           cleanup = "failed";
@@ -2844,6 +3066,23 @@ for (const execution of executions) {
             : "passed";
       }
 
+      // Local fixture teardown does not retire the API server. These assertions
+      // independently prove the recorded provider processes retired, while the
+      // workspace still exists, before final grading. The outer supervisor
+      // remains responsible for complete server/database cleanup.
+      if (cleanupAssertions.length > 0) {
+        const verification = await verifyCleanupAssertions(cleanupAssertions);
+        matcherResults.push(...verification.checks.map(check => ({
+          matcher: { kind: "json_path" as const, path: `cleanup.${check.id}`, expected: true },
+          passed: check.passed, detail: check.detail,
+        })));
+        if (verification.errors.length > 0) {
+          cleanup = "failed";
+          primaryError = new AggregateError([primaryError, ...verification.errors].filter(Boolean), "Cleanup verification failed after provider settlement");
+          if (failureClassOverride !== "secret_leak") failureClassOverride = "cleanup_failure";
+        }
+      }
+
       const finishedAtMs = Date.now();
       const runtimeUsage = buildRuntimeUsage({
         environmentId: execution.environment.id,
@@ -2879,6 +3118,7 @@ for (const execution of executions) {
         model: firstTaskEvidence ? firstTaskEvidence.observedModels[0] ?? firstTaskEvidence.configuredModel ?? "provider-default (unreported)" : execution.profile.model,
         ...(firstTaskEvidence ? { firstTask: firstTaskEvidence } : {}),
         ...(completionQuality.length ? { completionQuality } : {}),
+        ...(publicMcpUsage ? { publicMcp: publicMcpUsage } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,

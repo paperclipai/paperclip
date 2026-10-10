@@ -78,12 +78,117 @@ pub struct AcpxSidecarEvent {
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
+    session_open_timeout: Duration,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+}
+
+// A fresh Pi process verifies and copies its native closure before ACP admission.
+// Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
+    if agent == "pi" {
+        Duration::from_secs(60)
+    } else {
+        ordinary
+    }
+}
+
+// Pi's provider catalog is caller-selected. The authenticated controller binds
+// credential names (including custom models.json references); a Rust provider
+// roster would silently drop credentials before the sidecar can validate them.
+fn pi_credential_environment_keys(binding: Option<&str>) -> Result<Vec<String>, LocalRunnerError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Binding {
+        schema: String,
+        agent: String,
+        session_id: String,
+        names: Vec<String>,
+    }
+    let invalid = || LocalRunnerError::invalid("Pi credentials require a valid controller binding");
+    let Some(raw) = binding else {
+        return Ok(Vec::new());
+    };
+    if raw.len() > 4_096 {
+        return Err(invalid());
+    }
+    let value: Binding = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if value.schema != "paperclip.acpx_credential_binding.v1"
+        || value.agent != "pi"
+        || !is_stable_id(&value.session_id, SHORT_STABLE_ID_CHARS)
+        || value.names.len() > 128
+    {
+        return Err(invalid());
+    }
+    let mut seen = BTreeSet::new();
+    for name in &value.names {
+        let valid_name = name.len() <= 128
+            && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_');
+        // Match pi-provider-config.ts: prefixes such as LD_API_KEY are valid
+        // credentials; only the reserved process controls are rejected.
+        let protected_name = (name.starts_with("PAPERCLIP_") && name != "PAPERCLIP_PI_PROVIDERS")
+            || name.starts_with("NODE_")
+            || name.starts_with("NPM_")
+            || matches!(
+                name.as_str(),
+                "PATH"
+                    | "HOME"
+                    | "SHELL"
+                    | "TMPDIR"
+                    | "BASH_ENV"
+                    | "ENV"
+                    | "ZDOTDIR"
+                    | "LD_AUDIT"
+                    | "LD_LIBRARY_PATH"
+                    | "LD_PRELOAD"
+                    | "LD_DEBUG"
+                    | "LD_DEBUG_OUTPUT"
+                    | "LD_PROFILE"
+                    | "LD_PROFILE_OUTPUT"
+                    | "LD_TRACE_LOADED_OBJECTS"
+                    | "LD_ORIGIN_PATH"
+                    | "LD_BIND_NOW"
+                    | "LD_BIND_NOT"
+                    | "LD_DYNAMIC_WEAK"
+                    | "LD_HWCAP_MASK"
+                    | "LD_SHOW_AUXV"
+                    | "LD_USE_LOAD_BIAS"
+                    | "LD_VERBOSE"
+                    | "LD_WARN"
+                    | "LD_ASSUME_KERNEL"
+                    | "LD_PREFER_MAP_32BIT_EXEC"
+                    | "DYLD_INSERT_LIBRARIES"
+                    | "DYLD_LIBRARY_PATH"
+                    | "DYLD_FRAMEWORK_PATH"
+                    | "DYLD_FALLBACK_LIBRARY_PATH"
+                    | "DYLD_FALLBACK_FRAMEWORK_PATH"
+                    | "DYLD_VERSIONED_LIBRARY_PATH"
+                    | "DYLD_VERSIONED_FRAMEWORK_PATH"
+                    | "DYLD_ROOT_PATH"
+                    | "DYLD_IMAGE_SUFFIX"
+                    | "DYLD_SHARED_CACHE_DIR"
+                    | "GLIBC_TUNABLES"
+                    | "GCONV_PATH"
+                    | "LOCPATH"
+                    | "NLSPATH"
+                    | "AWS_ACCESS_KEY_ID"
+                    | "AWS_SECRET_ACCESS_KEY"
+                    | "AWS_SESSION_TOKEN"
+            );
+        if !valid_name || protected_name || !seen.insert(name) {
+            return Err(invalid());
+        }
+    }
+    // The sidecar still checks every name against Pi's pinned SDK/custom
+    // configuration and the exact session.open identity before provider launch.
+    Ok(value.names)
 }
 
 impl AcpxSidecarTransport {
@@ -96,10 +201,19 @@ impl AcpxSidecarTransport {
         agent: &str,
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
-            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "claude" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_AI_PROVIDER_KEY",
+            ],
             "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
-            "pi" => &["OPENROUTER_API_KEY"],
+            "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
             _ => {
@@ -109,6 +223,9 @@ impl AcpxSidecarTransport {
             }
         };
         let mut keys = vec![
+            "PAPERCLIP_AGENT_KEY_ID",
+            "PAPERCLIP_AGENT_PUBLIC_KEY",
+            "PAPERCLIP_AGENT_PRIVATE_KEY",
             "LANGUAGE",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
@@ -136,8 +253,43 @@ impl AcpxSidecarTransport {
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
+        if agent == "claude" {
+            keys.extend_from_slice(&[
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
+        }
+        let pi_keys = if agent == "pi" {
+            pi_credential_environment_keys(
+                std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING")
+                    .ok()
+                    .as_deref(),
+            )?
+        } else {
+            Vec::new()
+        };
+        keys.extend(pi_keys.iter().map(String::as_str));
         keys.extend_from_slice(credential_keys);
-        Self::start_with_environment_keys(config, &keys)
+        // Pi owns a native distribution copy, including a pending refresh at
+        // suspension. Allow its bounded cleanup to settle before group KILL;
+        // the ordinary two-second grace can cut off deletion mid-tree.
+        config.validate()?;
+        let mut launch_config = config.clone();
+        if agent == "pi" {
+            launch_config.shutdown_grace = Duration::from_secs(30);
+        }
+        let mut transport = Self::start_with_environment_keys(&launch_config, &keys)?;
+        transport.session_open_timeout = session_open_timeout(agent, config.request_timeout);
+        Ok(transport)
     }
 
     fn start_with_environment_keys(
@@ -164,6 +316,7 @@ impl AcpxSidecarTransport {
         Ok(Self {
             process,
             request_timeout: config.request_timeout,
+            session_open_timeout: config.request_timeout,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
@@ -171,6 +324,14 @@ impl AcpxSidecarTransport {
             stderr_categories: BTreeSet::new(),
             poisoned: false,
         })
+    }
+
+    fn command_timeout(&self, command: GeneratedAcpxSidecarCommand) -> Duration {
+        if command == GeneratedAcpxSidecarCommand::SessionOpen {
+            self.session_open_timeout
+        } else {
+            self.request_timeout
+        }
     }
 
     pub fn process_id(&self) -> u32 {
@@ -268,7 +429,8 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let deadline = Instant::now() + self.request_timeout;
+        let timeout = self.command_timeout(command);
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -695,8 +857,11 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_STARTUP_FAILED.EXIT_NONZERO" => return "agent_startup_exit_nonzero",
         "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
         "AGENT_DISCONNECTED" => return "agent_disconnected",
+        "ACPX_TOOL_CALL_STALE" => return "provider_tool_call_retired",
         "AUTH_REQUIRED" => return "authentication_required",
         "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
         "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
         "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
@@ -765,6 +930,67 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
+        assert!(pi_credential_environment_keys(None).unwrap().is_empty());
+        for name in [
+            "NODE_OPTIONS",
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "INVALID-NAME",
+        ] {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        for binding in [
+            json!({"schema":"other", "agent":"pi", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"cursor", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":["MY_PI_KEY", "MY_PI_KEY"]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[], "extra":true}),
+        ] {
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        assert!(pi_credential_environment_keys(Some(&"x".repeat(4_097))).is_err());
+    }
+
+    #[test]
+    fn pi_loader_and_shell_controls_match_the_controller_reservations() {
+        let names: Vec<String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test-fixtures/pi-acp/reserved-credential-names.json"
+        )))
+        .unwrap();
+        for name in names {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+    }
+
+    #[test]
+    fn pi_custom_credential_names_follow_the_controller_contract() {
+        let names = vec!["LD_API_KEY", "DYLD_API_KEY", "MY_PI_SERVICE_KEY"];
+        let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":names});
+        assert_eq!(
+            pi_credential_environment_keys(Some(&binding.to_string())).unwrap(),
+            names
+        );
+    }
+
+    #[test]
+    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+        let ordinary = Duration::from_secs(30);
+        assert_eq!(
+            session_open_timeout("pi", ordinary),
+            Duration::from_secs(60)
+        );
+        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+            assert_eq!(session_open_timeout(agent, ordinary), ordinary);
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -812,6 +1038,8 @@ mod tests {
     #[test]
     fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
         for (code, expected) in [
+            ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
+            ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
             ("COPILOT_AUTH_REQUIRED", "authentication_required"),
             ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
             ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
@@ -888,6 +1116,11 @@ mod tests {
             "provider_lifetime_owned"
         );
         let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
             (
                 "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
                 "runtime_admission_verification_timeout",

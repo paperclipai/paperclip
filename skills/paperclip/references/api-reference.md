@@ -1189,7 +1189,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 Other outcomes match `request_confirmation`:
 
 - `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
-- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `cancelled` expires all pending interactions without continuation wakes. Transitioning to `done` expires current questions and governed requests, but retains ordinary historical questions that precede newer human direction. An authorized human can answer a retained question after completion; this records history without reopening work or creating a response wake. Listing a terminal issue also applies these rules in its catch-up sweep.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
@@ -1673,3 +1673,21 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+
+**Run-scoped agent connection access.**
+
+`POST /api/runtime-tools/connections/request` uses the injected runtime tool
+capability, not a board session or ordinary agent key. Input:
+`{service, connectionId?, toolNames?, selectionInteractionId?, targetService?}`.
+`toolNames` contains 1–20 unique indexed names; company, agent, user, and task
+identity come from the active run. Missing access to an eligible saved connection
+creates a server-owned `connection_intent` with `payload.accessRequest` containing
+the connection ID/name and immutable catalog IDs, names, version hashes, and
+Allowed/Ask-first settings. The addressed human connection manager accepts via
+`POST /api/connection-intents/:id/complete` with `{connectionId}` or declines via
+`POST /api/connection-intents/:id/decline`. Acceptance atomically installs the
+connection for the requesting agent, grants only the listed tools, retains
+per-call write approval, records activity, and dispatches the existing continuation.
+An unauthorized approver receives 403; changed tool definitions, assignment,
+identity, or a closed task receive 409; unrelated connections receive 404.
+No credentials or provider authorization URL appear in the card payload.

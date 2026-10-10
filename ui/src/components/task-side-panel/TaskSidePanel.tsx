@@ -28,6 +28,7 @@ import {
   ListTree,
   Plus,
   SlidersHorizontal,
+  X,
 } from "lucide-react";
 import { fileResourcesApi } from "@/api/file-resources";
 import { IssueProperties } from "@/components/IssueProperties";
@@ -42,6 +43,7 @@ import {
   SidePanelLauncher,
   SidePanelToggleButton,
   SidePanelTabs,
+  SidePanelMobileTabs,
   useScrollbarWhileScrolling,
   useSidePanelTabs,
   type SidePanelLauncherItem,
@@ -97,6 +99,7 @@ export interface TaskSidePanelProps {
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  mobile?: boolean;
   hasActiveRun?: boolean;
   externalObjects?: IssueExternalObjectGroup[];
   externalObjectsLoading?: boolean;
@@ -241,6 +244,7 @@ export function TaskSidePanel({
   onAddSubIssue,
   onUpdate,
   inline = false,
+  mobile = false,
   hasActiveRun = false,
   externalObjects,
   externalObjectsLoading,
@@ -677,7 +681,9 @@ export function TaskSidePanel({
           size="icon-sm"
           className={cn(
             "shrink-0 text-muted-foreground hover:text-foreground focus-visible:text-foreground",
-            streamlinedTabs
+            mobile
+              ? "size-(--sz-44px) rounded-md"
+              : streamlinedTabs
               ? "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-md"
               : "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-(--side-panel-control-radius)",
           )}
@@ -688,7 +694,15 @@ export function TaskSidePanel({
       )}
     />
   );
-  const tabStrip = (
+  const tabStrip = mobile ? (
+    <SidePanelMobileTabs
+      tabs={visualTabs}
+      activeTabId={controller.activeTabId}
+      onActiveTabChange={selectTab}
+      onCloseTab={closeTab}
+      addControl={launcherControl}
+    />
+  ) : (
     <SidePanelTabs
       tabs={visualTabs}
       activeTabId={controller.activeTabId}
@@ -807,7 +821,11 @@ export function TaskSidePanel({
         <div className="flex h-(--side-panel-header-height) shrink-0 items-center gap-1 px-2">
           {tabStrip}
           {onRequestClose ? (
-            <SidePanelToggleButton open onToggle={onRequestClose} />
+            mobile ? (
+              <Button variant="ghost" size="icon" className="size-(--sz-44px) shrink-0" aria-label="Close side panel" onClick={onRequestClose}>
+                <X aria-hidden />
+              </Button>
+            ) : <SidePanelToggleButton open onToggle={onRequestClose} />
           ) : null}
         </div>
       )}

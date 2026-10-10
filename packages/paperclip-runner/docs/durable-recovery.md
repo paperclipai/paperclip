@@ -95,6 +95,15 @@ welcome and every control envelope against the authenticated connection,
 runner, environment lease, run, normalized session, turn, item, protocol,
 lease ID, expiry, and revocation metadata before applying an ACK or command.
 
+Semantic input integrity uses SHA-256 of the complete transmitted input's
+canonical JSON, with UTF-16 object-key order and JavaScript number formatting.
+The controller checks this proof after authentication and exact run/session/
+turn/item correlation, before committing, dispatching, or acknowledging the
+input. Receipt redaction has a separate digest; a redacted digest cannot stand
+in for wire integrity, including when only a protected field changes. A failed
+integrity proof keeps the existing operator-required recovery fence. Updating
+the verifier does not clear a previously failed run or replay its work.
+
 The daemon captures and removes the bootstrap environment variable before it
 parses arguments or starts child work. Secret buffers are overwritten when they
 are dropped. It resolves the destination once before sending a bearer value and
@@ -304,6 +313,14 @@ production core should close active sessions when it revokes a lease and choose
 the lease TTL to match its required revocation bound.
 
 ## Restart and reconciliation
+
+Local Linux process receipts use the kernel's `/proc/PID/stat` start ticks,
+`/proc/stat` boot time and `CLK_TCK` to record process birth. The server and
+retained Runner maintenance use the same reader. `/proc/PID` directory ctime
+can differ from birth and must not grant process ownership. Invalid or missing
+birth metadata fails closed. PID, process group and owner checks remain required.
+Drain active Linux runs before updating or rolling back across the previous
+ctime-based receipt format; do not rewrite a live receipt to force adoption.
 
 A socket drop keeps the same Rust process and in-memory lease. The process
 reconnects and reloads the mock-core command and event cursor.

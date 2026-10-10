@@ -6,6 +6,36 @@ import {
 import { validatePrpStructuredRunResult } from "./replay-contract.js";
 
 describe("normalizePrpResultSignals", () => {
+  it("normalizes an explicit null continuation without weakening completion rules", () => {
+    const providerResult = {
+      reportedWorkDisposition: "done",
+      summary: "Renamed the task to bobathan.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
+        remainingWork: [],
+      },
+      evidence: [],
+      verification: [],
+      continuation: null,
+    };
+    const validated = validatePrpStructuredRunResult(providerResult);
+    expect(validated).toMatchObject({ ok: true, result: { reportedWorkDisposition: "done" } });
+    if (validated.ok) expect(validated.result).not.toHaveProperty("continuation");
+    expect(providerResult).toHaveProperty("continuation", null);
+    expect(validatePrpStructuredRunResult({
+      ...providerResult,
+      reportedWorkDisposition: "yielded",
+    })).toMatchObject({ ok: false });
+    expect(normalizeLegacyPrpStructuredRunResult({
+      ...providerResult,
+      continuation: { kind: "response_wake", summary: "Contradictory wait.", idempotencyKey: "wait-1" },
+    })).toHaveProperty("continuation", {
+      kind: "response_wake", summary: "Contradictory wait.", idempotencyKey: "wait-1",
+    });
+  });
+
   it("accepts legacy completion aliases as one canonical PRP result", () => {
     const legacy = {
       schema: "paperclip.run_result.v1",

@@ -16,6 +16,18 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes personal membership state when a primary changes on another device", () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "user_preference", entityId: "user-1", action: "primary_agent.updated",
+      actorType: "user", actorId: "user-1",
+    }, { userId: "user-1", agentId: null });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["primary-agent", "company-1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.resourceMemberships.mine("company-1") });
+    client.clear();
+  });
+
   it.each([
     ["chat-1", "issue.comment_added", "agent", "agent-1", true],
     ["task-1", "issue.comment_added", "agent", "agent-1", false],
@@ -937,6 +949,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
     });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(invalidations).toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
+    }
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
@@ -977,6 +992,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       )).toBe(true);
       for (const ref of ["PAP-759", "issue-1"]) {
         expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.comments(ref) });
+        expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
       }
     },
   );
@@ -1626,5 +1642,32 @@ describe("task subtree notification context", () => {
   });
   it("suppresses the run shown on its own run detail page", () => {
     expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/agents/alex/runs/child-run", { runId: "child-run" }, { isForegrounded: true })).toBe(true);
+  });
+});
+
+describe("activity toast attribution", () => {
+  const build = __liveUpdatesTestUtils.buildActivityToast;
+  const payload = { action: "issue.created", entityType: "issue", entityId: "task-1", actorType: "user", actorId: "user-1", actorName: "Alex Example", actorImage: "/alex.png" };
+  it.each(["issue.created", "issue.updated", "issue.comment_added"])("hides the viewer's own %s", (action) => {
+    expect(build(new QueryClient(), "company", { ...payload, action }, { userId: "user-1", agentId: null })).toBeNull();
+  });
+  it("hides an agent's own action", () => {
+    expect(build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1" }, { userId: null, agentId: "agent-1" })).toBeNull();
+  });
+  it("uses the real name and photo with an empty directory cache", () => {
+    const toast = build(new QueryClient(), "company", payload, { userId: "other-user", agentId: null });
+    expect(toast?.title).toBe("Alex Example created Task task-1");
+    expect(toast?.actor).toMatchObject({ type: "user", name: "Alex Example", image: "/alex.png" });
+  });
+  it("uses the agent's custom avatar with an empty agent cache", () => {
+    const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky", customAvatarAssetId: "11111111-1111-4111-8111-111111111111" };
+    const toast = build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1", actorName: "Coder", actorAppearance: appearance }, { userId: "user-1", agentId: null });
+    expect(toast?.title).toBe("Coder created Task task-1");
+    expect(toast?.actor?.appearance).toEqual(appearance);
+  });
+  it("keeps system activity distinct from people", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, actorType: "system", actorName: undefined }, { userId: "user-1", agentId: null });
+    expect(toast?.title).toBe("System created Task task-1");
+    expect(toast?.actor).toBeUndefined();
   });
 });

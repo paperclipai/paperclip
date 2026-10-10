@@ -1,4 +1,5 @@
 import { connectionIntentService } from "./connection-intents.js";
+import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
 import { and, eq, isNull, lte, asc, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
@@ -79,9 +80,8 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         eq(heartbeatRuns.companyId, issue.companyId),
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${issue.id}`,
       )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-      const gap = latest?.resultJson?.configurationIncomplete as { reason?: string } | undefined;
       if (latest?.id !== loaded.interaction.sourceRunId || latest.status !== "failed"
-        || latest.errorCode !== "configuration_incomplete" || gap?.reason !== "ai_connection_unavailable") return null;
+        || !isAiConnectionConfigurationFailure(latest)) return null;
       // Restricted external chat retries require their original chat provenance.
       // Their existing Try again path owns that authorization and delivery.
       const [restrictedChat] = await tx.select({ id: chatConversations.id }).from(chatConversations)
@@ -167,7 +167,11 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
     }
   }
-  return { deliver, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
+  async function hasPending() {
+    return (await db.select({ id: connectionIntentDeliveries.interactionId }).from(connectionIntentDeliveries)
+      .where(isNull(connectionIntentDeliveries.deliveredAt)).limit(1)).length > 0;
+  }
+  return { deliver, hasPending, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
     const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date())))
       .orderBy(asc(connectionIntentDeliveries.nextAttemptAt)).limit(50);
     let failed = 0;

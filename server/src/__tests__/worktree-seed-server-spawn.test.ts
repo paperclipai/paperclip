@@ -2,14 +2,15 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ensureWorktreeSeeded,
   readWorktreeSeedManifest,
+  worktreeInitCommand,
 } from "../../../cli/src/commands/worktree.ts";
-import { realizeExecutionWorkspace } from "../services/workspace-runtime.ts";
+import { realizeExecutionWorkspace, resolveRuntimeProvisionCommand } from "../services/workspace-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -90,8 +91,75 @@ afterEach(async () => {
 });
 
 describe("managed worktree seed source through the server spawn path", () => {
+  it("preserves an explicitly empty instance during managed startup before its first database boot", async () => {
+    const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-server-empty-worktree-")));
+    cleanup.push(tempRoot);
+    const baseCwd = path.join(tempRoot, "source");
+    const cwd = path.join(tempRoot, "empty");
+    const sourceConfigPath = path.join(baseCwd, ".paperclip", "config.json");
+    await writeConfig(sourceConfigPath, "registered-source");
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.mkdir(path.join(baseCwd, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(baseCwd, "scripts", "provision-worktree-runtime.sh"), "#!/usr/bin/env bash\n");
+    const originalCwd = process.cwd();
+    const originalEnv = { ...process.env };
+    try {
+      process.chdir(cwd);
+      await worktreeInitCommand({ empty: true, fromConfig: sourceConfigPath, home: path.join(tempRoot, "instances") });
+      const configPath = path.join(cwd, ".paperclip", "config.json");
+      const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+      const startup = await execFileAsync(process.execPath, [path.join(repoRoot, "cli/node_modules/tsx/dist/cli.mjs"), "--eval", `
+        void (async () => {
+          const fs = await import('node:fs');
+          const dotenv = (await import(${JSON.stringify(pathToFileURL(path.join(repoRoot, "server/node_modules/dotenv/lib/main.js")).href)})).default;
+          const envPath = ${JSON.stringify(path.join(cwd, ".paperclip", ".env"))};
+          const saved = dotenv.parse(fs.readFileSync(envPath));
+          await import(${JSON.stringify(pathToFileURL(path.join(repoRoot, "server/src/config.ts")).href)});
+          const repaired = dotenv.parse(fs.readFileSync(envPath));
+          console.log(JSON.stringify({
+            jwt: process.env.PAPERCLIP_AGENT_JWT_SECRET === saved.PAPERCLIP_AGENT_JWT_SECRET,
+            actions: process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET === saved.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET,
+            auth: process.env.BETTER_AUTH_SECRET === saved.PAPERCLIP_AGENT_JWT_SECRET,
+            savedActions: repaired.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET === saved.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
+          }));
+        })();
+      `], { cwd, env: { ...process.env, PAPERCLIP_CONFIG: configPath, PAPERCLIP_AGENT_JWT_SECRET: "source-jwt", PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "source-actions", BETTER_AUTH_SECRET: "source-auth" } });
+      expect(JSON.parse(startup.stdout.trim().split("\n").at(-1)!)).toEqual({ jwt: true, actions: true, auth: true, savedActions: true });
+      const workspace = {
+        baseCwd, cwd, source: "project_primary" as const, projectId: "project-1",
+        workspaceId: "project-workspace-1", repoUrl: null, repoRef: "HEAD",
+        strategy: "git_worktree" as const, branchName: null, worktreePath: cwd,
+        warnings: [], created: false,
+      };
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");
+      expect(resolveRuntimeProvisionCommand({ config: { runtimeProvisionCommand: "./install-dependencies.sh" }, workspace }))
+        .toBe("./install-dependencies.sh");
+      process.env.PAPERCLIP_WORKSPACE_BASE_CWD = baseCwd;
+      process.env.PAPERCLIP_PROJECT_WORKSPACE_ID = "project-workspace-1";
+      process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID = "company-1";
+      const seedDatabase = vi.fn(async () => verifiedSeedResult());
+      const inspectLegacyDatabase = vi.fn(async () => null);
+      await expect(ensureWorktreeSeeded({ config: configPath }, { seedDatabase, inspectLegacyDatabase }))
+        .resolves.toEqual({ seeded: false, reason: "explicitly_empty" });
+      expect(seedDatabase).not.toHaveBeenCalled();
+      expect(inspectLegacyDatabase).not.toHaveBeenCalled();
+      const provisionScript = fileURLToPath(new URL("../../../scripts/provision-worktree-runtime.sh", import.meta.url));
+      const provision = await execFileAsync("bash", [provisionScript], {
+        cwd,
+        env: { ...process.env, PAPERCLIP_WORKSPACE_CWD: cwd },
+      });
+      expect(provision.stderr).toContain("explicitly empty");
+      expect(readWorktreeSeedManifest(configPath)).toBeNull();
+      await expect(fs.stat(path.join(cwd, ".paperclip", "seed-pending"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      process.chdir(originalCwd);
+      for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+      Object.assign(process.env, originalEnv);
+    }
+  });
+
   it("re-derives an ambient-instance manifest written before provisioning", async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-server-seed-source-"));
+    const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-server-seed-source-")));
     cleanup.push(tempRoot);
     const repoRoot = path.join(tempRoot, "repo");
     const hooksDir = path.join(tempRoot, "hooks");

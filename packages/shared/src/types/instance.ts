@@ -46,6 +46,7 @@ export interface InstanceExperimentalSettings {
    * Existing native runs ignore later flag changes so they remain recoverable.
    */
   enableNativeRunner: boolean;
+  enableAiConnectionRouters: boolean;
   /**
    * Hide the local environment and run all agents in the platform-managed
    * sandbox environment. Run selection refuses local while this is on.
@@ -70,6 +71,12 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
+  /** Show GitHub review bot setup and management independently of chat connectors. */
+  enableGitHubReviewBots: boolean;
+  /** Allow person-authorized assistant tools and task event delivery. */
+  enablePublicMcp: boolean;
+  /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
+  enableOpenAiDot: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */

@@ -46,6 +46,7 @@ import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { QuestionForm } from "./task-chat/QuestionForm";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -1196,7 +1197,46 @@ function AskUserQuestionsCard({
         </span>
       </div>
 
-      {interaction.status === "pending" ? (
+      {interaction.status === "pending" && interaction.payload.questionSet ? (
+        <QuestionForm
+          id={interaction.id}
+          questionSet={interaction.payload.questionSet}
+          draftKey={`issue-question:${interaction.companyId}:${interaction.id}`}
+          disabled={!onSubmitInteractionAnswers}
+          initialResponse={interaction.result?.answers ? {
+            schema: "paperclip.question_response.v1",
+            answers: Object.fromEntries(interaction.result.answers.map((answer) => [
+              answer.questionId,
+              interaction.payload.questionSet!.questions.find((question) => question.id === answer.questionId)?.answerMode === "text"
+                ? { text: answer.otherText ?? "" }
+                : { selectedOptionIds: answer.optionIds, ...(typeof answer.otherText === "string" ? { customText: answer.otherText } : {}) },
+            ])),
+          } : null}
+          onSubmit={async (response) => {
+            const answers = interaction.payload.questionSet!.questions.map((question) => {
+              const answer = response.answers[question.id];
+              const otherText = question.answerMode === "text" ? answer?.text : answer?.customText?.trim();
+              return {
+                questionId: question.id,
+                optionIds: question.answerMode === "text" ? [] : (answer?.selectedOptionIds ?? []),
+                ...(otherText !== undefined ? { otherText } : {}),
+              };
+            });
+            try {
+              await onSubmitInteractionAnswers?.(interaction, answers);
+            } catch (error) {
+              throw new Error(resolutionErrorMessage(error));
+            }
+          }}
+          onCancel={onCancelInteraction ? async () => {
+            try {
+              await onCancelInteraction(interaction);
+            } catch (error) {
+              throw new Error(resolutionErrorMessage(error));
+            }
+          } : undefined}
+        />
+      ) : interaction.status === "pending" ? (
         <div className="space-y-4">
           {questions.map((question, index) => {
             const hasFreeTextOption = question.options.some(
@@ -3684,6 +3724,17 @@ export function IssueThreadInteractionCard({
     creatorLabel: createdByLabel,
     addresseeLabel,
   });
+  if (interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
+    return (
+      <div id={`interaction-${interaction.id}`}>
+        <ConnectionIntentInteractionBody
+          interaction={interaction}
+          currentUserId={currentUserId}
+          addresseeLabel={addresseeLabel ?? "the addressed person"}
+        />
+      </div>
+    );
+  }
   if (isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
     return (
       <InteractionAudienceContext.Provider value={audience}>

@@ -473,7 +473,7 @@ export const companySkillTestRunTemplateSnapshotSchema = z.object({
 );
 
 export const companySkillTestRunCostSummarySchema = z.object({
-  costCents: z.number().int().nonnegative(),
+  costCents: z.number().nonnegative(),
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),

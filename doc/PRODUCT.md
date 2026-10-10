@@ -30,6 +30,15 @@ Example: A CEO agent's adapter config tells it to "review what your executives a
 
 Then you define who reports to the CEO: a CTO managing programmers, a CMO managing the marketing team, and so on. Every agent in the tree gets their own adapter configuration.
 
+Each person also has a personal primary agent per company. Their first human-created
+agent becomes primary automatically; they can choose another from its profile.
+An existing primary is replaced only after confirmation. The crown appears on the
+profile and roster, while the primary stays first in the Agents sidebar without a
+sidebar crown. Stars remain independent. Task drafts, explicit assignments, and
+recent choices take precedence over the primary; Chat similarly reopens a valid
+recent conversation before falling back to the primary. Opening Chat does not
+start execution. This preference does not change the org chart or permissions.
+
 ### Agent Execution
 
 Paperclip supports several ways to run an agent's heartbeat:
@@ -135,7 +144,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. Paperclip now has authenticated mode, company memberships, instance roles, and permission grants, but fine-grained enterprise governance should remain secondary to the core company control plane.
-- Do not interpret agent-level privacy flags as a project/issue privacy feature in V1; work visibility stays company-scoped.
+- Do not interpret agent-profile privacy flags as project/issue privacy. Work remains company-open by default, while explicitly private issues and projects use their own task ACLs.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
@@ -232,3 +241,12 @@ to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
 Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
+
+### CSV file previews
+
+Task attachment and workspace file tabs render CSV files as tables by default.
+The first record supplies column headers. Row numbers, row and column counts,
+and sticky headers help operators scan exports. Rendered and raw view icons
+remain next to download; raw view preserves the original source. The table
+shows up to 500 data rows and 100 columns, with a notice when the preview is
+limited. Download retains the complete file.

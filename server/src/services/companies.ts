@@ -1,3 +1,7 @@
+import { deleteCompany } from "./company-deletion.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { publishAccountingActivities } from "./accounting-transaction.js";
+import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -5,34 +9,10 @@ import {
   companyLogos,
   assets,
   agents,
-  agentApiKeys,
-  agentRuntimeState,
-  agentTaskSessions,
   agentWakeupRequests,
   issues,
-  issueComments,
-  projects,
-  goals,
   heartbeatRuns,
-  runIdentityContexts,
-  heartbeatRunEvents,
   costEvents,
-  financeEvents,
-  issueReadStates,
-  approvalComments,
-  approvals,
-  activityLog,
-  companySecrets,
-  joinRequests,
-  invites,
-  principalPermissionGrants,
-  companyMemberships,
-  companySkills,
-  documents,
-  routineRuns,
-  routineTriggers,
-  routineRevisions,
-  routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
@@ -47,7 +27,7 @@ import {
 } from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
 
@@ -66,7 +46,7 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db) {
+export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
@@ -74,19 +54,7 @@ export function companyService(db: Db) {
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
   async function applyArchiveCascadeInTx(tx: CompanyTx, id: string) {
-    const pausedAgentRows = await tx
-      .update(agents)
-      .set({
-        status: "paused",
-        pauseReason: "company_archived",
-        pausedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(agents.companyId, id),
-        notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
-      ))
-      .returning({ id: agents.id });
+    const pausedAgentRows = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, id), notInArray(agents.status, ["paused", "terminated", "pending_approval"])));
 
     const activeRunIds = await tx
       .select({ id: heartbeatRuns.id })
@@ -332,12 +300,16 @@ export function companyService(db: Db) {
       data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
+      const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
+        }
         const { logoAssetId, ...companyPatch } = data;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
@@ -390,20 +362,7 @@ export function companyService(db: Db) {
 
         let agentsRestored = 0;
         if (willReactivate) {
-          const restoredRows = await tx
-            .update(agents)
-            .set({
-              status: "idle",
-              pauseReason: null,
-              pausedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(and(
-              eq(agents.companyId, id),
-              eq(agents.status, "paused"),
-              eq(agents.pauseReason, "company_archived"),
-            ))
-            .returning({ id: agents.id });
+          const restoredRows = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, id), eq(agents.pauseReason, "company_archived")));
           agentsRestored = restoredRows.length;
         }
 
@@ -431,6 +390,13 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
+        if (data.budgetMonthlyCents !== undefined) {
+          await budgetServiceInTransaction(tx as unknown as Db, budgetPublications).upsertPolicy(id, {
+            scopeType: "company", scopeId: id, amount: data.budgetMonthlyCents, isActive: data.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
+          }, actor.actorType === "user" ? actor.actorId : null);
+          const [budgetUpdated] = await tx.select().from(companies).where(eq(companies.id, id));
+          Object.assign(updated, budgetUpdated);
+        }
         const [hydrated] = await hydrateCompanySpend([{
           ...updated,
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
@@ -448,6 +414,9 @@ export function companyService(db: Db) {
         };
       });
       if (!result) return null;
+      await createAgentLifecycle(db).reconcilePolicyHolds(id);
+      publishAccountingActivities(id, budgetPublications);
+      if (data.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, id);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
       // could throw: a Cloud-pinned primary company that crossed the
       // archived boundary (either direction) rings the harness so the
@@ -524,6 +493,7 @@ export function companyService(db: Db) {
         };
       });
       if (!result) return null;
+      await createAgentLifecycle(db).reconcilePolicyHolds(id);
 
       // Same doorbell rule as update(): the archive is committed, so ring
       // before finalization, which can throw without undoing it.
@@ -535,56 +505,7 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
-        const companyRunIds = await tx
-          .select({ id: heartbeatRuns.id })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, id));
-
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
-        if (companyRunIds.length > 0) {
-          await tx
-            .delete(heartbeatRunEvents)
-            .where(inArray(heartbeatRunEvents.runId, companyRunIds.map((run) => run.id)));
-        }
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
-        await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
-        await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
-        await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
-        await tx.delete(approvals).where(eq(approvals.companyId, id));
-        await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
-        await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
-        await tx.delete(invites).where(eq(invites.companyId, id));
-        await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
-        await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
-        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
-        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
-        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
-        await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
-        await tx.delete(routines).where(eq(routines.companyId, id));
-        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
-        await tx.delete(documents).where(eq(documents.companyId, id));
-        await tx.delete(issues).where(eq(issues.companyId, id));
-        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
-        await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
-        await tx.delete(projects).where(eq(projects.companyId, id));
-        await tx.delete(agents).where(eq(agents.companyId, id));
-        const rows = await tx
-          .delete(companies)
-          .where(eq(companies.id, id))
-          .returning();
-        return rows[0] ?? null;
-      }),
+    remove: (id: string) => deleteCompany(db, id),
 
     stats: () =>
       Promise.all([

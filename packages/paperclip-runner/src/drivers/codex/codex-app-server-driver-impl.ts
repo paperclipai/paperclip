@@ -17,7 +17,7 @@ import type {
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
@@ -528,6 +528,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         turns.forEach((turn, index) => {
           if (terminalIds.has(text(turn.id))) lastKnownTerminalIndex = index;
         });
+        if (nativeRestartInterruptedTurnId({
+          ...snapshot, semanticResult: null,
+        }) && (!providerHistoryIsArray || lastKnownTerminalIndex < 0)) {
+          await cancellation.wait(cancellation.close());
+          return { recovered: false, reason: "restart interruption history is incomplete" };
+        }
         // Releasing a consumed marker requires both an actual history array
         // and a checkpointed terminal that anchors its ordering. An array that
         // omits every durable terminal may be truncated or inconsistent, so

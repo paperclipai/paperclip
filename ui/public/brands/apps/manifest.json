@@ -33,6 +33,12 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "bedrock",
+      "provider": "Amazon Bedrock",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/bedrock.svg"
+    },
+    {
       "slug": "beehiiv",
       "provider": "beehiiv",
       "catalogVisible": false,
@@ -41,7 +47,7 @@
     {
       "slug": "bitly",
       "provider": "Bitly",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/bitly.svg"
     },
     {
@@ -99,7 +105,7 @@
     {
       "slug": "context7",
       "provider": "Context7",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/context7.svg",
       "darkAsset": "/brands/apps/context7-dark.svg"
     },
@@ -123,10 +129,22 @@
       "localAsset": "/brands/apps/embat.svg"
     },
     {
+      "slug": "enterpret",
+      "provider": "Enterpret",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/enterpret.png"
+    },
+    {
       "slug": "executor",
       "provider": "Executor",
       "catalogVisible": true,
       "localAsset": "/brands/apps/executor.png"
+    },
+    {
+      "slug": "gauge",
+      "provider": "Gauge",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gauge.png"
     },
     {
       "slug": "github",
@@ -153,6 +171,12 @@
       "provider": "Google Sheets",
       "catalogVisible": true,
       "localAsset": "/brands/apps/google-sheets.svg"
+    },
+    {
+      "slug": "google",
+      "provider": "Google",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google.svg"
     },
     {
       "slug": "google-drive",
@@ -242,7 +266,7 @@
     {
       "slug": "make",
       "provider": "Make",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/make.svg",
       "darkAsset": "/brands/apps/make-dark.svg"
     },
@@ -392,6 +416,19 @@
       "localAsset": "/brands/apps/supabase.svg"
     },
     {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
+      "slug": "telem",
+      "provider": "Telem.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telem.svg",
+      "darkAsset": "/brands/apps/telem-dark.svg"
+    },
+    {
       "slug": "telegram",
       "provider": "Telegram",
       "catalogVisible": true,
@@ -536,6 +573,92 @@
       "localAsset": "/brands/apps/browser-use.svg",
       "sourceUrl": "https://browser-use.com/logo-primary.svg",
       "retrievedAt": "2026-09-29"
+    },
+    {
+      "slug": "chat-completions-api",
+      "provider": "Chat Completions API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "local",
+      "provider": "Local endpoint",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "messages-api",
+      "provider": "Messages API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "responses-api",
+      "provider": "Responses API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "calendly",
+      "provider": "Calendly",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/calendly.png"
+    },
+    {
+      "slug": "exa",
+      "provider": "Exa",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/exa.svg"
+    },
+    {
+      "slug": "firecrawl",
+      "provider": "Firecrawl",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/firecrawl.svg"
+    },
+    {
+      "slug": "gsc-wizard",
+      "provider": "GSC Wizard",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gsc-wizard.png"
+    },
+    {
+      "slug": "parallel-search",
+      "provider": "Parallel Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/parallel.svg",
+      "darkAsset": "/brands/apps/parallel-dark.svg"
+    },
+    {
+      "slug": "tavily",
+      "provider": "Tavily",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/tavily.png"
+    },
+    {
+      "slug": "windsor-ai",
+      "provider": "Windsor.ai",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/windsor-ai.png"
+    },
+    {
+      "slug": "clickup",
+      "provider": "ClickUp",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/clickup.png"
+    },
+    {
+      "slug": "klaviyo",
+      "provider": "Klaviyo",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/klaviyo.png"
+    },
+    {
+      "slug": "monday",
+      "provider": "monday.com",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/monday.png",
+      "darkAsset": "/brands/apps/monday-dark.png"
     }
   ]
 }

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { canaryStartup } from "./canary-startup-fixture.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -14,6 +16,45 @@ const repoRoot = path.resolve(
 function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
+
+test("Docker Hub mirrors apply to both image builders without widening publication access", () => {
+  const dockerWorkflow = readWorkflow("docker.yml");
+  const releaseWorkflow = readWorkflow("release.yml");
+  const docker = dockerWorkflow.split("  build-and-push:\n")[1].split("\n  merge-and-push:")[0];
+  const preview = releaseWorkflow.split("  image_preview:\n")[1].split("\n  publish_image_preview:")[0];
+
+  for (const job of [docker, preview]) {
+    const steps = job.split(/\n(?=      - )/);
+    const builder = steps.find((step) => /uses: docker\/setup-buildx-action@/.test(step));
+    const build = steps.find((step) => /uses: docker\/build-push-action@/.test(step));
+    assert.ok(builder && build, "the mirror must configure the builder that runs the image build");
+    assert.ok(steps.indexOf(builder) < steps.indexOf(build));
+    const config = builder.match(/buildkitd-config-inline: \|\n((?: {12,}[^\n]*(?:\n|$))+)/)?.[1];
+    assert.ok(config, "configure the BuildKit container, not only the host Docker daemon");
+    assert.deepEqual([...config.matchAll(/^\s*\[registry\."([^"]+)"\]/gm)].map((match) => match[1]), ["docker.io"],
+      "GHCR publishing and cache traffic must not use the pull mirror");
+    const mirrors = config.match(/^\s*mirrors = (\[[^\n]+\])$/m)?.[1];
+    assert.ok(mirrors);
+    assert.deepEqual(JSON.parse(mirrors), ["mirror.gcr.io"]);
+    assert.doesNotMatch(config, /^\s*(?:http|insecure|ca|keypair)\s*=/m,
+      "keep verified HTTPS and anonymous public-image pulls");
+    assert.doesNotMatch(builder, /driver-opts:|buildkitd-flags:|secrets\./,
+      "do not change bootstrap images, entitlements, or credentials");
+  }
+
+  assert.match(docker, /platform: linux\/amd64/);
+  assert.match(docker, /platform: linux\/arm64/);
+  assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
+  assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
+  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
+  assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
+  assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);
+  assert.doesNotMatch(preview, /docker\/login-action|secrets\.|packages: write|id-token: write/);
+  assert.match(releaseWorkflow, /publish_image_preview:\n[\s\S]*?needs: \[plan_preview, image_preview\]/);
+  assert.doesNotMatch(dockerWorkflow.split("  merge-and-push:\n")[1], /buildkitd-config-inline/,
+    "the registry-only manifest merge does not need a Docker Hub mirror");
+});
 
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
@@ -170,6 +211,99 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
 });
 
+test("canary smoke consumes its publisher's source-bound lockfile before frozen installation", () => {
+  const workflow = readWorkflow("release.yml");
+  const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+  const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
+  for (const job of [publish, smoke]) {
+    assert.match(job, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/);
+    assert.match(job, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+    assert.match(job, /version: 9\.15\.4/);
+  }
+  assert.match(publish, /name: Save canary smoke lockfile\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}\n\s+path: pnpm-lock\.yaml\n\s+if-no-files-found: error\n\s+overwrite: true\n\s+retention-days: 14/);
+  assert.ok(publish.indexOf("name: Install dependencies") < publish.indexOf("name: Save canary smoke lockfile"));
+  assert.ok(publish.indexOf("name: Save canary smoke lockfile") < publish.indexOf("name: Restore tracked install-time changes"));
+  assert.ok(publish.indexOf("name: Restore tracked install-time changes") < publish.indexOf("name: Publish canary"));
+  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  assert.ok(smoke.indexOf("name: Restore canary smoke lockfile") < smoke.indexOf("name: Install test dependencies"));
+  assert.doesNotMatch(smoke, /run-id:|github-token:|repository:|continue-on-error|--no-frozen-lockfile/);
+});
+
+for (const drift of ["patch", "manifest"]) {
+  test(`a publisher lockfile lets a fresh smoke install retain validation after ${drift} drift`, (t) => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "canary-smoke-lockfile-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const source = path.join(root, "package");
+    mkdirSync(source);
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "smoke-fixture-dependency", version: "1.0.0" }));
+    writeFileSync(path.join(source, "index.js"), 'module.exports = "original";\n');
+    const pack = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", root], { cwd: source, encoding: "utf8" });
+    assert.equal(pack.status, 0, pack.stderr);
+    const manifest = {
+      name: "canary-smoke-fixture", private: true,
+      packageManager: "pnpm@9.15.4",
+      dependencies: { "smoke-fixture-dependency": "file:smoke-fixture-dependency-1.0.0.tgz" },
+      pnpm: { patchedDependencies: { "smoke-fixture-dependency@1.0.0": "fixture.patch" } },
+    };
+    writeFileSync(path.join(root, "package.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(root, "pnpm-workspace.yaml"), "packages: []\n");
+    const patch = (value) => writeFileSync(path.join(root, "fixture.patch"), [
+      "diff --git a/index.js b/index.js", "index 1111111..2222222 100644",
+      "--- a/index.js", "+++ b/index.js", "@@ -1 +1 @@",
+      '-module.exports = "original";', `+module.exports = "${value}";`, "",
+    ].join("\n"));
+    const workflow = readWorkflow("release.yml");
+    const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
+    const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
+    const installArgs = (name) => {
+      const job = name === "Install dependencies" ? publish : smoke;
+      const command = job.match(new RegExp(`name: ${name}\\n\\s+run: (pnpm install[^\\n]+)`))?.[1];
+      assert.ok(command, `missing ${name}`);
+      return [...command.split(" ").slice(1), "--offline", "--ignore-scripts"];
+    };
+    const install = (args) => spawnSync("pnpm", args, {
+      cwd: root, encoding: "utf8", env: { ...process.env, CI: "true" },
+    });
+    const success = (result) => assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    patch(drift === "patch" ? "old-patch" : "published-patch");
+    success(install(installArgs("Install dependencies")));
+    const staleLock = readFileSync(path.join(root, "pnpm-lock.yaml"));
+    if (drift === "patch") {
+      patch("published-patch");
+    } else {
+      copyFileSync(path.join(root, "smoke-fixture-dependency-1.0.0.tgz"), path.join(root, "updated-dependency.tgz"));
+      manifest.dependencies["smoke-fixture-dependency"] = "file:updated-dependency.tgz";
+      writeFileSync(path.join(root, "package.json"), JSON.stringify(manifest));
+    }
+    const before = install(installArgs("Install test dependencies"));
+    assert.notEqual(before.status, 0);
+    assert.match(before.stdout + before.stderr, drift === "patch" ? /ERR_PNPM_LOCKFILE_CONFIG_MISMATCH/ : /ERR_PNPM_OUTDATED_LOCKFILE/);
+
+    // Capture the publisher's resolution, then reproduce its tracked-file restore
+    // and a fresh smoke runner with no installed workspace dependencies.
+    success(install(installArgs("Install dependencies")));
+    const artifact = path.join(root, "publisher-lock.yaml");
+    if (publish.includes("name: Save canary smoke lockfile")) {
+      copyFileSync(path.join(root, "pnpm-lock.yaml"), artifact);
+    }
+    writeFileSync(path.join(root, "pnpm-lock.yaml"), staleLock);
+    rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+    if (smoke.includes("name: Restore canary smoke lockfile")) {
+      copyFileSync(artifact, path.join(root, "pnpm-lock.yaml"));
+    }
+    success(install(installArgs("Install test dependencies")));
+    assert.equal(readFileSync(path.join(root, "node_modules/smoke-fixture-dependency/index.js"), "utf8"), 'module.exports = "published-patch";\n');
+    assert.deepEqual(readFileSync(path.join(root, "pnpm-lock.yaml")), readFileSync(artifact));
+
+    // A lockfile from the wrong source still fails closed; restoring an artifact
+    // must not disable hash validation or resolve another version in the smoke job.
+    patch("different-source");
+    const wrongSource = install(installArgs("Install test dependencies"));
+    assert.notEqual(wrongSource.status, 0);
+    assert.match(wrongSource.stdout + wrongSource.stderr, /ERR_PNPM_LOCKFILE_CONFIG_MISMATCH/);
+  });
+}
+
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
@@ -244,10 +378,10 @@ test("release verify workflow covers the same split test surface as stable PR ve
   assert.match(buildJob, /persist-credentials: false/);
   assert.doesNotMatch(buildJob, /cache: pnpm/);
 
-  for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
+  for (const group of ["general-server-without-chat-or-native-runner", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-  for (const [group, count] of [["general-server-without-chat", 10], ["general-chat", 3]]) {
+  for (const [group, count] of [["general-server-without-chat-or-native-runner", 10], ["general-chat", 3]]) {
     const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
@@ -269,6 +403,30 @@ test("release verify workflow covers the same split test surface as stable PR ve
 
   assert.match(verifyWorkflow, /pnpm test:run:general -- --group/);
   assert.match(verifyWorkflow, /pnpm test:run:serialized -- --shard-index/);
+});
+
+test("release verification builds native test binaries in a required Rust-cached lane", () => {
+  const workflow = readWorkflow("release-verify.yml");
+  const runnerJob = workflow.match(/  verify_paperclip_runner:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  assert.equal((runnerJob.match(/- lane: server-integration/g) ?? []).length, 1);
+  assert.doesNotMatch(runnerJob, /continue-on-error/);
+  assert.match(runnerJob, /timeout-minutes: 20/);
+  assert.match(runnerJob, /shared-key: release-runner-v2/);
+  assert.match(runnerJob, /cache-workspace-crates: false/);
+  assert.match(runnerJob, /cache-bin: false/);
+  assert.match(runnerJob, /save-if: \$\{\{ matrix\.lane == 'rust'/);
+  assert.match(runnerJob, /Build native server test binaries\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+timeout-minutes: 10/);
+  assert.match(runnerJob, /pnpm build:rust\n\s+cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd --bin fake-codex-app-server/);
+  assert.match(runnerJob, /Run native server integration suites\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+run: pnpm test:run:general -- --group general-server-native-runner/);
+  assert.ok(runnerJob.indexOf("Cache Runner Rust dependencies") < runnerJob.indexOf("Build native server test binaries"));
+  assert.ok(runnerJob.indexOf("Build native server test binaries") < runnerJob.indexOf("Run native server integration suites"));
+
+  // The reusable workflow result includes every matrix child. Its caller must
+  // await that result without an override that can certify a failed native lane.
+  const cloud = readWorkflow("cloud-readiness.yml");
+  assert.match(cloud, /verify:[\s\S]*?uses: \.\/\.github\/workflows\/release-verify\.yml/);
+  assert.match(cloud, /source_verified:[\s\S]*?needs: \[verify\]/);
+  assert.doesNotMatch(cloud, /continue-on-error|always\(\)/);
 });
 
 test("Runner eval workflows pin actions and gate paid live execution", () => {
@@ -454,5 +612,96 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
+  }
+});
+
+
+
+test("canary startup refreshes an incomplete dependency publication, then onboards once", async () => {
+  const result = await canaryStartup({ mode: "recover" });
+  assert.equal(result.code, 0, result.output);
+  const installs = result.calls.filter(call => call.kind === "npm");
+  const onboarding = result.calls.filter(call => call.kind === "onboard");
+  assert.equal(installs.length, 2);
+  assert.equal(onboarding.length, 1);
+  for (const call of installs) {
+    assert.equal(call.args[0], "install");
+    assert.ok(call.args.includes("paperclipai@2026.1009.0-canary.1"));
+    assert.ok(call.args.includes("--no-package-lock"));
+    assert.ok(call.args.includes("--no-save"));
+  }
+  assert.ok(!installs[0].args.includes("--prefer-online"));
+  assert.ok(installs[1].args.includes("--prefer-online"));
+  assert.notEqual(installs[0].args[2], installs[1].args[2]);
+  assert.equal(installs[0].cache, installs[1].cache);
+  assert.deepEqual(onboarding[0].args.slice(0, 3), ["onboard", "--yes", "--data-dir"]);
+});
+
+test("permanent missing versions stop after three attempts without onboarding", async () => {
+  const result = await canaryStartup({ mode: "permanent" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 3);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 0);
+  assert.match(result.output, /installation failed.*onboarding was not started/);
+});
+
+test("npm failures other than ETARGET fail immediately without onboarding", async () => {
+  const result = await canaryStartup({ mode: "auth" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.length, 1);
+  assert.match(result.output, /E401/);
+});
+
+test("onboarding failures are never retried, even when they mention ETARGET", async () => {
+  const result = await canaryStartup({ mode: "success", onboard: "fail" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 1);
+  assert.match(result.output, /onboarding failed \(exit 17\)/);
+});
+
+test("a hanging npm install is stopped within the shared acquisition budget", async () => {
+  const result = await canaryStartup({ mode: "hang", budget: 1000 });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter(call => call.kind === "onboard").length, 0);
+  assert.ok(result.elapsed < 4000, `install exceeded bounded cancellation: ${result.elapsed}ms`);
+  assert.match(result.output, /exceeded its startup budget/);
+});
+
+test("backoff consumes the shared budget and does not begin another install after expiry", async () => {
+  const result = await canaryStartup({ mode: "permanent", budget: 1000, delay: 5000 });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.length, 1);
+  assert.match(result.output, /exceeded its startup budget/);
+});
+
+
+test("Playwright cancellation stops an onboarding process without replay", async () => {
+  const result = await canaryStartup({ mode: "success", onboard: "hang", cancelAtKind: "onboard" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter(call => call.kind === "npm").length, 1);
+  const onboarding = result.calls.filter(call => call.kind === "onboard");
+  assert.equal(onboarding.length, 1);
+  assert.throws(() => process.kill(onboarding[0].pid, 0), {code:"ESRCH"});
+  assert.match(result.output, /stopped by SIGTERM/);
+  assert.ok(result.elapsed < 2500, `onboarding cancellation took ${result.elapsed}ms`);
+});
+
+test("canary install retries retain the existing overall Playwright startup deadline", async () => {
+  const { INSTALL_BUDGET_MS } = await import("../../tests/canary-onboarding/start-published-canary.mjs");
+  const config = readFileSync(path.join(repoRoot, "tests/canary-onboarding/playwright.config.ts"), "utf8");
+  assert.equal(INSTALL_BUDGET_MS, 120_000);
+  assert.match(config, /timeout: 300_000/);
+  assert.match(config, /start-published-canary\.mjs/);
+  assert.match(config, /reuseExistingServer: false/);
+});
+
+
+test("nested ETARGET output does not retry a final authentication or network failure", async () => {
+  for (const mode of ["mixed", "network"]) {
+    const result = await canaryStartup({ mode });
+    assert.equal(result.code, 1);
+    assert.equal(result.calls.length, 1);
   }
 });

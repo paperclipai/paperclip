@@ -1,3 +1,5 @@
+import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
+import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
@@ -473,9 +475,9 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     operationId: "list_projects",
     title: "List projects",
     requiredClaims: ["discovery:projects:read"],
-    description: "Inspect available company projects before selecting a project for new work.",
+    description: listProjectsDescription,
     placement: "optional",
-    inputSchema: object({}),
+    inputSchema: listProjectsInputSchema,
   }),
   descriptor({
     operationId: "list_project_repositories",
@@ -518,7 +520,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         projectId: nullableText("Project identifier for the new task."),
         initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
-        assigneeActorId: nullableText("Optional actor assignee.", 200),
+        assigneeActorId: nullableText("Optional actor assignee. Mutually exclusive with assigneeUserId.", 200),
+        assigneeUserId: nullableText("Company person ID from list_people. Mutually exclusive with assigneeActorId.", 200),
         status: { enum: ["backlog", "todo"], description: "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved)." },
         priority: { enum: ["critical", "high", "medium", "low"] },
         blockedByTaskIds: stringArray("Initial blocker task identifiers."),
@@ -581,6 +584,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "approvalId", "body"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    operationId: "set_task_monitor", title: "Set task monitor",
+    description: "Schedule, replace or clear a persisted one-shot monitor on an owned task.",
+    placement: "optional", effect: "write", requiredClaims: [], allowedModes: ["standard"],
+    inputSchema: setTaskMonitorInputSchema, outputSchema: openObject,
   }),
   descriptor({
     operationId: "schedule_wake",

@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import path from "node:path";
 import {
   cleanupGitHubOperationLaunchers,
+  githubOperationLauncherDirectory,
   prepareGitHubOperationLaunchers,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
@@ -98,7 +98,7 @@ export async function createNativeGitHubAccess(input: {
       bridge = await startBridge({
         ...location,
         runtimeRootDir: input.target?.kind === "remote"
-          ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime", "github", location.runId)
+          ? githubOperationLauncherDirectory(location)
           : null,
         adapterKey: "native-github",
         hostApiToken: token,

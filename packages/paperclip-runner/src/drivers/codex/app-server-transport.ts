@@ -1,3 +1,4 @@
+import { configuredEnvironment } from "../../configured-environment.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
@@ -43,6 +44,8 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
+  takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
@@ -203,6 +206,8 @@ const SAFE_ENVIRONMENT_KEYS = [
   "AGENT_HOME",
   "ALL_PROXY",
   "CODEX_HOME",
+  // Only the selected managed provider credential enters the trusted server.
+  "PAPERCLIP_AI_PROVIDER_KEY",
   "HOME",
   "HTTP_PROXY",
   "HTTPS_PROXY",
@@ -227,8 +232,10 @@ const SAFE_ENVIRONMENT_KEYS = [
  * separate empty-by-default environment and filesystem permission profile.
  */
 export function createSanitizedCodexEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
+  source?: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
+  const explicit = source;
+  source ??= process.env;
   const environment: NodeJS.ProcessEnv = {};
   for (const key of SAFE_ENVIRONMENT_KEYS) {
     const value = source[key];
@@ -236,7 +243,10 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
-  Object.assign(environment, githubCredentialEnvironment(source));
+  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+    if (explicit?.[key] !== undefined) environment[key] = explicit[key];
+  }
+  Object.assign(environment, githubCredentialEnvironment(source), configuredEnvironment(explicit));
   return environment;
 }
 

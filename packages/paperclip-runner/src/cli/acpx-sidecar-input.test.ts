@@ -8,6 +8,12 @@ import {
 } from "./acpx-sidecar-input.js";
 
 describe("ACPX sidecar input sequencing", () => {
+  it("classifies a retired tool callback without copying provider text into its identity", () => {
+    const error = Object.assign(new Error("private-token-canary"), { code: "ACPX_TOOL_CALL_STALE" });
+    expect(acpxSidecarErrorCode(error)).toBe("ACPX_TOOL_CALL_STALE");
+    error.code = "ACPX_TOOL_CALL_STALE_EXTRA";
+    expect(acpxSidecarErrorCode(error)).toBe("acpx_sidecar_command_failed");
+  });
   it("drains initialize, session.open, and suspend in input order", async () => {
     const events: string[] = [];
     let pending = Promise.resolve();
@@ -112,6 +118,12 @@ describe("ACPX sidecar input sequencing", () => {
       recordAcpxBootstrapFailure(null, "turn.start", new Error("turn failed")),
     ).toBeNull();
     expect(acpxBootstrapBlockedError(null, "turn.start")).toBeNull();
+  });
+
+  it.each(["COPILOT_POLICY_VIOLATION", "COPILOT_DETACHED_WORK_UNSUPPORTED"])("preserves Copilot policy identity %s", code => {
+    const error = Object.assign(new Error("safe fixed policy message"), { code });
+    expect(acpxSidecarErrorCode(error)).toBe(code);
+    expect(acpxSidecarErrorCode(new Error("wrapped", { cause: error }))).toBe(code);
   });
 
   it("preserves stable ACPX error identities without copying startup stderr", () => {

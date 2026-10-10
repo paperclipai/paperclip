@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
@@ -12,6 +13,7 @@ import {
   redactTestDriveText,
   resolveTestDriveBootstrap,
   resolveTestDriveDataDir,
+  resolveTestDriveServerPort,
   testDriveCommand,
   type TestDriveApi,
   type TestDriveHarness,
@@ -86,6 +88,32 @@ afterEach(() => {
 });
 
 describe("test-drive data isolation", () => {
+  it.each([false, true])("reuses the saved port, with occupied=%s", async (occupied) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-test-drive-port-"));
+    cleanupDirectories.push(root);
+    const listener = createServer();
+    await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const savedPort = (listener.address() as { port: number }).port;
+    const close = () => new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+    if (!occupied) await close();
+    const configPath = path.join(root, "instances", "default", "config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      $meta: { version: 1, updatedAt: new Date().toISOString(), source: "onboard" },
+      database: {}, logging: { mode: "file" }, telemetry: { enabled: false },
+      server: { port: savedPort },
+    }));
+    try {
+      await prepareTestDriveEnvironment({ dataDir: root }, os.tmpdir());
+      if (occupied) { expect(Number(process.env.PORT)).not.toBe(savedPort); expect(Number(process.env.PORT)).toBeGreaterThanOrEqual(3100); }
+      else expect(Number(process.env.PORT)).toBe(savedPort);
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8")).server.port).toBe(savedPort);
+      expect(process.env.HOST).toBe("127.0.0.1");
+    } finally {
+      if (occupied) await close();
+    }
+  });
+
   it("creates unique retained OS temporary directories and reports absolute paths", () => {
     const first = resolveTestDriveDataDir();
     const second = resolveTestDriveDataDir();
@@ -598,5 +626,18 @@ describe("test-drive foreground lifecycle", () => {
     });
 
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+});
+
+describe("test drive port recovery", () => {
+  it("falls back from an occupied saved port at the top of the range", async () => {
+    const available = vi.fn(async (port: number) => port === 3101);
+    await expect(resolveTestDriveServerPort(65535, available)).resolves.toBe(3101);
+    expect(available.mock.calls.map(([port]) => port)).toEqual([65535, 3100, 3101]);
+  });
+  it("preserves a free saved port before searching the default range", async () => {
+    const available = vi.fn(async () => true);
+    await expect(resolveTestDriveServerPort(3110, available)).resolves.toBe(3110);
+    expect(available).toHaveBeenCalledTimes(1);
   });
 });

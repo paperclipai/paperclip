@@ -1928,6 +1928,56 @@ describe("IssuesList", () => {
     });
   });
 
+  it("ignores a saved workspace filter when the page address has no workspace query", async () => {
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({
+        companyId: "company-1",
+        collectionKey: "paperclip:test-issues",
+      }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "paperclip:test-issues",
+        viewState: {
+          workspaces: ["workspace-alpha"],
+        },
+        columns: ["id"],
+      }),
+    );
+    const alphaIssue = createIssue({
+      id: "issue-alpha",
+      identifier: "PAP-40",
+      title: "Alpha issue",
+      executionWorkspaceId: "workspace-alpha",
+    });
+    const betaIssue = createIssue({
+      id: "issue-beta",
+      identifier: "PAP-41",
+      title: "Beta issue",
+      executionWorkspaceId: "workspace-beta",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[alphaIssue, betaIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Alpha issue");
+      expect(container.textContent).toContain("Beta issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("applies an initial workspace filter from the issues URL state", async () => {
     const alphaIssue = createIssue({
       id: "issue-alpha",

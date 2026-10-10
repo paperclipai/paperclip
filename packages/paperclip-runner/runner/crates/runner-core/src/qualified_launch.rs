@@ -10,6 +10,21 @@ pub fn verify_launch_artifact(
     artifact: &QualifiedLaunchArtifact,
     label: &str,
 ) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
+    verify_launch_artifact_with_role(artifact, label, false)
+}
+
+pub fn verify_executable_launch_artifact(
+    artifact: &QualifiedLaunchArtifact,
+    label: &str,
+) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
+    verify_launch_artifact_with_role(artifact, label, true)
+}
+
+fn verify_launch_artifact_with_role(
+    artifact: &QualifiedLaunchArtifact,
+    label: &str,
+    executable: bool,
+) -> Result<VerifiedProcessArtifact, DurableRunnerError> {
     let source_metadata = fs::symlink_metadata(&artifact.path).map_err(|error| {
         DurableRunnerError::invalid(format!("failed to inspect qualified {label}: {error}"))
     })?;
@@ -49,8 +64,12 @@ pub fn verify_launch_artifact(
             "qualified {label} changed while it was opened"
         )));
     }
-    VerifiedProcessArtifact::snapshot_verified(canonical, file, &artifact.sha256)
-        .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+    let snapshot = if executable {
+        VerifiedProcessArtifact::snapshot_verified_executable(canonical, file, &artifact.sha256)
+    } else {
+        VerifiedProcessArtifact::snapshot_verified(canonical, file, &artifact.sha256)
+    };
+    snapshot.map_err(|error| DurableRunnerError::invalid(error.to_string()))
 }
 
 #[cfg(unix)]

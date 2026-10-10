@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bot, Check, Filter, HardDrive, Search, User, X } from "lucide-react";
+import { Bot, Check, Filter, Search, User, X } from "lucide-react";
 import { PriorityIcon } from "./PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { StatusIcon } from "./StatusIcon";
@@ -41,11 +41,6 @@ type LabelOption = {
   id: string;
   name: string;
   color: string;
-};
-
-type WorkspaceOption = {
-  id: string;
-  name: string;
 };
 
 type CreatorOption = {
@@ -116,7 +111,6 @@ export function IssueFiltersPopover({
   enableRoutineVisibilityFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
-  workspaces,
   creators,
   presentation = "legacy",
   inboxScopeFilters,
@@ -132,7 +126,6 @@ export function IssueFiltersPopover({
   enableRoutineVisibilityFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
-  workspaces?: WorkspaceOption[];
   creators?: CreatorOption[];
   presentation?: "legacy" | "streamlined";
   inboxScopeFilters?: InboxScopeFilters;
@@ -142,7 +135,6 @@ export function IssueFiltersPopover({
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectSearch, setProjectSearch] = useState("");
   const [labelSearch, setLabelSearch] = useState("");
-  const [workspaceSearch, setWorkspaceSearch] = useState("");
   const visibleAgents = useMemo(
     () => searchIssueFilterOptions(agents, assigneeSearch, (option) => option.name),
     [agents, assigneeSearch],
@@ -154,10 +146,6 @@ export function IssueFiltersPopover({
   const visibleLabels = useMemo(
     () => searchIssueFilterOptions(labels, labelSearch, (option) => option.name),
     [labels, labelSearch],
-  );
-  const visibleWorkspaces = useMemo(
-    () => searchIssueFilterOptions(workspaces, workspaceSearch, (option) => option.name),
-    [workspaces, workspaceSearch],
   );
   const creatorOptions = creators ?? [];
   const creatorOptionById = useMemo(
@@ -484,27 +472,6 @@ export function IssueFiltersPopover({
                         />
                         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                         <span className="text-sm">{label.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {workspaces && workspaces.length > 0 ? (
-                <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Workspace</span>
-                  {streamlined && workspaces.length > SEARCHABLE_FILTER_THRESHOLD ? (
-                    <FilterOptionSearch value={workspaceSearch} onChange={setWorkspaceSearch} label="Workspaces" />
-                  ) : null}
-                  <div data-filter-options="workspaces" className={streamlined ? "space-y-0.5" : "max-h-32 space-y-0.5 overflow-y-auto"}>
-                    {(streamlined ? visibleWorkspaces : workspaces).map((workspace) => (
-                      <label key={workspace.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
-                        <Checkbox
-                          checked={state.workspaces.includes(workspace.id)}
-                          onCheckedChange={() => onChange({ workspaces: toggleIssueFilterValue(state.workspaces, workspace.id) })}
-                        />
-                        <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="text-sm">{workspace.name}</span>
                       </label>
                     ))}
                   </div>

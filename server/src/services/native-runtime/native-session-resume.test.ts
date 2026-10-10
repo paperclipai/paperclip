@@ -421,6 +421,20 @@ describe("capability-gated connection tool refresh", () => {
     expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, refreshTools: true, toolRefreshOnResume: false })).toBeNull();
   });
 
+  it.each(["add", "edit", "remove"])("replaces sessions when connection instructions %s, even with live tool refresh", (change) => {
+    const block = (text: string) => ({ text, digest: createHash("sha256").update(text).digest("hex") });
+    const previous = execution(previousRunId);
+    const current = execution(currentRunId);
+    if (change !== "add") previous.runtimeContext.connectionInstructions = block("Prior connection instructions.");
+    if (change !== "remove") current.runtimeContext.connectionInstructions = block("Current connection instructions.");
+    previous.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(previous.runtimeContext);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const prior = previousRun({ nativeExecutionInput: previous });
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.runtimeContext = previous.runtimeContext;
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current })).not.toBeNull();
+  });
+
   it("preserves instruction and identity fences even during a supported refresh", () => {
     const current = execution(currentRunId);
     current.runtimeContext.instructions.bundle.digest = "b".repeat(64);
@@ -720,6 +734,10 @@ const recoveryFakeCodex = resolve(
     const previousStateBase = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     const server = createServer();
     let firstSession: NativeSession | undefined;
+    const ownedSessions = new Set<NativeSession>();
+    const ownedSpawns: Array<{ pid: number; processGroupId: number | null; startedAt: string }> = [];
+    const onSpawn = async (meta: typeof ownedSpawns[number]) => { ownedSpawns.push(meta); };
+    let executionCloseCompleted = false;
     const runnerDiagnostics: string[] = [];
     const onRunnerLog = async (_stream: "stdout" | "stderr", chunk: string) => {
       runnerDiagnostics.push(chunk.slice(-4_096));
@@ -846,6 +864,7 @@ const recoveryFakeCodex = resolve(
         runnerInstanceId,
         runnerEnvironment: environment,
         onLog: onRunnerLog,
+        onSpawn,
       });
       firstSession = await firstBackend.openSession({
         identity: {
@@ -857,6 +876,7 @@ const recoveryFakeCodex = resolve(
         },
         workingDirectory: workspace,
       });
+      ownedSessions.add(firstSession);
       const checkpoint = await firstSession.snapshot();
       expect(checkpoint.identity).toEqual({
         companyId,
@@ -995,6 +1015,7 @@ const recoveryFakeCodex = resolve(
         runnerInstanceId,
         runnerEnvironment: environment,
         onLog: onRunnerLog,
+        onSpawn,
       });
       let continuity: Record<string, unknown> | undefined;
       const controlPlaneInstanceId = randomUUID();
@@ -1017,6 +1038,12 @@ const recoveryFakeCodex = resolve(
           runnerInstanceId,
           controlPlaneInstanceId,
           timeoutMs: 20_000,
+          // This disposable real-daemon fixture must join full retirement before
+          // removing its controller routes and durable state. The production
+          // default deliberately permits asynchronous cleanup after a result.
+          requireSessionCloseBeforeReturn: true,
+          onSession(value) { if (value) ownedSessions.add(value); },
+          async onSessionClosed() { executionCloseCompleted = true; },
           controlPlane: port,
           async onContinuityBreak(value) {
             continuity = value;
@@ -1050,6 +1077,12 @@ const recoveryFakeCodex = resolve(
         terminal: { runTerminalState: "succeeded" },
         normalizedSessionId,
       });
+      expect(executionCloseCompleted).toBe(true);
+      expect(ownedSpawns.length).toBeGreaterThanOrEqual(2);
+      for (const { pid } of ownedSpawns) {
+        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      }
+      console.info("Recovery fixture retired owned daemons", ownedSpawns);
       expect(continuity).toMatchObject({
         // The daemon can reject the damaged retained input during startup,
         // before attach gets a chance to reject the unsettled provider session.
@@ -1187,9 +1220,13 @@ const recoveryFakeCodex = resolve(
         .where(eq(issues.id, issueId));
       expect(task).toEqual({ id: issueId, assigneeAgentId: agentId });
     } finally {
-      await firstSession
-        ?.close({ reason: "Recovery fixture cleanup" })
-        .catch(() => undefined);
+      // onSession(null) quarantines the runtime owner before close finishes;
+      // keep every published handle so an assertion/error cannot lose cleanup.
+      if (firstSession) ownedSessions.add(firstSession);
+      const closed = await Promise.allSettled([...ownedSessions].map((session) =>
+        Promise.resolve().then(() => session.close({ reason: "Recovery fixture cleanup" })),
+      ));
+      const closeFailures = closed.filter((result) => result.status === "rejected");
       runnerPrpWebSocketInternals.resetForTests();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
@@ -1197,6 +1234,10 @@ const recoveryFakeCodex = resolve(
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
       else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateBase;
       await database.cleanup();
+      if (closeFailures.length) {
+        // Retain exact fixture state if owned retirement cannot be proven.
+        throw new AggregateError(closeFailures.map((result) => result.reason), "Recovery fixture session cleanup failed");
+      }
       await rm(scratch, { recursive: true, force: true });
     }
   },
@@ -1882,6 +1923,18 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:68a51d34e091c55ee5d0d2b563153454dd727d72db16e6a27c358d342ae489c9",
     },
     {
+      contract: "GitHub working-comment tools",
+      // Deployed v14 threads retain the catalog without update_comment.
+      retainedFingerprint:
+        "sha256:134a7dbd526179aff57f91c261bb653e83db51c20492efab5c26a5ce618792c8",
+    },
+    {
+      contract: "GitHub instruction skill selection",
+      // Deployed v15 remote threads omitted configured skills from native turns.
+      retainedFingerprint:
+        "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -2111,10 +2164,17 @@ describe("rebindNativeSessionCheckpoint", () => {
   });
 
   it("retains provider identity but clears prior turn and event state", () => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
-      previousRun: previousRun(),
+      previousRun: prior,
       currentExecution: execution(currentRunId),
     });
+    expect(rebound?.governedWait).toBeUndefined();
+    expect(prior).toEqual(before);
     expect(rebound).toMatchObject({
       sessionId: "provider-thread-123",
       providerSessionId: "provider-thread-123",

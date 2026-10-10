@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ACPX_QUALIFICATION_MODELS } from "../acpx-qualification-models.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import {
   directAcceptanceProfiles,
@@ -34,9 +34,9 @@ describe("credential-free Runner acceptance catalog", () => {
     expect(nativeAcceptanceProfiles.find(({ id }) => id === "runner-opencode")?.model)
       .toBe(QUALIFIED_OPENCODE_MODEL);
     expect(nativeAcceptanceProfiles.find(({ id }) => id === "runner-acpx-claude")?.model)
-      .toBe(QUALIFIED_ACPX_PROFILES.claude.qualificationModel);
+      .toBe(ACPX_QUALIFICATION_MODELS.claude);
     expect(nativeAcceptanceProfiles.find(({ id }) => id === "runner-acpx-codex")?.model)
-      .toBe(QUALIFIED_ACPX_PROFILES.codex.qualificationModel);
+      .toBe(ACPX_QUALIFICATION_MODELS.codex);
     expect(nativeAcceptanceProfiles.some(({ adapterConfig }) =>
       adapterConfig.acpxAgent === "pi")).toBe(false);
     expect(directAcceptanceProfiles.some(({ adapterType }) =>

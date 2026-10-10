@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain, fetchClaudeQuota: mocks.claudeQuota }));
+const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
+vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
@@ -11,18 +11,16 @@ describe("explicit local subscription import", () => {
     mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-claude" } }));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-claude");
     expect(mocks.credentialFile).toHaveBeenCalledWith("/isolated/claude/.credentials.json");
-    expect(mocks.claudeQuota).toHaveBeenCalledWith("isolated-claude");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
   it("does not fall back to ambient Claude auth when an isolated login is absent or invalid", async () => {
     mocks.claude.mockResolvedValue("server-operator-token");
     mocks.claudeIsolatedKeychain.mockResolvedValue(null);
     mocks.credentialFile.mockRejectedValue(new Error("No file"));
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("Finish browser sign-in");
     mocks.credentialFile.mockResolvedValue("malformed");
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("Finish browser sign-in");
     expect(mocks.claude).not.toHaveBeenCalled();
-    expect(mocks.claudeQuota).not.toHaveBeenCalled();
     expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
   });
   it("verifies a macOS isolated login from the home's suffixed Keychain item when no credentials file exists", async () => {
@@ -33,7 +31,6 @@ describe("explicit local subscription import", () => {
     mocks.claudeIsolatedKeychain.mockResolvedValue("isolated-keychain-claude");
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-keychain-claude");
     expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
-    expect(mocks.claudeQuota).toHaveBeenCalledWith("isolated-keychain-claude");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
   it("prefers the credentials file over the Keychain for an isolated login", async () => {
@@ -47,12 +44,6 @@ describe("explicit local subscription import", () => {
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("alternate-token");
     expect(mocks.credentialFile).toHaveBeenLastCalledWith("/isolated/claude/credentials.json");
     expect(mocks.claude).not.toHaveBeenCalled();
-  });
-  it("verifies Claude's local credential, including explicit Keychain access", async () => {
-    mocks.claude.mockResolvedValue("fixture-claude");
-    await expect(readVerifiedLocalAiCredential("anthropic")).resolves.toBe("fixture-claude");
-    expect(mocks.claude).toHaveBeenCalledWith({ allowKeychain: true });
-    expect(mocks.claudeQuota).toHaveBeenCalledWith("fixture-claude");
   });
   it("reads Codex refresh credentials only from the isolated login home", async () => {
     mocks.codex.mockResolvedValue({ accessToken: "access", refreshToken: "refresh", idToken: "identity", accountId: "account", lastRefresh: "date" });
@@ -70,17 +61,18 @@ describe("explicit local subscription import", () => {
     expect(fetch).toHaveBeenCalledWith("https://api.x.ai/v1/models", expect.objectContaining({ redirect: "error" }));
   });
   it("rejects missing and invalid logins with actionable, redacted errors", async () => {
-    mocks.claude.mockResolvedValue(null);
-    await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow("claude auth login");
-    mocks.claude.mockResolvedValue("fixture-secret");
-    mocks.claudeQuota.mockRejectedValue(new Error("credential fixture-secret rejected"));
-    await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow(/^Could not verify the local subscription\. Run claude auth login in a terminal on the machine running Paperclip, then try Connect again\.$/);
+    await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow("Start browser sign-in");
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "" } }));
+    mocks.claudeIsolatedKeychain.mockResolvedValue(null);
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow(/^Could not verify the local subscription\. Finish browser sign-in for this connection, then try Connect again\.$/);
     mocks.codex.mockResolvedValue({ accessToken: "incomplete" });
-    await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toThrow("sign-in command shown");
+    await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toThrow("Finish browser sign-in");
     expect(mocks.codexQuota).not.toHaveBeenCalled();
   });
-  it.each(["openai", "xai"] as const)("never clones the ambient rotating %s login", async (provider) => {
-    await expect(readVerifiedLocalAiCredential(provider)).rejects.toThrow("separate local sign-in");
+  it.each(["anthropic", "openai", "xai"] as const)("never clones the ambient rotating %s login", async (provider) => {
+    await expect(readVerifiedLocalAiCredential(provider)).rejects.toThrow(provider === "xai"
+      ? "Start local sign-in"
+      : "Start browser sign-in");
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.readFile).not.toHaveBeenCalled();
   });

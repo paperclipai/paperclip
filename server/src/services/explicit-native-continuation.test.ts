@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
@@ -19,6 +19,8 @@ import {
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "./adapter-execution-control.js";
+import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -28,7 +30,7 @@ const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("explicit-native-message-"); db = createDb(database.connectionString); }, 30000);
+  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("explicit-native-message-"); db = createDb(database.connectionString); }, 90_000);
   afterAll(async () => { await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
@@ -385,6 +387,256 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+
+  it.each(["other_user", "same_user", "unaddressed", "tool_access"])("scopes connection waits to the user starting the fresh turn (%s)", async audience => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "slack_session_stopped" })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId: f.companyId, issueId: f.issueId, sourceRunId: f.sourceRunId,
+      createdByAgentId: f.agentId, kind: "connection_intent", status: "pending",
+      addresseeUserId: ["other_user", "tool_access"].includes(audience) ? "other-user" : audience === "same_user" ? "board" : null,
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, ...(audience === "tool_access" ? {} : { purpose: "ai" as const }), serviceSlug: "openai", serviceName: "OpenAI",
+        requestingAgentId: f.agentId, requestingAgentName: "Native", phase: "requested" },
+    }).returning();
+    expect(await admit(f)).toEqual(audience === "other_user"
+      ? { previousRunId: f.sourceRunId, commentId: f.commentId } : null);
+    // Starting another user's turn grants no connection authority and retains the card.
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+      .toMatchObject({ status: "pending", result: null, addresseeUserId: interaction.addresseeUserId });
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    if (audience === "other_user") expect(blocker).toBeNull();
+    else expect(blocker).not.toBeNull();
+  });
+
+  it.each(["fresh", "before_stop", "delivered", "unknown_stop_time", "wrong_actor", "approval"])(
+    "resumes an already-saved follow-up after native Slack Stop (%s)", async gate => {
+      const f = await seed(), queueId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "slack_session_stopped",
+        startedAt: new Date("2026-09-11T09:30:00Z"), finishedAt: gate === "unknown_stop_time" ? null : new Date("2026-09-11T10:00:00Z"),
+        contextSnapshot: { issueId: f.issueId, ...(gate === "delivered" ? { wakeCommentId: f.commentId } : {}) },
+        // Pre-fix Slack Stops recorded a system cancellation, with no operator identity.
+        resultJson: { cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Stopped from the bound Slack agent session", recordedAt: "2026-09-11T10:00:00Z" } },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (gate === "before_stop") await db.update(issueComments).set({ createdAt: new Date("2026-09-11T09:00:00Z") })
+        .where(eq(issueComments.id, f.commentId));
+      await db.insert(issueThreadInteractions).values({
+        companyId: f.companyId, issueId: f.issueId, sourceRunId: f.sourceRunId,
+        createdByAgentId: f.agentId, kind: "connection_intent", status: "pending", addresseeUserId: "other-user",
+        effectiveResolverPolicy: "human_only", payload: { version: 1, purpose: "ai", serviceSlug: "openai",
+          serviceName: "OpenAI", requestingAgentId: f.agentId, requestingAgentName: "Native", phase: "requested" },
+      });
+      if (gate === "approval") {
+        const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+        await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval.id });
+      }
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+        source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: gate === "wrong_actor" ? "other-user" : "board",
+        payload: { issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: {
+          issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } },
+      });
+      const result = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+        return admitExplicitNativeContinuation({ ...f, actorId: gate === "wrong_actor" ? "other-user" : f.actorId,
+          db: tx as unknown as typeof db, queuedCommentRequestId: queueId, dryRun: true });
+      });
+      expect(result).toEqual(gate === "fresh" ? { previousRunId: f.sourceRunId, commentId: f.commentId } : null);
+    },
+  );
+
+  async function seedTimedOutExplicitTurn() {
+    const f = await seed();
+    const explicitUserContinuation = await admit(f);
+    expect(explicitUserContinuation).not.toBeNull();
+    const [receipt] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    const now = new Date();
+    const [parent] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "timed_out",
+      errorCode: "timeout", startedAt: now, finishedAt: now,
+      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY },
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId,
+        previousRunId: f.sourceRunId, explicitUserContinuation },
+    }).where(eq(heartbeatRuns.id, f.successorRunId)).returning();
+    await db.update(issues).set({ status: "in_progress", executionRunId: parent.id })
+      .where(eq(issues.id, f.issueId));
+    return { ...f, parent, receipt, now };
+  }
+  const dispatchExplicitRetry = (f: Fixture, run: typeof heartbeatRuns.$inferSelect) => buildExecutionContinuation({
+    db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: run.id,
+    context: run.contextSnapshot!, summary: null, exposeLowTrustRaw: false,
+  });
+
+  it("re-admits an explicit user turn's timeout retry with its own durable authorization", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    await expect(dispatchExplicitRetry(f, f.parent)).resolves.toMatchObject({ interruptedRunId: f.sourceRunId });
+    const heartbeat = heartbeatService(db);
+    const [scheduled, competing] = await Promise.all([
+      heartbeat.scheduleBoundedRetry(f.parent.id, { now: f.now, delayMs: 1000 }),
+      heartbeat.scheduleBoundedRetry(f.parent.id, { now: f.now, delayMs: 1000 }),
+    ]);
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(competing).toMatchObject({ outcome: "scheduled", run: { id: scheduled.run.id } });
+    expect(scheduled.run.contextSnapshot?.explicitUserContinuation).toEqual({
+      previousRunId: f.parent.id, commentId: f.commentId,
+    });
+    // Dispatch validates the new run, not a borrowed parent receipt.
+    await expect(dispatchExplicitRetry(f, scheduled.run)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    const receipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
+    expect(receipts.find(row => row.id !== f.receipt.id)?.evidence.explicitUserContinuation).toMatchObject({
+      runId: scheduled.run.id, previousRunId: f.parent.id, actorId: "board", commentId: f.commentId,
+      automaticRetry: { sourceRunId: f.parent.id, sourceAuthorizationId: f.receipt.id },
+    });
+    expect(await heartbeat.scheduleBoundedRetry(f.parent.id, { now: f.now })).toMatchObject({
+      outcome: "scheduled", run: { id: scheduled.run.id },
+    });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(2);
+    // Removing the new receipt reproduces the original dispatch failure.
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, receipts.find(row => row.id !== f.receipt.id)!.id));
+    await expect(dispatchExplicitRetry(f, scheduled.run)).rejects.toThrow("continuation_user_authorization_missing");
+  });
+
+  it("waits for the parent adapter controller even when no environment lease remains", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    const heartbeat = heartbeatService(db);
+    const control = createAdapterExecutionControl();
+    adapterExecutionControls.set(f.parent.id, control);
+    try {
+      expect(await heartbeat.scheduleBoundedRetry(f.parent.id)).toMatchObject({ outcome: "not_scheduled" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(1);
+    } finally {
+      adapterExecutionControls.delete(f.parent.id);
+      control.finish();
+    }
+    expect(await heartbeat.scheduleBoundedRetry(f.parent.id)).toMatchObject({ outcome: "scheduled" });
+  });
+
+  it("binds each bounded explicit retry to its immediate parent without replacing prior receipts", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.scheduleBoundedRetry(f.parent.id, { now: f.now });
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+    const nextNow = new Date(f.now.getTime() + 2000);
+    await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", startedAt: f.now,
+      finishedAt: nextNow }).where(eq(heartbeatRuns.id, first.run.id));
+    const second = await heartbeat.scheduleBoundedRetry(first.run.id, { now: nextNow });
+    expect(second.outcome).toBe("scheduled");
+    if (second.outcome !== "scheduled") return;
+    expect(second.run).toMatchObject({ retryOfRunId: first.run.id, scheduledRetryAttempt: 2 });
+    await expect(dispatchExplicitRetry(f, second.run)).resolves.toMatchObject({ interruptedRunId: first.run.id });
+    const receipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(receipts).toHaveLength(3);
+    expect(receipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
+    await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", startedAt: nextNow,
+      finishedAt: nextNow }).where(eq(heartbeatRuns.id, second.run.id));
+    expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: nextNow })).toMatchObject({ outcome: "retry_exhausted" });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(3);
+  });
+
+  it("keeps sub-millisecond source ordering when authorizing a timeout retry", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    await db.execute(sql`update heartbeat_runs set created_at = ${f.now.toISOString()}::timestamptz +
+      case when id = ${f.sourceRunId} then interval '100 microseconds' else interval '500 microseconds' end
+      where company_id = ${f.companyId} and id in (${f.sourceRunId}, ${f.parent.id})`);
+    const result = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+    expect(result.outcome).toBe("scheduled");
+  });
+
+  it.each(["max_turns_continuation", "interaction_continuation_infra_retry", "workspace_busy"])(
+    "does not lend explicit user authority to the separate %s retry contract", async retryReason => {
+      const f = await seedTimedOutExplicitTurn();
+      const result = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now, retryReason });
+      expect(result.outcome).not.toBe("scheduled");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+    },
+  );
+
+  it.each(["deleted", "edited", "same_millisecond_edit", "empty", "actor", "run_authored", "legacy_receipt", "receipt_run", "receipt_company", "source", "task", "reassigned", "done", "superseded", "native_superseding", "interrupted_intent"])(
+    "refuses to re-admit an automatic explicit retry after %s changes", async kind => {
+      const f = await seedTimedOutExplicitTurn();
+      if (["deleted", "edited", "same_millisecond_edit", "empty", "actor", "run_authored"].includes(kind)) await db.update(issueComments).set({
+        ...(kind === "deleted" ? { deletedAt: new Date() } : {}),
+        ...(kind === "edited" ? { body: "Different instructions", updatedAt: new Date(f.now.getTime() + 1000) } : {}),
+        ...(kind === "same_millisecond_edit" ? { body: "Different instructions within the recorded millisecond" } : {}),
+        ...(kind === "empty" ? { body: " " } : {}),
+        ...(kind === "actor" ? { authorUserId: "another-user" } : {}),
+        ...(kind === "run_authored" ? { createdByRunId: f.parent.id } : {}),
+      }).where(eq(issueComments.id, f.commentId));
+      if (["receipt_run", "interrupted_intent"].includes(kind)) await db.update(issueRecoveryActions).set({ evidence: {
+        ...f.receipt.evidence, explicitUserContinuation: {
+          ...(f.receipt.evidence.explicitUserContinuation as Record<string, unknown>),
+          ...(kind === "receipt_run" ? { runId: randomUUID() } : { queuedCommentInterruptId: randomUUID() }),
+        },
+      } }).where(eq(issueRecoveryActions.id, f.receipt.id));
+      if (kind === "receipt_company") await db.update(issueRecoveryActions).set({ companyId: (await seed()).companyId })
+        .where(eq(issueRecoveryActions.id, f.receipt.id));
+      if (kind === "legacy_receipt") {
+        const { commentBodyHash: _bodyHash, commentUpdatedAt: _updatedAt, ...legacy } =
+          f.receipt.evidence.explicitUserContinuation as Record<string, unknown>;
+        await db.update(issueRecoveryActions).set({ evidence: { ...f.receipt.evidence,
+          explicitUserContinuation: legacy } }).where(eq(issueRecoveryActions.id, f.receipt.id));
+      }
+      if (kind === "source" || kind === "task") await db.update(heartbeatRuns).set({ contextSnapshot: {
+        ...f.parent.contextSnapshot,
+        ...(kind === "task" ? { issueId: randomUUID() } : { explicitUserContinuation: { previousRunId: randomUUID(), commentId: f.commentId } }),
+      } }).where(eq(heartbeatRuns.id, f.parent.id));
+      if (kind === "reassigned" || kind === "done") await db.update(issues).set(kind === "done"
+        ? { status: "done" } : { assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      if (kind === "superseded") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        status: "succeeded", contextSnapshot: { issueId: f.issueId }, createdAt: new Date(f.now.getTime() + 1000) });
+      if (kind === "native_superseding") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        status: "running", runtimeMode: "native", nativeIssueId: f.issueId, contextSnapshot: {} });
+      const result = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+      expect(result.outcome).not.toBe("scheduled");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+      expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
+        eq(issueRecoveryActions.cause, "explicit_user_continuation_retry")))).toHaveLength(0);
+    },
+  );
+
+  it("binds the initial user-message admission before any automatic retry", async () => {
+    const f = await seedTimedOutExplicitTurn();
+    await expect(dispatchExplicitRetry(f, f.parent)).resolves.toMatchObject({ interruptedRunId: f.sourceRunId });
+    await db.update(issueComments).set({ body: "Changed after the original admission" })
+      .where(eq(issueComments.id, f.commentId));
+    await expect(dispatchExplicitRetry(f, f.parent)).rejects.toThrow("continuation_user_authorization_missing");
+  });
+
+  it.each(["deleted", "edited", "same_millisecond_edit", "actor", "receipt_run", "receipt_source", "retry_parent", "execution_owner"])(
+    "revalidates the successor's exact authorization at dispatch: %s", async kind => {
+      const f = await seedTimedOutExplicitTurn();
+      const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      if (["deleted", "edited", "same_millisecond_edit", "actor"].includes(kind)) await db.update(issueComments).set({
+        ...(kind === "deleted" ? { deletedAt: new Date() } : {}),
+        ...(kind === "edited" ? { body: "Changed after scheduling", updatedAt: new Date(f.now.getTime() + 1000) } : {}),
+        ...(kind === "same_millisecond_edit" ? { body: "Changed within the recorded millisecond" } : {}),
+        ...(kind === "actor" ? { authorUserId: "another-user" } : {}),
+      }).where(eq(issueComments.id, f.commentId));
+      if (kind === "receipt_run" || kind === "receipt_source") {
+        const [receipt] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.sourceIssueId, f.issueId), eq(issueRecoveryActions.cause, "explicit_user_continuation_retry")));
+        await db.update(issueRecoveryActions).set({ evidence: { ...receipt.evidence, explicitUserContinuation: {
+          ...(receipt.evidence.explicitUserContinuation as Record<string, unknown>),
+          ...(kind === "receipt_run" ? { runId: f.parent.id } : { previousRunId: f.sourceRunId }),
+        } } }).where(eq(issueRecoveryActions.id, receipt.id));
+      }
+      if (kind === "retry_parent") await db.update(heartbeatRuns).set({ retryOfRunId: f.sourceRunId })
+        .where(eq(heartbeatRuns.id, scheduled.run.id));
+      if (kind === "execution_owner") await db.update(issues).set({ executionRunId: f.parent.id })
+        .where(eq(issues.id, f.issueId));
+      await expect(dispatchExplicitRetry(f, scheduled.run)).rejects.toThrow("continuation_user_authorization_missing");
+    },
+  );
 
   it.each(["active", "removed", "unavailable", "paused", "disabled"])("shows usable recovery guidance for external chat cancellations: %s", async kind => {
     const f = await seed();

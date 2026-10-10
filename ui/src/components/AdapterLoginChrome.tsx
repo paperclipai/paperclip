@@ -469,20 +469,51 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
+  const [browserCode, setBrowserCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
-  const command = isolated ? login?.command : "claude auth login";
-  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Checking local {provider} sign-in…</p>;
+  const command = login?.command;
+  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local";
+  async function submitBrowserCode() {
+    if (!browserCode.trim() || !login?.submitCode || submitting) return;
+    setSubmitting(true);
+    try {
+      await login.submitCode(browserCode.trim());
+      setBrowserCode("");
+    } catch {
+      // The login hook presents the request error beside the sign-in card.
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Preparing sign-in…</p>;
   const ready = login?.status === "ready";
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
       <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{provider} is signed in. Click Connect to use this account.</p>
-      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => setShowCommand(true)}>Use a different account</button>}
-    </> : <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
-    {(!ready || showCommand) && !login?.error && <>
+      {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>Use a different account</button>}
+    </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
+    {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">Preparing browser sign-in…</p>}
+    {browserLogin && !ready && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
+      providerName={connectSourceName(adapterType)}
+      authorizationUrl={login.authorizationUrl}
+      mode={adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
+    >
+      {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
+        <OnboardingCardField
+          value={browserCode}
+          onChange={setBrowserCode}
+          onSubmit={() => void submitBrowserCode()}
+          disabled={submitting}
+        />
+        <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
+      </div> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+    </ProviderSubscriptionCard>}
+    {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
       {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
         <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
@@ -490,6 +521,6 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
       </div>}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
-    {login && !login.preparing && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+    {login && !login.preparing && !ready && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
   </div>;
 }

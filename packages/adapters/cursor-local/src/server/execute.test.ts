@@ -138,6 +138,36 @@ function createFreshLeaseSandboxRunner(options: {
 }
 
 describe("cursor execute", () => {
+  it.each([0, 7])("settles legacy step usage only after a clean process exit (%s)", async (exitCode) => {
+    setPrepareCursorSandboxCommand.mockReset();
+    setPrepareCursorSandboxCommand.mockImplementation(async (input) => ({
+      command: input.command, env: input.env, remoteSystemHomeDir: null,
+      addedPathEntry: null, preferredCommandPath: null,
+    }));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-legacy-"));
+    const command = path.join(root, "agent.sh");
+    await fs.writeFile(command, `#!/bin/sh
+cat >/dev/null
+printf '%s\\n' '{"type":"step_finish","part":{"tokens":{"input":20,"output":5},"cost":0.01}}'
+exit ${exitCode}
+`, { mode: 0o755 });
+    const onUsage = vi.fn();
+    try {
+      const result = await execute({
+        runId: "run-legacy", agent: { id: "agent-1", companyId: "company-1", name: "Cursor", adapterType: "cursor", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command, cwd: root }, context: createPromptContextFixture(),
+        authToken: "fixture-run-token", onLog: async () => {}, onUsage,
+      });
+      expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 5 });
+      expect(result.costUsd).toBe(0.01);
+      expect(result.usageComplete).toBe(exitCode === 0);
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ complete: false, costUsd: 0.01 }));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { detail: "Authentication failed", structured: "", expected: "Authentication failed" },
     { detail: "", structured: "", expected: "Cursor exited with code 7" },
@@ -261,10 +291,20 @@ exit 7
     const remoteWorkspace = path.join(rootDir, "remote-workspace");
     const systemHomeDir = path.join(rootDir, "system-home");
     const managedCaptureDir = path.join(rootDir, "managed-capture");
+    const fixtureBinDir = path.join(rootDir, "fixture-bin");
+    const networkAttemptPath = path.join(rootDir, "network-attempted");
+    await fs.mkdir(fixtureBinDir, { recursive: true });
+    // A regression in installer interception must fail locally, not download
+    // and execute the real CLI or depend on an external server's latency.
+    await fs.writeFile(path.join(fixtureBinDir, "curl"), `#!/bin/sh
+: > "$FIXTURE_CURL_ATTEMPT_PATH"
+exit 97
+`, { mode: 0o755 });
     await fs.mkdir(managedCaptureDir, { recursive: true });
     await fs.mkdir(workspaceDir, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
     const preferredAgentScript = `#!/bin/sh
+cat >/dev/null
 printf '%s\\n' '{"type":"system","subtype":"init","session_id":"cursor-session-fresh-1","model":"auto"}'
 printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"output_text","text":"hello"}]}}'
 printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-session-fresh-1","result":"ok"}'
@@ -288,7 +328,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       finalPreparedCommand = preferredCommandPath;
       const runtimeEnv = {
         ...input.env,
-        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${input.env.PATH}`,
+        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${input.env.PATH ?? process.env.PATH ?? "/usr/bin:/bin"}`,
       };
       await fs.mkdir(path.dirname(preferredCommandPath), { recursive: true });
       await fs.writeFile(preferredCommandPath, preferredAgentScript);
@@ -306,19 +346,33 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
 
     const runnerState = {
       commands: [] as string[],
+      installCommands: [] as string[],
     };
     // The managed-runtime restore path probes the generated archive with
     // `wc -c` before reading bounded `dd | base64` chunks. Keep this fixture's
     // shell seam faithful to that protocol instead of returning empty stdout
     // for every shell command.
     const runner = {
-      execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
+      execute: async (input: { command: string; args?: string[]; env?: Record<string, string>; stdin?: string }) => {
         runnerState.commands.push(input.command);
+        const args = [...(input.args ?? [])];
+        if (args[1] === SANDBOX_INSTALL_COMMAND) {
+          runnerState.installCommands.push(args[1]);
+          args[1] = buildInstallSimulationCommand(
+            path.join(systemHomeDir, ".local", "bin", "agent"),
+            managedCaptureDir,
+          );
+        }
         // Exercise actual bounded file reads during managed-home restoration;
         // reporting empty success for every shell command hides missing bytes.
-        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
+        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, args, {
           cwd: remoteWorkspace,
-          env: { ...input.env, PATH: `${input.env?.PATH ?? ""}:/usr/bin:/bin` },
+          env: {
+            ...input.env,
+            PATH: `${fixtureBinDir}:${input.env?.PATH ?? ""}:/usr/bin:/bin`,
+            FIXTURE_CURL_ATTEMPT_PATH: networkAttemptPath,
+          },
+          stdin: input.stdin,
           timeoutSec: 30,
           graceSec: 5,
           onLog: async () => {},
@@ -370,7 +424,11 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       });
 
       expect(result.exitCode).toBe(0);
+      await expect(fs.stat(networkAttemptPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(runnerState.installCommands).toEqual([SANDBOX_INSTALL_COMMAND]);
       expect(prepareInputs).toHaveLength(2);
+      expect(prepareInputs[1].env.HOME).toBeTruthy();
+      expect(prepareInputs[1].env.HOME).not.toBe(systemHomeDir);
       expect(finalPreparedCommand).not.toBeNull();
       expect(finalPreparedCommand).toMatch(/\.local\/(bin|sbin)\/agent$/);
       const resolvedCommand = runMeta.find(Boolean)?.command as string | undefined;

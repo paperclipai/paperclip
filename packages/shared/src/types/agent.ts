@@ -1,3 +1,4 @@
+import type { AgentLifecycleState } from "./agent-lifecycle.js";
 import type { AgentAppearance } from "../agent-appearance.js";
 import type { AiConnectionLoginIntent } from "../ai-connections.js";
 import type {
@@ -25,7 +26,7 @@ export interface AgentPermissions extends Record<string, unknown> {
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
-  aiConnection?: import("../ai-connections.js").AiConnectionBinding;
+  aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";
@@ -90,6 +91,9 @@ export interface Agent {
   appearance?: AgentAppearance | null;
   avatarUrl?: string;
   status: AgentStatus;
+  lifecycleState?: AgentLifecycleState;
+  lifecycleVersion?: number;
+  lifecycleError?: string | null;
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
@@ -414,4 +418,12 @@ export interface AgentInstructionCandidate {
   errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Public cryptographic identity; private material is runtime-only. */
+export interface AgentPublicIdentity {
+  algorithm: "Ed25519";
+  keyId: string;
+  publicKeyPem: string;
+  createdAt: string;
 }

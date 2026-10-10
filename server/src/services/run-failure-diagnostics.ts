@@ -1,9 +1,15 @@
+import { readWorkspaceBaseRefDiagnostic } from "./workspace-base-ref-diagnostics.js";
+import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readRunCancellation } from "./run-cancellation.js";
+import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
+import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { MANAGED_GIT_WORKTREE_REASON_CODES, PERSISTED_WORKSPACE_SOURCE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Context = Record<string, string | number | boolean>;
@@ -144,6 +150,40 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  const configuration = read(result, "configurationIncomplete");
+  if (run.errorCode === "configuration_incomplete" && read(configuration, "reason") === "workspace_base_ref_unresolved") {
+    const diagnostic = readWorkspaceBaseRefDiagnostic(read(configuration, "baseRefDiagnostic"));
+    if (diagnostic) {
+      for (const [key, value] of Object.entries(diagnostic)) {
+        if (key !== "schemaVersion") execution[`workspaceBaseRef${key[0]!.toUpperCase()}${key.slice(1)}`] = value;
+      }
+    }
+  }
+  const workspaceValidation = read(result, "workspaceValidation");
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "git_worktree_not_reusable") {
+    execution.workspaceValidationReason = "git_worktree_not_reusable";
+    const reasonCode = MANAGED_GIT_WORKTREE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
+    const diagnostic = reasonCode === "git_inspection_failed"
+      ? readManagedGitInspectionDiagnostic(read(workspaceValidation, "inspectionDiagnostic")) : null;
+    if (diagnostic) {
+      execution.workspaceValidationInspectionCommand = diagnostic.command;
+      execution.workspaceValidationInspectionFailure = diagnostic.failure;
+      if (diagnostic.errorCode) execution.workspaceValidationInspectionErrorCode = diagnostic.errorCode;
+      if (diagnostic.exitCode !== undefined) execution.workspaceValidationInspectionExitCode = diagnostic.exitCode;
+    }
+  }
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "persisted_workspace_source_conflict") {
+    execution.workspaceValidationReason = "persisted_workspace_source_conflict";
+    const reasonCode = PERSISTED_WORKSPACE_SOURCE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
+  }
+  if (run.errorCode === "process_lost") {
+    const diagnostic = readProcessLossDiagnostic(read(result, "processLossDiagnostic"));
+    for (const [field, value] of Object.entries(diagnostic)) {
+      execution[`processLoss${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+    }
+  }
   const cancellation = readRunCancellation(result);
   if (cancellation) {
     execution.cancellationSource = cancellation.source;
@@ -165,12 +205,29 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   if (typeof toolInventoryComplete === "boolean") execution.acpToolInventoryComplete = toolInventoryComplete;
   const restoreFailure = read(result, "workspaceRestoreFailure");
   const restoreCode = WORKSPACE_RESTORE_FAILURE_CODES.find((code) => code === restoreFailure);
-  if (restoreCode) execution.workspaceRestoreFailure = restoreCode;
+  if (restoreCode) {
+    execution.workspaceRestoreFailure = restoreCode;
+    const diagnostic = sanitizeWorkspaceRestoreDiagnostic(read(result, "workspaceRestoreDiagnostic"));
+    if (diagnostic) {
+      execution.workspaceRestorePhase = diagnostic.phase;
+      execution.workspaceRestoreErrorCode = diagnostic.errorCode;
+      if (diagnostic.step) execution.workspaceRestoreStep = diagnostic.step;
+      if (diagnostic.httpStatus !== undefined) execution.workspaceRestoreHttpStatus = diagnostic.httpStatus;
+      if (diagnostic.exitCode !== undefined) execution.workspaceRestoreExitCode = diagnostic.exitCode;
+      if (diagnostic.transferStep) execution.workspaceRestoreTransferStep = diagnostic.transferStep;
+      if (diagnostic.transferFailureKind) execution.workspaceRestoreTransferFailureKind = diagnostic.transferFailureKind;
+      if (diagnostic.rpcCode !== undefined) execution.workspaceRestoreRpcCode = diagnostic.rpcCode;
+      if (diagnostic.gitCommand) execution.workspaceRestoreGitCommand = diagnostic.gitCommand;
+      if (diagnostic.gitFailureKind) execution.workspaceRestoreGitFailureKind = diagnostic.gitFailureKind;
+    }
+  }
   const adapter = scalars(options.adapterErrorMeta, [
     "category", "phase", "errorName", "acpCode", "causeMessage", "retryable",
     "stackPreview", "status", "statusCode", "requestId",
   ]);
   const provider = scalars(read(result, "terminalSessionFailure"), ["category", "title", "details"]);
+  const nativeProviderFailure = readNativeModelRejectionDiagnostic(read(result, "nativeProviderFailure"));
+  if (nativeProviderFailure) Object.assign(provider, nativeProviderFailure);
   const truncatedFields: string[] = [];
   const providerTruncation = read(read(result, "terminalSessionFailure"), "truncatedFields");
   if (Array.isArray(providerTruncation)) {
@@ -193,6 +250,13 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
+    const acquisition = options.phase === "setup" && run.errorCode === "setup_failed"
+      ? getEnvironmentAcquisitionDiagnostic(error, run) : null;
+    if (acquisition && execution.environmentAcquisitionPhase === undefined) {
+      execution.environmentAcquisitionPhase = acquisition.phase;
+      execution.environmentAcquisitionElapsedMs = acquisition.elapsedMs;
+      execution.environmentAcquisitionBudgetMs = acquisition.budgetMs;
+    }
     if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
       const lock = read(error, "workspaceRestoreLock");
       const operation = read(lock, "operation");

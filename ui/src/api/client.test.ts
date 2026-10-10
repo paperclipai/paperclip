@@ -4,6 +4,7 @@ import {
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
 import { __inflightGetCount, api, detachInflightGet } from "./client";
+import { toolsApi } from "./tools";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -42,6 +43,24 @@ afterEach(() => {
 });
 
 describe("tenant-session recovery", () => {
+  it("loads anonymous Dot consent despite concurrent protected background probes", async () => {
+    const reload = vi.fn();
+    const requestId = `pcmcp_request_${"a".repeat(43)}`;
+    const recovery = createTenantSessionRecoveryCoordinator(reload, () => `/dot-connect/${requestId}`);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      url.includes("/dot-mcp/requests/")
+        ? jsonResponse({ id: requestId, agentConnection: true })
+        : errorResponse({ error: "tenant_session_required" }),
+    ));
+
+    const background = api.get("/health");
+    const consent = api.get(`/dot-mcp/requests/${requestId}`);
+    await expect(background).rejects.toMatchObject({ status: 401 });
+    await expect(consent).resolves.toEqual({ id: requestId, agentConnection: true });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it("keeps concurrent failures pending and schedules one top-level reload", async () => {
     const reload = vi.fn();
     const recovery = createTenantSessionRecoveryCoordinator(reload);
@@ -197,5 +216,22 @@ describe("per-caller abort semantics", () => {
       name: "AbortError",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("managed-account request isolation", () => {
+  it("does not share a previous viewing user's pending account response", async () => {
+    const previous = deferred<Response>();
+    const current = deferred<Response>();
+    fetchMock.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const previousUser = toolsApi.listAggregatorApps("shared-gateway");
+    const currentUser = toolsApi.listAggregatorApps("shared-gateway");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, options]) => options.cache === "no-store")).toBe(true);
+    current.resolve(jsonResponse({ apps: ["current-user-account"] }));
+    previous.resolve(jsonResponse({ apps: ["previous-user-account"] }));
+    expect(await currentUser).toEqual({ apps: ["current-user-account"] });
+    expect(await previousUser).toEqual({ apps: ["previous-user-account"] });
   });
 });

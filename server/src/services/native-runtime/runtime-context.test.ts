@@ -13,8 +13,10 @@ const serviceMocks = vi.hoisted(() => ({
   readCommittedForRuntime: vi.fn(),
   getEffectiveProfilesForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
+  spekoToolsForSession: vi.fn(),
 }));
 
+vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
 vi.mock("../chat-github-tools.js", () => ({
   githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));
@@ -58,6 +60,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
+  serviceMocks.spekoToolsForSession.mockResolvedValue([]);
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-native-context-"));
@@ -405,4 +408,15 @@ it("pins channel tools only when the current task run is bound to that bot", asy
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set(["bot-connection"]));
   expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
   expect(serviceMocks.githubBotConnectionIdsForRun).toHaveBeenLastCalledWith(input.db, "company-1", "agent-1", "run-1");
+});
+
+it("pins a voice tool only when the current requester can call through that assigned endpoint", async () => {
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
+  const limit = vi.fn().mockResolvedValue([{ contextSnapshot: { issueId: "task-1" }, activeIdentityContextId: "identity-1" }]);
+  const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+  const input = { db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();
+  serviceMocks.spekoToolsForSession.mockResolvedValue([{ connectionId: "voice-connection" }]);
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
+  expect(serviceMocks.spekoToolsForSession).toHaveBeenLastCalledWith(db, { companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "task-1", identityContextId: "identity-1" });
 });

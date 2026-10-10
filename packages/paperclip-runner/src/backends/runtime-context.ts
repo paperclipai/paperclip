@@ -27,12 +27,21 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
     throw new Error("native_runtime_context_entry_outside_bundle");
   }
   const entry = readFileSync(entryPath, "utf8");
+  if (input.provider.kind === "openai_dot") {
+    return [input.runtimeContext.prompt.text, entry.trim(),
+      "This provider has no mounted workspace. Use Paperclip semantic tools for task coordination and write_document for durable text deliverables. Read pinned skills with list_assigned_skills and read_assigned_skill. Assigned app tools run through the Paperclip MCP gateway with normal permissions and approvals. If workspace tools are advertised, use them for files and sandboxed commands, then register_deliverable for requested downloadable files. Use get_identity and list_people to discover the responsible person and assignees. Read the current catalog before concluding a capability is unavailable.",
+      // Keep tool-use guidance aligned with shared external-agent onboarding; the standalone Runner has no shared-package dependency.
+      "When you receive a Paperclip assignment or message, use your own available tools, apps, plugins, skills, and capabilities to complete the requested work, then return the result to Paperclip. For example, use your existing Slack connection when the task calls for Slack. Paperclip's app catalog describes what this connection exposes; it is not a list of everything you can use in your own runtime. A missing Paperclip app connection does not make your own connection unavailable. Respect each tool's existing permissions, approvals, and the user's current instructions. Keep Paperclip data and actions within this connection's authorized company, agent, and task. Never use another Paperclip connection or identity to bypass a denial. Setup or test restrictions apply only to their stated scope; do not carry them into later requests unless the user explicitly says they continue.\n\nUse the assignment catalog through paperclip_dot_tool for Paperclip operations. Use your native tools directly for the rest of the work; they do not need to appear in that catalog. Record useful results and deliverables on the task and follow the Paperclip completion instructions.",
+      `Assigned Paperclip skills: ${input.runtimeContext.skills.map(skill => skill.runtimeName).join(", ") || "none"}.`].join("\n\n");
+  }
   return composeNativeSystemInstructions(input.runtimeContext, entry);
 }
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
+  // Keep the discovery/ordering rule in each turn. The completion tools own
+  // reporting, rejection feedback, approval handling and final-response details.
   const finalResponseConstraint =
-    "Obtain one accepted result from paperclip_finish or paperclip_block before writing the complete user-facing final response. Use paperclip_finish with yielded and a response_wake continuation only when explicitly waiting for the next response. If the tool rejects an incomplete report, correct it and retry. When it succeeds, read its outcome and explain any pending approval with the supplied link and required action. Do not claim the task is done when completion is still gated. Then write the final response exactly once and do not call another tool.";
+    "Obtain one accepted result from paperclip_finish or paperclip_block before writing the complete user-facing final response. Follow that tool's reporting and final-response instructions. If blocked, explain why work cannot continue, name the owner and give the unblock action.";
   const answeredQuestions = Array.isArray(input.interactionResponses)
     ? input.interactionResponses.flatMap((response, responseIndex) => {
         if (
@@ -110,7 +119,8 @@ export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
         : `For this turn, the editable agent instruction file is ${input.runtimeContext.instructions.workingCopy.rootPath}/${input.runtimeContext.instructions.workingCopy.entryPath}. This replaces any private working-copy path from a previous turn. Ordinary edits save after the provider stops and only with a durable revision receipt. Use the agent instruction tools for immediate saves. Shared instruction assets and repository instructions are not collected.`,
     ] : []),
     "Use Paperclip semantic tools for coordination and finalization.",
-    "Save requested plans and Paperclip documents directly with write_document. A saved Paperclip document is already a durable deliverable. Do not create a local file, compute file hashes, or call register_deliverable for it unless the user also requests a downloadable file. Cite the saved document in your completion evidence and final response.",
+    "When available, use submit_complaint for the raw reaction to agent-work friction or submit_suggestion for a concrete improvement. Submit proactively when warranted, briefly and in your own voice; this is not a mandatory report. Feedback is internal and attributed. Exclude secrets, private prompts, customer data, and personal blame. Never submit the same incident through both tools; aim for at most three suggestions per run. Submit silently once, before finishing, then immediately continue the primary task even if submission fails. Answer truthfully if the user asks about feedback or what you submitted.",
+    "Save requested plans and Paperclip documents directly with write_document. A saved Paperclip document is already a durable deliverable. Do not create a local file, compute file hashes, or call register_deliverable for it unless the user also requests a downloadable file. Cite the saved document in your completion evidence and include its returned documentHref as a clickable link in your final response.",
     "When the requested result is a file, use register_deliverable before paperclip_finish. Compute its exact byte size and SHA-256, register the workspace-relative file, cite deliverable:<attachmentId> from the receipt as completion evidence, and include /api/attachments/<attachmentId>/content as the download link in your answer. A bare workspace filename is not a delivered result. For repository edits, cite an accessible PR or registered work product. Preserve existing work; do not upload unrelated files. If file publication fails, fix it or report the concrete blocker instead of claiming the file is delivered.",
     ...(answeredQuestionConstraint ? [answeredQuestionConstraint] : []),
     finalResponseConstraint,

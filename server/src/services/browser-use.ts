@@ -16,9 +16,7 @@ import {
   issues,
   heartbeatRuns,
   agents,
-  companies,
   costEvents,
-  financeEvents,
 } from "@paperclipai/db";
 import {
   BROWSER_USE_IDLE_MS,
@@ -41,7 +39,9 @@ import { secretService } from "./secrets.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { issueTreeControlService } from "./issue-tree-control.js";
 import { accessService } from "./access.js";
-import { getMonthlySpendTotal } from "./costs.js";
+import { createCostEventInTransaction } from "./costs.js";
+import { createFinanceEventInTransaction } from "./finance.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity } from "./activity-log.js";
 import { browserUseViewports } from "./browser-use-viewport.js";
 import { forbidden, notFound, conflict } from "../errors.js";
@@ -911,36 +911,32 @@ export function browserUseService(
     const cents = Math.max(0, Math.round(Number(summary.totalCostUsd) * 100));
     if (!Number.isSafeInteger(cents))
       throw new BrowserUseError(502, "Browser Use returned invalid usage.");
-    const [issue] = await db
-      .select({ projectId: issues.projectId })
-      .from(issues)
-      .where(and(eq(issues.id, s.issueId), eq(issues.companyId, s.companyId)));
-    const event = await db.transaction(async (tx) => {
+    const event = await withAccountingTransaction(db, s.companyId, async (tx, publications) => {
+      const [issue] = await tx
+        .select({ projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.id, s.issueId), eq(issues.companyId, s.companyId)));
       const [current] = await tx
         .select()
         .from(runs)
         .where(eq(runs.id, run.id))
         .for("update");
       if (cents <= current.accountedCents) return null;
-      const [e] = await tx
-        .insert(costEvents)
-        .values({
-          companyId: s.companyId,
-          agentId: s.agentId,
-          issueId: s.issueId,
-          projectId: issue?.projectId,
-          heartbeatRunId: run.heartbeatRunId,
-          provider: "browser-use-cloud",
-          biller: "browser-use-cloud",
-          billingType: "metered_api",
-          model: summary.model,
-          costCents: cents - current.accountedCents,
-          occurredAt: new Date(),
-          billingCode: `browser-use-cloud:${run.id}`,
-        })
-        .returning();
-      await tx.insert(financeEvents).values({
-        companyId: e.companyId,
+      const e = await createCostEventInTransaction(tx, s.companyId, {
+        agentId: s.agentId,
+        issueId: s.issueId,
+        projectId: issue?.projectId,
+        heartbeatRunId: run.heartbeatRunId,
+        provider: "browser-use-cloud",
+        biller: "browser-use-cloud",
+        billingType: "metered_api",
+        model: summary.model,
+        costCents: cents - current.accountedCents,
+        occurredAt: new Date(),
+        billingCode: `browser-use-cloud:${run.id}`,
+        idempotencyKey: `browser-use-cloud:${run.id}:${cents}`,
+      }, publications);
+      await createFinanceEventInTransaction(tx, publications, s.companyId, {
         agentId: e.agentId,
         issueId: e.issueId,
         projectId: e.projectId,
@@ -963,23 +959,6 @@ export function browserUseService(
         .where(eq(runs.id, run.id));
       return e;
     });
-    await db
-      .update(agents)
-      .set({
-        spentMonthlyCents: await getMonthlySpendTotal(db, {
-          companyId: s.companyId,
-          agentId: s.agentId,
-        }),
-      })
-      .where(and(eq(agents.companyId, s.companyId), eq(agents.id, s.agentId)));
-    await db
-      .update(companies)
-      .set({
-        spentMonthlyCents: await getMonthlySpendTotal(db, {
-          companyId: s.companyId,
-        }),
-      })
-      .where(eq(companies.id, s.companyId));
     // Re-evaluate on retries too: accounting may have committed immediately
     // before a crash interrupted budget enforcement.
     const lastEvent =

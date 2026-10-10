@@ -1866,7 +1866,11 @@ fn process_command<E: CommandExecutor>(
 
 fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64) -> Value {
     let mut envelope = event.envelope.clone();
-    if protocol_version == 1 && envelope.pointer("/payload/schemaVersion") == Some(&json!(2)) {
+    if envelope
+        .pointer("/payload/schemaVersion")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > protocol_version)
+    {
         // Preserve the source sequence on a v1 connection so its cumulative
         // ACK can advance past an event family that only exists in PRP v2.
         // Never copy the v2 payload because it can include a goal objective.
@@ -1874,7 +1878,7 @@ fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64)
         envelope["payload"]["eventType"] = json!("runner.diagnostic");
         envelope["payload"]["schemaVersion"] = json!(1);
         envelope["payload"]["payload"] = json!({
-            "reasonCode": "event_requires_prp_v2",
+            "reasonCode": if event.envelope.pointer("/payload/schemaVersion") == Some(&json!(3)) { "event_requires_prp_v3" } else { "event_requires_prp_v2" },
             "originalEventType": event.event_type,
         });
     }

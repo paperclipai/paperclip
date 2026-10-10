@@ -337,12 +337,12 @@ describe("browser error diagnostics with the real SDK", () => {
     const gate = await importFreshSentry();
     await gate.initBrowserErrorMonitoring(DSN, "staging");
     const previousPath = window.location.pathname + window.location.search;
-    window.history.replaceState({}, "", "/tasks/private-task?token=private-capability");
+    window.history.replaceState({}, "", "/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability");
     document.documentElement.classList.add("translated-ltr", "private-customer-class");
     try {
       gate.captureBrowserException(new DOMException("insertBefore failed", "NotFoundError"), {
         boundary: "route",
-        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/private-task?token=private-capability:3:4)",
+        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability:3:4)",
       });
       document.documentElement.classList.remove("translated-ltr");
       gate.captureBrowserException(new Error("unrelated failure"));
@@ -364,7 +364,7 @@ describe("browser error diagnostics with the real SDK", () => {
         expect(event).not.toHaveProperty("request");
         expect(event.breadcrumbs).toBeUndefined();
       }
-      for (const secret of ["tenant.example", "private-task", "private-capability", "private-customer-class"]) {
+      for (const secret of ["tenant.example", "sentry-fixture-secret-task-7fa83e", "private-capability", "private-customer-class"]) {
         expect(JSON.stringify(events)).not.toContain(secret);
       }
       await gate.teardownBrowserErrorMonitoring();

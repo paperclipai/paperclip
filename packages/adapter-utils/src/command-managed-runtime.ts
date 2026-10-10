@@ -538,6 +538,7 @@ export async function prepareCommandManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  runtimeRootDir?: string;
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
@@ -572,7 +573,7 @@ export async function prepareCommandManagedRuntime(input: {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",
     sandboxId: input.spec.leaseId ?? "managed",
-    remoteCwd: workspaceRemoteDir,
+    remoteCwd: input.spec.remoteCwd,
     timeoutMs,
     apiKey: null,
   };
@@ -605,6 +606,7 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
+          runtimeRootDir: input.runtimeRootDir,
           syncWorkspace: input.syncWorkspace,
           workspaceInboundMode: input.workspaceInboundMode,
           workspaceDurableSeed: input.workspaceDurableSeed,
@@ -649,6 +651,7 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
+    runtimeRootDir: input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,

@@ -1,3 +1,7 @@
+import { isLockedIssueStub } from "@/components/LockedIssueChip";
+import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
+import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
+import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -39,10 +43,11 @@ import {
   trackRecentAssignee,
   trackRecentAssigneeUser,
 } from "../../lib/recent-assignees";
-import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projects";
+import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
@@ -242,6 +247,9 @@ export function IssueProperties({
   documentDeepLink,
   sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
+  const policyResult = useExecutionPolicy(issue.executionPolicy);
+  const policyAvailable = policyResult.success;
+  const executionPolicy = policyResult.success ? policyResult.data : null;
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
@@ -295,11 +303,12 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatShellEnabled,
   });
-  const { data: paneTabWorkProducts } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
-    enabled: taskChatShellEnabled,
-  });
+  const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useIssueWorkProducts(issue.id);
+  const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
+  const remainingExternalObjects = useMemo(() => {
+    const identities = new Set(pullRequests.map((product) => pullRequestIdentity(pullRequestHref(product))).filter(Boolean));
+    return externalObjects?.filter((entry) => !identities.has(pullRequestIdentity(entry.pill.url)));
+  }, [externalObjects, pullRequests]);
   const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   // Proxy `artifact-review-*` documents surface only through their Work
   // product row, so they must not summon the Plan or Documents surfaces.
@@ -387,9 +396,9 @@ export function IssueProperties({
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
-  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
-  const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(executionPolicy?.monitor?.notes ?? "");
+  const [monitorServiceInput, setMonitorServiceInput] = useState(executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
@@ -994,6 +1003,7 @@ export function IssueProperties({
     applyAssignee(next, track);
   };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+    if (!policyAvailable) return;
     onUpdate({
       executionPolicy: buildExecutionPolicy({
         existingPolicy: issue.executionPolicy ?? null,
@@ -1068,13 +1078,13 @@ export function IssueProperties({
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
   useEffect(() => {
-    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
-    setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
+    setMonitorAtInput(toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(executionPolicy?.monitor?.notes ?? "");
+    setMonitorServiceInput(executionPolicy?.monitor?.serviceName ?? "");
   }, [
-    issue.executionPolicy?.monitor?.nextCheckAt,
-    issue.executionPolicy?.monitor?.notes,
-    issue.executionPolicy?.monitor?.serviceName,
+    executionPolicy?.monitor?.nextCheckAt,
+    executionPolicy?.monitor?.notes,
+    executionPolicy?.monitor?.serviceName,
   ]);
   // Re-sync watchdog editor inputs when the persisted watchdog changes (and reset on close).
   useEffect(() => {
@@ -1256,6 +1266,7 @@ export function IssueProperties({
       ? M | null
       : never
     : never) => {
+    if (!policyAvailable) return;
     const basePolicy = buildExecutionPolicy({
       existingPolicy: issue.executionPolicy ?? null,
       reviewerValues,
@@ -1265,8 +1276,10 @@ export function IssueProperties({
       onUpdate({ executionPolicy: null });
       return;
     }
+    const { monitor: _previousMonitor, ...policyWithoutMonitor } = basePolicy ?? {};
     onUpdate({
       executionPolicy: {
+        ...policyWithoutMonitor,
         mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
@@ -1294,11 +1307,11 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
-  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
-  const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
-  const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
+  const monitorServiceName = executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
+  const monitorNotes = executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
   const monitorNow = useMonitorCountdown(monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
@@ -1537,9 +1550,11 @@ export function IssueProperties({
               ? retryNow.data?.outcome === "already_promoted"
                 ? "Already promoted — run starting"
                 : "Promoted — run starting"
-              : scheduledRetryIsContinuation
-                ? "Pulls continuation forward immediately"
-                : "Pulls retry forward immediately"}
+              : retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
+                ? retryNow.data.message
+                : scheduledRetryIsContinuation
+                  ? "Pulls continuation forward immediately"
+                  : "Pulls retry forward immediately"}
         </span>
       </div>
     </div>
@@ -1578,7 +1593,7 @@ export function IssueProperties({
           >
             Schedule
           </button>
-          {issue.executionPolicy?.monitor ? (
+          {executionPolicy?.monitor ? (
             <button
               type="button"
               className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
@@ -1762,11 +1777,11 @@ export function IssueProperties({
       onClick={() => {
         if (option.kind === "agent") {
           selectAssignee({ assigneeAgentId: option.agent.id, assigneeUserId: null }, option.label, () =>
-            trackRecentAssignee(option.agent.id),
+            trackRecentAssignee(option.agent.id, companyId ?? undefined),
           );
         } else if (option.kind === "user") {
           selectAssignee({ assigneeAgentId: null, assigneeUserId: option.userId }, option.label, () =>
-            trackRecentAssigneeUser(option.userId),
+            trackRecentAssigneeUser(option.userId, companyId ?? undefined),
           );
         } else {
           selectAssignee({ assigneeAgentId: null, assigneeUserId: null }, option.label);
@@ -1995,7 +2010,6 @@ export function IssueProperties({
               onClick={() => {
                 if (option.kind === "project") {
                   const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  trackRecentProject(option.project.id);
                   onUpdate({
                     projectId: option.project.id,
                     projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
@@ -2106,16 +2120,17 @@ export function IssueProperties({
     if (!issue.parentId) return null;
     return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
   }, [allIssues, issue.parentId]);
-  const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
-  const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
+  const parentAncestor = issue.ancestors?.find((ancestor) => ancestor.id === issue.parentId);
+  const parentIdentifier = parentAncestor?.identifier ?? currentParentIssue?.identifier;
+  const parentTitle = parentAncestor?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
     <IssueReferencePill
       variant="property"
-      issue={{
+      issue={isLockedIssueStub(parentAncestor) ? parentAncestor : {
         id: issue.parentId,
         identifier: parentIdentifier ?? issue.parentId,
         title: parentTitle ?? "Parent task",
-        status: issue.ancestors?.[0]?.status ?? currentParentIssue?.status,
+        status: parentAncestor?.status ?? currentParentIssue?.status,
       }}
       className="min-w-0 max-w-full"
     />
@@ -2583,8 +2598,20 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        {pullRequests.length > 0 || workProductsError ? (
+          <PropertyRow label="Pull requests" wrap>
+            <div className="flex min-w-0 flex-col gap-2">
+              <IssuePullRequestLinks products={pullRequests} externalObjects={externalObjects?.map((entry) => entry.pill)} />
+              {workProductsError ? (
+                <span className="text-xs text-muted-foreground">
+                  Couldn’t load pull requests. <button type="button" className="text-primary hover:underline" onClick={() => void refetchWorkProducts()}>Retry</button>
+                </span>
+              ) : null}
+            </div>
+          </PropertyRow>
+        ) : null}
         <ExternalObjectRows
-          externalObjects={externalObjects}
+          externalObjects={remainingExternalObjects}
           externalObjectsLoading={externalObjectsLoading}
           externalObjectsError={externalObjectsError}
           onRetryExternalObjects={onRetryExternalObjects}
@@ -2602,6 +2629,11 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        {!policyAvailable ? (
+          <PropertyRow label="Execution policy" wrap>
+            <span role="status" className="text-sm text-muted-foreground">Execution policy unavailable. Refresh to try again.</span>
+          </PropertyRow>
+        ) : (<>
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2639,6 +2671,7 @@ export function IssueProperties({
           )}
         </PropertyPicker>
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+        </>)}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
@@ -2665,6 +2698,7 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
+        {policyAvailable ? (
         <PropertyPicker
           inline={inline}
           label="Monitor"
@@ -2676,6 +2710,7 @@ export function IssueProperties({
         >
           {monitorContent}
         </PropertyPicker>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

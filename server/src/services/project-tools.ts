@@ -1,4 +1,4 @@
-import { createProjectSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
+import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -21,13 +21,18 @@ export async function callProjectTool(input: {
   companyId: string; issueId: string; agentId: string; conversation: boolean;
 }) {
   const args = input.arguments;
+  const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
   let body: unknown;
   if (input.name === "set_task_title") {
     path = `/issues/${input.issueId}/title`;
     body = setIssueTitleSchema.parse(args);
   } else if (input.name === "list_project_repositories") path = `/companies/${input.companyId}/project-repositories`;
-  else if (input.name === "list_projects") { /* read projects */ }
+  else if (page) {
+    const query = new URLSearchParams({ view: "summary", limit: String(page.limit) });
+    if (page.cursor) query.set("cursor", page.cursor);
+    path += `?${query}`;
+  }
   else if (input.name === "create_project") {
     body = createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }).parse(args);
   } else if (input.name === "create_task") {
@@ -51,5 +56,5 @@ export async function callProjectTool(input: {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
-  return input.name === "list_projects" ? { projects: result } : result;
+  return result;
 }

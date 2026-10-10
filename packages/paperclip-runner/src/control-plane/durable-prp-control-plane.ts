@@ -1,3 +1,4 @@
+import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -29,13 +30,13 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES } from "../drivers/acpx/environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES, CLAUDE_ROUTING_ENV_KEYS, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
+import { piCredentialNames } from "../drivers/acpx/pi-provider-config.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
 } from "../protocol/replay-contract.js";
-import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   type DurableRecoveryCommittedEvent,
   type DurableRecoveryCoreCommand,
@@ -45,7 +46,7 @@ import {
 
 const protocol = "paperclip.runner";
 const protocolMinVersion = 1;
-const protocolVersion = 2;
+const protocolVersion = 3;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
@@ -55,6 +56,11 @@ const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
+class CommandJournalLimitError extends Error {
+  constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
+    super(`Durable PRP command journal bound exceeded: ${code}.`);
+  }
+}
 // A provider can emit several 100-event runner batches before the transport's
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
@@ -74,6 +80,7 @@ const commandTypes = new Set([
   "request.resolve",
   "interaction.receipt",
   "semantic_tool.result",
+  "external_provider.operation",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -411,6 +418,18 @@ function canonicalDigest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+function matchesSemanticInputDigest(input: unknown, digest: unknown): boolean {
+  try {
+    // Wire integrity covers the complete input, including protected fields.
+    // Receipt redaction can erase those differences and has a separate hash.
+    return digest === `sha256:${canonicalDigest(input)}`;
+  } catch {
+    // Canonicalization bounds must keep the same permanent integrity fence.
+    // Never attach an input-derived error or payload to the diagnostic.
+    return false;
+  }
+}
+
 function exactIdentity(value: unknown): value is DurableRecoveryIdentity {
   return (
     isRecord(value) &&
@@ -684,7 +703,7 @@ function isStoredCoreState(
       (command, index) =>
         isRecord(command) &&
         (command.schema === "paperclip.prp.command.v1" ||
-          command.schema === "paperclip.prp.command.v2") &&
+          command.schema === "paperclip.prp.command.v2" || command.schema === "paperclip.prp.command.v3") &&
         typeof command.commandId === "string" &&
         stableIdPattern.test(command.commandId) &&
         command.commandId.length <= 160 &&
@@ -1475,7 +1494,14 @@ export class DurablePrpControlPlane {
   #connections = new Set<AuthorityConnection>();
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #pendingSemanticCalls = new Set<string>();
+  #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
+  #semanticResultFailures: Array<{
+    callId: string;
+    operationId: string;
+    stage: "persist_result" | "dispatch";
+    code: string;
+  }> = [];
   #port: number | null = null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
@@ -1605,6 +1631,16 @@ export class DurablePrpControlPlane {
     }
   }
 
+  /** Retire this journal writer after stopped ingress is fully joined. A late
+   * external effect keeps its committed input pending for reconciliation;
+   * it must never overwrite the successor controller's durable state. */
+  retireSemanticToolCallbacks(): void {
+    if (this.#server !== null || this.#connections.size !== 0 || this.#connectionProcessing.size !== 0) {
+      throw new Error("Semantic callback retirement requires drained, stopped ingress.");
+    }
+    this.#semanticCallbacksRetired = true;
+  }
+
   /** Forces a resumable re-authentication after an immutable run attachment rotates. */
   disconnectActiveRunner(): void {
     const connections = [...this.#connections];
@@ -1641,6 +1677,7 @@ export class DurablePrpControlPlane {
     );
     return {
       persistenceFailed: this.#semanticResultPersistenceFailed,
+      failures: this.#semanticResultFailures,
       pending: pending.map((entry) => {
         const event = entry.envelope.payload as Record<string, unknown>;
         const payload = event.payload as Record<string, unknown>;
@@ -1936,7 +1973,7 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: type.startsWith("session.goal.")
+      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
         ? "paperclip.prp.command.v2"
         : "paperclip.prp.command.v1",
       commandId:
@@ -1948,12 +1985,10 @@ export class DurablePrpControlPlane {
       status: "pending",
       result: null,
     };
-    if (
-      this.#store.state.commands.length >= maxCommands ||
-      Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes
-    ) {
-      throw new Error("Durable PRP command journal bound exceeded.");
-    }
+    if (this.#store.state.commands.length >= maxCommands)
+      throw new CommandJournalLimitError("command_journal_full");
+    if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
+      throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
     this.#store.save();
     if (deliverImmediately) {
@@ -3131,8 +3166,10 @@ export class DurablePrpControlPlane {
     if (
       isSemanticInput &&
       semantic !== undefined &&
-      (semantic.content as Record<string, unknown>).digest !==
-        digestPaperclipSemanticContent(semantic.input)
+      !matchesSemanticInputDigest(
+        semantic.input,
+        (semantic.content as Record<string, unknown>).digest,
+      )
     ) {
       // Only the authenticated, schema-valid, exactly correlated input may
       // permanently fail its owner. Never commit, dispatch, or ACK these bytes.
@@ -3262,7 +3299,20 @@ export class DurablePrpControlPlane {
       // evidence stays pending for authoritative reconciliation.
       if (existing === undefined && !alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
         this.#pendingSemanticCalls.add(commandId);
+        const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {
+          this.#semanticResultPersistenceFailed = true;
+          // Keep diagnostics bounded and content-free. Exception messages can
+          // contain tool bodies or credentials; retain only known error codes.
+          const storageCode = error && typeof error === "object" && "code" in error ? error.code : null;
+          const code = error instanceof CommandJournalLimitError ? error.code
+            : typeof storageCode === "string" && ["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EIO", "EROFS"].includes(storageCode)
+              ? storageCode : stage === "dispatch" ? "dispatcher_rejected" : "result_persistence_failed";
+          this.#semanticResultFailures.push({ callId: call.callId, operationId: call.operationId, stage, code });
+          this.#semanticResultFailures = this.#semanticResultFailures.slice(-20);
+          this.disconnectActiveRunner();
+        };
         const queueResult = (result: unknown, isError: boolean): void => {
+          if (this.#semanticCallbacksRetired) return;
           try {
             // Retain the full input once in its canonical event. Copying a
             // large write into its result command can exceed the wire bound
@@ -3274,12 +3324,11 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
-          } catch {
-            this.#semanticResultPersistenceFailed = true;
+          } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
             // the caller can recover or terminate the run explicitly.
-            this.disconnectActiveRunner();
+            recordFailure("persist_result", error);
           }
         };
         void this.#onSemanticToolInput(call)
@@ -3297,8 +3346,7 @@ export class DurablePrpControlPlane {
             }
             // A rejected dispatcher promise does not prove that its effect
             // rolled back. Do not fabricate a final failure or retry the write.
-            this.#semanticResultPersistenceFailed = true;
-            this.disconnectActiveRunner();
+            recordFailure("dispatch", error);
           })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
@@ -3338,7 +3386,14 @@ const runnerPlatformEnvironmentKeys = [
 ] as const;
 
 const runnerExplicitProviderEnvironmentKeys = [
-  ...ACPX_CREDENTIAL_NAMES.pi,
+  ...ACPX_CREDENTIAL_NAMES.claude.filter(name => !name.startsWith("AWS_")),
+  ...CLAUDE_ROUTING_ENV_KEYS,
+  "PAPERCLIP_AI_PROVIDER_KEY",
+  "PAPERCLIP_AI_PROVIDER_URL",
+  "PAPERCLIP_AGENT_KEY_ID",
+  "PAPERCLIP_AGENT_PUBLIC_KEY",
+  "PAPERCLIP_AGENT_PRIVATE_KEY",
+  ...ACPX_CREDENTIAL_NAMES.pi.filter(name => !name.startsWith("AWS_")),
   ...ACPX_CREDENTIAL_NAMES.cursor,
   ...ACPX_CREDENTIAL_NAMES.copilot,
   ACPX_CREDENTIAL_BINDING_ENV,
@@ -3377,6 +3432,7 @@ const runnerExplicitProviderEnvironmentKeys = [
 
 function runnerEnvironment(
   ticket: string,
+  normalizedSessionId: string,
   explicitSource?: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const platformSource = explicitSource ?? process.env;
@@ -3395,7 +3451,28 @@ function runnerEnvironment(
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }
-    Object.assign(environment, githubCredentialEnvironment(explicitSource));
+    if (explicitSource.CLAUDE_CODE_USE_BEDROCK === "1") {
+      for (const key of ["AWS_BEARER_TOKEN_BEDROCK"] as const) {
+        if (explicitSource[key] !== undefined) environment[key] = explicitSource[key];
+      }
+    }
+    // Pi custom-provider references and direct cloud credentials cross only
+    // under the controller's exact run/session credential binding.
+    const marker = explicitSource[ACPX_CREDENTIAL_BINDING_ENV];
+    let binding: unknown;
+    if (marker !== undefined && Buffer.byteLength(marker) <= 4_096) {
+      try { binding = JSON.parse(marker); } catch { /* Sidecar admission rejects invalid markers. */ }
+    }
+    let taskEnvironmentSource = explicitSource;
+    if (binding !== null && typeof binding === "object" && !Array.isArray(binding)
+      && (binding as Record<string, unknown>).agent === "pi") {
+      const bound = createAcpxSidecarHostEnvironment(explicitSource, "pi", normalizedSessionId);
+      taskEnvironmentSource = bound;
+      for (const key of piCredentialNames(explicitSource)) {
+        if (bound[key] !== undefined) environment[key] = bound[key];
+      }
+    }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource), configuredEnvironment(taskEnvironmentSource));
   }
   return environment;
 }
@@ -3543,7 +3620,7 @@ export function spawnRunner(options: {
   }
 
   const command = options.runnerBinaryPath ?? runnerBinary;
-  const environment = runnerEnvironment(options.ticket, options.environment);
+  const environment = runnerEnvironment(options.ticket, options.identity.normalizedSessionId, options.environment);
   const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
     ...handle,
     restart: (ticket) => spawnRunner({ ...options, ticket }),

@@ -1,5 +1,29 @@
 # Runner E2E security for a public repository
 
+## Attended connection authentication
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+Provider-connection results may retain closed diagnostic codes and terminal run
+status before managed-instance teardown. Only error records and failed tool
+receipts are inspected; raw error messages, child stderr, model output and
+reasoning are not retained. Unknown causes and unavailable logs stay explicit.
+The optional installed-Gemini filesystem smoke uses synthetic credentials and
+loopback model responses, makes no real provider calls, and removes its
+disposable home/workspace.
+
+The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
+account and OAuth grant. Signup and token exchange use Node fetch, credentials
+stay outside model context, and dynamic cookie/code/token values join the
+attempt's redaction set. Tracing, video and automatic screenshots are disabled
+for that suite; only reviewed fixture task routes may produce public screenshots.
+External API evidence retains visible answers and tool outcomes, never raw model
+reasoning. Empty provider configuration directories prevent operator plugins and
+MCP credentials from being inherited. All grants are revoked during cleanup and
+the launcher removes the isolated database and provider homes.
+
 This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
@@ -292,3 +316,29 @@ Cursor, Copilot, GitHub and GH environment variables are stripped from the
 server environment. GitHub PAT shapes are included in retained-evidence scans.
 Candidates have no automatic infrastructure retries; spending must be reconciled
 before a deliberate repeat.
+
+Copilot protection fixtures use production browser/public API permission and
+cancellation paths. Their local one-shot socket accepts a nonce/PID only and owns
+one fixed bounded child; it cannot select commands, arguments, or paths. The exact
+native client command is supplied by the fixture, while production notices retain
+only its SHA-256. The fixture keeps private process identities local, closes its
+owned socket/child in cleanup, and never signals API-reported PIDs. Directory
+watch loss makes the denial oracle incomplete; it must not become a no-effect pass.
+
+Pi Daytona controls bind process identity to the independent Linux observer's
+PID, start ticks and boot ID within the exact admitted run/lease/sandbox. The
+controller's `processStartedAt` annotations may change as launch metadata settles
+and do not identify a remote process birth. Every remote snapshot and retirement
+seal must retain the original birth identity and complete no-effect journal.
+Local controls retain their separate public process-authority comparison.
+
+Pi provider-death admission accepts the native bootstrap's `/proc/self/fd/3`
+or `/proc/self/fd/7` wrapper launch only after binding that held descriptor and
+the wrapper executable to the sealed snapshot Node inode. Exact guard and
+entrypoint paths, closure hashes, Pi title, run/lease ancestry and fresh process
+birth checks remain required. Other descriptor aliases, missing descriptors and
+foreign inodes fail before any signal. Native Linux calibration exercises both
+descriptor launches with synthetic owned processes and no provider credentials;
+it does not qualify paid Pi behavior or change previous failed grades.
+
+The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.

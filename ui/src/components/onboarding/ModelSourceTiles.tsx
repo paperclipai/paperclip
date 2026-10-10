@@ -21,17 +21,21 @@ import {
 
 /** How a source gets authenticated. Every tile is in the same mode at once. */
 export type CredentialMode = "subscription" | "api";
+export type ModelConnectionMode = CredentialMode | "advanced";
 
 export type ModelSource = {
   id: string;
   label: string;
   /** The brand mark, rendered into a 30px square. */
   icon: ReactNode;
+  /** Override the row's credential mode; null leaves the tag slot empty. */
+  credentialMode?: ModelConnectionMode | null;
 };
 
-const CREDENTIAL_TAG_LABEL: Record<CredentialMode, string> = {
+const CREDENTIAL_TAG_LABEL: Record<ModelConnectionMode, string> = {
   subscription: "Subscription",
-  api: "API",
+  api: "API key",
+  advanced: "Custom Gateway",
 };
 
 /**
@@ -43,7 +47,7 @@ const CREDENTIAL_TAG_LABEL: Record<CredentialMode, string> = {
  * what makes the outgoing label fall out of frame rather than slide past the
  * tile's padding and over the row below.
  */
-export function CredentialTag({ mode }: { mode: CredentialMode }) {
+export function CredentialTag({ mode }: { mode: ModelConnectionMode }) {
   return (
     <span className="relative flex h-4 w-full items-center justify-center overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <AnimatePresence initial={false} mode="sync">
@@ -70,7 +74,7 @@ function ModelSourceTile({
   settling,
 }: {
   source: ModelSource;
-  mode: CredentialMode;
+  mode: ModelConnectionMode | null;
   selected: boolean;
   onSelect: () => void;
   buttonRef: (node: HTMLButtonElement | null) => void;
@@ -123,7 +127,7 @@ function ModelSourceTile({
       <span className="text-(length:--text-compact) font-medium text-foreground">
         {source.label}
       </span>
-      <CredentialTag mode={mode} />
+      {mode ? <CredentialTag mode={mode} /> : <span aria-hidden className="h-4" />}
     </button>
   );
 }
@@ -138,7 +142,7 @@ export function ModelSourceTiles({
   settling = false,
 }: {
   sources: ModelSource[];
-  mode: CredentialMode;
+  mode: ModelConnectionMode;
   /** `null` before anything has been picked — the step opens this way. */
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -220,7 +224,7 @@ export function ModelSourceTiles({
           >
             <ModelSourceTile
               source={source}
-              mode={mode}
+              mode={source.credentialMode === undefined ? mode : source.credentialMode}
               selected={source.id === selectedId}
               onSelect={() => onSelect(source.id)}
               settling={settling}

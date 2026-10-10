@@ -53,12 +53,14 @@ export interface IssueChatLinkedRun {
   agentId: string;
   adapterType?: string;
   agentName?: string;
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  error?: string | null;
   scheduledRetryAt?: string | null;
   nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;

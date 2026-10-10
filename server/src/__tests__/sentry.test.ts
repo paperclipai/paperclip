@@ -127,6 +127,29 @@ describe("sentryReady", () => {
 });
 
 describe("captureException", () => {
+  it("sends only private normalized portfolio diagnostics on the matching event", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { CloudPortfolioError } = await import("../services/cloud-portfolio-error.js");
+    await sentryReady;
+    const error = new CloudPortfolioError("upstream", { phase: "fetch", elapsedMs: 270, upstreamStatus: null }, { code: "ECONNRESET" });
+    Object.assign(error, { cause: new Error("private cause"), headers: { authorization: "private token" } });
+    Object.defineProperty(error, "diagnostics", { value: { token: "private replacement" } });
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      expect.objectContaining({ message: error.message, stack: error.stack }),
+      { tags: { error_code: "cloud_portfolio_failure" }, fingerprint: ["{{ default }}"], contexts: {
+        cloud_portfolio: { phase: "fetch", elapsedMs: 270, upstreamStatus: null, networkCode: "ECONNRESET" },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[0]![0]).not.toHaveProperty("cause");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
   it("adds bounded Stop timeout context only to that event", async () => {
     process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
     const sdk = mockSentryPackage();

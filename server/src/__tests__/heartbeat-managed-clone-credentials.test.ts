@@ -8,6 +8,7 @@ import { ensureManagedProjectWorkspace, prepareProjectRepositoryWorkspaces } fro
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
 import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
+import { readGitConnectionFailure } from "../services/git-connection-failure.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -38,6 +39,79 @@ async function createLocalSourceRepo() {
 }
 
 describe("ensureManagedProjectWorkspace clone credentials", () => {
+  it.each([
+    ["authentication_failed", "fatal: Authentication failed for 'https://example.test/team/repo.git/'"],
+    ["dns_failure", "ssh: Could not resolve hostname repository-alias.example.test: Name or service not known\nfatal: Could not read from remote repository."],
+    [null, "fatal: Authentication failed for 'https://example.test/team/repo.git/'\nfatal: bad config line 1 in file /tmp/config"],
+    [null, "fatal: corrupt loose object"],
+  ] as const)("preserves only proven outbound clone classification through the actionable wrapper: %s", async (reason, stderr) => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-clone-"));
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh
+printf '%s\\n' "$FIXTURE_CLONE_STDERR" >&2
+exit 128
+`, { mode: 0o755 });
+    try {
+      const failure = await ensureManagedProjectWorkspace({
+        companyId: "remote-clone-fixture", projectId: path.basename(bin),
+        repoUrl: "https://fixture-user:fixture-password@example.test/team/repo.git",
+        resolveGitAuth: async () => ({
+          configArgs: [], env: { PATH: bin, FIXTURE_CLONE_STDERR: stderr },
+          source: "company_secret", secretName: "GITHUB_TOKEN",
+        }),
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("Failed to prepare managed checkout");
+      expect((failure as Error).message).not.toContain("fixture-password");
+      expect(readGitConnectionFailure(failure)).toEqual(reason ? {
+        schemaVersion: 1, provider: "git", operation: "clone", reason,
+      } : null);
+      const homeEntries = await fs.readdir(path.dirname(resolveManagedProjectWorkspaceDir({
+        companyId: "remote-clone-fixture", projectId: path.basename(bin), repoName: "repo",
+      })));
+      expect(homeEntries.some((name) => name.includes(".clone-"))).toBe(false);
+    } finally {
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify a credential-provider exception that resembles a Git failure", async () => {
+    const failure = Object.assign(new Error("fatal: Authentication failed for 'https://example.test/repo.git'"), {
+      code: 128, stderr: "fatal: Authentication failed for 'https://example.test/repo.git'",
+    });
+    const caught = await ensureManagedProjectWorkspace({
+      companyId: "credential-provider-fixture", projectId: "project", repoUrl: "https://example.test/repo.git",
+      resolveGitAuth: async () => { throw failure; },
+    }).catch((error: unknown) => error);
+    expect(caught).toBe(failure);
+    expect(readGitConnectionFailure(caught)).toBeNull();
+  });
+
+  it("does not transfer clone classification to a later local checkout failure", async () => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-checkout-"));
+    const previousPath = process.env.PATH;
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$1" = clone ]; then
+  for argument in "$@"; do destination="$argument"; done
+  /bin/mkdir -p "$destination/.git"
+  exit 0
+fi
+printf '%s\\n' "fatal: Authentication failed for 'https://example.test/repo.git'" >&2
+exit 128
+`, { mode: 0o755 });
+    try {
+      process.env.PATH = bin;
+      const failure = await ensureManagedProjectWorkspace({
+        companyId: "checkout-failure-fixture", projectId: "project", repoUrl: "https://example.test/repo.git", repoRef: "missing-branch",
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("Authentication failed");
+      expect(readGitConnectionFailure(failure)).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
   it("materializes every repository-only project row inside the task workspace and reuses local edits", async () => {
     const first = await createLocalSourceRepo();
     const second = await createLocalSourceRepo();

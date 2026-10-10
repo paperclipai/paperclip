@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import {
   issues as issueRows,
   type Db,
@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
+  accessService,
   heartbeatService,
   issueService,
   issueTreeControlService,
@@ -55,6 +56,35 @@ export function issueTreeControlRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const access = accessService(db);
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: {
+    id: string;
+    companyId: string;
+    projectId?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string;
+  }) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        assigneeUserId: issue.assigneeUserId ?? null,
+        status: issue.status ?? "backlog",
+      },
+    });
+    if (decision.allowed) return true;
+    res.status(404).json({ error: "Root issue not found" });
+    return false;
+  }
 
   async function resolveRootIssue(req: Request) {
     const rootIssueId = req.params.id as string;
@@ -66,6 +96,7 @@ export function issueTreeControlRoutes(
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const preview = await treeControlSvc.preview(root.companyId, root.id, req.body);
     const actor = getActorInfo(req);
@@ -93,6 +124,7 @@ export function issueTreeControlRoutes(
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const actor = getActorInfo(req);
     const actorInput = {
@@ -334,6 +366,7 @@ export function issueTreeControlRoutes(
     const issueId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, issuesSvc.getById(issueId), "Issue not found");
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
     res.json({ activePauseHold });
   });
@@ -342,6 +375,7 @@ export function issueTreeControlRoutes(
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
     const statusParam = typeof req.query.status === "string" ? req.query.status : null;
     const modeParam = typeof req.query.mode === "string" ? req.query.mode : null;
     const includeMembers = req.query.includeMembers === "true";
@@ -360,6 +394,7 @@ export function issueTreeControlRoutes(
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const holdId = req.params.holdId as string;
     if (!isUuidLike(holdId)) {
@@ -387,6 +422,7 @@ export function issueTreeControlRoutes(
         "Root issue not found",
       );
       if (!root) return;
+      if (!(await assertIssueReadAllowed(req, res, root))) return;
 
       const holdId = req.params.holdId as string;
       if (!isUuidLike(holdId)) {

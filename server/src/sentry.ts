@@ -57,6 +57,7 @@
 
 import os from "node:os";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
+import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -114,6 +115,14 @@ export function captureException(error: unknown): void {
       sentryHandle.captureException(exception, {
         tags: { error_code: "adapter_stop_unconfirmed" },
         contexts: { adapter_stop: { ...error.diagnostics } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (error instanceof CloudPortfolioError) {
+      const exception = new Error(error.message);
+      exception.stack = error.stack;
+      sentryHandle.captureException(exception, {
+        tags: { error_code: "cloud_portfolio_failure" },
+        contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
         fingerprint: ["{{ default }}"],
       });
     } else {

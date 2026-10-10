@@ -16,6 +16,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   McpConnectionCredentialRef,
@@ -129,6 +130,7 @@ export const toolConnections = pgTable(
     credentialPolicy: text("credential_policy").$type<ToolConnectionCredentialPolicy>().notNull().default("shared"),
     status: text("status").$type<ToolConnectionStatus>().notNull().default("draft"),
     enabled: boolean("enabled").notNull().default(false),
+    agentInstructions: jsonb("agent_instructions").$type<ConnectionAgentInstructions>(),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     transportConfig: jsonb("transport_config").$type<Record<string, unknown>>().notNull().default({}),
     credentialRefs: jsonb("credential_refs").$type<McpConnectionCredentialRef[]>().notNull().default([]),
@@ -146,12 +148,12 @@ export const toolConnections = pgTable(
   },
   (table) => [
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
-    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')`),
     check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
     check("tool_connections_channel_transport_check", sql`(
-      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'runtime_auth'))
+      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'voice', 'runtime_auth'))
       or
-      (${table.connectionPurpose} = 'channel' and (${table.transport} = 'chat_sdk' or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
+      (${table.connectionPurpose} = 'channel' and (${table.transport} in ('chat_sdk', 'voice') or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
       or
       (${table.connectionPurpose} = 'ai' and ${table.transport} = 'runtime_auth')
     )`),
@@ -187,6 +189,21 @@ export const connectionGrants = pgTable(
         strategy?: string;
         accessTokenExpiresAt?: string | null;
         scopes?: string[];
+        /**
+         * Whether `scopes` is what the provider asserted, or only what we requested.
+         * A provider may omit `scope` from the token response, and RFC 6749 §5.1 reads that
+         * omission as "the grant matches the request" — but a provider that over-grants and
+         * omits it turns our own request into a false record of the grant.
+         */
+        scopeSource?: "provider" | "requested_fallback";
+        /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+        unrequestedScopes?: string[];
+        /**
+         * The scopes the authorization URL sent for *this* grant. A refresh carries no fresh
+         * request, so this is the baseline it judges the provider's response against. It is
+         * per-grant because two users can authorize the same connection with different scopes.
+         */
+        requestedScopes?: string[];
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;

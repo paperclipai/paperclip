@@ -1,3 +1,4 @@
+import profiles from "../acpx-profiles.json" with { type: "json" };
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -18,7 +19,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseProviderPackArguments, materializeCandidateProviderPack } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
+import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -99,21 +102,6 @@ function writePortableNodeShim(name, entrypoint) {
   chmodSync(shimPath, 0o755);
 }
 
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shimPath, 0o755);
-}
-
 try {
   const deployed = spawnSync(
     "pnpm",
@@ -165,21 +153,21 @@ try {
   copyFileSync(process.execPath, stableNodeCommand);
   chmodSync(stableNodeCommand, 0o755);
   const relocatedNode = spawnSync(stableNodeCommand, ["--version"], {
-    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 10_000,
+    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: buildNodeStartupTimeout(),
   });
   if (relocatedNode.status !== 0 || relocatedNode.stdout.trim() !== `v${process.versions.node}`) {
     throw new Error("Provider pack Node is not portable after relocation; build with a standalone Node distribution");
   }
 
   const candidateProviders = {};
-  for (const provider of candidates) {
+  for (const provider of providerPackProviders(process.platform, process.arch, candidates)) {
     const assetPath = `provider-assets/${provider}/${process.platform}-${process.arch}`;
     const metadata = await materializeCandidateProviderPack({ provider, outputRoot: join(temporaryRoot, assetPath) });
     if (typeof metadata?.version !== "string" || !metadata.version || metadata.version.length > 120
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: (provider === "cursor" || provider === "pi") ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -202,11 +190,13 @@ try {
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
+    temporaryRoot,
     "claude",
     relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
+  writePortableExecutableShim(temporaryRoot, "node", "node/bin/node");
+  writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
+  writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
   writePortableNodeShim(
     "claude-agent-acp",
@@ -309,12 +299,12 @@ try {
   const payload = {
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.156.0",
-      opencode: "1.18.32",
-      acpx: "0.13.1",
-      grok: "1.0.13",
-      claudeAcp: "0.73.0",
-      codexAcp: "1.6.2",
+      codex: profiles.profiles.codex.agentRuntimeVersion,
+      opencode: "1.18.34",
+      acpx: profiles.acpxVersion,
+      grok: profiles.profiles.grok.agentRuntimeVersion,
+      claudeAcp: profiles.profiles.claude.agentServerVersion,
+      codexAcp: profiles.profiles.codex.agentServerVersion,
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
@@ -327,13 +317,13 @@ try {
       .update(distDigest)
       .digest("hex")}`,
     acpxProfileDigests: {
-      grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+      grok: profiles.profiles.grok.commandDigest,
       claude:
-        "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+        profiles.profiles.claude.commandDigest,
       codex:
-        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+        profiles.profiles.codex.commandDigest,
     },
-    ...(candidates.length ? { candidateProviders } : {}),
+    ...providerPackManifestFields(candidateProviders, candidates),
     artifacts: {
       grokLauncher: {
         path: "dist/providers/grok/launcher.cjs",

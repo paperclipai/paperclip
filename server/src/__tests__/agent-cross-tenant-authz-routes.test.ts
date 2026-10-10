@@ -48,6 +48,7 @@ let currentAccessCanUser = false;
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  retryLifecycle: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
   clearError: vi.fn(),
@@ -302,6 +303,7 @@ function resetMockDefaults() {
   currentKeyAgentId = agentId;
   currentAccessCanUser = false;
   mockAgentService.getById.mockImplementation(async () => ({ ...baseAgent }));
+  mockAgentService.retryLifecycle.mockImplementation(async () => ({ ...baseAgent, lifecycleState: "preparing", lifecycleError: null }));
   mockAgentService.pause.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.resume.mockImplementation(async () => ({ ...baseAgent }));
   mockAgentService.clearError.mockImplementation(async () => ({ ...baseAgent, status: "idle" }));
@@ -343,7 +345,7 @@ function resetMockDefaults() {
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
-describe.sequential("agent cross-tenant route authorization", () => {
+describe("agent cross-tenant route authorization", () => {
   beforeEach(() => {
     resetMockDefaults();
   });
@@ -357,6 +359,12 @@ describe.sequential("agent cross-tenant route authorization", () => {
       isInstanceAdmin: false,
     };
     const deniedCases = [
+      {
+        label: "public cryptographic identity",
+        request: (app: express.Express) =>
+          requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}/identity`)),
+        untouched: [],
+      },
       {
         label: "pause",
         request: (app: express.Express) =>
@@ -746,6 +754,46 @@ describe.sequential("agent cross-tenant route authorization", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only agents in error status can have their error cleared");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+    retry: (...args: unknown[]) => mockAgentService.retryLifecycle(...args),
+    pauseAgent: (...args: unknown[]) => mockAgentService.pause(...args),
+    resumeAgent: (...args: unknown[]) => mockAgentService.resume(...args),
+    terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
+  }) };
+});
+
+
+describe("agent lifecycle retry authorization", () => {
+  beforeEach(resetMockDefaults);
+
+  it("retries and audits a board-authorized agent in its company", async () => {
+    const app = await createApp({ type: "board", userId: "board", source: "local_implicit" });
+    const res = await requestApp(app, base => request(base).post(`/api/agents/${agentId}/lifecycle/retry`).send({}));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: agentId, lifecycleState: "preparing", lifecycleError: null });
+    expect(mockAgentService.retryLifecycle).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId, entityId: agentId, action: "agent.lifecycle_retried", actorType: "user", actorId: "board",
+    }));
+  });
+
+  it.each([
+    [{ type: "none" }, 403],
+    [{ type: "agent", agentId, companyId }, 403],
+    [{ type: "board", userId: "outsider", source: "session", companyIds: ["other-company"] }, 404],
+    [{ type: "board", userId: "reader", source: "session", companyIds: [companyId] }, 403],
+  ])("refuses retry for %j", async (actor, status) => {
+    const app = await createApp(actor);
+    const res = await requestApp(app, base => request(base).post(`/api/agents/${agentId}/lifecycle/retry`).send({}));
+    expect(res.status).toBe(status);
+    expect(mockAgentService.retryLifecycle).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

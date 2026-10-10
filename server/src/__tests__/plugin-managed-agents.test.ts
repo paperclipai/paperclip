@@ -1,3 +1,4 @@
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -11,12 +12,14 @@ import {
   agentInstructionHeads,
   agents,
   approvals,
+  budgetPolicies,
   companies,
   createDb,
   pluginEntities,
   pluginCompanySettings,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -106,6 +109,8 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     await db.delete(pluginManagedResources);
     await db.delete(pluginCompanySettings);
     await db.delete(approvals);
+    await db.delete(budgetPolicies);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
@@ -252,11 +257,15 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
   it("keeps an explicit resume durable across managed-agent reconcile", async () => {
     const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
     const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
-    await agentService(db).resume(created.agentId!);
+    await createAgentLifecycle(db).resumeAgent(created.agentId!);
 
     const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
 
-    expect(reconciled.agent).toMatchObject({
+    expect(reconciled.agent).toMatchObject({ lifecycleState: "resuming", pauseReason: null });
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    await worker.process(created.agentId!);
+    await worker.stop();
+    expect((await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" })).agent).toMatchObject({
       status: "idle",
       pauseReason: null,
       pausedAt: null,
@@ -497,6 +506,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     const relinked = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
     expect(relinked.status).toBe("relinked");
     expect(relinked.agentId).toBe(agentId);
+    expect(relinked.agent?.urlKey).toBe("renamed-wiki-agent");
 
     const [binding] = await db.select().from(pluginEntities);
     expect(binding?.data).toMatchObject({ agentId });

@@ -2,11 +2,12 @@ import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
 import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
+import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -48,6 +49,9 @@ if (shouldLoadWorkingDirectoryEnv({
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
+if (basename(dirname(PAPERCLIP_ENV_FILE_PATH)) === ".paperclip") {
+  applyEmptyWorktreeSigningSecrets(dirname(dirname(PAPERCLIP_ENV_FILE_PATH)));
+}
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
