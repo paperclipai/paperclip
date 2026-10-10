@@ -209,6 +209,49 @@ export function resolvePaperclipInstanceRootForAdapter(
   return path.resolve(homeDir, "instances", instanceId);
 }
 
+/** OpenCode's own directory name inside each XDG root. */
+export const OPENCODE_APP_DIR_NAME = "opencode";
+
+/**
+ * Resolve OpenCode's data dir for the given env.
+ *
+ * OpenCode appends its own app name to `XDG_DATA_HOME`, so the directory that
+ * actually holds `opencode.db`, `auth.json`, and `storage/` is
+ * `$XDG_DATA_HOME/opencode` — NOT `$XDG_DATA_HOME`. Every caller that needs to
+ * read or seed that content must go through here; the off-by-one-level mistake
+ * is silent (the file is simply never found) rather than an error.
+ */
+export function resolveOpenCodeDataDir(input: {
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const xdgDataHome = env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share");
+  return path.resolve(xdgDataHome, OPENCODE_APP_DIR_NAME);
+}
+
+/**
+ * Resolve the per-agent OpenCode data home for a local run, or `null` when the
+ * run should keep OpenCode's default shared data dir.
+ *
+ * Single source of truth shared by the adapter (which sets `XDG_DATA_HOME`) and
+ * by the feedback trace collector (which must read the same directory), so the
+ * two cannot drift apart.
+ */
+export function resolveOpenCodePerAgentDataDir(input: {
+  agentId: string | null | undefined;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+}): string | null {
+  const agentId = input.agentId?.trim() ?? "";
+  if (!agentId || !PATH_SEGMENT_RE.test(agentId)) return null;
+  const base = path.join(
+    resolvePaperclipInstanceRootForAdapter({ instanceId: input.instanceId, env: input.env }),
+    "adapter-data",
+    OPENCODE_APP_DIR_NAME,
+  );
+  return path.join(base, agentId, OPENCODE_APP_DIR_NAME);
+}
+
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}).",
   "",

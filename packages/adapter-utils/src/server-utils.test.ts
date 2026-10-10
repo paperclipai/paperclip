@@ -31,6 +31,8 @@ import {
   hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
+  resolveOpenCodeDataDir,
+  resolveOpenCodePerAgentDataDir,
   sanitizeSshRemoteEnv,
   sanitizeInheritedPaperclipEnv,
   isForbiddenConfigEnvKey,
@@ -3999,5 +4001,39 @@ describe("wake continuation comment ownership", () => {
       executionContinuation: { ...continuation([]), objective },
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
+  });
+});
+
+describe("opencode data dir resolution", () => {
+  // OpenCode appends its own app name to XDG_DATA_HOME, so the directory that
+  // actually holds opencode.db / auth.json / storage/ is $XDG_DATA_HOME/opencode.
+  // Getting this wrong is silent: the file is simply never found.
+  it("resolves the opencode data dir one level below XDG_DATA_HOME", () => {
+    expect(resolveOpenCodeDataDir({ env: { XDG_DATA_HOME: "/data/root" } })).toBe(
+      path.join("/data/root", "opencode"),
+    );
+  });
+
+  it("falls back to the XDG default share dir when XDG_DATA_HOME is unset", () => {
+    expect(resolveOpenCodeDataDir({ env: {} })).toBe(
+      path.join(os.homedir(), ".local", "share", "opencode"),
+    );
+  });
+
+  it("gives each agent a distinct per-agent opencode data dir", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    const a = resolveOpenCodePerAgentDataDir({ agentId: "agent-a", env });
+    const b = resolveOpenCodePerAgentDataDir({ agentId: "agent-b", env });
+    expect(a).not.toBe(b);
+    expect(a).toBe(
+      path.join("/home/paperclip", "instances", "default", "adapter-data", "opencode", "agent-a", "opencode"),
+    );
+  });
+
+  it("returns null for a missing or unsafe agent id", () => {
+    const env = { PAPERCLIP_HOME: "/home/paperclip", PAPERCLIP_INSTANCE_ID: "default" };
+    expect(resolveOpenCodePerAgentDataDir({ agentId: null, env })).toBeNull();
+    expect(resolveOpenCodePerAgentDataDir({ agentId: "  ", env })).toBeNull();
+    expect(resolveOpenCodePerAgentDataDir({ agentId: "../../etc", env })).toBeNull();
   });
 });
