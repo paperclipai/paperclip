@@ -332,6 +332,35 @@ function buildHeaders(input: {
   };
 }
 
+// This lane has no per-run env channel: the prompt is assembled here and POSTed
+// to a long-lived Hermes gateway whose env is fixed at launch, so
+// PAPERCLIP_RUN_ID / PAPERCLIP_TASK_ID are never present in the agent's shell.
+// Inline the concrete ids instead of pointing at env vars.
+function runtimeIdentityLines(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string[] {
+  const issueId = issueIdFromContext(ctx);
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  return [
+    "Paperclip runtime identity:",
+    `- Agent ID: ${ctx.agent.id}`,
+    `- Company ID: ${ctx.agent.companyId}`,
+    `- Run ID: ${ctx.runId}`,
+    ...(issueId ? [`- Issue ID: ${issueId}`] : []),
+    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
+    ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
+  ];
+}
+
+// The issue-update contract is only meaningful for a scoped run: an unscoped run
+// (taskId/issueId null) must not be told to update an issue it does not have.
+function identityGuidanceLines(ctx: AdapterExecutionContext, issueId: string | null): string[] {
+  return issueId
+    ? [`- Use X-Paperclip-Run-Id: ${ctx.runId} on mutating Paperclip API requests when a Paperclip API key is available.`]
+    : [
+        "- No issue scope: this run is not bound to a Paperclip issue, so do not run the checkout or issue-update workflow.",
+        "- Report the outcome in the run response instead of writing to an issue.",
+      ];
+}
+
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
@@ -353,16 +382,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
         omitIssueDescription: Boolean(taskMarkdown),
       });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  const issueId = issueIdFromContext(ctx);
   const lines = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
-    "Paperclip runtime identity:",
-    `- Agent ID: ${ctx.agent.id}`,
-    `- Company ID: ${ctx.agent.companyId}`,
-    `- Run ID: ${ctx.runId}`,
-    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
-    ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
+    ...runtimeIdentityLines(ctx, paperclipApiUrl),
     "",
     ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
       ? []
@@ -370,8 +394,8 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
           "Execution contract:",
           "- Take concrete action in this run when the task is actionable.",
           "- Do not stop at a plan unless the issue asks for planning only.",
-          "- Leave durable progress and update the issue to a clear final disposition.",
-          "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
+          ...(issueId ? ["- Leave durable progress and update the issue to a clear final disposition."] : []),
+          ...identityGuidanceLines(ctx, issueId),
           "",
         ]),
     wakePrompt,
@@ -394,9 +418,15 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
-  const input = configuredInput && ctx.context.conversationMode === true
-    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl)}`
-    : configuredInput ?? buildInput(ctx, paperclipApiUrl);
+  // A configured payloadTemplate.input replaces the generated prompt, so layer
+  // the runtime identity and the mutation guidance into it as well: this lane
+  // has no per-run env channel, and the identity would otherwise never reach a
+  // run that sets a custom input.
+  const issueId = issueIdFromContext(ctx);
+  const customInputIdentity = [...runtimeIdentityLines(ctx, paperclipApiUrl), "", ...identityGuidanceLines(ctx, issueId)].join("\n");
+  const input = configuredInput
+    ? `${configuredInput}\n\n${ctx.context.conversationMode === true ? buildInput(ctx, paperclipApiUrl) : customInputIdentity}`
+    : buildInput(ctx, paperclipApiUrl);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
