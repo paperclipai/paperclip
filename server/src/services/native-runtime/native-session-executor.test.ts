@@ -13977,3 +13977,79 @@ describe("computer graceful idle reservation", () => {
     else expect(detach).toHaveBeenCalledOnce();
   });
 });
+
+describe("computer managed context snapshots", () => {
+  it("stages a retry into fresh immutable references without touching earlier snapshots or provider HOME", async () => {
+    const root = await mkdtemp(join(tmpdir(), "computer-context-retry-"));
+    const source = join(root, "source"), agentHome = join(root, "agent-home");
+    await mkdir(source); await mkdir(agentHome);
+    await writeFile(join(source, "AGENTS.md"), "snapshot instruction", { mode: 0o400 });
+    await chmod(source, 0o500);
+    const remoteExecute = async (command: { command: string; args?: string[]; stdin?: string }) => ({
+      exitCode: 0, timedOut: false, signal: null, stderr: "",
+      stdout: execFileSync(command.command, command.args, { input: command.stdin, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }),
+    });
+    const target = { kind: "remote", transport: "computer", environmentId: "snapshot-env", remoteCwd: agentHome,
+      fileAuthority: { kind: "remote-persistent", agentHome, root: agentHome, placementId: "placement" },
+      runner: { execute: remoteExecute }, processRunner: { execute: remoteExecute } };
+    const sourceContext = nativeRuntimeContextFixture();
+    sourceContext.instructions.bundle.rootPath = source;
+    const run = { ...execution, binding: { ...execution.binding, agentId: "snapshot-agent", runId: "snapshot-retry" },
+      runtimeContext: sourceContext };
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    const contexts: ReturnType<typeof nativeRuntimeContextFixture>[] = [];
+    const homes: string[] = [];
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        // Factory-only fixture has no live PRP controller; isolate its local
+        // journals while retaining the exact same remote session and run.
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = join(root, `controller-${attempt}`);
+        await createRunnerdBackend({ db: leaseDb(run), execution: run, runnerInstanceId: "snapshot-runner", runnerExecutionTarget: target as never });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+          runnerRuntimeContext: ReturnType<typeof nativeRuntimeContextFixture>;
+        };
+        contexts.push(transport.runnerRuntimeContext);
+        const destination = transport.runnerRuntimeContext.instructions.bundle.rootPath;
+        expect(destination).toMatch(/\/context\/snapshots\/[0-9a-f-]+\/instructions$/);
+        expect(transport.runnerRuntimeContext.instructions.entryPath).toBe("AGENTS.md");
+        const home = remoteRunnerStorageRoots(target as never, run.session.normalizedSessionId!).sessionRoot + "/filesystem/codex-home";
+        homes.push(home);
+        await mkdir(home, { recursive: true });
+        if (attempt === 0) await writeFile(join(home, "provider-session"), "persistent conversation");
+        await stageRemoteRunnerDirectory({ target: target as never, runner: target.runner as never, sourcePath: source, targetPath: destination, mode: 0o500 });
+        expect(await readFile(join(destination, "AGENTS.md"), "utf8")).toBe("snapshot instruction");
+        expect((await lstat(destination)).mode & 0o777).toBe(0o500);
+        expect(await readFile(join(home, "provider-session"), "utf8")).toBe("persistent conversation");
+      }
+      expect(contexts[0]!.instructions.bundle.rootPath).not.toBe(contexts[1]!.instructions.bundle.rootPath);
+      expect(homes[0]).toBe(homes[1]);
+      expect((await lstat(contexts[0]!.instructions.bundle.rootPath)).mode & 0o777).toBe(0o500);
+      expect(await readFile(join(contexts[0]!.instructions.bundle.rootPath, "AGENTS.md"), "utf8")).toBe("snapshot instruction");
+    } finally {
+      if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      execFileSync("chmod", ["-R", "u+w", root]);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["prepare-failed", "dispatch-lost-ack"])("fences prelaunch retry at the physical launch boundary (%s)", async condition => {
+    let dispatched = false;
+    const retire = vi.fn(async () => true);
+    const inspectProcess = vi.fn(async () => ({ running: false, claim: null }));
+    const launch = vi.fn(async () => { throw new Error("lost launch acknowledgement"); });
+    const target = { kind: "remote", transport: "computer", remoteCwd: "/remote", launch, retire, inspectProcess };
+    const launcher = createRemoteRunnerProcessLauncher({ target: target as never, runner: { execute: vi.fn() } as never,
+      remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity", stateDirectory: "/runtime/state",
+      diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "physical-launch",
+      ensureArtifact: async () => { if (condition === "prepare-failed") throw new Error("read-only context staging failed"); },
+      onLaunchAttempt: () => { dispatched = true; },
+    });
+    const handle = launcher({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {} });
+    await expect(handle.completion).rejects.toThrow(condition === "prepare-failed" ? "context staging failed" : "lost launch acknowledgement");
+    await retireUnlaunchedComputerAttempt(target as never, dispatched);
+    if (condition === "prepare-failed") { expect(launch).not.toHaveBeenCalled(); expect(retire).toHaveBeenCalledOnce(); }
+    else { expect(launch).toHaveBeenCalledOnce(); expect(inspectProcess).not.toHaveBeenCalled(); expect(retire).not.toHaveBeenCalled(); }
+  });
+});
