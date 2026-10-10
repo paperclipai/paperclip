@@ -8,5 +8,7 @@ export function useMemoryConnectorsEnabled() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  return { enabled: !query.isError && query.data?.enableMemoryConnectors === true, loaded: query.isFetched };
+  // Derive the gate from data, not `isError`: cached settings stay visible while a
+  // refetch is failing; only a no-data failure reports `loaded` without the flag.
+  return { enabled: query.data?.enableMemoryConnectors === true, loaded: query.isFetched };
 }

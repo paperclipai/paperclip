@@ -22,20 +22,17 @@ export function useSavedProviderKeys(
     queryKey: ["ai-connections", companyId],
     queryFn: () => aiConnectionsApi.list(companyId!),
     enabled: Boolean(companyId && provider) && enabled,
-    retry: false,
   });
   const managedAccounts = provider && managed.data ? savedManagedProviderAccounts(companyId!, provider, managed.data.currentUserId, managed.data.connections) : [];
   const personal = useQuery({
     queryKey: queryKeys.secrets.myUserSecrets(companyId ?? ""),
     queryFn: () => secretsApi.listMyUserSecrets(companyId!),
     enabled: Boolean(companyId) && enabled,
-    retry: false,
   });
   const organization = useQuery({
     queryKey: queryKeys.secrets.list(companyId ?? ""),
     queryFn: () => secretsApi.list(companyId!),
     enabled: Boolean(companyId) && enabled,
-    retry: false,
   });
   const storedLogin = useQuery({
     // Disabled queries still return cached data. Keep other providers away
@@ -50,7 +47,6 @@ export function useSavedProviderKeys(
       }
     },
     enabled: Boolean(companyId) && enabled && envKey === "ANTHROPIC_API_KEY",
-    retry: false,
   });
   return {
     storedLogin,

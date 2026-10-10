@@ -583,7 +583,7 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {!needsSetup && (isError ? (
+      {!needsSetup && (error ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}

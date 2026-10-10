@@ -83,7 +83,6 @@ export function useRecentTasks({
     queryKey: summaryKey,
     queryFn: ({ signal }) => issuesApi.summaries(companyId!, queryIds, { signal }),
     enabled: Boolean(companyId && queryIds.length),
-    retry: false,
     staleTime: 30_000,
   });
   // Observe completion even when structural sharing preserves the data object.

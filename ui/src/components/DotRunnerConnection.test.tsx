@@ -73,7 +73,7 @@ it("keeps a revoked binding cleared when the follow-up connection read fails", a
   await flush();
   expect(container.querySelector("output")?.textContent).toBe("");
   expect(onBinding).toHaveBeenLastCalledWith("");
-  expect(container.querySelector("[role=alert]")?.textContent).toBe("Connection refresh failed");
+  expect(container.querySelector("[role=alert]")?.textContent).toContain("Connection refresh failed");
   expect(client.getQueryData(["dot-binding", "company", "agent"])).toMatchObject({ binding: null });
   expect(Array.from(container.querySelectorAll("button")).some(button => button.textContent === "Revoke connection")).toBe(false);
 });

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrimaryAgentPreference } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { primaryAgentApi } from "@/api/primaryAgent";
+import { describeError } from "@/api/errors";
 import { PrimaryAgentPresentationProvider } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { usePrimaryAgent } from "@/hooks/usePrimaryAgent";
 import { queryKeys } from "@/lib/queryKeys";
@@ -32,7 +33,7 @@ export function PrimaryAgentProvider({ children }: { children: ReactNode }) {
     onError: (error, choice, context) => {
       client.setQueryData(keyFor(choice), context?.previous);
       if (!isCurrentScope(choice)) return;
-      pushToast({ title: "Couldn't change your primary agent.", body: error.message, tone: "error",
+      pushToast({ title: "Couldn't change your primary agent.", body: describeError(error).body, tone: "error",
         action: { label: "Retry", onClick: () => { if (isCurrentScope(choice)) mutation.mutate(choice); } } });
     },
     onSuccess: (data, choice) => client.setQueryData(keyFor(choice), data),
@@ -46,7 +47,7 @@ export function PrimaryAgentProvider({ children }: { children: ReactNode }) {
   return <PrimaryAgentPresentationProvider value={companyId ? {
     companyId, primaryAgentId: primaryAgent?.id ?? null, primaryAgent,
     loading: preference.loading || roster.isPending,
-    error: error?.message,
+    error: error ? describeError(error).body : undefined,
     onRetry: () => { void preference.retry(); void roster.refetch(); },
     pendingAgentId: mutation.isPending && isCurrentScope(mutation.variables) ? mutation.variables.agentId : null,
     onChange: agentId => mutation.mutate({ companyId, userId: preference.userId, agentId }),

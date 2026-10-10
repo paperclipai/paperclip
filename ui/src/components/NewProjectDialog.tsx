@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { projectsApi } from "../api/projects";
+import { describeError } from "../api/errors";
 import { queryKeys } from "../lib/queryKeys";
 import { trackRecentProject } from "../lib/recent-projects";
 import { ProjectTile } from "./ProjectTile";
@@ -60,7 +61,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
         <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
           <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
         </div>
-        {create.isError && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{create.error.message}</p>}
+        {create.isError && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{describeError(create.error).body}</p>} // query-error-ok: mutation result
         <div className="flex shrink-0 justify-end gap-2 px-5 py-5">
           <Button type="button" variant="ghost" disabled={create.isPending} onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={!name.trim() || create.isPending}>{create.isPending ? "Creating…" : "Create project"}</Button>
