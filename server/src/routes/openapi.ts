@@ -1675,6 +1675,13 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/folders/ensure-my",
   "POST /api/routines/{id}/triggers",
   "POST /api/companies/{companyId}/secrets",
+  // ACC-2184 (audit gouvernance): runtime = assertBoard(req) — Bearer agents get 403.
+  "GET /api/companies/{companyId}/secrets",
+  "GET /api/tool-gateway/audit",
+  // ACC-2184 follow-up (review ACC-2194): CSV variant shares the same
+  // assertAgentAuditPermission as the JSON endpoint (activity.ts), so it must
+  // be classified board-only in lockstep with the JSON variant.
+  "GET /api/companies/{companyId}/audit/agent-actions.csv",
   "POST /api/companies/{companyId}/user-secret-definitions",
   "POST /api/companies/{companyId}/me/user-secrets",
   "POST /api/companies/{companyId}/skills",
@@ -5793,7 +5800,10 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/audit/agent-actions",
   tags: ["activity"],
-  summary: "List agent action audit entries",
+  summary:
+    "List agent action audit entries (board-only by default; agents allowed for actorScope=user|system|plugin)",
+  description:
+    "Runtime authorization: with default actorScope=agents the caller must be a board user holding the 'audit:view_agent_actions' company permission (Bearer agents get 403 'Board access required'). With actorScope=user|system|plugin, any authenticated agent or board user from the company can list the entries but only board users with the permission see attribution fields (agentId, runId, responsibleUserId, details). The response carries an 'accessTier' field: 'full' (attribution visible) or 'basic' (attribution stripped).",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -5822,7 +5832,9 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/audit/agent-actions.csv",
   tags: ["activity"],
-  summary: "Export agent action audit entries as CSV",
+  summary: "Export agent action audit entries as CSV (board-only)",
+  description:
+    "Runtime authorization: same as the JSON variant when actorScope=agents — the caller must be a board user holding the 'audit:view_agent_actions' company permission. The CSV export always enforces this strict board check (it does not honor actorScope=user|system|plugin like the JSON endpoint does); Bearer agents get 403 'Board access required'.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
