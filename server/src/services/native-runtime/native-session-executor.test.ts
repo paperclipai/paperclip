@@ -2463,6 +2463,37 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it("stages a provider pack through a command-only computer runner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-computer-pack-"));
+    const sourcePath = join(root, "source");
+    const targetPath = join(root, "remote pack's files");
+    const manifest = JSON.stringify({ artifactDigest: "exact-release-digest" });
+    try {
+      await mkdir(join(sourcePath, "bin"), { recursive: true });
+      await writeFile(join(sourcePath, "provider-pack.json"), manifest);
+      await writeFile(join(sourcePath, "bin", "provider"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const execute = vi.fn(async (request: { command: string; args: string[]; stdin: string }) => {
+        execFileSync(request.command, request.args, { input: request.stdin });
+        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+      });
+      const runner = { execute };
+      await stageRemoteRunnerDirectory({
+        target: { kind: "remote", transport: "computer", remoteCwd: root, runner } as never,
+        runner: runner as never,
+        sourcePath,
+        targetPath,
+        mode: 0o700,
+      });
+      expect(await readFile(join(targetPath, "provider-pack.json"), "utf8")).toBe(manifest);
+      expect((await lstat(join(targetPath, "bin", "provider"))).mode & 0o100).toBe(0o100);
+      expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]![0]).toMatchObject({ bypassSession: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not upload excluded Codex scratch trees or credentials", async () => {
     const sourcePath = await mkdtemp(
       join(tmpdir(), "paperclip-codex-restore-source-"),

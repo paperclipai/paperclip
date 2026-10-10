@@ -12210,11 +12210,6 @@ async function createRunnerdBackendWithinSessionClaim(
           if (!configuredProviderPackRoot) {
             throw new Error("runner_remote_provider_artifact_incompatible: install the matching Paperclip package and Daytona image; the image provider pack did not match the bundled release identity");
           }
-          if (!remoteCommandRunner.syncIn) {
-            throw new Error(
-              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
-            );
-          }
           const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
             "'",
             "'\\''",
