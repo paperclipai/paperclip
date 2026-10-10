@@ -740,6 +740,13 @@ export interface IssueExecutionPolicy {
    * default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  /**
+   * What happens when `maxReviewRounds` is exhausted. `responsible_user`
+   * (default) hands the pending stage to the responsible human.
+   * `return_assignee` never involves a human: the issue goes back to the
+   * return assignee, like a round below the cap.
+   */
+  reviewEscalation?: "responsible_user" | "return_assignee" | null;
 }
 
 export interface IssueExecutionMonitorState {

@@ -2102,4 +2102,48 @@ describe("review round circuit breaker", () => {
       changesRequestedCount: 1,
     });
   });
+
+  it("returns to the executor at the cap when the policy sets reviewEscalation to return_assignee", () => {
+    const agentOnlyPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalation: "return_assignee",
+    })!;
+    expect(agentOnlyPolicy.reviewEscalation).toBe("return_assignee");
+    const stageId = agentOnlyPolicy.stages[0].id;
+
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        responsibleUserId: boardUserId,
+        executionPolicy: agentOnlyPolicy,
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      },
+      policy: agentOnlyPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Agent round at the cap",
+    });
+
+    expect(result.patch.status).toBe("in_progress");
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(result.patch.assigneeUserId ?? null).toBeNull();
+    expect(result.patch.executionState).toMatchObject({
+      status: "changes_requested",
+      changesRequestedCount: 1,
+    });
+  });
 });

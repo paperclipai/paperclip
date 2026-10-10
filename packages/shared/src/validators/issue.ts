@@ -447,6 +447,7 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+  reviewEscalation: z.enum(["responsible_user", "return_assignee"]).optional().nullable().default(null),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

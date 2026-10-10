@@ -64,7 +64,8 @@ type TransitionResult = {
 /**
  * Consecutive agent-initiated changes-requested rounds tolerated on one stage
  * before the pending review escalates to the responsible human. Policies can
- * override via `maxReviewRounds`; human decisions always reset the counter.
+ * override via `maxReviewRounds`, or set `reviewEscalation: "return_assignee"`
+ * to skip the human; human decisions always reset the counter.
  */
 export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 
@@ -412,6 +413,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
     ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
+    ...(parsed.data.reviewEscalation != null ? { reviewEscalation: parsed.data.reviewEscalation } : {}),
   };
 }
 
@@ -867,7 +869,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const actorIsHuman = actor?.type === "user";
         const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
         if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
-          const escalationUserId = reviewEscalationUserId(input.issue);
+          const escalationUserId =
+            input.policy?.reviewEscalation === "return_assignee"
+              ? null
+              : reviewEscalationUserId(input.issue);
           if (escalationUserId) {
             // Rounds exhausted: keep the stage pending but hand it to the
             // responsible human instead of bouncing back to the implementer.
