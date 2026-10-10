@@ -2045,6 +2045,74 @@ const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set([
   "revision_requested",
 ]);
 
+const REVIEW_VERDICT_SATISFYING_KINDS = new Set([
+  "request_confirmation",
+  "request_checkbox_confirmation",
+]);
+
+// A tool-action or secret-proposal confirmation is not a review decision. The
+// pending review check below already excludes those payloads, so the recorded
+// verdict check must exclude them too, or a resolved tool card would read as
+// an approval.
+function isReviewVerdictInteraction(interaction: {
+  kind: string;
+  status: string;
+  payload?: unknown;
+}): boolean {
+  if (!REVIEW_VERDICT_SATISFYING_KINDS.has(interaction.kind)) return false;
+  if (!interaction.payload || typeof interaction.payload !== "object") return true;
+  const payload = interaction.payload as Record<string, unknown>;
+  return !("toolAction" in payload && payload.toolAction !== undefined) &&
+    !("secretProposal" in payload && payload.secretProposal !== undefined);
+}
+
+// Fail-closed: only the LATEST verdict satisfies a review path, and only when
+// it was accepted. An older acceptance must not survive a newer rejection,
+// because the newer verdict is the decision that still stands.
+function verdictTimestamp(value: Date | string | undefined): number {
+  if (value === undefined || value === null) return Number.NEGATIVE_INFINITY;
+  // Rows arrive from the database as a Date. A Date must be compared as a
+  // number: its String form starts with a weekday, so it does not sort by
+  // time. Accept an ISO string as well, for callers that already have one.
+  const parsed = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function hasSatisfiedReviewVerdict(
+  interactions: Array<{
+    kind: string;
+    status: string;
+    payload?: unknown;
+    createdAt?: Date | string;
+    id?: string;
+  }>,
+): boolean {
+  const verdicts = interactions.filter(isReviewVerdictInteraction);
+  if (verdicts.length === 0) return false;
+  const latest = verdicts.reduce((newest, candidate) => {
+    const newestAt = verdictTimestamp(newest.createdAt);
+    const candidateAt = verdictTimestamp(candidate.createdAt);
+    if (candidateAt !== newestAt) return candidateAt > newestAt ? candidate : newest;
+    // Same timestamp, or no timestamp at all. listForIssue orders by
+    // createdAt ASC then id ASC, so the later entry in the array is the newer
+    // row. Keep it.
+    return candidate;
+  });
+  return String(latest.status) === "accepted";
+}
+
+export function __hasSatisfiedReviewVerdictForTests(
+  interactions: Array<{
+    kind: string;
+    status: string;
+    payload?: unknown;
+    createdAt?: Date | string;
+    id?: string;
+  }>,
+): boolean {
+  return hasSatisfiedReviewVerdict(interactions);
+}
+
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
@@ -4663,6 +4731,12 @@ export function issueRoutes(
 
     if (pendingInteractions.length > 0) return null;
     if (await hasQueuedInteractionResponse(db, input.existing.companyId, input.existing.id, input.existing.assigneeAgentId)) return null;
+    // A recorded, accepted review verdict is itself a satisfied review path.
+    // The judgement already happened and it is auditable in the issue history,
+    // so restoring a blocked issue to in_review does not have to manufacture a
+    // new request. Without this, an issue whose review is complete and
+    // accepted cannot leave `blocked` on the agent-authored path at all.
+    if (hasSatisfiedReviewVerdict(interactions)) return null;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(
       input.existing.id,
@@ -4683,6 +4757,7 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
+        "recorded_accepted_review_verdict",
       ],
     });
   }
