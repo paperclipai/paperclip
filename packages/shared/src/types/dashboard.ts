@@ -7,10 +7,10 @@ export interface DashboardRunActivityDay {
    */
   failed: number;
   /**
-   * Runs that terminated in a failure state (failed/timed_out) but whose retry
-   * chain eventually succeeded — e.g. restart-killed runs that recovered. Kept
-   * out of `failed` so the headline failure count reflects true, unrecovered
-   * failures.
+   * Runs that terminated as failed, timed_out, or interrupted (shutdown) but
+   * whose retry chain eventually succeeded — e.g. restart-killed runs and
+   * shutdown interrupts that recovered. Kept out of `failed` so the headline
+   * failure count reflects true, unrecovered failures.
    */
   recovered: number;
   other: number;
