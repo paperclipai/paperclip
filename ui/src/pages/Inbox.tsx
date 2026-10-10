@@ -2482,7 +2482,6 @@ function StreamlinedInbox({
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
                 presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}
               />
               <Popover>
@@ -2588,7 +2587,6 @@ function StreamlinedInbox({
                 enableRoutineVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
-                workspaces={isolatedWorkspacesEnabled ? executionWorkspaces.filter((w) => w.mode === "isolated_workspace").map((w) => ({ id: w.id, name: w.name })) : undefined}
                 presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}
                 inboxScopeFilters={tab === "all" ? {
                   category: allCategoryFilter,
