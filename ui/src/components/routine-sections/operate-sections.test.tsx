@@ -65,6 +65,8 @@ describe("routine operations", () => {
     expect(container.textContent).toContain("Loading activity");
     expect(container.textContent).not.toContain("No activity yet");
     render(<ActivitySection error={new Error("Activity unavailable")} />);
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Activity unavailable");
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Couldn't load routine activity");
+    expect(alert?.textContent).toContain("Activity unavailable");
   });
 });

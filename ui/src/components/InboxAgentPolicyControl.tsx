@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Inbox, LoaderCircle, Save } from "lucide-react";
 import type { InboxAgentPolicy, InboxAgentPolicyMode } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
+import { describeError } from "@/api/errors";
 import { inboxAgentPolicyApi } from "@/api/inbox-agent-policy";
 import { queryKeys } from "@/lib/queryKeys";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { isAgentTaskTarget } from "@/lib/company-members";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { Button } from "@/components/ui/button";
@@ -54,6 +56,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     queryFn: () => inboxAgentPolicyApi.getMine(companyId!),
     enabled: !!companyId,
   });
+  const policyView = useQueryView(policyQuery);
   const policy = policyQuery.data;
 
   const agentsQuery = useQuery({
@@ -109,15 +112,20 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     draft && policy && policyKey(draft.mode, draft.allowedAgentIds) !== policyKey(policy.mode, policy.allowedAgentIds),
   );
 
-  if (policyQuery.error) {
+  // A saved policy stays on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the control.
+  if (policyView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {policyQuery.error instanceof Error ? policyQuery.error.message : "Failed to load inbox agent policy."}
-      </div>
+      <QueryErrorState
+        error={policyView.error}
+        action="load the inbox agent policy"
+        onRetry={policyView.retry}
+        retrying={policyView.isFetching}
+      />
     );
   }
 
-  if (policyQuery.isLoading || !draft) {
+  if (policyQuery.isLoading || policyView.kind === "reconnecting" || !draft) {
     return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
   }
 
@@ -166,8 +174,8 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
       ) : null}
 
       {updateMutation.error ? (
-        <div className="max-w-2xl rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {updateMutation.error instanceof Error ? updateMutation.error.message : "Failed to save inbox agent policy."}
+        <div role="alert" className="max-w-2xl rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {describeError(updateMutation.error, { action: "save the inbox agent policy" }).body}
         </div>
       ) : null}
 

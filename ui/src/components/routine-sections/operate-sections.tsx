@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon } from "lucide-react";
+import { describeError } from "@/api/errors";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { routineDetailHref } from "../RoutineContextualSidebar";
@@ -8,6 +9,7 @@ import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { useToastActions } from "@/context/ToastContext";
 import { IssuesList } from "../IssuesList";
 import { EmptyState } from "../EmptyState";
+import { QueryErrorState, useQueryView } from "../QueryView";
 import { RoutineHistoryTab } from "../RoutineHistoryTab";
 import { RoutineActivityRow } from "../RoutineActivityRow";
 import { useRoutineDetail } from "./context";
@@ -18,10 +20,12 @@ export function RunsSection() {
   const { pushToast } = useToastActions();
   const filters = { originKind: "routine_execution", originId: routine.id };
   const issueQueryKey = [...queryKeys.issues.list(companyId), "routine", routine.id];
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: issueQueryKey,
     queryFn: () => issuesApi.list(companyId, filters),
   });
+  const { data: issues, isLoading } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
@@ -29,14 +33,14 @@ export function RunsSection() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routine.id) });
     },
-    onError: (updateError) => pushToast({ title: "Failed to update task", body: updateError.message, tone: "error" }),
+    onError: (updateError) => pushToast({ title: "Failed to update task", body: describeError(updateError).body, tone: "error" }),
   });
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error}
+      isLoading={isLoading || issuesView.kind === "reconnecting"}
+      error={issuesView.kind === "error" ? (issuesView.error as Error) : null}
       agents={agents}
       projects={projects}
       liveIssueIds={new Set(hasLiveRun && activeIssueId ? [activeIssueId] : [])}
@@ -50,7 +54,17 @@ export function RunsSection() {
   );
 }
 
-export function ActivitySection({ isLoading = false, error }: { isLoading?: boolean; error?: Error | null } = {}) {
+export function ActivitySection({
+  isLoading = false,
+  error,
+  onRetry,
+  retrying = false,
+}: {
+  isLoading?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
+  retrying?: boolean;
+} = {}) {
   const ctx = useRoutineDetail();
   const { activity } = ctx;
   const events = activity ?? [];
@@ -76,7 +90,16 @@ export function ActivitySection({ isLoading = false, error }: { isLoading?: bool
   }, [events]);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading activity…</p>;
-  if (error) return <p role="alert" className="text-sm text-destructive">{error.message}</p>;
+  if (error) {
+    return (
+      <QueryErrorState
+        error={error}
+        action="load routine activity"
+        onRetry={onRetry}
+        retrying={retrying}
+      />
+    );
+  }
 
   if (events.length === 0) {
     return <EmptyState icon={ActivityIcon} message="No activity yet." />;

@@ -22,6 +22,7 @@ import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentsToolbar } from "../components/AgentsToolbar";
@@ -228,11 +229,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
-  const { data: agents, isLoading, error } = useQuery({
+  const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: agents, isLoading } = agentsQuery;
+  const agentsView = useQueryView(agentsQuery);
 
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -322,8 +325,21 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return <EmptyState icon={Bot} message="Select an organization to view agents." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || agentsView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
+  }
+  if (agentsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={agentsView.error}
+        action="load agents"
+        onRetry={agentsView.retry}
+        retrying={agentsView.isFetching}
+      />
+    );
   }
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query);
@@ -420,7 +436,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         hideViewToggle={forceListView} onNewAgent={openNewAgent} />
 
       <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
         <EmptyState

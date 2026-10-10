@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
+import { describeError, isTransientError } from "../api/errors";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { Link, useNavigate } from "@/lib/router";
@@ -782,7 +783,6 @@ function StreamlinedIssuesList({
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
@@ -2080,10 +2080,10 @@ function StreamlinedIssuesList({
 
       {collectionLoading && !externalObjectFilterError && <PageSkeleton variant="issues-list" collectionHeading={viewState.groupBy !== "none" ? "group"
         : viewState.showDateGroupSeparators && issueDateSeparatorField(viewState) && rowPresentation === "task" ? "date" : null} />}
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {externalObjectFilterError && (
+      {error && !isTransientError(error) && <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p>}
+      {externalObjectFilterError && !isTransientError(externalObjectFilterError) && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
-          <p>Unable to filter tasks by external status: {externalObjectFilterError.message}</p>
+          <p>Unable to filter tasks by external status: {describeError(externalObjectFilterError).body}</p>
           <Button variant="outline" size="sm" onClick={retryExternalObjectSummaries}>Retry external statuses</Button>
         </div>
       )}
@@ -2097,7 +2097,7 @@ function StreamlinedIssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {hierarchy.error.message}</p> : null}
+      {hierarchy.error && !isTransientError(hierarchy.error) ? <p role="alert" className="text-sm text-destructive">{describeError(hierarchy.error, { action: "load task hierarchy" }).body}</p> : null}
       {!collectionLoading && !externalObjectFilterError && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
