@@ -57,6 +57,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: "linked" | "pending" | "revoked";
 }
 

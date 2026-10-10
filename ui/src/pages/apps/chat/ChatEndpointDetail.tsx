@@ -1,4 +1,5 @@
-import { Identity } from "@/components/Identity";
+import { deriveInitials } from "@/components/Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { SlackToolsSettings, SlackSearchAccess } from "./SlackToolSettings";
@@ -779,13 +780,19 @@ function Access({
                 role="listitem"
                 className="flex flex-wrap items-center gap-3 py-3"
               >
-                <div className="min-w-0 flex-1">
-                  <Identity name={link.paperclipUserLabel ?? link.externalLabel} size="default" className="gap-2" />
-                  {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="pl-10 text-xs text-muted-foreground">
-                    {link.status === "revoked" ? "Disconnected" : link.status === "linked"
-                      ? link.externalLabel
-                      : "Waiting for account confirmation"}
-                  </p>}
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Avatar aria-hidden="true">
+                    {link.paperclipUserImage && <AvatarImage src={link.paperclipUserImage} alt="" />}
+                    <AvatarFallback>{deriveInitials(link.paperclipUserLabel ?? link.externalLabel)}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm" title={link.paperclipUserLabel ?? link.externalLabel}>{link.paperclipUserLabel ?? link.externalLabel}</p>
+                    {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="text-xs text-muted-foreground">
+                      {link.status === "revoked" ? "Disconnected" : link.status === "linked"
+                        ? link.externalLabel
+                        : "Waiting for account confirmation"}
+                    </p>}
+                  </div>
                 </div>
                 {link.status === "linked" ? (
                   <Button

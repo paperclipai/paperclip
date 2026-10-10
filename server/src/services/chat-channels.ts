@@ -28496,6 +28496,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             id: authUsers.id,
             name: authUsers.name,
             email: authUsers.email,
+            image: authUsers.image,
           })
           .from(authUsers)
           .where(inArray(authUsers.id, userIds))
@@ -28520,6 +28521,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : principal.externalId,
         paperclipUserId: link?.paperclipUserId ?? null,
         paperclipUserLabel: user?.name ?? user?.email ?? null,
+        paperclipUserImage: user?.image ?? null,
         status: link?.status ?? "pending",
         lastConnectAt: connectByPrincipal.get(principal.id) ?? null,
       };

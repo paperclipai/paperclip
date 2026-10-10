@@ -331,6 +331,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: ChatIdentityLinkStatus;
   expiresAt?: string | null;
   confirmedAt?: string | null;

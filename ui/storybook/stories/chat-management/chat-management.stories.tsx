@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { useQueryClient } from "@tanstack/react-query";
 import { Route, Routes, useNavigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -9,6 +9,7 @@ import { PluginLauncherProvider } from "@/plugins/launchers";
 import { ChatEndpointDetail } from "@/pages/apps/chat/ChatEndpointDetail";
 import { useCompany } from "@/context/CompanyContext";
 import type { ChatEndpoint, ChatEndpointResource, ChatIdentityLink } from "@/api/chatEndpoints";
+import userAvatar from "../../prototypes/slack-avatar/ceo-cliptoon.png";
 import { storybookAgents } from "../../fixtures/paperclipData";
 
 type Scenario = "populated" | "empty" | "error" | "channel-added";
@@ -33,7 +34,8 @@ function ChatManagementPage({ tab = "settings", scenario = "populated" }: { tab?
       { id: "general", type: "channel", providerResourceId: "CGENERAL", label: "#general", availability: "available", enabled: false },
     ];
     let principals: ChatIdentityLink[] = scenario === "empty" ? [] : [
-      { id: "ada", principalId: "ada", externalLabel: "@ada", paperclipUserLabel: "Ada Lovelace", paperclipUserId: "ada", status: "linked" },
+      { id: "ada", principalId: "ada", externalLabel: "@ada", paperclipUserLabel: "Ada Lovelace", paperclipUserId: "ada", paperclipUserImage: userAvatar, status: "linked" },
+      { id: "alan", principalId: "alan", externalLabel: "@alan", paperclipUserLabel: "Alan Turing", paperclipUserImage: null, status: "linked" },
       { id: "grace", principalId: "grace", externalLabel: "Grace Hopper", status: "pending" },
     ];
     let resourceReads = 0;
@@ -101,7 +103,24 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Settings: Story = { name: "1 · Settings" };
-export const Access: Story = { name: "2 · People and access", args: { tab: "access" } };
+export const Access: Story = {
+  name: "2 · People and access", args: { tab: "access" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const name = await canvas.findByText("Ada Lovelace");
+    await expect(name).toHaveAttribute("title", "Ada Lovelace");
+    const row = name.closest('[role="listitem"]')!;
+    const avatar = row.querySelector('[data-slot="avatar"]')!;
+    await waitFor(() => expect(avatar.querySelector("img")).toBeVisible());
+    await expect(canvas.getByText("AT")).toBeVisible();
+    const center = (element: Element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    };
+    await expect(Math.abs(center(avatar) - center(name.parentElement!))).toBeLessThan(1);
+    await expect(Math.abs(center(avatar) - center(within(row as HTMLElement).getByRole("button", { name: "Disconnect" })))).toBeLessThan(1);
+  },
+};
 export const InvitePeople: Story = {
   name: "3 · Invite people", args: { tab: "access" },
   play: async ({ canvasElement }) => {
