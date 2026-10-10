@@ -5,6 +5,9 @@ import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   cleanupGitHubOperationLaunchers,
+  adapterExecutionTargetRuntimeRoot,
+  prepareAdapterExecutionTargetRuntime,
+  type AdapterComputerExecutionTarget,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
@@ -435,5 +438,38 @@ describe("GitHub launcher lifecycle", () => {
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("computer legacy runtime ownership", () => {
+  it.each(["claude", "codex"])("isolates %s assets and callback roots for owners sharing a checkout", async adapterKey => {
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: 123, startedAt: "2026-10-10T00:00:00Z" }));
+    const target = (ownerId: string, generation = 1) => ({
+      kind: "remote", transport: "computer", providerKey: "boat", environmentId: "environment",
+      leaseId: ownerId, remoteCwd: "/shared/project", listenerPort: 43127,
+      runner: { execute }, processRunner: { execute },
+      resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId, generation },
+      fileAuthority: { kind: "remote-persistent", placementId: "shared", root: "/shared/project", agentHome: `/homes/${ownerId}` },
+      launch: vi.fn(), inspectProcess: vi.fn(), retainWarm: vi.fn(), retire: vi.fn(),
+      computerTool: { command: "cua-driver", args: ["mcp"] },
+    } satisfies AdapterComputerExecutionTarget);
+    const prepare = (owner: AdapterComputerExecutionTarget) => prepareAdapterExecutionTargetRuntime({
+      target: owner, runId: owner.leaseId!, adapterKey, workspaceLocalDir: "/unused-local-workspace", syncWorkspace: false,
+    });
+    const first = await prepare(target("agent-one"));
+    const second = await prepare(target("agent-two"));
+    expect(first.workspaceRemoteDir).toBe("/shared/project");
+    expect(second.workspaceRemoteDir).toBe(first.workspaceRemoteDir);
+    expect(first.runtimeRootDir).toBe(adapterExecutionTargetRuntimeRoot(target("agent-one"), adapterKey));
+    expect(second.runtimeRootDir).not.toBe(first.runtimeRootDir);
+    expect(adapterExecutionTargetRuntimeRoot(target("agent-one", 2), adapterKey)).not.toBe(first.runtimeRootDir);
+    expect((await prepare(target("agent-one"))).runtimeRootDir).toBe(first.runtimeRootDir);
+    expect(first.runtimeRootDir).toMatch(new RegExp(`^/shared/project/\\.paperclip-runtime/${adapterKey}/owners/[a-f0-9]{64}$`));
+  });
+
+  it("preserves the existing sandbox runtime root", () => {
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" } as const;
+    expect(adapterExecutionTargetRuntimeRoot(target, "claude")).toBe("/workspace/.paperclip-runtime/claude");
   });
 });
