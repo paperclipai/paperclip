@@ -564,39 +564,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setEnvironmentEditorKey(key => key + 1);
   }, []);
 
-  const handleSave = useCallback(async () => {
-    if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
-    const nextOverlay = flushedEnv
-      ? {
-          ...overlay,
-          adapterConfig: {
-            ...overlay.adapterConfig,
-            env: flushedEnv,
-          },
-        }
-      : overlay;
-    if (!isOverlayDirty(nextOverlay)) return;
-    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
-  }, [isCreate, isDirty, overlay, props]);
-
-  useEffect(() => {
-    if (!isCreate) {
-      props.onDirtyChange?.(isDirty);
-      props.onSaveActionChange?.(handleSave);
-      props.onCancelActionChange?.(handleCancel);
-    }
-  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
-
-  useEffect(() => {
-    if (isCreate) return;
-    return () => {
-      props.onSaveActionChange?.(null);
-      props.onCancelActionChange?.(null);
-      props.onDirtyChange?.(false);
-    };
-  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange]);
-
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
@@ -839,6 +806,45 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
+  const attachedBoat = experimentalSettings !== undefined
+    && effectiveLoginEnvironment?.status === "active"
+    && effectiveLoginEnvironment.driver === "computer"
+    && effectiveLoginEnvironment.config.provider === "boat";
+  const unsupportedBoatCodexEngine = attachedBoat && adapterType === "codex_local"
+    && (isCreate ? props.values.codexEngine : eff("adapterConfig", "engine", config.engine)) !== "cli";
+  const handleSave = useCallback(async () => {
+    if (isCreate || unsupportedBoatCodexEngine) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const nextOverlay = flushedEnv
+      ? {
+          ...overlay,
+          adapterConfig: {
+            ...overlay.adapterConfig,
+            env: flushedEnv,
+          },
+        }
+      : overlay;
+    if (!isOverlayDirty(nextOverlay)) return;
+    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+  }, [isCreate, isDirty, overlay, props, unsupportedBoatCodexEngine]);
+
+  useEffect(() => {
+    if (!isCreate) {
+      props.onDirtyChange?.(isDirty);
+      props.onSaveActionChange?.(unsupportedBoatCodexEngine ? null : handleSave);
+      props.onCancelActionChange?.(handleCancel);
+    }
+  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel, unsupportedBoatCodexEngine]);
+
+  useEffect(() => {
+    if (isCreate) return;
+    return () => {
+      props.onSaveActionChange?.(null);
+      props.onCancelActionChange?.(null);
+      props.onDirtyChange?.(false);
+    };
+  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange]);
+
   // Load the sandbox provider capabilities. A login that runs on a real
   // pseudo-terminal needs a provider that advertises the login pseudo-terminal
   // capability. The login panel gate reads this to hide the panel for a provider
@@ -969,10 +975,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths || isDotRunner,
     managedSandboxOnly: hideHostPaths || isDotRunner,
-    allowExecutionEngineSelection: experimentalSettings !== undefined
-      && effectiveLoginEnvironment?.status === "active"
-      && effectiveLoginEnvironment.driver === "computer"
-      && effectiveLoginEnvironment.config.provider === "boat",
+    allowExecutionEngineSelection: attachedBoat,
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
   };
 
@@ -1101,7 +1104,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [testActionError, setTestActionError] = useState<string | null>(null);
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
-  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId || unsupportedBoatCodexEngine;
 
   // Drop a stale Test result when the adapter type or the effective environment
   // changes. A held result would keep the login affordance visible for a target
@@ -1406,7 +1409,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">Unsaved changes</span>
-              <Button size="sm" onClick={handleSave} disabled={props.isSaving}>
+              <Button size="sm" onClick={handleSave} disabled={props.isSaving || unsupportedBoatCodexEngine}>
                 {props.isSaving ? "Saving..." : "Save"}
               </Button>
             </div>
@@ -1458,7 +1461,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={!isCreate && props.isSaving}
+              disabled={(!isCreate && props.isSaving) || unsupportedBoatCodexEngine}
             >
               {!isCreate && props.isSaving ? "Saving..." : "Save"}
             </Button>

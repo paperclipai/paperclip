@@ -146,7 +146,8 @@ function Setup({
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
-  const [boatEngine, setBoatEngine] = useState<"cli" | "acp" | undefined>();
+  const [boatEngines, setBoatEngines] = useState<Partial<Record<string, "cli" | "acp">>>({});
+  const boatEngine = boatEngines[adapterType];
   const [provider, setProvider] = useState("openrouter");
   const [apiKey, setApiKey] = useState("");
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
@@ -352,12 +353,12 @@ function Setup({
         value={boatEngine ?? "cli"}
         disabled={busy}
         onChange={(event) => {
-          setBoatEngine(event.target.value === "acp" ? "acp" : "cli");
+          setBoatEngines(current => ({ ...current, [adapterType]: adapterType !== "codex_local" && event.target.value === "acp" ? "acp" : "cli" }));
           resetTest();
         }}
       >
         <option value="cli">{adapterType === "codex_local" ? "Codex CLI" : "Claude CLI"}</option>
-        <option value="acp">ACP</option>
+        {adapterType !== "codex_local" && <option value="acp">ACP</option>}
       </select>
     </Field>
   ) : null;
