@@ -1122,7 +1122,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.transport.configureTool.mock.calls.slice(-3).every((call) => Boolean(call[3]))).toBe(true);
   });
 
-  it("moves only receipt-owned tools and lifecycle hooks when the callback origin changes", async () => {
+  it.each(["current", "legacy"])("moves only receipt-owned %s tools and hooks when callback origin and signing secret change", async proofVersion => {
     const f = await nativeServiceFixture();
     const tools: {id: string; name: string; source: {kind: string; url: string}}[] = [];
     f.transport.listTools.mockImplementation(async () => structuredClone(tools) as never[]);
@@ -1135,10 +1135,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const input = {companyId: f.companyId, endpointId: f.endpointId, agentId: "agent_test", callbackUrl: "https://old-tunnel.example.test/tools", signingSecret: "whsec_fixture", client: f.transport, assertOwned: async () => {}};
     await configureSpekoSessionTools(db, input);
     const oldIds = tools.map(t => t.id);
-    await configureSpekoSessionTools(db, {...input, callbackUrl: "https://new-tunnel.example.test/tools"});
+    if (proofVersion === "legacy") {
+      const actions = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      for (const action of actions) await db.update(chatActions).set({payload: {name: action.payload.name, fingerprint: action.payload.fingerprint}}).where(eq(chatActions.id, action.id));
+    }
+    const rotated = {...input, callbackUrl: "https://new-tunnel.example.test/tools", signingSecret: "whsec_rotated",
+      ...(proofVersion === "legacy" ? {previousSigningSecret: input.signingSecret} : {})};
+    await configureSpekoSessionTools(db, rotated);
+    expect(f.transport.configureTool.mock.calls.slice(-3).every(call => call[2] === "whsec_rotated")).toBe(true);
     expect(tools.map(t => t.id)).toEqual(oldIds);
     expect(tools.every(t => t.source.url === "https://new-tunnel.example.test/tools")).toBe(true);
     expect(f.transport.configureWebhook.mock.calls.at(-1)?.[3]).toBe("hook_test");
+    expect(f.transport.configureWebhook.mock.calls.at(-1)?.[2]).toBe("whsec_rotated");
     // Even the same provider ID is no longer ours if its URL was changed outside
     // Paperclip. A historical ID alone cannot authorize overwriting it.
     tools[0]!.source.url = "https://another-app.example.test/tools";
