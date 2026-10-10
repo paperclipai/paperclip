@@ -2863,7 +2863,7 @@ function IssueChatFeedbackButtons({
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
             placeholder="Add a short note"
-            className="min-h-20 resize-y bg-background text-sm"
+            className="min-h-20 resize-none bg-background text-sm sm:resize-y"
             disabled={isSaving}
           />
           <div className="mt-2 flex items-center justify-end gap-2">
@@ -6736,7 +6736,7 @@ export function IssueChatThread({
             <div
               ref={composerViewportAnchorRef}
               data-testid="issue-chat-composer-dock"
-              className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+              className="sticky bottom-(--tc-composer-bottom) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
             >
               <IssueChatComposer
                 ref={composerRef}

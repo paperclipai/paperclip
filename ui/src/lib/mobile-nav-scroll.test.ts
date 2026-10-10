@@ -53,4 +53,12 @@ describe("mobile navigation scroll response", () => {
     expect(nav.update(940, 940)).toBe(false);
     expect(nav.update(924, 940)).toBe(true);
   });
+
+  it("follows the position without counting a synced jump as a swipe", () => {
+    const nav = tracker(100);
+    nav.sync(500, 1000);
+    expect(nav.update(490, 1000)).toBe(true);
+    expect(nav.update(520, 1000)).toBe(true);
+    expect(nav.update(522, 1000)).toBe(false);
+  });
 });

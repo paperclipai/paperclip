@@ -16,6 +16,14 @@ export class MobileNavScrollTracker {
     private lastMaxTop: number,
   ) {}
 
+  /** Follow the scroll position without counting it as a swipe. */
+  sync(scrollTop: number, maxTop: number): void {
+    this.lastTop = Math.max(0, Math.min(scrollTop, maxTop));
+    this.lastMaxTop = maxTop;
+    this.direction = 0;
+    this.distance = 0;
+  }
+
   update(scrollTop: number, maxTop: number): boolean {
     // Safari rubber-banding must not count as a change in scroll direction.
     const top = Math.max(0, Math.min(scrollTop, maxTop));

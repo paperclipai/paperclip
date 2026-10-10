@@ -155,8 +155,13 @@ vi.mock("./AnnouncementWell", () => ({
   AnnouncementWell: () => <div data-announcement-well />,
 }));
 
+const mobileBottomNavState = { visible: true };
+
 vi.mock("./MobileBottomNav", () => ({
-  MobileBottomNav: () => null,
+  MobileBottomNav: ({ visible }: { visible: boolean }) => {
+    mobileBottomNavState.visible = visible;
+    return null;
+  },
 }));
 
 vi.mock("./WorktreeBanner", () => ({
@@ -1370,6 +1375,200 @@ describe("Layout", () => {
     expect(rootEl.className).toContain("bg-background");
     expect(rootEl.classList.contains("overflow-clip")).toBe(true);
 
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+describe("Layout mobile keyboard handling", () => {
+  let container: HTMLDivElement;
+
+  // iOS reports the software keyboard only through visualViewport: innerHeight,
+  // 100vh and 100dvh all keep their full value, so anything docked to the bottom
+  // of the layout viewport lands behind the keyboard unless we measure it.
+  const viewport = {
+    height: 800,
+    offsetTop: 0,
+    scale: 1,
+    listeners: new Set<() => void>(),
+    addEventListener(_type: string, fn: () => void) {
+      this.listeners.add(fn);
+    },
+    removeEventListener(_type: string, fn: () => void) {
+      this.listeners.delete(fn);
+    },
+    emit() {
+      for (const fn of this.listeners) fn();
+    },
+  };
+
+  /** The keyboard hook defers to rAF, which jsdom runs on a ~16ms timer. */
+  async function flushFrame() {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 32));
+    });
+  }
+
+  async function openKeyboard(height: number) {
+    viewport.height = height;
+    await act(async () => {
+      viewport.emit();
+    });
+    await flushFrame();
+  }
+
+  function mainElement() {
+    return container.querySelector("#main-content") as HTMLElement;
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    currentPathname = "/PAP/issues/PAP-1";
+    mockCompanyState.companies = [
+      { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
+    ];
+    mockCompanyState.selectedCompany = {
+      id: "company-1",
+      issuePrefix: "PAP",
+      name: "Paperclip",
+    };
+    mockCompanyState.selectedCompanyId = "company-1";
+    mockHealthApi.get.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      version: "1.2.3",
+    });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ censorUsernameInLogs: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    mockPluginSlots.slots = [];
+    mockPluginSlotContexts.length = 0;
+    mockSidebarState.sidebarOpen = false;
+    mockSidebarState.isMobile = true;
+    mockSidebarState.collapsed = false;
+    mockSidebarState.peeking = false;
+
+    viewport.height = 800;
+    viewport.offsetTop = 0;
+    viewport.scale = 1;
+    viewport.listeners.clear();
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    // The nav tracker clamps scroll positions to the document's scroll range,
+    // which jsdom reports as empty.
+    Object.defineProperty(document.documentElement, "scrollHeight", { configurable: true, value: 3000 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+  });
+
+  afterEach(() => {
+    delete (document.documentElement as { scrollHeight?: number }).scrollHeight;
+    delete (document.documentElement as { clientHeight?: number }).clientHeight;
+    container.remove();
+    document.body.innerHTML = "";
+    document.documentElement.classList.remove("keyboard-open");
+    document.documentElement.style.removeProperty("--sz-keyboard-inset");
+    vi.clearAllMocks();
+  });
+
+  async function renderMobileLayout() {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushFrame();
+    return root;
+  }
+
+  it("lifts the composer dock above the keyboard and hides the bottom nav", async () => {
+    const root = await renderMobileLayout();
+
+    expect(mainElement().style.getPropertyValue("--tc-composer-bottom")).toBe(
+      "var(--tc-composer-visible-nav-offset)",
+    );
+    expect(mobileBottomNavState.visible).toBe(true);
+
+    await openKeyboard(460);
+
+    // The dock now rides the measured keyboard inset instead of the nav offset.
+    expect(mainElement().style.getPropertyValue("--tc-composer-bottom")).toContain(
+      "var(--sz-keyboard-inset)",
+    );
+    expect(document.documentElement.style.getPropertyValue("--sz-keyboard-inset")).toBe("340px");
+    // The nav is fixed to the layout viewport, so it would sit behind the keyboard.
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    await openKeyboard(800);
+
+    expect(mainElement().style.getPropertyValue("--tc-composer-bottom")).toBe(
+      "var(--tc-composer-visible-nav-offset)",
+    );
+    expect(mobileBottomNavState.visible).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not let the keyboard-driven scroll toggle the nav mid-animation", async () => {
+    const root = await renderMobileLayout();
+
+    await openKeyboard(460);
+    const liftedOffset = mainElement().style.getPropertyValue("--tc-composer-bottom");
+
+    // Opening the keyboard makes Safari scroll the focused field into view.
+    // That scroll must not flip the nav state and slide the dock by a nav height.
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 400 });
+    await act(async () => {
+      window.dispatchEvent(new Event("scroll"));
+    });
+    await flushFrame();
+
+    expect(mainElement().style.getPropertyValue("--tc-composer-bottom")).toBe(liftedOffset);
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("reads the right direction on the first scroll after the keyboard closes", async () => {
+    const root = await renderMobileLayout();
+
+    async function scrollTo(top: number) {
+      Object.defineProperty(window, "scrollY", { configurable: true, value: top });
+      await act(async () => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      await flushFrame();
+    }
+
+    await openKeyboard(460);
+    // The page moves a long way down while the keyboard is up. The nav is
+    // frozen here, but the position still has to be recorded.
+    await scrollTo(500);
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    await openKeyboard(800);
+
+    // First scroll after the keyboard closes, and it goes up. Measured against
+    // a stale 0 this reads as a 500px scroll down and hides the nav.
+    await scrollTo(490);
+    expect(mobileBottomNavState.visible).toBe(true);
+
+    // A real downward scroll still hides it.
+    await scrollTo(600);
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
     await act(async () => {
       root.unmount();
     });

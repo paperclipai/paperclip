@@ -1,8 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MobileNavScrollTracker } from "../lib/mobile-nav-scroll";
 
-export function useMobileNavVisibility(enabled: boolean, pathname: string): boolean {
+/**
+ * `frozen` holds the nav still. iOS scrolls the page while it animates the
+ * software keyboard, and toggling the nav then would shift the docked composer
+ * mid-animation. The tracker keeps following the scroll position while frozen,
+ * so the first scroll after unfreezing is measured against a current position.
+ */
+export function useMobileNavVisibility(enabled: boolean, pathname: string, frozen = false): boolean {
   const [visible, setVisible] = useState(true);
+  const frozenRef = useRef(frozen);
+  frozenRef.current = frozen;
 
   useEffect(() => {
     setVisible(true);
@@ -29,6 +37,10 @@ export function useMobileNavVisibility(enabled: boolean, pathname: string): bool
       frame = requestAnimationFrame(() => {
         frame = null;
         const { top, max } = scrollBounds();
+        if (frozenRef.current) {
+          tracker.sync(top, max);
+          return;
+        }
         const previous = tracker.visible;
         const next = tracker.update(top, max);
         if (next !== previous) setVisible(next);

@@ -292,7 +292,7 @@ export function IssueChatFeedbackButtons({
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
             placeholder="Add a short note"
-            className="min-h-20 resize-y bg-background text-sm"
+            className="min-h-20 resize-none bg-background text-sm sm:resize-y"
             disabled={isSaving}
           />
           <div className="mt-2 flex items-center justify-end gap-2">
