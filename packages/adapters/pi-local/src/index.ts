@@ -38,5 +38,6 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
 - All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
-- Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
+- Agent instructions are appended to Pi's system prompt via --append-system-prompt; -p selects non-interactive print mode.
+- On local Windows runs, system instructions are passed through a temporary UTF-8 file and the user task through stdin to avoid command-line length limits. The temporary file is removed after the run, including failures and session retries.
 `;
