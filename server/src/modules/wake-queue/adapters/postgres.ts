@@ -97,7 +97,18 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     responsibleUserId: row.responsibleUserId,
     contextSnapshot: parseObject(row.contextSnapshot),
     configurationIncompletePayload: Object.keys(configurationIncompletePayload).length > 0 ? configurationIncompletePayload : null,
+    operatorStopped: isOperatorStoppedRunRow(row),
   };
+}
+
+const OPERATOR_STOP_ERROR_CODES = new Set(["operator_interrupted", "agent_paused"]);
+
+/** Mirrors recovery's `isOperatorCancelledRun`, plus agent pause, for the release-time recovery tail. */
+export function isOperatorStoppedRunRow(row: Pick<HeartbeatRunRow, "status" | "errorCode" | "resultJson">): boolean {
+  if (row.status !== "cancelled") return false;
+  if (row.errorCode && OPERATOR_STOP_ERROR_CODES.has(row.errorCode)) return true;
+  const actorType = parseObject(row.resultJson).cancelledByActorType;
+  return actorType === "user" || actorType === "board";
 }
 
 function toIssueSnapshot(row: IssueRow): IssueSnapshot {

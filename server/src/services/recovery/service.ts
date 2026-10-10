@@ -1138,6 +1138,37 @@ export function recoveryService(
     return Boolean(run || deferredWake || nativeRecovery);
   }
 
+  async function wasBlockedByAssigneeAgent(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    blockedTransitionAt: Date | null,
+  ) {
+    if (!blockedTransitionAt) return false;
+    const row = await db
+      .select({ actorType: activityLog.actorType, agentId: activityLog.agentId, details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.updated"),
+          gte(activityLog.createdAt, new Date(blockedTransitionAt.getTime() - 5_000)),
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    // Only the self-block itself counts. Any later issue update (for example a
+    // board edit of the blocker set) re-enables the backstop for this cycle.
+    return (
+      row?.actorType === "agent" &&
+      row.agentId === agentId &&
+      (row.details as Record<string, unknown> | null)?.status === "blocked"
+    );
+  }
+
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
     return db
       .select({ id: issueThreadInteractions.id })
@@ -4535,6 +4566,19 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // A person paused this agent (or stopped its run) on purpose. Escalating its
+      // assigned work to `blocked` while the pause lasts fights that decision and
+      // strands the issue after resume; leave it for the resumed agent.
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        latestRun?.agentId === agentId &&
+        latestRun.status === "cancelled" &&
+        (latestRun.errorCode === "agent_paused" || isOperatorCancelledRun(latestRun, agentId))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
@@ -5588,6 +5632,7 @@ export function recoveryService(
       checked: 0,
       healed: 0,
       existingWakeSkipped: 0,
+      selfBlockedSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -5752,6 +5797,14 @@ export function recoveryService(
           });
         if (existingWake) {
           result.existingWakeSkipped += 1;
+          continue;
+        }
+        // The assignee agent opened this blocked cycle itself, knowing its recorded
+        // blockers were resolved: it is waiting on something outside the blocker
+        // graph. Re-waking it here made it re-block on every sweep (each re-block
+        // stamps a new cycle, so the ready-state key never repeats).
+        if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt)) {
+          result.selfBlockedSkipped += 1;
           continue;
         }
 
