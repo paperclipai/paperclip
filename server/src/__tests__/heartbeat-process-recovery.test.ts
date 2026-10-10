@@ -1916,6 +1916,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
       .mockRejectedValueOnce(new executionContinuation.StaleExecutionContinuationError(code));
     try {
+      await db.update(agents).set({
+        status: "error",
+        errorReason: "previous failure",
+      }).where(eq(agents.id, agentId));
       const heartbeat = heartbeatService(db);
       await heartbeat.resumeQueuedRuns();
       await waitForRunToSettle(heartbeat, runId);
@@ -1926,7 +1930,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(agentWakeupRequests.id, wakeupRequestId));
       expect(wakeup.status).toBe("cancelled");
       const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-      expect(agent.status).not.toBe("error");
+      expect(agent).toMatchObject({ status: "idle", errorReason: null });
       expect(mockAdapterExecute.mock.calls.some(
         ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
       )).toBe(false);
