@@ -81,10 +81,14 @@ type ProcessClaim = { bootId: string; unitName: string; nonce: string; launchGen
   owners require the computer. A timed-out controller operation is not proof
   that remote work ended. Preserve independent cleanup failures without
   replacing a successful task result.
-- Native idle expiry releases its owner after runner termination. Controller
-  restart reconciles durable owners and authenticates the same runner before
-  resuming; it does not start duplicate work. Legacy completion has no warm
-  holder.
+- Native idle expiry fences admission and reserves the exact owner generation
+  for graceful runner suspension. The checkpoint remains on Boat. A bounded
+  30-second shutdown interval permits protocol close before mandatory exact
+  descendant retirement; this is not extra usable warm time. Crash reconciliation
+  hard-retires after that interval. Stale callbacks cannot close a successor.
+  Controller restart reconciles durable owners and authenticates the same runner
+  before resuming; it does not start duplicate work. Legacy completion has no
+  warm holder.
 - Human Connect creates a bounded hold using the runner warm timeout. Visible
   presence may renew a short liveness deadline within that bound; an idle open
   tab cannot keep the computer running forever. UI says Connect/Connecting.
