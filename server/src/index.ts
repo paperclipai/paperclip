@@ -53,6 +53,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { serverVersion } from "./version.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -931,6 +932,7 @@ async function startServerWithDatabaseTeardown(
       : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
+    hostVersion: serverVersion,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
     authPublicBaseUrl: config.authPublicBaseUrl,

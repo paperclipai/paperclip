@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { serverVersion } from "../version.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -934,6 +935,14 @@ describe("startServer authenticated auth origin setup", () => {
     expect(detectPortMock).toHaveBeenCalledWith({
       port: 3210,
       hostname: "127.0.0.1",
+    });
+  });
+
+  it("passes the resolved server version to the plugin host", async () => {
+    await startServer();
+
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
+      hostVersion: serverVersion,
     });
   });
 
