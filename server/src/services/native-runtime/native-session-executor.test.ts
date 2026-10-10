@@ -711,6 +711,39 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it("admits a valid computer identity when the supervised RPC takes longer than two seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      let nonce = "";
+      const launch = vi.fn(async (request: { args: string[] }) => { nonce = request.args[4]!; });
+      const execute = vi.fn(async (request: { args: string[]; timeoutMs?: number }) => {
+        const label = request.args[2];
+        const result = { exitCode: 0, timedOut: false, signal: null, stdout: "", stderr: "" };
+        if (label === "paperclip-runner-process-identity") {
+          const elapsed = Math.min(3_000, request.timeoutMs ?? 0);
+          await new Promise(resolve => setTimeout(resolve, elapsed));
+          return { ...result, timedOut: elapsed < 3_000,
+            stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\ncomputer-runner\nlinux:abcd-1234:100\n` };
+        }
+        if (label === "paperclip-runner-monitor") return { ...result, exitCode: 3 };
+        if (label === "paperclip-runner-diagnostics") return result;
+        return { ...result, stdout: Buffer.from("{}").toString("base64") };
+      });
+      const onSpawn = vi.fn();
+      const launcher = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "computer", remoteCwd: "/home/user/project", launch } as never,
+        runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/state/identity",
+        stateDirectory: "/runtime/state", diagnosticsDirectory: "/runtime/logs", runnerInstanceId: "computer-runner", onSpawn,
+      });
+      const handle = launcher({ command: "/controller/runnerd", args: ["--runner-id", "computer-runner"], cwd: "/controller", environment: {} });
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 4321, processGroupId: null, startedAt: "2026-09-06T00:00:00.000Z" });
+      await expect(handle.completion).resolves.toMatchObject({ code: null });
+      expect(execute.mock.calls.filter(([request]) => request.args[2] === "paperclip-runner-process-identity")).toHaveLength(1);
+      expect(execute.mock.calls.some(([request]) => request.args[2] === "paperclip-runner-identity-failure-cleanup")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["timeout", "ssh_failure", "rejected_rpc"] as const)(
     "keeps the admitted process after a transient %s monitor failure", async failure => {
       vi.useFakeTimers();
