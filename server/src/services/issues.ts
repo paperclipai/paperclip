@@ -2600,6 +2600,47 @@ export async function runWorkspaceIsFinalized(
   return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
 }
 
+/**
+ * Applies the dependency-readiness rule to a set of candidate blocker issues:
+ * a blocker still blocks unless it is done and its workspace finalize settled.
+ */
+async function listBlockingIssueIdsAmong(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerIssueIds: string[],
+) {
+  const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
+  if (uniqueBlockerIssueIds.length === 0) return [];
+  const rows = await dbOrTx
+    .select({
+      id: issues.id,
+      status: issues.status,
+      executionWorkspaceId: issues.executionWorkspaceId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, uniqueBlockerIssueIds),
+      ),
+    );
+  const blocking = rows
+    .filter((row) => row.status !== "done")
+    .map((row) => row.id);
+  const doneWithWorkspace = rows.filter(
+    (row) => row.status === "done" && row.executionWorkspaceId,
+  );
+  const pendingFinalize = await listPendingFinalizeBlockerIssueIds(
+    dbOrTx,
+    companyId,
+    doneWithWorkspace.map((row) => ({
+      blockerIssueId: row.id,
+      executionWorkspaceId: row.executionWorkspaceId as string,
+    })),
+  );
+  return [...blocking, ...doneWithWorkspace.filter((row) => pendingFinalize.has(row.id)).map((row) => row.id)];
+}
+
 async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -9188,6 +9229,17 @@ export function issueService(db: Db) {
         },
       };
     },
+
+    /**
+     * Of the given blocker ids, returns the ones that still block: not done,
+     * or done with the workspace sync-back still pending. This is the rule of
+     * `getDependencyReadiness`, applied to blockers a request is about to set.
+     */
+    listUnresolvedBlockerIssueIds: (
+      companyId: string,
+      blockerIssueIds: string[],
+    ): Promise<string[]> =>
+      listBlockingIssueIdsAmong(db, companyId, blockerIssueIds),
 
     getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
       const issue = await dbOrTx

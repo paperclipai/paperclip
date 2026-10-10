@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  listUnresolvedBlockerIssueIds: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -326,6 +327,7 @@ describe("issue comment reopen routes", () => {
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
+    mockIssueService.listUnresolvedBlockerIssueIds.mockReset();
     mockIssueService.getCurrentScheduledRetry.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
@@ -2011,6 +2013,73 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  describe("resume intent judges the blockers set by the same request", () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const storedBlockerId = "33333333-3333-4333-8333-333333333333";
+    const newBlockerId = "44444444-4444-4444-8444-444444444444";
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+      mockIssueService.getRelationSummaries.mockResolvedValue({
+        blockedBy: [],
+        blocks: [],
+      });
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        issueId,
+        blockerIssueIds: [storedBlockerId],
+        unresolvedBlockerIssueIds: [storedBlockerId],
+        unresolvedBlockerCount: 1,
+        allBlockersDone: false,
+        isDependencyReady: false,
+      });
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>) => ({
+          ...makeIssue("blocked"),
+          ...patch,
+        }),
+      );
+    });
+
+    it("accepts resume when the request clears the stored blockers", async () => {
+      const res = await request(await installActor(createApp()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ comment: "blocker is obsolete", resume: true, blockedByIssueIds: [] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("todo");
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({ status: "todo", blockedByIssueIds: [] }),
+      );
+      expect(mockIssueService.listUnresolvedBlockerIssueIds).not.toHaveBeenCalled();
+    });
+
+    it("rejects resume when the request sets a blocker that is still open, and says how to fix it", async () => {
+      mockIssueService.listUnresolvedBlockerIssueIds.mockResolvedValue([newBlockerId]);
+
+      const res = await request(await installActor(createApp()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ comment: "now waiting", resume: true, blockedByIssueIds: [newBlockerId] });
+
+      expect(res.status).toBe(409);
+      expect(res.body.details).toMatchObject({
+        issueId,
+        unresolvedBlockerIssueIds: [newBlockerId],
+      });
+      expect(res.body.details.remediation).toEqual(expect.any(String));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("keeps judging the stored blockers when the request does not set blockers", async () => {
+      const res = await request(await installActor(createApp()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ comment: "please resume", resume: true });
+
+      expect(res.status).toBe(409);
+      expect(res.body.details.unresolvedBlockerIssueIds).toEqual([storedBlockerId]);
+    });
   });
 
   it("does not move dependency-blocked issues to todo via the PATCH comment path", async () => {
