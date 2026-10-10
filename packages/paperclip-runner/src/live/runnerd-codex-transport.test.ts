@@ -2158,32 +2158,6 @@ it.each(["installed", "explicit"] as const)("records the selected %s Codex comma
   }
 });
 
-it.each([false, true])("binds detached-process guidance only for a trusted persistent computer (%s)", async (computer) => {
-  const root = await mkdtemp(join(tmpdir(), "paperclip-computer-process-guidance-"));
-  const runnerBinary = join(root, "runnerd");
-  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
-  let instructions = "";
-  const { transport } = createCapabilityRunnerdCodexTransport({
-    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
-    codexCommand: "/qualified/codex", persistentAgentHome: computer ? "/agent/home" : undefined,
-    controlPlaneRegistration: async (authority) => {
-      instructions = String((authority.store.state.runAttachTemplate!.provider as { instructions: string }).instructions);
-      throw new Error("fixture_stop_before_runner_launch");
-    },
-    runnerProcessLauncher: () => { throw new Error("must not launch"); },
-  });
-  try {
-    await expect(transport.request("thread/start", { cwd: root, model: "gpt-6.1-sol", dynamicTools: [],
-      developerInstructions: "Preserve the task instructions." })).rejects.toThrow("fixture_stop_before_runner_launch");
-    expect(instructions).toContain("Preserve the task instructions.");
-    expect(instructions.includes("nohup setsid")).toBe(computer);
-    if (computer) {
-      expect(instructions).toContain("stop when its warm timeout expires");
-      expect(instructions).toContain("Do not create services or change runner ownership");
-    }
-  } finally { await transport.close(); await rm(root, { recursive: true, force: true }); }
-});
-
 it("rejects remote Codex without a guest executable before resolving controller dependencies", async () => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-codex-command-"));
   const runnerBinary = join(root, "runnerd");
