@@ -1,3 +1,4 @@
+import { notifyChatDeliveryWork } from "../chat-work-notifications.js";
 import { environmentService } from "../environments.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -210,6 +211,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     const threadId = conversation.externalThreadId;
     const providerEventId = `${threadId}:${session.id}:${toolId}`;
     const trigger = prior.length ? "subscribed_message" : "direct_message";
+    await notifyChatDeliveryWork(tx);
     const [delivery] = await tx.insert(chatDeliveries).values({
       companyId: session.companyId, endpointId: session.endpointId, conversationId: session.conversationId,
       providerEventId, deduplicationKey: createHash("sha256").update(providerEventId).digest("hex"),

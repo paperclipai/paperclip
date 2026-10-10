@@ -415,12 +415,23 @@ from event-driven normal paths and route only real deadlines through the interna
 scheduler. Preserve durable delivery, startup recovery, and domain-level claims.
 Longer polling intervals alone do not complete an item.
 
-- [ ] **JOB-01 — Chat reconciliation.** Current: every **1s**, with multiple
-  runtime/delivery/publication lanes and SQL even without connectors. Change:
-  disarm empty lanes and activate on committed events or deadlines. **Complete
-  when:** a tenant with no chat obligations issues no chat SQL and new inbound,
-  publication, and recovery work still runs. Sources:
+- [ ] **JOB-01 — Chat reconciliation.** Partially migrated on 2026-10-10.
+  Inbound deliveries, outbound publications, and Slack upload receipt recovery
+  now use transaction-aware commit wakes and durable retry/claim deadlines.
+  Empty queues disarm after startup. Publication deadlines use the dispatch
+  eligibility predicate so paused endpoints, unknown outcomes, blocked followers,
+  and receipts owned by a live sender do not cause empty scans. Completion wakes
+  refill free endpoint slots without waiting for slow peers. No new tables.
+  Remaining **1s** maintenance: provider runtimes, provider-specific action
+  outboxes, run milestone/wake-notice projection, GitHub operation recovery,
+  Teams protocol maintenance, and Slack session sync. GitHub pre-ingress recovery
+  must still inspect provider history: a lost callback has no local queue row.
+  This slice does **not** yet make the whole chat subsystem quiet. Independent
+  DB roots/direct SQL require startup recovery, as with the other migrated queues.
+  **Complete when:** all remaining lanes are demand/deadline-driven and a tenant
+  with no chat obligations issues no chat SQL. Sources:
   [app.ts](../../server/src/app.ts),
+  [chat-delivery-work.ts](../../server/src/services/chat-delivery-work.ts),
   [chat-channels.ts](../../server/src/services/chat-channels.ts).
 
 - [x] **JOB-02 — Email reconciliation.** Replaced the unconditional **1s**

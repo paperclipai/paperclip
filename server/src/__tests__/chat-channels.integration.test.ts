@@ -1,3 +1,7 @@
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
+import { notifyChatPublicationWork } from "../services/chat-work-notifications.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
 import { buildSlackAppManifest } from "@paperclipai/shared";
 import { toolAccessService } from "../services/tool-access.js";
@@ -7345,7 +7349,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const countBefore = postFetch.mock.calls.length;
     await executeConnectorTool(db, binding, "slack_post_message", uncertain);
     expect(postFetch.mock.calls).toHaveLength(countBefore);
-    await expect(executeSlackTool(db, binding, "slack_delivery", { actionId: uncertainAction.id }, postFetch as typeof fetch)).resolves.toMatchObject({ state: "delivered", receipt: { reconciled: true } });
+    const receiptSettled = vi.fn();
+    const unsubscribeReceipt = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, receiptSettled);
+    try {
+      await expect(executeSlackTool(db, binding, "slack_delivery", { actionId: uncertainAction.id }, postFetch as typeof fetch)).resolves.toMatchObject({ state: "delivered", receipt: { reconciled: true } });
+      expect(receiptSettled).toHaveBeenCalledTimes(1);
+    } finally { unsubscribeReceipt(); }
     await expect(executeConnectorTool(db, binding, "slack_create_channel", { name: "approval-required", is_private: true, idempotencyKey: randomUUID() })).rejects.toMatchObject({ reasonCode: expect.stringMatching(/approval/) });
     expect(postFetch.mock.calls.some(call => String(call[0]).endsWith("/conversations.create"))).toBe(false);
     const [approval] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, fixture.companyId));
@@ -14482,6 +14491,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .onDiscordGatewayEvent;
     if (!onGatewayEvent) throw new Error("Expected Discord Gateway callback");
 
+    const recovered = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, recovered);
     const disconnect = Promise.resolve(
       onGatewayEvent({
         endpointId: endpoint.id,
@@ -14505,7 +14516,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await Promise.resolve();
     expect(recoveryFinished).toBe(false);
     releaseDisconnect();
-    await Promise.all([disconnect, recovery]);
+    try {
+      await Promise.all([disconnect, recovery]);
+      expect(recovered).toHaveBeenCalled();
+    } finally { unsubscribe(); }
     await expect(context.service.get(endpoint.id)).resolves.toMatchObject({
       status: "active",
       healthMessage: "Connected",
@@ -17360,10 +17374,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
+    const originalTransaction = db.transaction.bind(db);
     const transaction = vi.spyOn(db, "transaction");
-    transaction.mockRejectedValueOnce(
-      new Error("injected lifecycle persistence failure"),
-    );
+    let injected = false;
+    transaction.mockImplementation(async (callback, options) => {
+      const [delivery] = await db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, "lifecycle:Ev-lifecycle-retry"),
+      ));
+      // Fail the lifecycle effect after durable admission and claim, regardless
+      // of how many transaction boundaries those writes require.
+      if (!injected && delivery?.state === "processing") {
+        injected = true;
+        throw new Error("injected lifecycle persistence failure");
+      }
+      return originalTransaction(callback, options);
+    });
     await expect(
       service.handleWebhook(
         endpoint.publicId,
@@ -32753,6 +32779,158 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
     return { ...fixture, storage, runtime, service, lanes, enqueue, cleanup };
   }
+
+  it("restores chat queue deadlines without polling blocked followers or receipt owners", async () => {
+    const f = await publicationLaneFixture(1);
+    const { service, lanes, enqueue } = f;
+    const lane = lanes[0]!;
+    try {
+      const head = await enqueue(0, "Head");
+      const tail = await enqueue(0, "Follower", 1);
+      const retryAt = new Date(Date.now() + 120_000);
+      await db.update(chatPublications).set({ state: "retry", nextAttemptAt: retryAt }).where(eq(chatPublications.id, head.id));
+      expect(await service.nextPublicationAt()).toBe(retryAt.getTime());
+      await db.update(chatPublications).set({ state: "delivery_unknown", nextAttemptAt: null }).where(eq(chatPublications.id, head.id));
+      expect(await service.nextPublicationAt()).toBeNull();
+      const leaseUntil = new Date(Date.now() + 180_000);
+      await db.update(chatPublications).set({ state: "streaming", updatedAt: new Date() }).where(eq(chatPublications.id, head.id));
+      await db.insert(chatEndpointLeases).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        leaseKey: `publication:${head.id}:0`, token: randomUUID(), expiresAt: leaseUntil });
+      expect(await service.nextPublicationAt()).toBe(leaseUntil.getTime());
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        kind: "slack_file_upload_receipt", providerActionId: randomUUID(), status: "received",
+        payload: { publicationId: head.id, publicationAttempt: 0 } });
+      expect(await service.nextSlackReceiptAt()).toBeNull();
+      await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, lane.endpoint.id));
+      await db.update(chatPublications).set({ updatedAt: new Date(Date.now() - 70_000) }).where(eq(chatPublications.id, head.id));
+      const wake = vi.fn();
+      const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatReceipts, wake);
+      try {
+        await service.scheduleQueuedPublications();
+        expect(wake).toHaveBeenCalled();
+        expect(await service.nextSlackReceiptAt()).toBeLessThanOrEqual(Date.now());
+        await service.processPendingSlackFileUploadReceipts(); // Invalid retained payload is closed, not retried.
+        expect(await service.nextSlackReceiptAt()).toBeNull();
+      } finally { unsubscribe(); }
+      await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, tail.id));
+      expect(await service.nextPublicationAt()).toBeNull();
+    } finally { await f.cleanup(); }
+  });
+
+  it("restores inbound retry and abandoned wake deadlines and excludes paused queues", async () => {
+    const f = await publicationLaneFixture(1);
+    const { service, lanes } = f;
+    const lane = lanes[0]!;
+    try {
+      const retryAt = new Date(Date.now() + 120_000);
+      const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, providerEventId: randomUUID(), deduplicationKey: randomUUID(),
+        eventKind: "message", normalizedEvent: { conversation: { externalThreadId: lane.conversation.externalThreadId } },
+        receivedAt: new Date(Date.now() - 1000), state: "retry", nextAttemptAt: retryAt }).returning();
+      const [follower] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, providerEventId: randomUUID(), deduplicationKey: randomUUID(),
+        eventKind: "message", normalizedEvent: delivery!.normalizedEvent, state: "received" }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      const [edit] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "message_updated", state: "received",
+        receivedAt: new Date(Date.now() - 2000), normalizedEvent: { ...delivery!.normalizedEvent,
+          message: { targetProviderEventId: delivery!.providerEventId } } }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      await db.update(chatDeliveries).set({ state: "filtered" }).where(eq(chatDeliveries.id, edit!.id));
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      await db.update(chatDeliveries).set({ state: "processed" }).where(eq(chatDeliveries.id, delivery!.id));
+      const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        deliveryId: delivery!.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "issued",
+        result: { retryAt: retryAt.toISOString() } }).returning();
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+      const claimedAt = new Date();
+      await db.update(chatActions).set({ status: "processing", updatedAt: claimedAt }).where(eq(chatActions.id, action!.id));
+      expect(await service.nextInboundDeliveryAt()).toBe(claimedAt.getTime() + 60_000);
+      await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      expect(await service.nextInboundDeliveryAt()).toBeNull();
+      await db.update(chatActions).set({ status: "processed" }).where(eq(chatActions.id, action!.id));
+      await db.update(chatDeliveries).set({ state: "filtered" }).where(eq(chatDeliveries.id, follower!.id));
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      expect(await service.nextInboundDeliveryAt()).toBeNull();
+      await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "installation", state: "retry",
+        nextAttemptAt: retryAt, normalizedEvent: { lifecycle: { kind: "endpoint", provider: "slack",
+          providerEventId: randomUUID(), availability: "available", reason: "Recovered" } } });
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
+    } finally { await f.cleanup(); }
+  });
+
+  it("sleeps behind an unresolved Slack tool send and wakes when its receipt settles", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "succeeded" }).returning();
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: lane.conversation.issueId,
+        authorAgentId: f.assignedAgentId, createdByRunId: run!.id, body: "Already sent" }).returning();
+      const publication = await f.enqueue(0, "Already sent");
+      await db.update(chatPublications).set({ commentId: comment!.id }).where(eq(chatPublications.id, publication.id));
+      const [send] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        conversationId: lane.conversation.id, kind: "slack_tool_write", providerActionId: randomUUID(), status: "processing",
+        payload: { name: "slack_post_message", binding: { runId: run!.id }, args: {
+          channel: lane.conversation.externalConversationId.replace(/^slack:/, ""),
+          thread_ts: lane.conversation.externalThreadId.split(":").at(-1), text: "  Already sent\n" } } }).returning();
+      await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      expect(await f.service.nextPublicationAt()).toBeNull();
+      for (const status of ["uncertain", "processed"]) {
+        await db.transaction(async tx => {
+          await notifyChatPublicationWork(tx);
+          await tx.update(chatActions).set({ status }).where(eq(chatActions.id, send!.id));
+        });
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      }
+      await vi.waitFor(async () => {
+        const [row] = await db.select().from(chatPublications).where(eq(chatPublications.id, publication.id));
+        expect(row!.state).toBe("cancelled");
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(lane.providerRuntime.posts).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
+
+  it("wakes chat dispatch after commit and refills free endpoint slots without the maintenance loop", async () => {
+    const f = await publicationLaneFixture(6);
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.lanes[0]!.providerRuntime.postHook = () => gate;
+    try {
+      await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      let settle!: () => void;
+      const commitGate = new Promise<void>(resolve => { settle = resolve; });
+      let staged!: () => void;
+      const stagedGate = new Promise<void>(resolve => { staged = resolve; });
+      const writing = db.transaction(async tx => {
+        await notifyChatPublicationWork(tx);
+        await tx.insert(chatPublications).values(f.lanes.map((lane, index) => ({ companyId: f.companyId,
+          endpointId: lane.endpoint.id, conversationId: lane.conversation.id, issueId: lane.conversation.issueId,
+          idempotencyKey: `work-test:${randomUUID()}`, payload: { text: `Queued ${index}` }, state: "pending" as const })));
+        staged(); await commitGate;
+      });
+      await stagedGate;
+      expect(f.lanes.every(lane => lane.providerRuntime.posts.length === 0)).toBe(true);
+      settle(); await writing;
+      await vi.waitFor(() => expect(f.lanes.slice(1).every(lane => lane.providerRuntime.posts.length === 1)).toBe(true), { timeout: 10_000 });
+      release();
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(chatPublications).where(eq(chatPublications.companyId, f.companyId));
+        expect(rows.every(row => row.state === "published")).toBe(true);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(onError).not.toHaveBeenCalled();
+    } finally { release(); await coordinator.stop(); await f.cleanup(); }
+  });
 
   it("refills four tracked publication endpoint lanes after a scheduled budget and joins shutdown", async () => {
     const fixture = await publicationLaneFixture(6);

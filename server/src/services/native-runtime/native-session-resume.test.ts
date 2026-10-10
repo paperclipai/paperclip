@@ -24,7 +24,6 @@ import {
   nativeRunResults,
 } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
-import * as codexCommandResolver from "../../../../packages/paperclip-runner/src/drivers/codex/codex-command.js";
 import {
   CodexAppServerDriver,
   HarnessDriverBackend,
@@ -746,6 +745,9 @@ const recoveryFakeCodex = resolve(
     };
     // The production resolver prefers installed Codex over PATH. Explicitly
     // bind this disposable fixture so it can never invoke a real provider.
+    const codexCommandResolver = await vi.importActual<{ resolveCodexCommand: () => string }>(
+      "../../../../packages/paperclip-runner/src/drivers/codex/codex-command.js",
+    );
     const resolveFixtureCodex = vi.spyOn(codexCommandResolver, "resolveCodexCommand")
       .mockReturnValue(join(bin, "codex"));
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
