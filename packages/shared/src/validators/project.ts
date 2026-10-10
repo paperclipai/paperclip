@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
+import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema } from "./trust-policy.js";
+import { objectWithoutDefaults } from "./partial.js";
+
+export const projectDiscoverySchema = z.object({
+  limit: z.number().int().min(1).max(50).default(50),
+  cursor: z.string().uuid().transform(value => value.toLowerCase()).optional(),
+}).strict();
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -8,6 +16,7 @@ const executionWorkspaceStrategySchema = z
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
+    runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
   .strict();
@@ -15,17 +24,26 @@ const executionWorkspaceStrategySchema = z
 export const projectExecutionWorkspacePolicySchema = z
   .object({
     enabled: z.boolean(),
+    sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
     defaultMode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch", "adapter_default"]).optional(),
     allowIssueOverride: z.boolean().optional(),
-    defaultProjectWorkspaceId: z.string().uuid().optional().nullable(),
+    defaultProjectWorkspaceId: z.string().guid().optional().nullable(),
+    environmentId: z.string().guid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
-    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-    branchPolicy: z.record(z.unknown()).optional().nullable(),
-    pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
-    runtimePolicy: z.record(z.unknown()).optional().nullable(),
-    cleanupPolicy: z.record(z.unknown()).optional().nullable(),
+    workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+    branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    pullRequestPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
   })
   .strict();
+
+export const projectWorkspaceRuntimeConfigSchema = z.object({
+  workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.string(), z.enum(["running", "stopped", "manual"])).optional().nullable(),
+}).strict();
 
 const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);
 const projectWorkspaceVisibilitySchema = z.enum(["default", "advanced"]);
@@ -43,7 +61,8 @@ const projectWorkspaceFields = {
   remoteProvider: z.string().optional().nullable(),
   remoteWorkspaceRef: z.string().optional().nullable(),
   sharedWorkspaceKey: z.string().optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  runtimeConfig: projectWorkspaceRuntimeConfigSchema.optional().nullable(),
 };
 
 function validateProjectWorkspace(value: Record<string, unknown>, ctx: z.RefinementCtx) {
@@ -88,27 +107,42 @@ export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema
 
 const projectFields = {
   /** @deprecated Use goalIds instead */
-  goalId: z.string().uuid().optional().nullable(),
-  goalIds: z.array(z.string().uuid()).optional(),
+  goalId: z.string().guid().optional().nullable(),
+  goalIds: z.array(z.string().guid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
-  leadAgentId: z.string().uuid().optional().nullable(),
+  leadAgentId: z.string().guid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
+  icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
+  env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 
 export const createProjectSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
+  repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
+  repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
 });
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
-export const updateProjectSchema = z.object(projectFields).partial();
+export const updateProjectSchema = objectWithoutDefaults(
+  z.object(projectFields),
+).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const addProjectAccessMemberSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().min(1),
+});
+
+export type AddProjectAccessMember = z.infer<typeof addProjectAccessMemberSchema>;
 
 export type ProjectExecutionWorkspacePolicy = z.infer<typeof projectExecutionWorkspacePolicySchema>;

@@ -1,24 +1,38 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 interface CopyTextProps {
   text: string;
   /** What to display. Defaults to `text`. */
   children?: React.ReactNode;
+  containerClassName?: string;
   className?: string;
+  ariaLabel?: string;
+  title?: string;
   /** Tooltip message shown after copying. Default: "Copied!" */
   copiedLabel?: string;
 }
 
-export function CopyText({ text, children, className, copiedLabel = "Copied!" }: CopyTextProps) {
+export function CopyText({
+  text,
+  children,
+  containerClassName,
+  className,
+  ariaLabel,
+  title,
+  copiedLabel = "Copied!",
+}: CopyTextProps) {
   const [visible, setVisible] = useState(false);
   const [label, setLabel] = useState(copiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
   const handleClick = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setLabel(copiedLabel);
     } catch {
       setLabel("Copy failed");
@@ -29,10 +43,12 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
   }, [copiedLabel, text]);
 
   return (
-    <span className="relative inline-flex">
+    <span className={cn("relative inline-flex", containerClassName)}>
       <button
         ref={triggerRef}
         type="button"
+        aria-label={ariaLabel}
+        title={title}
         className={cn(
           "cursor-copy hover:text-foreground transition-colors",
           className,

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/question-response.schema.json",
+  "title": "Paperclip question response",
+  "type": "object",
+  "required": ["schema", "answers"],
+  "properties": {
+    "schema": { "const": "paperclip.question_response.v1" },
+    "answers": {
+      "type": "object",
+      "propertyNames": { "minLength": 1, "maxLength": 160 },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "selectedOptionIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+          },
+          "text": { "type": "string", "maxLength": 100000 },
+          "customText": { "type": "string", "maxLength": 100000 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

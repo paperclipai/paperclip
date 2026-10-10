@@ -1,0 +1,147 @@
+{
+  "schema": "paperclip.rich-acp-ui-browser-proof.v1",
+  "sourceRevision": "851c60a1fbc7c68990077204022295ed2c2c11a1",
+  "recordedAt": "2026-09-28T17:17:49.521920+00:00",
+  "environment": {
+    "server": "http://localhost:6007",
+    "browser": "Chrome via Codex computer-use",
+    "platform": "macOS ARM64",
+    "data": "production components and parser, in-memory fixtures",
+    "credentials": "none"
+  },
+  "providerCalls": 0,
+  "paidProviderCalls": 0,
+  "spendUsd": 0,
+  "observedDefect": {
+    "path": "ui/src/adapters/paperclip-runner/index.ts",
+    "beforeDescriptionCharacters": 4000,
+    "canonicalDescriptionCharacters": 100000,
+    "fix": "Preserve valid complete input context; reject oversized context with an explicit notice. Render complete Markdown context in a keyboard-focusable scroll region."
+  },
+  "nativeCursor": {
+    "normalizer": "normalizeCursorPlanRequest({toolCallId: rich-acp-cursor-plan, plan: fullPlan, todos: []})",
+    "revision": "eedc589b367de4f6366ff76090d93676adb1e2238d4c5af280ac88393e1adef3",
+    "requestId": "cursor-create-plan-revision-7",
+    "pipeline": [
+      "paperclipRunnerUIAdapter",
+      "transcriptToTaskChatItems",
+      "TaskChatProtocolCard",
+      "QuestionForm"
+    ],
+    "exactAppendixDomCharacters": 99724,
+    "finalSentinelVisible": true,
+    "manuallyScrolledToEnd": true,
+    "manualApprovalReceiptVerified": true,
+    "fixtureSource": "Canonical runtime_request.created fixture matches normalizeCursorPlanRequest output; the browser does not launch Cursor or execute its normalizer.",
+    "normalizerReference": "packages/paperclip-runner/src/drivers/acpx/cursor-extensions.ts (Cursor provider branch)"
+  },
+  "storybookPlays": [
+    {
+      "storyId": "chat-comments-rich-acp-interactions--typed-questions-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--question-cancellation-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--complete-plan-accepted-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--plan-revision-cancelled-then-rejected-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--notice-details-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--native-cursor-plan-accepted-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--native-cursor-plan-rejected-verified",
+      "status": "PASS"
+    },
+    {
+      "storyId": "chat-comments-rich-acp-interactions--native-cursor-plan-cancelled-verified",
+      "status": "PASS"
+    }
+  ],
+  "automatedChecks": {
+    "uiTypecheck": "passed",
+    "targetedVitest": {
+      "files": 3,
+      "tests": 46,
+      "status": "passed"
+    },
+    "tokenGates": "passed"
+  },
+  "limitations": [
+    "No live provider process, persistence, control-plane reconnect, or Daytona browser flow was exercised.",
+    "Receipts prove UI payload identity only; provider and server enforcement are separate deterministic tests.",
+    "Native Cursor approval currently includes an optional rejection-reason page even for accept/cancel; no conditional question support is claimed.",
+    "Desktop viewport inspected; mobile was not exercised in this proof."
+  ],
+  "screenshots": [
+    {
+      "file": "integer-validation.png",
+      "sha256": "53971cce4566412b58f895d022d59e2ff31ffe87505e42c9e296081d8b44b865"
+    },
+    {
+      "file": "native-plan-accepted.png",
+      "sha256": "afc0c429e03a82e2310923448657c27312f8a2f0e768bfe85e09750d55b8f872"
+    },
+    {
+      "file": "native-plan-before-truncation.png",
+      "sha256": "89961213c0465df9a782832dda6a021b4599a42249986ec84cf65f029ed976a9"
+    },
+    {
+      "file": "native-plan-cancelled.png",
+      "sha256": "ccd70eb5faf35f723a2b33115e9b9589de492590af2ef1f9d3bb2c310556e620"
+    },
+    {
+      "file": "native-plan-full-end.png",
+      "sha256": "598b9234850cff0debfd0520619055d5b0175e69255c26c4e1d2878dce58db40"
+    },
+    {
+      "file": "native-plan-full-start.png",
+      "sha256": "8d6fd1885eb01cd2b1370ea9bf548eee082bffa882931bb7d9067364025a4af1"
+    },
+    {
+      "file": "native-plan-manual-accepted.png",
+      "sha256": "397aad94f1924f26d2c8820e1726db4ac5fcc5206c87bf14007efaf7f2377750"
+    },
+    {
+      "file": "native-plan-rejected.png",
+      "sha256": "22635bf2dce745dfa04ffd6d78f8814faaadc73b22be3856487b5922029fde0d"
+    },
+    {
+      "file": "notice-details-readable.png",
+      "sha256": "69f8aa101a22f1bf53ae9a6cd144e064e1f5790f444d98e7ca8d4d7eea6e5758"
+    },
+    {
+      "file": "notice-details.png",
+      "sha256": "8e8a6f8ee5a4700c04e996feec8bba2772c6e766e5c018610a7063bc44411de1"
+    },
+    {
+      "file": "plan-accepted.png",
+      "sha256": "e50499360d059f78b5651f2b9bc6bcdfd56fa09a51a8fd51351c64d2cef8bba8"
+    },
+    {
+      "file": "question-cancelled.png",
+      "sha256": "849035f58d700daf7f670d814ec3ea46e156306e32a48dd2d6f5f13ebd87af03"
+    },
+    {
+      "file": "typed-questions-verified.png",
+      "sha256": "564d7aab62e24ee8a5ff6899b8be497b16c417b7a7794a42f655946bc955c899"
+    }
+  ],
+  "reproduce": {
+    "command": "pnpm --filter @paperclipai/ui storybook",
+    "storyFile": "ui/storybook/stories/rich-acp-interactions.stories.tsx",
+    "instructions": "Open each story ID listed below. Storybook play assertions run against production components. Inspect the Native Cursor plan pending story and scroll the Question context region to the final sentinel."
+  },
+  "screenshotsStorage": "Screenshots are deliberately outside Git; file names and digests below identify the local captured evidence, not bundled repository assets."
+}

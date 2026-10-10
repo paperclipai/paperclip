@@ -28,12 +28,37 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` for local coding agents
-- `openclaw` / `http` for webhook-based external agents
+- `claude_local` / `codex_local` / `opencode_local` / `hermes_local` for local coding agents
+- `hermes_gateway` / `openclaw_gateway` / `http` for webhook-based external agents
 - `process` for generic local command execution
+
+Use `hermes_local` when Paperclip should start the local Hermes CLI. Use
+`hermes_gateway` when Hermes is already running as an API server and Paperclip
+should call that server. Both are built-in adapter types from the unified
+`@paperclipai/hermes-paperclip-adapter` package.
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.
+
+### Reusing model connections
+
+Both onboarding and the new-agent connection step can reuse saved credentials
+in the selected organization. A saved subscription is the default when available;
+otherwise a saved API key is selected automatically. Personal keys appear before
+organization keys. You can still choose a new key or another account:
+
+- Claude can use your saved subscription login without another sign-in.
+- OpenAI lists ChatGPT accounts saved by Paperclip's Codex sign-in flow. Choose
+  an account or select **Sign in to another account**.
+- In API-key mode, choose a saved personal or organization provider key, or
+  enter a new key. The picker recognizes canonical provider keys (such as
+  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`) and the distinct keys created by
+  agent setup.
+
+Reusing a connection binds its secret reference to the agent. It does not copy
+or rotate the saved value. The connection is tested before the agent is created;
+being listed does not guarantee that a provider still accepts the credential.
+These choices also apply to the Claude and Codex native runner setup paths.
 
 ## Agent Hiring via Governance
 

@@ -1,0 +1,53 @@
+import { describe, expect, it } from "vitest";
+import { inheritNativeRunnerAdapterConfig } from "./native-agent-runtime-inheritance.js";
+import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
+
+describe("native hire runtime inheritance", () => {
+  it("preserves Cursor's selected mode without its live session or credentials", () => {
+    expect(inheritNativeRunnerAdapterConfig({
+      provider: "acpx", acpxAgent: "cursor", acpxSessionMode: "plan", model: "exact-cursor-model",
+      runtimeSessionId: "parent-session", env: { CURSOR_API_KEY: "parent-secret" },
+    })).toEqual({ provider: "acpx", acpxAgent: "cursor", acpxSessionMode: "plan", model: "exact-cursor-model" });
+  });
+
+  it.each([
+    ["claude_managed", "managedProfileId", "managedAgentsRetentionAcknowledged"],
+    ["aws_agentcore", "agentCoreProfileId", "agentCoreRetentionAcknowledged"],
+  ])("preserves the company profile reference for %s", (provider, profileKey, retentionKey) => {
+    const inherited = inheritNativeRunnerAdapterConfig({
+      provider,
+      [profileKey]: "qualified-company-profile",
+      [retentionKey]: true,
+      runtimeSessionId: "parent-session",
+      env: { API_KEY: "parent-secret" },
+    });
+    expect(resolvePaperclipRunnerProviderProfile(inherited)).toMatchObject({
+      provider,
+      [profileKey]: "qualified-company-profile",
+    });
+    expect(inherited).not.toHaveProperty("runtimeSessionId");
+    expect(inherited).not.toHaveProperty("env");
+  });
+
+  it("inherits Dot billing acknowledgement without copying a live binding, attachment access, or workspace access", () => {
+    expect(inheritNativeRunnerAdapterConfig({ provider: "openai_dot", allowUnmeteredProvider: true, dotBindingId: "parent-binding", dotWorkspaceAccess: true, dotAttachmentAccess: true }))
+      .toEqual({ provider: "openai_dot", allowUnmeteredProvider: true });
+  });
+
+  it.each(["codex", "acpx", "opencode"])("does not copy unrelated profile references for %s", (provider) => {
+    const inherited = inheritNativeRunnerAdapterConfig({
+      provider, managedProfileId: "unrelated-managed", agentCoreProfileId: "unrelated-remote",
+    });
+    expect(inherited).not.toHaveProperty("managedProfileId");
+    expect(inherited).not.toHaveProperty("agentCoreProfileId");
+  });
+
+  it.each([null, true, {}, "", "   "])("does not copy an invalid profile reference %j", (profileId) => {
+    expect(inheritNativeRunnerAdapterConfig({ provider: "claude_managed", managedProfileId: profileId }))
+      .not.toHaveProperty("managedProfileId");
+  });
+});
+
+it("preserves Pi thinking configuration without live identity or credentials", () => {
+  expect(inheritNativeRunnerAdapterConfig({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", runtimeSessionId: "prior", env: { OPENROUTER_API_KEY: "canary" } })).toEqual({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low" });
+});
