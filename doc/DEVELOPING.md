@@ -1896,6 +1896,24 @@ credentials, query strings, fragments, and wildcards are ignored. Matching is
 by exact normalized origin, so allowing one port does not allow another.
 Link-local destinations remain denied even when explicitly listed.
 
+## Plugin HTTP Loopback Origins
+
+Plugin `ctx.http.fetch` calls use public endpoints by default. To test a plugin
+against a service on the same machine, the server owner may list exact loopback
+origins:
+
+```sh
+PAPERCLIP_PLUGIN_HTTP_LOOPBACK_ORIGINS=http://127.0.0.1:8795
+```
+
+This setting is separate from the HTTP adapter allowlist. Only `localhost`,
+`127.0.0.1`, and `[::1]` are accepted. An entry must have an HTTP(S) scheme,
+host and optional port only. Entries with paths, credentials, query strings or
+fragments are rejected. A listed origin only permits a loopback IP on that exact origin;
+other private networks and link-local addresses remain blocked. The request
+still pins the resolved address and does not follow redirects. Leave this
+setting unset when no plugin needs a local service.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:

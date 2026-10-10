@@ -106,7 +106,30 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+const PLUGIN_LOOPBACK_ORIGINS_ENV = "PAPERCLIP_PLUGIN_HTTP_LOOPBACK_ORIGINS";
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+
+function isLoopbackHost(hostname: string): boolean {
+  return ["localhost", "127.0.0.1", "::1"].includes(hostname.replace(/^\[|\]$/g, "").toLowerCase());
+}
+
+function isLoopbackIP(address: string): boolean {
+  const lower = address.toLowerCase();
+  return lower === "127.0.0.1" || lower === "::1" || lower === "::ffff:127.0.0.1";
+}
+
+/** Only an exact operator-listed loopback origin can receive plugin HTTP. */
+export function pluginHttpLoopbackOrigins(raw = process.env[PLUGIN_LOOPBACK_ORIGINS_ENV] ?? ""): ReadonlySet<string> {
+  const origins = new Set<string>();
+  for (const entry of raw.split(",")) {
+    let url: URL;
+    try { url = new URL(entry.trim()); } catch { continue; }
+    if (!ALLOWED_PROTOCOLS.has(url.protocol) || !isLoopbackHost(url.hostname) ||
+      url.username || url.password || url.search || url.hash || url.pathname !== "/") continue;
+    origins.add(url.origin.toLowerCase());
+  }
+  return origins;
+}
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -149,7 +172,7 @@ function isPrivateIP(ip: string): boolean {
  * 1. Parse and validate the URL syntax
  * 2. Enforce protocol whitelist (http/https only)
  * 3. Resolve the hostname to IP(s) via DNS
- * 4. Validate that ALL resolved IPs are non-private
+ * 4. Require a public IP, except for an exact operator-listed loopback origin
  * 5. Pin the first safe IP into the URL so fetch() does not re-resolve DNS
  *
  * This prevents DNS rebinding attacks where an attacker controls DNS to
@@ -166,7 +189,10 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+export async function validateAndResolveFetchUrl(urlString: string,
+  loopbackOrigins = pluginHttpLoopbackOrigins(),
+  lookupAddresses: (hostname: string) => Promise<Array<{ address: string; family: number }>> =
+    (hostname) => dnsLookup(hostname, { all: true })): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -185,10 +211,12 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   // between DNS resolution here and the second resolution fetch() would do.
   const originalHostname = parsed.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   const hostHeader = parsed.host; // includes port if non-default
+  const allowLoopback = isLoopbackHost(originalHostname) &&
+    loopbackOrigins.has(parsed.origin.toLowerCase());
 
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
-  const dnsPromise = dnsLookup(originalHostname, { all: true });
+  const dnsPromise = lookupAddresses(originalHostname);
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
@@ -202,10 +230,10 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
     }
 
-    // Filter to only non-private IPs instead of rejecting the entire request
-    // when some IPs are private. This handles multi-homed hosts that resolve
-    // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    // A loopback opt-in pins only loopback IPs. Other requests pin only public
+    // IPs, including for hosts that resolve to both public and private IPs.
+    const safeResults = results.filter((entry) => allowLoopback
+      ? isLoopbackIP(entry.address) : !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
@@ -274,7 +302,7 @@ function buildPinnedRequestOptions(
   };
 }
 
-async function executePinnedHttpRequest(
+export async function executePinnedHttpRequest(
   target: ValidatedFetchTarget,
   init: RequestInit | undefined,
   signal: AbortSignal,
@@ -1725,7 +1753,7 @@ export function buildHostServices(
 
     http: {
       async fetch(params) {
-        // SSRF protection: validate protocol whitelist + block private IPs.
+        // SSRF protection: validate protocol + public IP, or exact loopback opt-in.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
         const target = await validateAndResolveFetchUrl(params.url);
 
