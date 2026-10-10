@@ -19,6 +19,75 @@ const desktopCache = new Map<
   string,
   { viewerUrl: string; expiresAt: string }
 >();
+export const processProgram = String.raw`
+import os,sys,json,fcntl,subprocess,shutil,re
+p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
+def retire_owner(root,oid):
+ open(os.path.join(root,'retired'),'a').close()
+ unit='paperclip-'+oid+'.service';slice='paperclip-'+oid+'.slice'
+ subprocess.run(['systemctl','--user','stop',slice,unit],capture_output=True)
+ state=subprocess.run(['systemctl','--user','show',slice,'--property=ActiveState','--value'],capture_output=True,text=True).stdout.strip()
+ if state not in ('inactive','failed',''):raise RuntimeError('process retirement unconfirmed')
+ for entry in os.scandir(root):
+  if entry.name.startswith('command-') and entry.is_dir(follow_symlinks=False):
+   try:shutil.rmtree(entry.path)
+   except FileNotFoundError:pass
+if p['action']=='cleanup-retired':
+ # The controller supplies only its durable retired runner identities. Do not
+ # discover owners from the filesystem or touch any agent/project directory.
+ for owner in p['owners']:
+  oid=owner['id']
+  if not isinstance(oid,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',oid):raise RuntimeError('invalid retired owner')
+  root=os.path.join(base,oid)
+  if os.path.islink(root):raise RuntimeError('invalid retired owner directory')
+  if not os.path.isdir(root):continue
+  with open(os.path.join(root,'lock'),'a') as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX)
+   generation_path=os.path.join(root,'generation')
+   generation=int(open(generation_path).read()) if os.path.exists(generation_path) else 0
+   if owner['generation']<generation:print(json.dumps({'error':'conflict'}));sys.exit(0)
+   if os.path.exists(os.path.join(root,'retired')) and not any(e.name.startswith('command-') and e.is_dir(follow_symlinks=False) for e in os.scandir(root)):continue
+   retire_owner(root,oid)
+ print('{}');sys.exit(0)
+owner=p['owner'];oid=owner['id'];root=os.path.join(base,oid);os.makedirs(root,exist_ok=True)
+with open(os.path.join(root,'lock'),'a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ tombstone=os.path.join(root,'retired');unit='paperclip-'+oid+'.service';slice='paperclip-'+oid+'.slice'
+ boot=open('/proc/sys/kernel/random/boot_id').read().strip()
+ generation_path=os.path.join(root,'generation')
+ generation=int(open(generation_path).read()) if os.path.exists(generation_path) else 0
+ if owner['generation']<generation:print(json.dumps({'error':'conflict'}));sys.exit(0)
+ if p['action']=='advance':
+  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  with open(generation_path,'w') as f:f.write(str(owner['generation']))
+  print('{}')
+ elif p['action']=='retire':
+  retire_owner(root,oid)
+  print('{}')
+ elif p['action']=='inspect':
+  claim=owner.get('process');marker=os.path.join(root,'claim.json');actual=json.load(open(marker)) if os.path.exists(marker) else None
+  valid=claim and actual and claim['nonce']==actual['nonce'] and claim['launchGeneration']==actual['launchGeneration'] and actual['bootId']==boot
+  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
+  print(json.dumps({'running':bool(valid and state=='active' and not os.path.exists(tombstone)),'claim':actual if valid else claim}))
+ else:
+  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
+  claim=owner['process'];claim['bootId']=boot
+  marker=os.path.join(root,'claim.json')
+  if os.path.exists(marker):
+   old=json.load(open(marker))
+   if old['launchGeneration']>claim['launchGeneration'] or (old['launchGeneration']==claim['launchGeneration'] and old['nonce']!=claim['nonce']):print(json.dumps({'error':'conflict'}));sys.exit(0)
+   active=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()=='active'
+   if active and old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
+  with open(marker,'w') as f:json.dump(claim,f)
+  # Shell launch scripts own expansion of their positional arguments and identity markers.
+  payload=p['input'];args=['systemd-run','--user','--expand-environment=no','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
+  for key,value in payload.get('env',{}).items():args.append('--setenv='+key+'='+value)
+  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
+  if state!='active':
+   result=subprocess.run(args+['--',payload['command']]+payload.get('args',[]),capture_output=True)
+   if result.returncode:raise RuntimeError('launch failed')
+  print(json.dumps(claim))
+`;
 export function boatBackend(
   resolveKey: (record: ComputerRecord) => Promise<string>,
   fetcher: typeof fetch = fetch,
@@ -195,57 +264,7 @@ export function boatBackend(
       );
     return value;
   }
-  const processProgram = String.raw`
-import os,sys,json,fcntl,subprocess,shutil
-p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
-owner=p['owner'];oid=owner['id'];root=os.path.join(base,oid);os.makedirs(root,exist_ok=True)
-with open(os.path.join(root,'lock'),'a') as lock:
- fcntl.flock(lock,fcntl.LOCK_EX)
- tombstone=os.path.join(root,'retired');unit='paperclip-'+oid+'.service';slice='paperclip-'+oid+'.slice'
- boot=open('/proc/sys/kernel/random/boot_id').read().strip()
- generation_path=os.path.join(root,'generation')
- generation=int(open(generation_path).read()) if os.path.exists(generation_path) else 0
- if owner['generation']<generation:print(json.dumps({'error':'conflict'}));sys.exit(0)
- if p['action']=='advance':
-  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
-  with open(generation_path,'w') as f:f.write(str(owner['generation']))
-  print('{}')
- elif p['action']=='retire':
-  open(tombstone,'a').close()
-  subprocess.run(['systemctl','--user','stop',slice,unit],capture_output=True)
-  state=subprocess.run(['systemctl','--user','show',slice,'--property=ActiveState','--value'],capture_output=True,text=True).stdout.strip()
-  if state not in ('inactive','failed',''):raise RuntimeError('process retirement unconfirmed')
-  # Reap only this retired owner's command spools after its cgroup is stopped.
-  # This covers controller crashes and SSH timeouts that skipped caller cleanup.
-  for entry in os.scandir(root):
-   if entry.name.startswith('command-') and entry.is_dir(follow_symlinks=False):
-    try:shutil.rmtree(entry.path)
-    except FileNotFoundError:pass
-  print('{}')
- elif p['action']=='inspect':
-  claim=owner.get('process');marker=os.path.join(root,'claim.json');actual=json.load(open(marker)) if os.path.exists(marker) else None
-  valid=claim and actual and claim['nonce']==actual['nonce'] and claim['launchGeneration']==actual['launchGeneration'] and actual['bootId']==boot
-  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
-  print(json.dumps({'running':bool(valid and state=='active' and not os.path.exists(tombstone)),'claim':actual if valid else claim}))
- else:
-  if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
-  claim=owner['process'];claim['bootId']=boot
-  marker=os.path.join(root,'claim.json')
-  if os.path.exists(marker):
-   old=json.load(open(marker))
-   if old['launchGeneration']>claim['launchGeneration'] or (old['launchGeneration']==claim['launchGeneration'] and old['nonce']!=claim['nonce']):print(json.dumps({'error':'conflict'}));sys.exit(0)
-   active=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()=='active'
-   if active and old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
-  with open(marker,'w') as f:json.dump(claim,f)
-  # Shell launch scripts own expansion of their positional arguments and identity markers.
-  payload=p['input'];args=['systemd-run','--user','--expand-environment=no','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
-  for key,value in payload.get('env',{}).items():args.append('--setenv='+key+'='+value)
-  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
-  if state!='active':
-   result=subprocess.run(args+['--',payload['command']]+payload.get('args',[]),capture_output=True)
-   if result.returncode:raise RuntimeError('launch failed')
-  print(json.dumps(claim))
-`;
+
   async function host(record: ComputerRecord, port: number) {
     if (!Number.isInteger(port) || port < 1024 || port > 65535)
       throw new ComputerError("invalid", "Invalid preview port");
@@ -330,6 +349,17 @@ print('{}')
           computerId: record.id,
         },
       );
+      const retiredOwners = record.ledger.owners
+        .filter((owner) => owner.kind === "runner" && owner.phase === "retired")
+        .map(({ id, generation }) => ({ id, generation }));
+      if (retiredOwners.length) {
+        // Archived providers cannot clean remote files. Settle their exact
+        // retired owners after resume, before admitting any new command.
+        await execute(record, processProgram, {
+          action: "cleanup-retired",
+          owners: retiredOwners,
+        });
+      }
     },
     async advance(record, owner) {
       await execute(record, processProgram, { action: "advance", owner });
