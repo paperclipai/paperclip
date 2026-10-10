@@ -388,6 +388,81 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
   });
 
+  async function seedDeepSubtree() {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { status: "blocked", issueNumber: 1000 });
+    let boundaryId = sourceId;
+    for (let depth = 1; depth < 100; depth += 1) {
+      boundaryId = await seedIssue(companyId, {
+        parentId: boundaryId, status: "blocked", identifier: `DEEP-${depth}`, issueNumber: 1000 + depth,
+      });
+    }
+    const agentId = await seedAgent(companyId);
+    const watchdog = await seedWatchdog(companyId, sourceId, agentId);
+    return { companyId, sourceId, boundaryId, agentId, watchdog, ...createService() };
+  }
+
+  it("rejects an incomplete subtree before dispatching a stopped review", async () => {
+    const x = await seedDeepSubtree();
+    const omittedId = await seedIssue(x.companyId, {
+      parentId: x.boundaryId, status: "blocked", issueNumber: 1100,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: x.companyId, agentId: x.agentId, status: "running",
+      contextSnapshot: { issueId: omittedId },
+    });
+    expect(await x.service.reconcileTaskWatchdogs({ companyId: x.companyId }))
+      .toMatchObject({ checked: 1, triggered: 0, incomplete: 1, incompleteIssueIds: [x.sourceId], skipped: 0 });
+    expect(x.wakes).toHaveLength(0);
+    const [persisted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, x.watchdog.id));
+    expect(persisted!.watchdogIssueId).toBeNull();
+    expect(persisted!.lastObservedFingerprint).toBeNull();
+  });
+
+  it("allows a complete boundary leaf but revokes its scope when an omitted child appears", async () => {
+    const x = await seedDeepSubtree();
+    expect((await x.service.reconcileTaskWatchdogs({ companyId: x.companyId })).triggered).toBe(1);
+    const [persisted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, x.watchdog.id));
+    const scope = {
+      kind: "watchdog" as const, watchdogId: x.watchdog.id, companyId: x.companyId,
+      watchedIssueId: x.sourceId, stopFingerprint: persisted!.lastObservedFingerprint,
+    };
+    expect((await x.service.revalidateMutationScope(scope)).allowed).toBe(true);
+    const omittedId = await seedIssue(x.companyId, {
+      parentId: x.boundaryId, status: "blocked", issueNumber: 1100,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: x.companyId, agentId: x.agentId, status: "running",
+      contextSnapshot: { issueId: omittedId },
+    });
+    const incomplete = await x.service.revalidateMutationScope(scope);
+    expect(incomplete.allowed).toBe(false);
+    expect(incomplete.classification?.state).toBe("incomplete");
+    expect(incomplete.reason).toContain("incomplete");
+    expect(await x.service.reconcileForIssueAndAncestors(x.companyId, x.sourceId))
+      .toMatchObject({ triggered: 0, incomplete: 1, incompleteIssueIds: [x.sourceId], skipped: 0 });
+    expect(x.wakes).toHaveLength(1);
+    await db.update(issues).set({ parentId: x.sourceId }).where(eq(issues.id, omittedId));
+    const visible = await x.service.revalidateMutationScope(scope);
+    expect(visible.allowed).toBe(false);
+    expect(visible.classification?.state).toBe("live");
+  });
+
+  it("does not treat excluded boundary children as a truncated watched subtree", async () => {
+    const x = await seedDeepSubtree();
+    const hiddenId = await seedIssue(x.companyId, { parentId: x.boundaryId, issueNumber: 1100 });
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, hiddenId));
+    const harnessId = await seedIssue(x.companyId, { parentId: x.boundaryId, issueNumber: 1103 });
+    await db.update(issues).set({ harnessKind: "test" }).where(eq(issues.id, harnessId));
+    await seedIssue(x.companyId, {
+      parentId: x.boundaryId, issueNumber: 1101, originKind: "task_watchdog", originId: x.boundaryId,
+    });
+    const otherCompanyId = await seedCompany();
+    await seedIssue(otherCompanyId, { parentId: x.boundaryId, issueNumber: 1102 });
+    expect((await x.service.reconcileTaskWatchdogs({ companyId: x.companyId })).triggered).toBe(1);
+    expect(x.wakes).toHaveLength(1);
+  });
+
   it("reconciles ancestor watchdogs for a descendant issue mutation", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-ANCESTOR", status: "done" });
