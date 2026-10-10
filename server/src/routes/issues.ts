@@ -1420,6 +1420,15 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
   "automation",
 ]);
 
+// Wake reasons the wake-diagnostics projection is allowed to echo back verbatim.
+// Anything outside this list is projected to "other" (see
+// projectWakeDiagnosticReason below), so a platform wake reason that is missing
+// here is rendered as "other" in GET /api/issues/:id/diagnostics/wakes even though
+// the wake itself was delivered correctly. Reasons written by third-party
+// callers, and therefore never echoed back, stay outside this list on purpose.
+// Add a reason here only when it is a constant the server itself writes; the
+// issue wake request write sites live in routes/, services/ and
+// modules/wake-queue/.
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_execution_deferred",
   "chat_task_completed",
@@ -1435,6 +1444,58 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  // Heartbeat scheduling and cap skips; the skip reason is stored as the wake reason.
+  "heartbeat.scheduling_suppressed",
+  "heartbeat.worktree_execution_cutoff",
+  "heartbeat.daily_run_limit",
+  "heartbeat.daily_cost_limit",
+  "heartbeat_timer",
+  // Issue status and board transitions.
+  "issue_status_changed",
+  "issue_reopened_via_comment",
+  "issue_checked_out",
+  "issue_unblock_requested",
+  "issue_children_completed",
+  // Issue tree control.
+  "issue_tree_restored",
+  "issue_tree_resumed",
+  // Execution policy stages and approvals.
+  "execution_review_requested",
+  "execution_approval_requested",
+  "execution_changes_requested",
+  "approval_approved",
+  // Issue execution scheduling.
+  "issue_execution_promoted",
+  "issue_execution_deferred",
+  "issue_execution_same_name",
+  "issue_execution_issue_not_found",
+  "issue_state_guard_mismatch",
+  "issue_rewake_throttled",
+  // Recovery sweeps, monitors and continuations.
+  "issue_recovery_action_restored",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
+  "monitor_due",
+  "issue_assignment_recovery",
+  "issue_continuation_needed",
+  "provider_quota_recovery",
+  // Scheduled monitors and bounded retries the dispatcher enqueues itself.
+  "issue_monitor_due",
+  "transient_failure_retry",
+  "workspace_busy_retry",
+  "max_turns_continuation_retry",
+  "ai_connection_busy_retry",
+  "interaction_continuation_infra_retry",
+  "execution_review_participant_recovery",
+  "native_safe_replacement",
+  "issue_review_path_lost",
+  // Interaction hand-off wake.
+  "interaction_pending",
+  // Operator- and timer-driven wakes.
+  "retry_failed_run",
+  "queued_comment_interrupt",
+  "goal_control",
+  "skill_test_run_created",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
