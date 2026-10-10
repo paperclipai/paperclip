@@ -2121,6 +2121,46 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(receipt!.evidence).toEqual(newerEvidence);
   });
 
+  it.each(["manual", "task_watchdog", "task_watchdog_product_bug"] as const)(
+    "only business children with origin %s establish a restored recovery path",
+    async (originKind) => {
+      const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+      const childId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(issues).values({
+        id: childId, companyId, parentId: sourceIssueId,
+        title: "Active child", originKind, status: "in_progress",
+        assigneeAgentId: managerId,
+        issueNumber: 2, identifier: `${prefix}-2`,
+      });
+      await seedHeartbeatRun({ companyId, agentId: managerId, runId, issueId: childId });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, childId));
+      const action = await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId, sourceIssueId, kind: "missing_disposition", ownerType: "board",
+        returnOwnerAgentId: coderId, cause: "successful_run_missing_issue_disposition",
+        fingerprint: "child-path:test", nextAction: "Review the interrupted source.",
+        wakePolicy: { type: "board_escalation" },
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+      const blockers = await db.select().from(issueRelations).where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, sourceIssueId),
+        eq(issueRelations.type, "blocks"),
+      ));
+      const [stored] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      if (originKind === "task_watchdog") {
+        expect(blockers).toHaveLength(0);
+        expect(stored?.status).toBe("active");
+      } else {
+        expect(blockers.map((row) => row.issueId)).toEqual([childId]);
+        expect(stored).toMatchObject({ status: "resolved", resolutionNote: "durable_path_restored:healthy_child" });
+      }
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
+
   it("resolves an active recovery action and removes it from active projections", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);

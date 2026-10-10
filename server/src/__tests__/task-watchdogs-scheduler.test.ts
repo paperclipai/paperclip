@@ -22,6 +22,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { recoveryService } from "../services/recovery/service.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -547,6 +549,44 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       lastObservedFingerprint: newerFingerprint,
     });
     expect(wakes.length).toBe(2);
+  });
+
+  it("keeps a live watchdog review fresh when stranded recovery scans its child issue", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-RECOVERY", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, sourceId));
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    const childId = watchdog!.watchdogIssueId!;
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, status: "running", invocationSource: "assignment",
+      contextSnapshot: { issueId: childId },
+    });
+    await db.update(issues).set({ status: "in_progress", executionRunId: runId }).where(eq(issues.id, childId));
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId: sourceId, kind: "missing_disposition", ownerType: "board",
+      returnOwnerAgentId: agentId, cause: "successful_run_missing_issue_disposition",
+      fingerprint: "watchdog-recovery:test", nextAction: "Review the interrupted source.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const scope = {
+      kind: "watchdog" as const, watchdogId: watchdog!.id, companyId,
+      watchedIssueId: sourceId, stopFingerprint: originalFingerprint,
+    };
+    expect((await service.revalidateMutationScope(scope)).allowed).toBe(true);
+    await recoveryService(db, { enqueueWakeup: async () => null }).reconcileStrandedAssignedIssues();
+    const revalidated = await service.revalidateMutationScope(scope);
+    expect(revalidated.allowed).toBe(true);
+    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped subtree");
+    expect(revalidated.classification.stopFingerprint).toBe(originalFingerprint);
+    // The review must still be fenced after a real business-state change.
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceId));
+    expect((await service.revalidateMutationScope(scope)).allowed).toBe(false);
   });
 
   it("keeps watchdog mutation scope valid across metadata-only source evidence", async () => {
