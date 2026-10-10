@@ -362,6 +362,7 @@ import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js
 import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
+  resolveAdapterExecutionTargetTimeoutSec,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentInstructionWorkingCopyService, collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
@@ -633,6 +634,7 @@ import {
   instanceSettingsService,
   resolveWorktreeRunExecutionActivation,
 } from "./instance-settings.js";
+import { readAdapterRunTimeoutPolicy } from "./adapter-run-timeout.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
@@ -6767,6 +6769,15 @@ export function heartbeatService(
         const runGoalControlRequestId = readNonEmptyString(
           context.goalControlRequestId,
         );
+        // Company/instance run-timeout default, resolved once and shared by
+        // both dispatch paths: a native run enforces it as the turn timeout and
+        // an adapter run receives it on the execution context. Read per run,
+        // because the setting is operator-editable and a stale cache would keep
+        // a removed wall clock in force.
+        const adapterTimeoutPolicy = await readAdapterRunTimeoutPolicy(
+          db,
+          runtimeEnv,
+        );
         try {
           if (nativeRuntimeResolution.kind === "native") {
             if (!nativeExecution || !nativeRunnerInstanceId)
@@ -6852,7 +6863,20 @@ export function heartbeatService(
                     getFreshSessionHandoff: getNativeFreshSessionHandoff,
                     refreshTools: context.refreshTools === true,
                     conversationMode: isConversation(issueContext),
-                    turnTimeoutMs: Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)) * 1_000,
+                    // Resolve the turn wall clock through the same chain the
+                    // legacy adapter path uses, so the company/instance policy
+                    // bounds native runs too. The clamp preserves today's
+                    // native behavior for an opted-out (negative) per-agent
+                    // value: 0 means "no turn timeout".
+                    turnTimeoutMs:
+                      Math.max(
+                        0,
+                        resolveAdapterExecutionTargetTimeoutSec(
+                          executionTarget,
+                          asNumber(runtimeConfig.timeoutSec, 0),
+                          adapterTimeoutPolicy,
+                        ),
+                      ) * 1_000,
                     runnerInstanceId: nativeRunnerInstanceId,
                     leaseOwner: runOptions.nativeLeaseOwner,
                     restartRecovery: runOptions.nativeRestartRecovery,
@@ -7063,6 +7087,8 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            // adapterTimeoutPolicy was resolved above, before the dispatch
+            // branch, so the native and legacy paths cannot drift apart.
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
@@ -7079,6 +7105,7 @@ export function heartbeatService(
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
                     executionTarget,
+                    adapterTimeoutPolicy,
                     executionTransport: remoteExecution
                       ? {
                           remoteExecution: remoteExecution as unknown as Record<

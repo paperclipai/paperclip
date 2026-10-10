@@ -341,6 +341,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const adapterExecutionTimeout = resolveAdapterExecutionTargetTimeout(
       executionTarget,
       asNumber(config.timeoutSec, 0),
+      ctx.adapterTimeoutPolicy,
     );
     const timeoutSec = adapterExecutionTimeout.timeoutSec;
     const graceSec = asNumber(config.graceSec, 20);

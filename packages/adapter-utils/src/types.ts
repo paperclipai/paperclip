@@ -3,7 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
-import type { AdapterExecutionTarget } from "./execution-target.js";
+import type {
+  AdapterExecutionTarget,
+  AdapterExecutionTargetTimeoutPolicy,
+} from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 import type { AdapterExecutionPhaseSink } from "./execution-phase.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
@@ -260,6 +263,14 @@ export interface AdapterExecutionContext {
   getFreshSessionHandoff?: () => Promise<string | null>;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
+  /**
+   * Host-resolved deployment-wide run-timeout default (instance setting, else
+   * `PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC`). Absent means no policy, which keeps
+   * the historical unlimited behavior for local/SSH targets. The adapter
+   * passes it to `resolveAdapterExecutionTargetTimeout*` so the per-agent
+   * `adapterConfig.timeoutSec` stays the first rung of the precedence chain.
+   */
+  adapterTimeoutPolicy?: AdapterExecutionTargetTimeoutPolicy | null;
   /**
    * Legacy remote transport view. Prefer `executionTarget`, which is the
    * provider-neutral contract produced by core runtime code.

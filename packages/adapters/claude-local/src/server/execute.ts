@@ -113,6 +113,7 @@ interface ClaudeExecutionInput {
   context: Record<string, unknown>;
   runtimeCommandSpec?: AdapterExecutionContext["runtimeCommandSpec"];
   executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
+  adapterTimeoutPolicy?: AdapterExecutionContext["adapterTimeoutPolicy"];
   authToken?: string;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
@@ -319,6 +320,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
+    input.adapterTimeoutPolicy,
   );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
@@ -466,6 +468,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
     runtimeCommandSpec: ctx.runtimeCommandSpec,
     executionTarget,
+    adapterTimeoutPolicy: ctx.adapterTimeoutPolicy,
     authToken,
     onLog,
   });

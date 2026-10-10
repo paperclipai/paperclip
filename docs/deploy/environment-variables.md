@@ -27,6 +27,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` | (unset) | Optional pinned npm package spec (for example, `@openai/codex@0.160.0`) installed inside each fresh remote lease when its Codex harness is not baked into the sandbox image. Mutually exclusive with `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH`; Paperclip verifies the installed executable before starting `runnerd`. |
 | `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` | `/opt/paperclip-runner/provider-pack` in Docker; otherwise unset | Host-local path to the immutable provider pack built by `pnpm --filter @paperclipai/paperclip-runner build:provider-pack`. Stamped standard Docker images include the pack; downstream compositions and the `cloud` target inherit it. Unstamped local Docker builds skip pack generation. The pack includes its target-built Node 24.11+ runtime, locked production dependencies, OpenCode proxy/executable, and ACPX sidecar. Remote OpenCode and ACPX fail closed without it. A preinstalled pack is accepted only when its complete digested manifest matches this build-owned pack; otherwise Paperclip stages this pack into the sandbox. |
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
+| `PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC` | (unset) | Default wall-clock limit in seconds for one agent run on local and SSH targets, used when the `adapterRunTimeoutSec` instance setting is unset. Positive adds a limit, negative means "no wall-clock timeout" for every unconfigured agent, and `0`/blank means no policy (local and SSH runs stay unlimited). A per-agent `adapterConfig.timeoutSec` always wins, and sandbox targets keep their own 4h transport default. A non-numeric value refuses startup, matching the other operator knobs. See `doc/spec/agents-runtime.md`. |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
 Daytona connectivity for `paperclip_runner` uses authenticated provider
@@ -94,7 +95,8 @@ Daytona snapshot for future leases.
   `instance.experimental` floors every experimental toggle write.
 - Any Instance → General section: `instance.general.censorUsernameInLogs`,
   `instance.general.backupRetention`,
-  `instance.general.feedbackDataSharingPreference` (each also rejects
+  `instance.general.feedbackDataSharingPreference`,
+  `instance.general.adapterRunTimeoutSec` (each also rejects
   value-changing writes via `PATCH /api/instance/settings/general`), plus the
   UI-only `instance.general.deploymentStatus` and `instance.general.signOut`.
 - Any experimental toggle: `instance.experimental.<flagKey>` (e.g.

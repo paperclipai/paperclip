@@ -1954,11 +1954,15 @@ async function buildRuntime(input: {
     headers: [{ name: "Authorization", value: `Bearer ${server.token}` }],
   }));
   // Resolve the wall-clock timeout through the shared execution-target
-  // resolver so sandbox-backed runs pick up the 4h backstop default while
-  // local/SSH runs keep the historical "0 = no adapter timeout" behavior.
+  // resolver so sandbox-backed runs pick up the 4h backstop default and
+  // local/SSH runs pick up the deployment policy default (instance setting,
+  // else PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC) instead of defaulting to
+  // unbounded. With no policy configured, local/SSH keep "0 = no adapter
+  // timeout".
   const timeoutResolution = resolveAdapterExecutionTargetTimeout(
     executionTarget,
     asNumber(config.timeoutSec, DEFAULT_ACP_ENGINE_TIMEOUT_SEC),
+    input.ctx.adapterTimeoutPolicy,
   );
   const timeoutSec = timeoutResolution.timeoutSec;
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));

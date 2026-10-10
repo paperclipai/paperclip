@@ -65,6 +65,7 @@ import {
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
+import { readAdapterRunTimeoutPolicyFromEnv, ADAPTER_RUN_TIMEOUT_SEC_ENV_KEY } from "@paperclipai/adapter-utils";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
@@ -799,6 +800,20 @@ async function startServerWithDatabaseTeardown(
     }
   } catch (err) {
     logger.error({ err }, "invalid PAPERCLIP_SETTING_DEFAULTS; refusing to start (fail closed)");
+    throw err;
+  }
+
+  // Adapter run-timeout policy (PAPERCLIP_ADAPTER_RUN_TIMEOUT_SEC). Same
+  // fail-closed posture: a non-numeric value refuses startup instead of
+  // surfacing later as a run that dies at dispatch time, which is the worst
+  // moment to learn the operator's timeout policy was never applied.
+  try {
+    readAdapterRunTimeoutPolicyFromEnv();
+  } catch (err) {
+    logger.error(
+      { err },
+      `invalid ${ADAPTER_RUN_TIMEOUT_SEC_ENV_KEY}; refusing to start (fail closed)`,
+    );
     throw err;
   }
 

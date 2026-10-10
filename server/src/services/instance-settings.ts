@@ -208,12 +208,18 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
+      // Run-timeout policy. Absent, null, or 0 all mean "no policy": the
+      // resolver treats 0 as unset because the adapter config UI persists 0
+      // for untouched per-agent fields. Negative stays intact as the
+      // deployment-level opt-out.
+      adapterRunTimeoutSec: parsed.data.adapterRunTimeoutSec ?? null,
     };
   }
   return {
     censorUsernameInLogs: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    adapterRunTimeoutSec: null,
   };
 }
 
