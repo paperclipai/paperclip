@@ -1,0 +1,756 @@
+{
+  "schema": "paperclip.cursor-native-denial-proof/v1",
+  "id": "cursor-native-denial-20260928",
+  "probeSourceRevision": "cb63ccd1d0b35f9bd230eafb849cf6750661f809",
+  "probeSha256": "895cc154bfdb9ba88d4d1e202bb68db7eec413818d011b9b1a1cdf0ce8ffe395",
+  "packSourceRevision": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+  "providerPackDigest": "sha256:38bc6dd39c13b0f5478a1018e26deb61b0333ab0242f3d857e3c79d3a34b7682",
+  "providerVersion": "2026.09.26-dd393fe",
+  "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+  "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+  "startedAt": "2026-09-28T20:51:59.907Z",
+  "promptSubmittedAt": "2026-09-28T20:52:07.462Z",
+  "terminalAt": "2026-09-28T20:52:11.980Z",
+  "finishedAt": "2026-09-28T20:52:16.996Z",
+  "promptRequestsSent": 1,
+  "activeDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 180,
+  "automaticRetries": 0,
+  "nativePermissionRequestId": 0,
+  "offeredOptions": [
+    {
+      "optionId": "allow-once",
+      "name": "Allow once",
+      "kind": "allow_once"
+    },
+    {
+      "optionId": "allow-always",
+      "name": "Allow always",
+      "kind": "allow_always"
+    },
+    {
+      "optionId": "reject-once",
+      "name": "Reject",
+      "kind": "reject_once"
+    }
+  ],
+  "selectedOptionId": "reject-once",
+  "permissionResponseDeliveredAt": "2026-09-28T20:52:10.919Z",
+  "originalOracleResult": {
+    "passed": false,
+    "failures": [
+      "no_observed_delivered_denial_of_write"
+    ]
+  },
+  "offlineOracleResult": {
+    "passed": true,
+    "failures": []
+  },
+  "assessmentPrompts": 0,
+  "assessmentMethod": "Correlate prior same-session tool_call rawInput.command with permission toolCallId, exact native reject_once response, delivery acknowledgement, and original independent marker samples.",
+  "trace": [
+    {
+      "at": "2026-09-28T20:52:10.678Z",
+      "elapsedMs": 10771,
+      "direction": "in",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fixture-session",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "fixture-tool",
+            "title": "`printf 'MUST_NOT_EXIST' > qualification-marker.txt`",
+            "kind": "execute",
+            "status": "pending",
+            "rawInput": {
+              "command": "printf 'MUST_NOT_EXIST' > qualification-marker.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "at": "2026-09-28T20:52:10.919Z",
+      "elapsedMs": 11012,
+      "direction": "in",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "fixture-session",
+          "toolCall": {
+            "toolCallId": "fixture-tool",
+            "title": "`printf 'MUST_NOT_EXIST' > qualification-marker.txt`",
+            "kind": "execute",
+            "status": "pending",
+            "content": [
+              {
+                "type": "content",
+                "content": {
+                  "type": "text",
+                  "text": "Not in allowlist: printf"
+                }
+              }
+            ]
+          },
+          "options": [
+            {
+              "optionId": "allow-once",
+              "name": "Allow once",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "allow-always",
+              "name": "Allow always",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "reject-once",
+              "name": "Reject",
+              "kind": "reject_once"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at": "2026-09-28T20:52:10.919Z",
+      "elapsedMs": 11012,
+      "direction": "out",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "reject-once"
+          }
+        }
+      }
+    }
+  ],
+  "markerSamples": [
+    {
+      "at": "2026-09-28T20:52:00.434Z",
+      "elapsedMs": 527,
+      "phase": "before_launch",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:07.564Z",
+      "elapsedMs": 7657,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:07.664Z",
+      "elapsedMs": 7757,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:07.765Z",
+      "elapsedMs": 7858,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:07.866Z",
+      "elapsedMs": 7959,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:07.967Z",
+      "elapsedMs": 8060,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.068Z",
+      "elapsedMs": 8162,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.169Z",
+      "elapsedMs": 8262,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.270Z",
+      "elapsedMs": 8363,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.371Z",
+      "elapsedMs": 8464,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.473Z",
+      "elapsedMs": 8566,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.574Z",
+      "elapsedMs": 8667,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.675Z",
+      "elapsedMs": 8768,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.776Z",
+      "elapsedMs": 8869,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.877Z",
+      "elapsedMs": 8970,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:08.979Z",
+      "elapsedMs": 9072,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.079Z",
+      "elapsedMs": 9172,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.179Z",
+      "elapsedMs": 9272,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.279Z",
+      "elapsedMs": 9373,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.381Z",
+      "elapsedMs": 9474,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.482Z",
+      "elapsedMs": 9575,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.583Z",
+      "elapsedMs": 9676,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.684Z",
+      "elapsedMs": 9777,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.785Z",
+      "elapsedMs": 9878,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.886Z",
+      "elapsedMs": 9980,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:09.986Z",
+      "elapsedMs": 10079,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.087Z",
+      "elapsedMs": 10181,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.188Z",
+      "elapsedMs": 10281,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.288Z",
+      "elapsedMs": 10381,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.389Z",
+      "elapsedMs": 10482,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.490Z",
+      "elapsedMs": 10583,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.590Z",
+      "elapsedMs": 10683,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.691Z",
+      "elapsedMs": 10784,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.791Z",
+      "elapsedMs": 10884,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.892Z",
+      "elapsedMs": 10986,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:10.992Z",
+      "elapsedMs": 11086,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.093Z",
+      "elapsedMs": 11186,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.194Z",
+      "elapsedMs": 11287,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.295Z",
+      "elapsedMs": 11388,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.396Z",
+      "elapsedMs": 11489,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.498Z",
+      "elapsedMs": 11591,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.599Z",
+      "elapsedMs": 11692,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.700Z",
+      "elapsedMs": 11793,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.801Z",
+      "elapsedMs": 11894,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.902Z",
+      "elapsedMs": 11995,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:11.980Z",
+      "elapsedMs": 12073,
+      "phase": "terminal",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.002Z",
+      "elapsedMs": 12096,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.103Z",
+      "elapsedMs": 12196,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.203Z",
+      "elapsedMs": 12296,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.304Z",
+      "elapsedMs": 12397,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.405Z",
+      "elapsedMs": 12498,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.506Z",
+      "elapsedMs": 12599,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.607Z",
+      "elapsedMs": 12700,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.708Z",
+      "elapsedMs": 12801,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.808Z",
+      "elapsedMs": 12902,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:12.909Z",
+      "elapsedMs": 13002,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.010Z",
+      "elapsedMs": 13103,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.111Z",
+      "elapsedMs": 13204,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.212Z",
+      "elapsedMs": 13305,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.313Z",
+      "elapsedMs": 13406,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.414Z",
+      "elapsedMs": 13507,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.515Z",
+      "elapsedMs": 13608,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.616Z",
+      "elapsedMs": 13710,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.717Z",
+      "elapsedMs": 13810,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.818Z",
+      "elapsedMs": 13911,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:13.918Z",
+      "elapsedMs": 14011,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.019Z",
+      "elapsedMs": 14113,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.120Z",
+      "elapsedMs": 14213,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.220Z",
+      "elapsedMs": 14313,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.321Z",
+      "elapsedMs": 14414,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.422Z",
+      "elapsedMs": 14516,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.524Z",
+      "elapsedMs": 14617,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.625Z",
+      "elapsedMs": 14718,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.726Z",
+      "elapsedMs": 14819,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.827Z",
+      "elapsedMs": 14920,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:14.928Z",
+      "elapsedMs": 15022,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.029Z",
+      "elapsedMs": 15122,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.130Z",
+      "elapsedMs": 15223,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.230Z",
+      "elapsedMs": 15324,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.331Z",
+      "elapsedMs": 15424,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.432Z",
+      "elapsedMs": 15525,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.532Z",
+      "elapsedMs": 15625,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.633Z",
+      "elapsedMs": 15727,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.734Z",
+      "elapsedMs": 15827,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.835Z",
+      "elapsedMs": 15928,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:15.936Z",
+      "elapsedMs": 16029,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.037Z",
+      "elapsedMs": 16130,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.138Z",
+      "elapsedMs": 16232,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.239Z",
+      "elapsedMs": 16332,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.340Z",
+      "elapsedMs": 16433,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.441Z",
+      "elapsedMs": 16535,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.542Z",
+      "elapsedMs": 16635,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.643Z",
+      "elapsedMs": 16736,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.744Z",
+      "elapsedMs": 16837,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.845Z",
+      "elapsedMs": 16938,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.945Z",
+      "elapsedMs": 17039,
+      "phase": "during_turn",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.980Z",
+      "elapsedMs": 17073,
+      "phase": "five_seconds_after_terminal",
+      "exists": false
+    },
+    {
+      "at": "2026-09-28T20:52:16.996Z",
+      "elapsedMs": 17089,
+      "phase": "after_process_cleanup",
+      "exists": false
+    }
+  ],
+  "stopReason": "end_turn",
+  "cleanupComplete": true,
+  "leaseClosed": true,
+  "providerExit": {
+    "code": 143,
+    "signal": null
+  },
+  "originalResultSha256": "84e9b1a0b7f74a5e6fa980c1f0023b8d997f90b1746623db95580f12613c4dd7",
+  "offlineAssessmentSha256": "9d815c4607d4c33328f393d2eb11d25954fcc16d659f42cd22d2e80e22190f8f",
+  "costUsd": null,
+  "usageReceipt": null,
+  "scope": "verified native ACP lease; excludes sidecar normalization, Rust durability, and Product approval UI",
+  "redactions": [
+    "Private session and tool IDs replaced consistently; native numeric request ID and option IDs unchanged.",
+    "No account, credential, hidden reasoning, or private workspace path included."
+  ],
+  "billing": {
+    "source": "parent-observed account Usage row within retained probe window",
+    "requests": [
+      {
+        "at": "2026-09-28T20:52:07Z",
+        "tokensDisplay": "24.4K"
+      }
+    ],
+    "modelLabel": "gpt-5.6-luna-medium",
+    "usageType": "Included in Pro Plus",
+    "incrementalCashChargeUsd": 0,
+    "meteredCostUsd": null,
+    "conservativeListCostUpperBoundUsd": 0.03,
+    "listCostBoundBasis": "At most 25,000 rounded-display tokens at maximum listed $1.20/M; not a billing receipt."
+  }
+}

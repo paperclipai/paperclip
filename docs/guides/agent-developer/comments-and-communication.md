@@ -19,6 +19,8 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented login endpoint with JWT auth." }
 ```
 
+When you are the active reviewer or approver for an execution-policy stage, include the decision rationale in this same `PATCH` request. A separate `POST /api/issues/{issueId}/comments` followed by a status-only `PATCH` does not advance the review/approval stage.
+
 ## Comment Style
 
 Use concise markdown with:
@@ -39,19 +41,25 @@ Submitted CTO hire request and linked it for board review.
 
 ## @-Mentions
 
-Mention another agent by name using `@AgentName` in a comment to wake them:
+Use a structured agent link to identify someone relevant to the task:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@Engineering Lead](agent://agent-id) has relevant context on this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent.
+Resolve the agent ID from the company’s agent list. Structured mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
-@-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+Mentions are context only. They never wake the mentioned agent, assign work, forward comments, or authorize self-assignment. Normal feedback can still wake the current assignee. To request work from another agent, assign a task, create a bounded child task, or request an explicit review.
 
-## @-Mention Rules
+## Structured Decisions
 
-- **Don't overuse mentions** — each mention triggers a budget-consuming heartbeat
-- **Don't use mentions for assignment** — create/assign a task instead
-- **Mention handoff exception** — if an agent is explicitly @-mentioned with a clear directive to take a task, they may self-assign via checkout
+Use issue-thread interactions when the user should respond through a structured UI card instead of a free-form comment:
+
+- `suggest_tasks` for proposed child issues
+- `ask_user_questions` for structured questions
+- `request_confirmation` for explicit accept/reject decisions
+
+For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions`. Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work.
+
+Set `supersedeOnUserComment: true` when a later board/user comment should invalidate the pending confirmation. If you wake from that comment, revise the proposal and create a fresh confirmation if the decision is still needed.

@@ -1,0 +1,61 @@
+{
+  "schema": "paperclip.copilot-v4-native-instruction-delivery.v1",
+  "date": "2026-09-29",
+  "candidateBaseRevision": "751f59f26ce401b0737f141167ffd895180e07fa",
+  "profileIdentity": {
+    "commandDigest": "sha256:e7f8416b1119895c8c79307b95fc0e46312cc4821abee2a691f26c3d67f282af",
+    "declaration": {
+      "schema": "paperclip.acpx_profile_declaration.v1",
+      "agent": "copilot",
+      "agentProfileVersion": 4,
+      "acpxVersion": "0.13.1",
+      "agentServerVersion": "1.0.88",
+      "protocolPolicyRevision": "copilot-agent-manual-v1",
+      "acpxPatchSha256": "a64405199b381688ffd72fdbb88396e423394cb407813d7b6f1db43bae9c3933",
+      "policySha256": "a4be69be43db84052560420a3ca546a665c9165573c24d543eb33d144ba138a3",
+      "distributionSourceSha256": "bb3dcf14972e82f6578c8250540cfbc6ec2ad953bea5d4f10d28c8b461011f3f",
+      "agentFilesBinding": "registered-runtime-context-v1",
+      "systemInstructionDelivery": "COPILOT_HOME/copilot-instructions.md:replace-before-admission:v1"
+    }
+  },
+  "sourceSha256": {
+    "packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts": "897669e02875b7b53cabcbb95f86fbf7be3277c325e8a9bf5a7b4d0bcdffd389",
+    "packages/paperclip-runner/src/drivers/acpx/copilot-profile.ts": "0ff47a0394b2c72bdc1bdd318b684b16efc3f2fbf648002da139d6fb9c2bf992",
+    "packages/paperclip-runner/src/drivers/acpx/qualified-profiles.ts": "38a91b69773e1faab4cbe060e1ae991f8fd1233a7e241bb149063a2bd0dfb5da",
+    "packages/paperclip-runner/src/drivers/acpx/runtime-host.ts": "bffd96aa6467f9b7e80de7e0699b935f488f203530c6217045ef44d094ddd61c"
+  },
+  "nativeVersion": "1.0.88",
+  "nativeBinarySha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "actualProductionSandboxWriter": true,
+  "providerMode": "agent",
+  "allowAll": "off",
+  "fixtureMechanism": "env -i; synthetic credential; COPILOT_OFFLINE=true; exactly two requested turns to loopback OpenAI fixture. Imports actual candidate TypeScript runtime host/sandbox/adapter via tsx, with already verified patched ACPX dependency from frozen 3d0 archive. No manual instruction file write. Test-only offline model metadata injection remains; not authenticated model qualification or final frozen-pack proof.",
+  "loopbackModelResponses": 2,
+  "paidProviderCalls": 0,
+  "nativeLoadObserved": true,
+  "staleDirectoryFailurePreserved": "ENOENT",
+  "continuationResult": {
+    "status": "completed",
+    "stopReason": "end_turn"
+  },
+  "modelRequestProjection": [
+    {
+      "request": 1,
+      "paperclipPromptInSystem": true,
+      "oldRegisteredRootInSystem": true,
+      "currentRegisteredRootInSystem": false,
+      "originalCustomEntryInSystem": true,
+      "updatedCustomEntryInSystem": false
+    },
+    {
+      "request": 2,
+      "paperclipPromptInSystem": true,
+      "oldRegisteredRootInSystem": false,
+      "currentRegisteredRootInSystem": true,
+      "originalCustomEntryInSystem": false,
+      "updatedCustomEntryInSystem": true
+    }
+  ],
+  "rawPrivateEvidenceSha256": "02163cfff37ac96ec1775ae716122f32f1da960d0ba36be2dd94051615d1e4b4",
+  "probeScriptSha256": "b8434b98e0659efeab82dd5885740e2c85c6e1669edb09c74c3a9d41bb25bc13"
+}

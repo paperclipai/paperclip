@@ -6,23 +6,28 @@ interface SwipeToArchiveProps {
   children: ReactNode;
   onArchive: () => void;
   disabled?: boolean;
+  selected?: boolean;
   className?: string;
 }
 
-const COMMIT_THRESHOLD = 0.4;
-const MAX_SWIPE = 0.92;
-const COMMIT_DELAY_MS = 210;
+const COMMIT_THRESHOLD = 0.32;
+const MAX_SWIPE = 0.88;
+const COMMIT_DELAY_MS = 140;
 
 export function SwipeToArchive({
   children,
   onArchive,
   disabled = false,
+  selected = false,
   className,
 }: SwipeToArchiveProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const startPointRef = useRef<{ x: number; y: number } | null>(null);
   const widthRef = useRef(0);
-  const timeoutRef = useRef<number | null>(null);
+  const archiveTimeoutRef = useRef<number | null>(null);
+  const suppressClickTimeoutRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const offsetXRef = useRef(0);
   const [offsetX, setOffsetX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isCollapsing, setIsCollapsing] = useState(false);
@@ -30,44 +35,83 @@ export function SwipeToArchive({
 
   useEffect(() => {
     return () => {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-      }
+      if (archiveTimeoutRef.current !== null) window.clearTimeout(archiveTimeoutRef.current);
+      if (suppressClickTimeoutRef.current !== null) window.clearTimeout(suppressClickTimeoutRef.current);
+      archiveTimeoutRef.current = null;
+      suppressClickTimeoutRef.current = null;
+      startPointRef.current = null;
+      suppressClickRef.current = false;
     };
   }, []);
 
+  const clearArchiveTimeout = () => {
+    if (archiveTimeoutRef.current === null) return;
+    window.clearTimeout(archiveTimeoutRef.current);
+    archiveTimeoutRef.current = null;
+  };
+
+  const clearClickSuppressionTimeout = () => {
+    if (suppressClickTimeoutRef.current === null) return;
+    window.clearTimeout(suppressClickTimeoutRef.current);
+    suppressClickTimeoutRef.current = null;
+  };
+
+  const clearClickSuppression = () => {
+    clearClickSuppressionTimeout();
+    suppressClickRef.current = false;
+  };
+
+  const releaseClickSuppressionSoon = () => {
+    clearClickSuppressionTimeout();
+    suppressClickTimeoutRef.current = window.setTimeout(() => {
+      suppressClickRef.current = false;
+      suppressClickTimeoutRef.current = null;
+    }, 350);
+  };
+
   const reset = () => {
     startPointRef.current = null;
+    offsetXRef.current = 0;
     setIsDragging(false);
+    setIsCollapsing(false);
+    setLockedHeight(null);
     setOffsetX(0);
   };
 
   const commitArchive = () => {
+    clearArchiveTimeout();
     const node = containerRef.current;
     if (!node) {
       onArchive();
       return;
     }
+    startPointRef.current = null;
     setIsDragging(false);
     setLockedHeight(node.offsetHeight);
-    setOffsetX(-Math.max(widthRef.current, node.offsetWidth));
+    const commitOffset = -Math.max(widthRef.current, node.offsetWidth);
+    offsetXRef.current = commitOffset;
+    setOffsetX(commitOffset);
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         setIsCollapsing(true);
       });
     });
-    timeoutRef.current = window.setTimeout(() => {
+    archiveTimeoutRef.current = window.setTimeout(() => {
+      archiveTimeoutRef.current = null;
       onArchive();
     }, COMMIT_DELAY_MS);
   };
 
   const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    if (disabled || event.touches.length !== 1) return;
+    if (disabled || isCollapsing || archiveTimeoutRef.current !== null || event.touches.length !== 1) return;
+    clearArchiveTimeout();
+    clearClickSuppression();
     const touch = event.touches[0];
     const node = containerRef.current;
     widthRef.current = node?.offsetWidth ?? 0;
     setLockedHeight(node?.offsetHeight ?? null);
     setIsCollapsing(false);
+    suppressClickRef.current = false;
     startPointRef.current = { x: touch.clientX, y: touch.clientY };
   };
 
@@ -86,11 +130,13 @@ export function SwipeToArchive({
         startPointRef.current = null;
         return;
       }
+      suppressClickRef.current = true;
     }
 
     if (deltaX >= 0) {
       event.preventDefault();
       setIsDragging(true);
+      offsetXRef.current = 0;
       setOffsetX(0);
       return;
     }
@@ -98,17 +144,27 @@ export function SwipeToArchive({
     const maxSwipe = widthRef.current > 0 ? widthRef.current * MAX_SWIPE : Number.POSITIVE_INFINITY;
     event.preventDefault();
     setIsDragging(true);
-    setOffsetX(Math.max(deltaX, -maxSwipe));
+    const nextOffset = Math.max(deltaX, -maxSwipe);
+    offsetXRef.current = nextOffset;
+    setOffsetX(nextOffset);
   };
 
   const handleTouchEnd = () => {
-    if (disabled || isCollapsing) return;
+    if (disabled || isCollapsing || archiveTimeoutRef.current !== null) return;
     const shouldCommit =
-      widthRef.current > 0 && Math.abs(offsetX) >= widthRef.current * COMMIT_THRESHOLD;
+      widthRef.current > 0 && Math.abs(offsetXRef.current) >= widthRef.current * COMMIT_THRESHOLD;
     if (shouldCommit) {
+      releaseClickSuppressionSoon();
       commitArchive();
       return;
     }
+    if (isDragging) releaseClickSuppressionSoon();
+    reset();
+  };
+
+  const handleTouchCancel = () => {
+    if (disabled || isCollapsing || archiveTimeoutRef.current !== null) return;
+    clearClickSuppression();
     reset();
   };
 
@@ -126,12 +182,21 @@ export function SwipeToArchive({
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
+      onTouchCancel={handleTouchCancel}
+      onClickCapture={(event) => {
+        if (!suppressClickRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearClickSuppression();
+      }}
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex items-center justify-end bg-emerald-600 px-4 text-white"
-        style={{ opacity: Math.max(archiveReveal, 0.2) }}
+        // Visible only while actually swiping: the selected row surface is
+        // translucent (matching the task-list hover), so a resting opacity
+        // floor would tint the whole row green and ghost the label through.
+        className="pointer-events-none absolute inset-0 flex items-center justify-end rounded-lg bg-emerald-600 px-4 text-white"
+        style={{ opacity: archiveReveal }}
       >
         <span className="inline-flex items-center gap-2 text-sm font-medium">
           <Archive className="h-4 w-4" />
@@ -139,7 +204,11 @@ export function SwipeToArchive({
         </span>
       </div>
       <div
-        className="relative bg-card will-change-transform"
+        data-inbox-row-surface
+        className={cn(
+          "relative will-change-transform",
+          selected ? "rounded-lg bg-accent/50" : "bg-background",
+        )}
         style={{
           transform: `translate3d(${offsetX}px, 0, 0)`,
           transition: isDragging ? "none" : "transform 180ms ease-out",

@@ -1,0 +1,382 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+use paperclip_runner_core::acpx_provider_session::{
+    AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession, AcpxProviderSessionConfig,
+    AcpxProviderSessionIdentity,
+};
+use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand as GoalCommand;
+use paperclip_runner_core::provider_bridge::{
+    authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
+};
+use serde_json::json;
+
+fn tool_set() -> AuthorizedToolSet {
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read an issue.".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    AuthorizedToolSet {
+        schema: "paperclip.runner.authorized-tools.v1".to_owned(),
+        schema_version: 1,
+        catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+        operations,
+    }
+}
+
+fn config(mode: &str) -> AcpxProviderSessionConfig {
+    AcpxProviderSessionConfig {
+        transport: AcpxSidecarTransportConfig {
+            command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
+            args: vec!["--mode".to_owned(), mode.to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(100),
+        },
+        agent: "codex".to_owned(),
+        model: "gpt-5.6-sol".to_owned(),
+        run_id: "run-1".to_owned(),
+        catalog_revision: 1,
+        runtime_directory: std::env::temp_dir(),
+        normalized_session_id: "session-1".to_owned(),
+        working_directory: std::env::temp_dir(),
+        permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
+        pi_thinking_level: None,
+        permission_mode_pinned: true,
+        provider_policy: None,
+        system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
+        tool_set: tool_set(),
+        expected_identity: None,
+    }
+}
+
+fn expected_identity() -> AcpxProviderSessionIdentity {
+    AcpxProviderSessionIdentity {
+        kind: "acpx".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        acpx_record_id: "record-1".to_owned(),
+        backend_session_id: "backend-1".to_owned(),
+        agent_session_id: "agent-1".to_owned(),
+        profile_digest: format!("sha256:{}", "1".repeat(64)),
+        workspace_digest: format!("sha256:{}", "2".repeat(64)),
+        requested_model: "gpt-5.6-sol".to_owned(),
+        effective_model: "gpt-5.6-sol".to_owned(),
+        permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        mode: None,
+        pi_thinking_level: None,
+        provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+    }
+}
+
+fn start_error(config: &AcpxProviderSessionConfig) -> String {
+    match AcpxProviderSession::start(config) {
+        Ok(mut session) => {
+            let _ = session.shutdown("unexpected successful bootstrap");
+            panic!("ACPX provider session unexpectedly started")
+        }
+        Err(error) => error.to_string(),
+    }
+}
+
+#[test]
+fn controls_goals_and_observes_updates_without_an_active_prompt() {
+    let mut session = AcpxProviderSession::start(&config("goals")).unwrap();
+    let initial = session
+        .goal_control(GoalCommand::SessionGoalGet, json!({}))
+        .unwrap();
+    assert_eq!(
+        initial["sessionGoals"]["actions"],
+        json!(["set", "pause", "resume", "clear"])
+    );
+    assert!(initial["goal"].is_null());
+    for status in ["active", "paused", "active"] {
+        let result = session
+            .goal_control(
+                GoalCommand::SessionGoalSet,
+                json!({"objective":"Verify the durable goal", "status":status}),
+            )
+            .unwrap();
+        assert_eq!(result["goal"]["status"], status);
+        assert!(session.state().active_turn_id().is_none());
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            !events.is_empty(),
+            "out-of-prompt goal update must not disappear"
+        );
+    }
+    let cleared = session
+        .goal_control(GoalCommand::SessionGoalClear, json!({}))
+        .unwrap();
+    assert!(cleared["goal"].is_null());
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap()
+        .is_some());
+    session.shutdown("goal test complete").unwrap();
+}
+
+#[test]
+fn bootstraps_a_codex_session_and_confirms_run_identity() {
+    let mut session = AcpxProviderSession::start(&config("bootstrap")).unwrap();
+    assert!(session.process_id() > 0);
+    assert_eq!(session.identity(), &expected_identity());
+    assert_eq!(session.state().run_id(), "run-1");
+    assert_eq!(session.state().active_turn_id(), None);
+    assert_eq!(session.catalog_revision(), 1);
+    session.shutdown("test complete").unwrap();
+    session.shutdown("already closed").unwrap();
+}
+
+#[test]
+fn validates_qualified_policy_and_tool_catalog_before_spawning() {
+    let mut invalid_agent = config("bootstrap");
+    invalid_agent.agent = "unknown".to_owned();
+    assert!(start_error(&invalid_agent).contains("known immutable profile"));
+
+    let mut missing_policy = config("bootstrap");
+    missing_policy.agent = "copilot".to_owned();
+    assert!(start_error(&missing_policy).contains("explicit provider read-only policy"));
+
+    let mut unpinned = config("bootstrap");
+    unpinned.permission_mode_pinned = false;
+    assert!(start_error(&unpinned).contains("must be pinned"));
+
+    let mut invalid_tools = config("bootstrap");
+    invalid_tools.tool_set.catalog_digest = "invalid".to_owned();
+    assert!(start_error(&invalid_tools).contains("authorized tools"));
+
+    let mut invalid_lifetime_fence = config("bootstrap");
+    let mut invalid_identity = expected_identity();
+    invalid_identity.provider_lifetime_fence_candidates = [60_001, 60_001, 60_003];
+    invalid_lifetime_fence.expected_identity = Some(invalid_identity);
+    assert!(start_error(&invalid_lifetime_fence).contains("lifetime fence candidates"));
+}
+
+#[test]
+fn bootstraps_unlisted_models_confirmed_by_the_sidecar_for_every_agent() {
+    for agent in ["claude", "codex", "pi", "grok", "cursor", "copilot"] {
+        let mut selected = config("bootstrap");
+        selected.agent = agent.to_owned();
+        selected.model = "custom/model[context=272k,reasoning=medium]".to_owned();
+        selected.pi_thinking_level = if agent == "pi" {
+            Some(paperclip_runner_core::acpx_provider_session::PiThinkingLevel::Low)
+        } else {
+            None
+        };
+        selected.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+        let mut session = AcpxProviderSession::start(&selected).unwrap();
+        assert_eq!(session.identity().requested_model, selected.model);
+        assert_eq!(session.identity().effective_model, selected.model);
+        session
+            .shutdown("model verification test complete")
+            .unwrap();
+    }
+}
+
+#[test]
+fn rejects_a_sidecar_that_reports_another_effective_model() {
+    let error = start_error(&config("bootstrap-wrong-model"));
+    assert!(error.contains("identity does not match"), "{error}");
+}
+
+#[test]
+fn rejects_a_sidecar_that_does_not_confirm_the_run_attachment() {
+    let error = start_error(&config("bootstrap-wrong-run"));
+    assert!(error.contains("run attachment"), "{error}");
+}
+
+#[test]
+fn validates_recovery_identity_against_the_requested_session() {
+    let mut recovered = config("bootstrap");
+    recovered.expected_identity = Some(expected_identity());
+    let mut session = AcpxProviderSession::start(&recovered).unwrap();
+    assert_eq!(
+        session.identity(),
+        recovered.expected_identity.as_ref().unwrap()
+    );
+    session.shutdown("test complete").unwrap();
+
+    let mut mismatch = config("bootstrap");
+    let mut expected = expected_identity();
+    expected.normalized_session_id = "another-session".to_owned();
+    mismatch.expected_identity = Some(expected);
+    assert!(start_error(&mismatch).contains("conflicts with the requested session"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_non_utf8_directories_before_spawning() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut directory_name =
+        format!("paperclip-acpx-non-utf8-{}-", std::process::id()).into_bytes();
+    directory_name.push(0xff);
+    let directory = std::env::temp_dir().join(OsString::from_vec(directory_name));
+
+    let mut invalid = config("bootstrap");
+    invalid.working_directory = directory;
+    let error = start_error(&invalid);
+
+    assert!(error.contains("must be valid UTF-8"), "{error}");
+}
+
+/// Exercise the subprocess transport, real event decoder/reducer and tool bridge.
+/// The command journal distinguishes no admission from a late sidecar rejection.
+fn check_tool_receiver_admission(oversized: bool) {
+    let root = std::env::temp_dir().join(format!("acpx-admission-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let journal = root.join("commands.jsonl");
+    let mut fixture = config(if oversized {
+        "admission-tool-oversized"
+    } else {
+        "admission-tool"
+    });
+    fixture
+        .transport
+        .args
+        .extend(["--journal".to_owned(), journal.to_str().unwrap().to_owned()]);
+    let mut session = AcpxProviderSession::start(&fixture).unwrap();
+    session
+        .start_turn("turn-admission", "Read the issue", &std::env::temp_dir())
+        .unwrap();
+    let result = paperclip_runner_core::provider_bridge::ToolResult {
+        call_id: "call-admission".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!({"id":"issue-1"}),
+        is_error: false,
+    };
+    if oversized {
+        let error = session
+            .poll_event(Duration::from_secs(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("256 KiB admission limit"), "{error}");
+        assert!(!session.state().has_pending_tools());
+        assert!(session.state().pending_tool("call-admission").is_none());
+        // Rejection cannot be bypassed by supplying a matching callback result.
+        assert!(session.deliver_tool_result(&result).is_err());
+    } else {
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(session.state().pending_tool("call-admission").is_some());
+        let mut foreign = result.clone();
+        foreign.call_id = "another-call".to_owned();
+        assert!(session.deliver_tool_result(&foreign).is_err());
+        assert!(session.state().pending_tool("call-admission").is_some());
+        session.deliver_tool_result(&result).unwrap();
+        assert!(!session.state().has_pending_tools());
+        session
+            .deliver_tool_result(&result)
+            .expect("an identical receipt retry must be idempotent");
+        let mut changed_payload = result.clone();
+        changed_payload.result = json!({"id":"another-issue"});
+        let mut changed_operation = result.clone();
+        changed_operation.operation_id = "issues.write".to_owned();
+        let mut changed_error = result.clone();
+        changed_error.is_error = true;
+        for conflicting in [changed_payload, changed_operation, changed_error] {
+            let error = session
+                .deliver_tool_result(&conflicting)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("conflicting duplicate tool result"),
+                "{error}"
+            );
+        }
+        assert!(!session.state().has_pending_tools());
+    }
+    session.shutdown("admission test complete").unwrap();
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let emitted: Vec<_> = rows.iter().filter_map(|row| row.get("emitted")).collect();
+    assert_eq!(emitted.len(), 1);
+    let frame = emitted[0];
+    assert_eq!(frame["eventType"], "runtime.tool_called");
+    let payload_bytes = serde_json::to_vec(&frame["payload"]).unwrap().len();
+    let frame_bytes = serde_json::to_vec(frame).unwrap().len() + 1;
+    assert!(
+        frame_bytes < 1024 * 1024,
+        "must reach payload admission, not the line limit"
+    );
+    assert_eq!(payload_bytes > 256 * 1024, oversized);
+    let resolutions: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.get("request"))
+        .filter(|request| request["command"] == "tool.resolve")
+        .collect();
+    if oversized {
+        assert!(
+            resolutions.is_empty(),
+            "rejected event must never send tool.resolve"
+        );
+    } else {
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(
+            resolutions[0]["params"],
+            json!({
+                "callId":"call-admission","turnId":"turn-admission",
+                "result":{"id":"issue-1"},"error":null,
+            })
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn receiver_rejects_sub_megabyte_tool_event_before_pending_admission_or_resolution() {
+    check_tool_receiver_admission(true);
+}
+
+#[test]
+fn receiver_admits_normal_tool_event_and_resolves_only_correlated_call_once() {
+    check_tool_receiver_admission(false);
+}
+
+#[test]
+fn pi_thinking_effective_identity_is_admitted_before_any_turn() {
+    use paperclip_runner_core::acpx_provider_session::{
+        AcpxProviderRuntimePolicy, PiThinkingLevel,
+    };
+    let mut cfg = config("bootstrap");
+    cfg.agent = "pi".to_owned();
+    cfg.model = "openrouter/deepseek/deepseek-v4-flash-0731".to_owned();
+    cfg.pi_thinking_level = Some(PiThinkingLevel::Low);
+    cfg.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+    let mut session = AcpxProviderSession::start(&cfg).unwrap();
+    assert_eq!(
+        session.identity().pi_thinking_level,
+        Some(PiThinkingLevel::Low)
+    );
+    assert!(session.state().active_turn_id().is_none());
+    let identity = session.identity().clone();
+    session.shutdown("thinking mode admitted").unwrap();
+    cfg.expected_identity = Some(identity);
+    let mut restored = AcpxProviderSession::start(&cfg).unwrap();
+    assert_eq!(
+        restored.identity().pi_thinking_level,
+        Some(PiThinkingLevel::Low)
+    );
+    assert!(restored.state().active_turn_id().is_none());
+    restored
+        .shutdown("restored thinking mode admitted")
+        .unwrap();
+    for mode in [
+        "bootstrap-wrong-pi-thinking",
+        "bootstrap-missing-pi-thinking",
+        "bootstrap-alias-pi-thinking",
+    ] {
+        cfg.transport.args = vec!["--mode".to_owned(), mode.to_owned()];
+        assert!(start_error(&cfg).contains("identity"));
+    }
+}

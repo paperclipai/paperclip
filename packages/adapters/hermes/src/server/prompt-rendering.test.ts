@@ -1,0 +1,327 @@
+import { expect, test } from "vitest";
+
+import { buildPrompt } from "./execute.js";
+
+function baseContext(overrides: Record<string, unknown> = {}) {
+  return {
+    agent: {
+      id: "agent-1",
+      name: "Hermes Engineer",
+      companyId: "company-1",
+    },
+    runId: "run-1",
+    config: {},
+    context: {
+      issueId: "issue-1",
+      paperclipWake: {
+        reason: "issue_assigned",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-3404",
+          title: "Plan the Hermes prompt update",
+          status: "in_progress",
+          priority: "medium",
+          workMode: "planning",
+        },
+        checkedOutByHarness: true,
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+      paperclipTaskMarkdown: [
+        "Paperclip task context:",
+        '- Issue: "PAP-3404"',
+        '- Title: "Plan the Hermes prompt update"',
+        "",
+        "Planning mode directive:",
+        "Make the plan only. Do not write code or perform implementation work.",
+        "",
+        "Issue description:",
+        "```text",
+        "Use the wake payload as runtime authority.",
+        "```",
+      ].join("\n"),
+      ...overrides,
+    },
+  } as any;
+}
+
+test("renders standard assignment wake with task authority and no backlog discovery guidance", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11750",
+        title: "Add Hermes prompt rendering regression tests",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "PAP-11750"',
+      '- Title: "Add Hermes prompt rendering regression tests"',
+      "",
+      "Issue description:",
+      "```text",
+      "Add focused unit tests for assignment wake and custom prompt rendering.",
+      "```",
+    ].join("\n"),
+  }), {});
+
+  expect(prompt).toContain("## Paperclip Wake Payload");
+  expect(prompt).toContain("- reason: issue_assigned");
+  expect(prompt).toContain("- issue: PAP-11750 Add Hermes prompt rendering regression tests");
+  expect(prompt).toContain("- issue work mode: standard");
+  expect(prompt).toContain("Paperclip task context:");
+  expect(prompt).toContain("Add focused unit tests for assignment wake and custom prompt rendering.");
+  expect(prompt).toContain("The harness already checked out this issue for the current run.");
+  expect(prompt).not.toContain("clear final disposition");
+  expect(prompt).not.toContain("check for unassigned issues");
+  expect(prompt).not.toContain("status=backlog");
+});
+
+test("keeps current wake comments in the wake owner and preserves assignment markdown inputs", () => {
+  const commentBody = "Please preserve the exact current comment once.";
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11751",
+        title: "Keep the current comment once",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: commentBody }],
+      fallbackFetchNeeded: false,
+    },
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "PAP-11751"',
+    ].join("\n"),
+    paperclipTurnContext: {
+      version: 1,
+      assignment: { owner: "task_markdown" },
+      events: { owner: "wake_prompt", comments: [{ id: "comment-1", revision: "rev-1" }] },
+    },
+  }), {});
+
+  expect(prompt.split(commentBody)).toHaveLength(2);
+  expect(prompt).toContain('Paperclip task context:\n- Issue: "PAP-11751"');
+});
+
+test("renders scoped planning wake authority before the Hermes default workflow", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://127.0.0.1:3101/api",
+  });
+
+  expect(prompt).toContain("## Paperclip Wake Payload");
+  expect(prompt).toContain("- issue: PAP-3404 Plan the Hermes prompt update");
+  expect(prompt).toContain("- planning directive: Make the plan only. Do not write code or perform implementation work.");
+  expect(prompt).toContain("- checkout: already claimed by the harness for this run");
+  expect(prompt).toContain("The harness already checked out this issue for the current run.");
+  expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
+  expect(prompt).not.toContain("clear final disposition");
+  expect(prompt).not.toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).not.toContain("check for unassigned issues");
+  expect(prompt).not.toContain("status=backlog");
+});
+
+test("renders resume deltas instead of full scoped-wake boilerplate when continuing a session", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11750",
+        title: "Add Hermes prompt rendering regression tests",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      latestCommentId: "comment-2",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-2", body: "Please add the resume-delta case.", createdAt: "2026-06-23T00:00:00.000Z" }],
+      fallbackFetchNeeded: false,
+    },
+  }), {}, { resumedSession: true });
+
+  expect(prompt).toContain("## Paperclip Resume Delta");
+  expect(prompt).toContain("You are resuming an existing Paperclip session.");
+  expect(prompt).toContain("Focus on the new wake delta below");
+  expect(prompt).toContain("Please add the resume-delta case.");
+  expect(prompt).toContain("- fallback fetch needed: no");
+  expect(prompt).not.toContain("Before generic repo exploration or boilerplate heartbeat updates");
+});
+
+test("renders comment wake batch guidance without defaulting to a full-thread refetch", () => {
+  const prompt = buildPrompt(baseContext({
+    wakeCommentId: "comment-1",
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan the Hermes prompt update",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Please tighten the prompt.", createdAt: "2026-06-23T00:00:00.000Z" }],
+      fallbackFetchNeeded: false,
+    },
+  }), {});
+
+  expect(prompt).toContain("Use this inline wake data first before refetching the issue thread.");
+  expect(prompt).toContain("Only fetch the API thread when `fallbackFetchNeeded` is true");
+  expect(prompt).toContain("New comments in order:");
+  expect(prompt).toContain("Please tighten the prompt.");
+  expect(prompt).toContain("- fallback fetch needed: no");
+});
+
+test("renders accepted-plan continuation without authorizing implementation on the planning issue", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan the Hermes prompt update",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    },
+  }), {});
+
+  expect(prompt).toContain("- planning directive: Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.");
+  expect(prompt).toContain("- accepted-plan continuation: you may create child implementation issues from the approved plan");
+  expect(prompt).toContain("must not start implementation work on the planning issue itself");
+  expect(prompt).not.toContain("- planning directive: Make the plan only.");
+  expect(prompt).not.toContain("Update the plan only");
+});
+
+test("keeps authoritative parent and ancestor context from task markdown", () => {
+  const prompt = buildPrompt(baseContext({
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "PAP-3404"',
+      "",
+      "Authoritative parent / ancestor context:",
+      "- Parent: PAP-11724 Optimize prompt traces (in_progress) [medium]",
+      "- Ancestor 2: PAP-11721 Fetch raw traces (done) [medium]",
+    ].join("\n"),
+  }), {});
+
+  expect(prompt).toContain("Authoritative parent / ancestor context:");
+  expect(prompt).toContain("- Parent: PAP-11724 Optimize prompt traces (in_progress) [medium]");
+  expect(prompt).not.toContain("check the issue body or comments for references");
+});
+
+test("keeps current runtime identity in the user turn without repeating static API examples", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://paperclip.local/api",
+  });
+
+  expect(prompt).toContain("- Agent ID: agent-1");
+  expect(prompt).toContain("- Company ID: company-1");
+  expect(prompt).toContain("- Run ID: run-1");
+  expect(prompt).toContain("- API base: http://paperclip.local/api");
+  expect(prompt).not.toContain("Safe multiline update pattern:");
+});
+
+test("preserves custom prompt templates while exposing runtime and wake variables", () => {
+  const prompt = buildPrompt(baseContext(), {
+    paperclipApiUrl: "http://paperclip.local/api",
+    promptTemplate: [
+      "CUSTOM TEMPLATE",
+      "agent={{agent.name}}",
+      "api={{paperclipApiUrl}}",
+      "keyEnv={{paperclipApiKeyEnv}}",
+      "runEnv={{paperclipRunIdEnv}}",
+      "wakePrompt={{paperclipWakePrompt}}",
+      "task={{paperclipTaskMarkdown}}",
+      "wakeJson={{paperclipWakeJson}}",
+      "wake={{wakePayloadJson}}",
+    ].join("\n"),
+  });
+
+  expect(prompt).toContain("CUSTOM TEMPLATE");
+  expect(prompt).toContain("agent=Hermes Engineer");
+  expect(prompt).toContain("api=http://paperclip.local/api");
+  expect(prompt).toContain("keyEnv=PAPERCLIP_API_KEY");
+  expect(prompt).toContain("runEnv=PAPERCLIP_RUN_ID");
+  expect(prompt).toContain("wakePrompt=## Paperclip Wake Payload");
+  expect(prompt).toContain("task=Paperclip task context:");
+  expect(prompt).toContain("wakeJson={\"reason\":\"issue_assigned\"");
+  expect(prompt).toContain('"reason":"issue_assigned"');
+  expect(prompt).toContain("## Paperclip Wake Payload");
+  expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
+  expect(prompt).toContain("Paperclip runtime identity:");
+});
+
+test("keeps historical task markdown available to custom templates while automatic context uses assignment markdown", () => {
+  const historical = "Historical task with current comment.";
+  const assignment = "Assignment task without current comment.";
+  const prompt = buildPrompt(baseContext({
+    paperclipTaskMarkdown: historical,
+    paperclipTaskMarkdownAssignment: assignment,
+    paperclipWake: {
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", status: "in_progress" },
+      comments: [{ id: "comment-1", body: "Current comment." }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    },
+  }), { promptTemplate: "custom={{paperclipTaskMarkdown}}" });
+  expect(prompt).toContain(`custom=${historical}`);
+  expect(prompt).toContain(assignment);
+  expect(prompt).toContain("Current comment.");
+});
+
+test("keeps legacy task markdown when ownership fields are absent", () => {
+  const legacyTask = "Legacy task context from an older Paperclip caller.";
+  const prompt = buildPrompt(baseContext({
+    paperclipTaskMarkdown: legacyTask,
+    paperclipTaskMarkdownAssignment: undefined,
+    paperclipTaskMarkdownCompact: undefined,
+  }), {});
+
+  expect(prompt).toContain(legacyTask);
+});
+
+
+test.each([false, true])("conversation prompts preserve the handoff policy (resumed=%s)", (resumedSession) => {
+  const directive = "Chat directive: clarify goals and hand the plan off to project tasks.";
+  const ctx = baseContext({
+    conversationMode: true,
+    paperclipTaskMarkdown: directive,
+    paperclipTaskMarkdownCompact: directive,
+  });
+  ctx.context.paperclipWake.interactionKind = "request_confirmation";
+  ctx.context.paperclipWake.interactionStatus = "accepted";
+  for (const config of [{}, { promptTemplate: "Custom agent instruction." }]) {
+    const prompt = buildPrompt(ctx, config, { resumedSession });
+    expect(prompt).toContain(directive);
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("clear final disposition");
+    expect(prompt).not.toContain("Create child issues");
+    expect(prompt).not.toContain("--arg status done");
+  }
+});

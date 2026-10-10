@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-14T13:00:00.000Z",
+  "purpose": "Immutable regression evidence for the stop-time authorization shape observed by the PAP-17159 watchdog. This fixture is historical evidence; do not use it to rewrite or re-resolve the source interaction.",
+  "companyId": "5cbe79ee-acb3-4597-896e-7662742593cd",
+  "watchdogRun": {
+    "id": "3ede42c3-efed-4658-9cff-eda1b5c08e6d",
+    "status": "succeeded",
+    "watchdogIssueId": "99c136ef-c48e-45ec-8854-22b7eb5cd512",
+    "watchdogIssueIdentifier": "PAP-17159",
+    "watchedIssueId": "80f77c6d-87b5-4585-b1a6-eaf2b68667de",
+    "watchedIssueIdentifier": "PAP-17100",
+    "stopFingerprint": "task_watchdog_stop:427b917d8175df5b4fc657e2f568c03fe8785fa7fd4f30b99d277d0b6f8970f2",
+    "startedAt": "2026-08-13T16:31:00.016Z",
+    "finishedAt": "2026-08-13T16:34:39.713Z"
+  },
+  "creatorRun": {
+    "id": "ec65375d-e43f-4f1c-808a-7a953477b5aa",
+    "status": "succeeded",
+    "issueId": "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4",
+    "issueIdentifier": "PAP-17237",
+    "startedAt": "2026-08-13T16:13:09.140Z",
+    "finishedAt": "2026-08-13T16:30:32.511Z"
+  },
+  "interactionAtStop": {
+    "id": "8bef17ef-6df4-4e52-8333-f3a789580be0",
+    "issueId": "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4",
+    "kind": "request_confirmation",
+    "status": "pending",
+    "continuationPolicy": "wake_assignee",
+    "requestedResolverPolicy": "board_only",
+    "effectiveResolverPolicy": "board_only",
+    "sourceRunId": "ec65375d-e43f-4f1c-808a-7a953477b5aa",
+    "createdByAgentId": "352aa64b-2a22-4d00-928f-71f5fb884f66",
+    "createdAt": "2026-08-13T16:30:24.126Z",
+    "target": {
+      "type": "issue_document",
+      "issueId": "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4",
+      "documentId": "b2066808-597e-4221-b41d-4065842a1a27",
+      "key": "plan",
+      "revisionId": "30821754-4bc9-4562-805f-e6ec04064449",
+      "revisionNumber": 1
+    }
+  },
+  "watchdogAuthorizationAtStop": {
+    "allowedOperations": [
+      "resolve_eligible_request_confirmation_plan_interactions"
+    ],
+    "deniedOperations": [
+      "resolve_board_only_or_security_sensitive_approvals"
+    ]
+  },
+  "stopSnapshot": {
+    "version": 2,
+    "materialLeaves": [
+      {
+        "issueId": "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4",
+        "status": "in_review",
+        "assigneeAgentId": "352aa64b-2a22-4d00-928f-71f5fb884f66",
+        "assigneeUserId": null,
+        "blockerIssueIds": [],
+        "pendingInteractionIds": ["8bef17ef-6df4-4e52-8333-f3a789580be0"],
+        "pendingApprovalIds": []
+      },
+      {
+        "issueId": "56c974ca-a506-4088-aa63-3b833c726094",
+        "status": "blocked",
+        "assigneeAgentId": "eae27ade-c807-4723-97e8-23808ad4fa14",
+        "assigneeUserId": null,
+        "blockerIssueIds": ["6d1707c9-2c37-4eb4-9cb5-1faf17f194e2"],
+        "pendingInteractionIds": [],
+        "pendingApprovalIds": []
+      },
+      {
+        "issueId": "6d1707c9-2c37-4eb4-9cb5-1faf17f194e2",
+        "status": "blocked",
+        "assigneeAgentId": "6176c74d-1b42-4f04-8aed-8af2f4cbe51f",
+        "assigneeUserId": null,
+        "blockerIssueIds": ["bebf57a9-1ad4-4e63-a454-ae6f28d14a99"],
+        "pendingInteractionIds": [],
+        "pendingApprovalIds": []
+      }
+    ],
+    "waitsByIssueId": {
+      "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4": {
+        "pendingInteractionIds": ["8bef17ef-6df4-4e52-8333-f3a789580be0"],
+        "pendingApprovalIds": []
+      }
+    }
+  },
+  "manualAcceptance": {
+    "status": "accepted",
+    "resolverPolicy": "board_only",
+    "resolvedByUserId": "1gQsX9Jbj5jk1Wu51YU1G0atxCRwj1Om",
+    "resolvedByAgentId": null,
+    "resolvedByRunId": null,
+    "resolvedAt": "2026-08-14T11:59:10.773Z",
+    "result": { "version": 1, "outcome": "accepted" }
+  },
+  "descendantPathAtVerification": [
+    { "identifier": "PAP-17159", "id": "99c136ef-c48e-45ec-8854-22b7eb5cd512", "relation": "watchdog_for", "status": "done" },
+    { "identifier": "PAP-17100", "id": "80f77c6d-87b5-4585-b1a6-eaf2b68667de", "relation": "watched_root", "status": "blocked" },
+    { "identifier": "PAP-17104", "id": "bebf57a9-1ad4-4e63-a454-ae6f28d14a99", "relation": "child", "status": "blocked" },
+    { "identifier": "PAP-17237", "id": "1c2d9fb4-f9d1-4dc3-baaa-7fc5971b52d4", "relation": "child", "status": "done" }
+  ],
+  "verification": {
+    "historicalInteractionStillPending": false,
+    "historicalInteractionIsCurrentWait": false,
+    "auditAttributionChanged": false
+  }
+}
