@@ -196,7 +196,7 @@ export function boatBackend(
     return value;
   }
   const processProgram = String.raw`
-import os,sys,json,fcntl,subprocess
+import os,sys,json,fcntl,subprocess,shutil
 p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
 owner=p['owner'];oid=owner['id'];root=os.path.join(base,oid);os.makedirs(root,exist_ok=True)
 with open(os.path.join(root,'lock'),'a') as lock:
@@ -215,6 +215,12 @@ with open(os.path.join(root,'lock'),'a') as lock:
   subprocess.run(['systemctl','--user','stop',slice,unit],capture_output=True)
   state=subprocess.run(['systemctl','--user','show',slice,'--property=ActiveState','--value'],capture_output=True,text=True).stdout.strip()
   if state not in ('inactive','failed',''):raise RuntimeError('process retirement unconfirmed')
+  # Reap only this retired owner's command spools after its cgroup is stopped.
+  # This covers controller crashes and SSH timeouts that skipped caller cleanup.
+  for entry in os.scandir(root):
+   if entry.name.startswith('command-') and entry.is_dir(follow_symlinks=False):
+    try:shutil.rmtree(entry.path)
+    except FileNotFoundError:pass
   print('{}')
  elif p['action']=='inspect':
   claim=owner.get('process');marker=os.path.join(root,'claim.json');actual=json.load(open(marker)) if os.path.exists(marker) else None
