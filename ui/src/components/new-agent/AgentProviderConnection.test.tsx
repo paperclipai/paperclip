@@ -21,6 +21,7 @@ const managedApi = vi.hoisted(() => ({
   checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as "ready" | "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+  setDefault: vi.fn(),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({
@@ -408,6 +409,46 @@ describe("AgentProviderConnection reuse", () => {
     openProvider();
     expect(host.textContent).toContain("New subscription login");
     expect(host.textContent).not.toContain("Use saved subscription");
+  });
+
+  it.each(["claude_local", "codex_local"] as const)("tests and retries the newly entered API account without replacing the subscription default: %s", async adapterType => {
+    const provider = adapterType === "claude_local" ? "anthropic" : "openai";
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+      id: "subscription-account", grantId: "subscription-grant", companyId: "c1", provider,
+      method: "subscription", name: "My subscription", ownership: "personal",
+      ownerUserId: "user-1", isDefault: true, status: "connected",
+    }] } as never);
+    const { test, connected, key } = await mount(adapterType, false, true, false, false);
+    test.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    click("Use API key instead");
+    openProvider();
+    flushSync(() => {
+      const input = host.querySelector('input[type="password"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "fixture-api-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("Connect");
+    const expected = {
+      env: {},
+      aiConnection: {
+        provider, method: "api_key", mode: "delegated",
+        connectionId: "managed-connection", grantId: "managed-grant",
+      },
+    };
+    await vi.waitFor(() => expect(host.textContent).toContain("The provider did not respond"));
+    expect(test).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(connected).not.toHaveBeenCalled();
+    expect(managedApi.create).toHaveBeenCalledExactlyOnceWith("c1", {
+      provider, method: "api_key", name: `My ${provider === "openai" ? "OpenAI" : "Claude"} API`,
+      ownership: "personal", apiKey: "fixture-api-key", agentIds: [], allAgents: true,
+    });
+    expect(host.querySelector<HTMLInputElement>('input[type="password"]')?.value ?? "").toBe("");
+    click("Connect");
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith(expected));
+    expect(test).toHaveBeenNthCalledWith(2, expected);
+    expect(managedApi.create).toHaveBeenCalledTimes(1);
+    expect(managedApi.setDefault).not.toHaveBeenCalled();
+    expect(connected.mock.calls[0][0].credentials?.[key]).toBeUndefined();
   });
 
   it("defaults to subscription when no saved credentials exist", async () => {
