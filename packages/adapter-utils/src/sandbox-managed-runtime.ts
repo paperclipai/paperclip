@@ -1115,6 +1115,7 @@ export async function prepareSandboxManagedRuntime(input: {
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   workspaceSeedCacheDirectory?: string;
+  workspaceSeedCacheCompanyDirectory?: string;
   /** Durable snapshots supplied when reconstructing an interrupted restore. */
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
@@ -1568,7 +1569,7 @@ export async function prepareSandboxManagedRuntime(input: {
               const verified = await captureDirectorySnapshot(verifiedRoot, { exclude: baselineSnapshot!.exclude, ignoredPaths: baselineSnapshot!.ignoredPaths, diskBacked: true });
               try {
                 if (directorySnapshotSha256(verified) === directorySnapshotSha256(baselineSnapshot!)) {
-                  await publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration, { ...seed, gitArchivePath: gitSnapshot || repositories.length ? seed.gitArchivePath : null });
+                  await publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration, { ...seed, gitArchivePath: gitSnapshot || repositories.length ? seed.gitArchivePath : null }, { companyDirectory: input.workspaceSeedCacheCompanyDirectory });
                 }
               } finally { await disposeDirectorySnapshot(verified); }
             });

@@ -790,6 +790,7 @@ async function prepareRuntime(input: {
   repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   durableSeed?: WorkspaceDurableSeedPaths;
   seedCacheDirectory?: string;
+  seedCacheCompanyDirectory?: string;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -807,6 +808,7 @@ async function prepareRuntime(input: {
     workspaceCheckpoint: true,
     onWorkspaceCheckpoint: input.onCheckpoint,
     workspaceSeedCacheDirectory: input.seedCacheDirectory,
+    workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
     runtimeSpan: input.onPhase,
   });
 }
@@ -976,6 +978,7 @@ export async function prepareNativeWorkspaceSync(input: {
       onCheckpoint: input.onCheckpoint,
       workspaceLocalDir: input.workspaceLocalDir,
       mode,
+      seedCacheCompanyDirectory: path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id")),
       seedCacheDirectory: path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"), requireSafeSegment(input.workspaceId, "workspace_id")),
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,

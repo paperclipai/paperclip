@@ -143,13 +143,13 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
     writeFile: (file: string, data: ArrayBuffer) => fs.writeFile(file, Buffer.from(data)), readFile: (file: string) => fs.readFile(file),
     listFiles: (dir: string) => fs.readdir(dir), remove: (file: string) => fs.rm(file, { force: true, recursive: true }), run,
     syncIn: sync, syncOut: sync };
-  const prepare = () => prepareSandboxManagedRuntime({ spec: { provider: "test", sandboxId: "test", remoteCwd: remote, timeoutMs: 30000, apiKey: null, transport: "sandbox" },
+  const prepare = (overrides: Partial<Parameters<typeof prepareSandboxManagedRuntime>[0]> = {}) => prepareSandboxManagedRuntime({ spec: { provider: "test", sandboxId: "test", remoteCwd: remote, timeoutMs: 30000, apiKey: null, transport: "sandbox" },
     adapterKey: "test", client, workspaceLocalDir: f.root, workspaceCheckpoint: true,
     runtimeSpan: async (name, work) => {
       if (mutateDuringPack && name === "pack") await fs.writeFile(path.join(f.root, "unchanged"), "concurrent change");
       return work();
     },
-    workspaceSeedCacheDirectory: cache, workspaceDurableSeed: { workspaceArchivePath: path.join(f.temp, "run-seed.tar") } });
+    workspaceSeedCacheDirectory: cache, workspaceDurableSeed: { workspaceArchivePath: path.join(f.temp, "run-seed.tar") }, ...overrides });
   const first = await prepare(); await first.restoreWorkspace(); expect(payloadBytes).toBe(0);
   const generation = (await fs.readdir(cache))[0]!;
   await fs.writeFile(path.join(cache, generation, "workspace.tar"), "corrupt cache");
@@ -176,4 +176,22 @@ it("uses sparse native transfer end-to-end, including replay and unsupported-run
   expect(await fs.readdir(cache)).toEqual(existingGenerations);
   expect((await fs.stat(path.join(f.temp, "run-seed.tar"))).size).toBeGreaterThan(0);
   await raced.cleanupWorkspaceSnapshot();
+  // A saturated optional cache must still admit and recover from its per-run seed.
+  mutateDuringPack = false;
+  for (let count = (await fs.readdir(cache)).length; count < 16; count++) {
+    await fs.mkdir(path.join(cache, `.pending-retained-${count}`));
+  }
+  const saturated = await fs.readdir(cache);
+  await fs.writeFile(path.join(f.root, "new"), "quota recovery");
+  const uncached = await prepare();
+  expect(await fs.readdir(cache)).toEqual(saturated);
+  const snapshot = uncached.workspaceSyncSnapshot!;
+  await fs.writeFile(path.join(f.root, "new"), "later host edit");
+  await fs.rm(remote, { recursive: true, force: true });
+  const recovered = await prepare({ workspaceInboundMode: "durable_seed", workspaceBaseline: snapshot.baseline,
+    workspaceGitSnapshot: snapshot.gitSnapshot, workspaceRepositories: snapshot.repositories });
+  expect(await fs.readFile(path.join(remote, "new"), "utf8")).toBe("quota recovery");
+  expect(await fs.readFile(path.join(f.root, "new"), "utf8")).toBe("later host edit");
+  expect(await fs.readdir(cache)).toEqual(saturated);
+  await recovered.cleanupWorkspaceSnapshot();
 }, 30000);
