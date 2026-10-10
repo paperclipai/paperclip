@@ -44,6 +44,7 @@ import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js"
 import {
   classifyToolDefinitionFailure,
   formatTerminalSessionFailure,
+  isSessionResetWorthyFailure,
   sanitizeTerminalSessionFailure,
   type AcpxTerminalSessionFailure,
   type AcpxTerminalSessionFailureDiagnostic,
@@ -5064,6 +5065,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const sessionUnavailable = terminal.status === "failed" &&
           terminal.error.detailCode === "SESSION_RESUME_REQUIRED";
         if (sessionUnavailable) clearSession = true;
+        // A lost transport (duplex channel) or a session-rooted failure — the
+        // accumulated conversation dropped mid-response, no longer fits the
+        // context window, or failed to compact — must reset the stored task
+        // session. Otherwise the next attempt resumes the same failed/bloated
+        // session and grows it further toward the compaction cliff, turning a
+        // transient blip into a per-task death spiral.
+        //
+        // The reset-worthy provider text can arrive in the typed terminal
+        // diagnostic (title/details) while `terminal.error.message` stays
+        // generic, so classify both together.
+        const terminalFailureText = terminal.status === "failed"
+          ? [terminal.error.message, terminalSessionFailure?.title, terminalSessionFailure?.details]
+              .filter(Boolean)
+              .join("\n")
+          : "";
+        if (channelLost || isSessionResetWorthyFailure(terminalFailureText)) {
+          clearSession = true;
+        }
         // Saving a conversation is independent from certifying tool outcomes.
         // Its next turn receives history, not a replay of pending tool calls.
         preserveInterruptedSession = ctx.signal?.aborted === true && !forcedStop && !timedOut && !channelLost
@@ -5282,7 +5301,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
-          clearSession: clearSession || timedOut,
+          // A mid-turn connection loss, context-overflow, or compaction failure
+          // resets the session so the retry starts fresh rather than resuming
+          // the same failed/bloated conversation.
+          clearSession: clearSession || timedOut || isSessionResetWorthyFailure(message),
           resultJson: { phase, ...activityDiagnostics },
           summary: message,
         };

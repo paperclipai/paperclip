@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyToolDefinitionFailure, formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
+import { classifyToolDefinitionFailure, formatTerminalSessionFailure, isSessionResetWorthyFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
 
 describe("terminal session failure diagnostics", () => {
   it.each([
@@ -150,5 +150,47 @@ describe("terminal session failure diagnostics", () => {
     expect(diagnostic.title).not.toMatch(/[\ud800-\udfff]/u);
     expect(diagnostic.details).not.toMatch(/[\ud800-\udfff]/u);
     expect(diagnostic.truncatedFields).toEqual(["title"]);
+  });
+});
+
+describe("isSessionResetWorthyFailure", () => {
+  it.each([
+    // Connection / transport loss — the historical trigger that was never matched.
+    "Connection closed mid-response",
+    "connection reset by peer",
+    "connection lost before the run completed",
+    "socket hang up",
+    "read ECONNRESET",
+    "write EPIPE",
+    "stream closed unexpectedly",
+    "The sandbox duplex control channel was lost (channel_exit) before the run completed.",
+    "premature close",
+    "closed before the response was received",
+    // Context-size overflow — resuming only replays the same oversized prompt.
+    "prompt is too long",
+    "API Error: 400 prompt is too long: 215000 tokens > 200000 maximum",
+    "context length exceeded",
+    "context window too large",
+    "too many input tokens",
+    "input is too long",
+    // Compaction failures.
+    "compaction failed after reaching the threshold",
+    "failed to compact the conversation",
+  ])("resets the session for %s", (message) => {
+    expect(isSessionResetWorthyFailure(message)).toBe(true);
+  });
+
+  it.each([
+    // Ordinary recoverable failures keep their existing resume-based recovery.
+    "HTTP 503 service unavailable",
+    "overloaded_error",
+    "tool call arguments are invalid: name must be a string",
+    "rate limit exceeded, retry after 30s",
+    "the agent returned an empty response",
+    "",
+    null,
+    undefined,
+  ])("leaves recoverable failures on the resume path: %s", (message) => {
+    expect(isSessionResetWorthyFailure(message)).toBe(false);
   });
 });
