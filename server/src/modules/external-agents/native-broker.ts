@@ -162,6 +162,13 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
     async function eventAssignment(tx:ExternalAdmissionTransaction,b:ReturnType<typeof eventBinding>) {
       return (await tx.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${b.runId}::uuid and company_id=${b.companyId}::uuid and agent_id=${b.agentId}::uuid and binding_id=${b.bindingId}::uuid and binding_generation=${b.bindingGeneration} and normalized_session_id=${b.normalizedSessionId} and turn_id=${b.turnId} and revision=${b.assignmentRevision} for update`))[0];
     }
+    async function reserveRevocationEvent(tx:ExternalAdmissionTransaction,a:Assignment,sourceEventId:string,references:Record<string,unknown>) {
+      const [created]=await tx.execute(sql`insert into ${mailboxTable} (company_id,binding_id,binding_generation,assignment_id,kind,source_event_id,"references") values (${a.companyId}::uuid,${a.bindingId}::uuid,${a.bindingGeneration},${a.id}::uuid,'authority_revoked',${sourceEventId},${JSON.stringify(references)}::jsonb) on conflict do nothing returning id`);
+      if(created)return true;
+      const [old]=await tx.execute<{companyId:string;assignmentId:string|null;kind:string}>(sql`select company_id as "companyId",assignment_id as "assignmentId",kind from ${mailboxTable} where binding_id=${a.bindingId}::uuid and binding_generation=${a.bindingGeneration} and source_event_id=${sourceEventId}`);
+      if(!old||old.companyId!==a.companyId||old.assignmentId!==a.id||old.kind!=="authority_revoked")throw conflict("Runner event identity conflicts with its durable receipt.");
+      return false;
+    }
     return {
       attach:async(send,revoke,checkpoint)=>{
         const [existing]=await db.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${runId}::uuid`);
@@ -199,16 +206,31 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           if(!binding)throw forbidden("Runner dispatch binding unavailable.");
           if(p.kind==="authority_revoked") {
             const a=await eventAssignment(tx,b);if(!a)return;
-            await tx.execute(sql`update ${assignmentTable} set status='fenced' where id=${a.id}::uuid`);
-            let references:Record<string,unknown>={assignmentId:a.id,runId,externalStopConfirmed:false};
             if(provider==="muse") {
+              const [hold]=await tx.select().from(externalAgentHolds).where(and(eq(externalAgentHolds.provider,provider),eq(externalAgentHolds.assignmentId,a.id))).for("update");
               const [last]=await tx.execute<{requestId:string}>(sql`select request_id as "requestId" from ${operationTable} where assignment_id=${a.id}::uuid order by created_at desc limit 1`);
-              const boundary={bindingId:b.bindingId,generation:b.bindingGeneration,assignmentId:a.id,runId,turnId:a.turnId,assignmentRevision:a.revision,stopNonce:randomUUID(),operationBoundary:last?.requestId??null};
-              references={boundary,reason:"runner_authority_revoked",externalStopConfirmed:false};
+              // A server fence may already have established this assignment's
+              // stop boundary. A later Runner fact cannot erase its evidence.
+              const boundary=hold?.stopBoundary??{bindingId:b.bindingId,generation:b.bindingGeneration,assignmentId:a.id,runId,turnId:a.turnId,assignmentRevision:a.revision,stopNonce:randomUUID(),operationBoundary:last?.requestId??null};
+              const references={boundary,reason:"runner_authority_revoked",externalStopConfirmed:false};
+              // Reserve the event identity before any state transition. A lost
+              // ACK replay leaves the original receipt and hold unchanged.
+              if(!await reserveRevocationEvent(tx,a,event.sourceEventId,references))return;
+              await tx.execute(sql`update ${assignmentTable} set status='fenced' where id=${a.id}::uuid`);
               const [unresolved]=await tx.execute(sql`select 1 from ${operationTable} where assignment_id=${a.id}::uuid and status in ('dispatched','pending','unknown') limit 1`);
-              if(a.claimedAt)await tx.insert(externalAgentHolds).values({companyId:a.companyId,agentId:a.agentId,provider,assignmentId:a.id,bindingId:a.bindingId,bindingGeneration:a.bindingGeneration,runId,workerUnknown:true,nativeEffectsUnknown:!!unresolved,stopBoundary:boundary}).onConflictDoUpdate({target:[externalAgentHolds.provider,externalAgentHolds.assignmentId],set:{stopBoundary:boundary,workerUnknown:true,nativeEffectsUnknown:sql`${externalAgentHolds.nativeEffectsUnknown} or ${!!unresolved}`,releasedAt:null,updatedAt:new Date()}});
+              if(a.claimedAt) {
+                if(hold?.stopBoundary) {
+                  const nativeEffectsUnknown=hold.nativeEffectsUnknown||!!unresolved;
+                  if(nativeEffectsUnknown&&(!hold.nativeEffectsUnknown||hold.releasedAt!==null))await tx.update(externalAgentHolds).set({nativeEffectsUnknown:true,releasedAt:null,updatedAt:new Date()}).where(eq(externalAgentHolds.id,hold.id));
+                } else {
+                  await tx.insert(externalAgentHolds).values({companyId:a.companyId,agentId:a.agentId,provider,assignmentId:a.id,bindingId:a.bindingId,bindingGeneration:a.bindingGeneration,runId,workerUnknown:true,nativeEffectsUnknown:!!unresolved,stopBoundary:boundary}).onConflictDoUpdate({target:[externalAgentHolds.provider,externalAgentHolds.assignmentId],set:{stopBoundary:boundary,workerUnknown:true,nativeEffectsUnknown:sql`${externalAgentHolds.nativeEffectsUnknown} or ${!!unresolved}`,releasedAt:null,updatedAt:new Date()}});
+                }
+              }
+              return;
             }
-            await tx.execute(sql`insert into ${mailboxTable} (company_id,binding_id,binding_generation,assignment_id,kind,source_event_id,"references") values (${a.companyId}::uuid,${a.bindingId}::uuid,${a.bindingGeneration},${a.id}::uuid,'authority_revoked',${event.sourceEventId},${JSON.stringify(references)}::jsonb) on conflict do nothing`);return;
+            const references={assignmentId:a.id,runId,externalStopConfirmed:false};
+            if(await reserveRevocationEvent(tx,a,event.sourceEventId,references))await tx.execute(sql`update ${assignmentTable} set status='fenced' where id=${a.id}::uuid`);
+            return;
           }
           if(binding.generation!==b.bindingGeneration)throw forbidden("Runner dispatch generation fenced.");
           await assertCurrentAuthority(tx,binding);

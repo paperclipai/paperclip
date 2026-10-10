@@ -314,6 +314,116 @@ describe("personal Muse control plane",()=>{
     }finally{await f.detach();}
   });
 
+  it("preserves the original stop receipt across concurrent Runner replays and worker reporting",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const event={sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}};
+      await f.port.dispatch(event);
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!,boundary=state.stop.boundary!;
+      const [before]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      await Promise.all([f.port.dispatch(event),f.port.dispatch(event)]);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(before);
+      await f.broker.revoke(f.company.id,f.agent.id,f.operatorId,{bindingId:f.binding.id,generation:1,expectedRevision:state.revision});
+      const cleanup=await f.identity.authenticate(f.credentials.cleanupToken,"cleanup");
+      await f.broker.cleanup(cleanup,{command:"worker.quiescent",boundary,requestId:randomUUID()});
+      const [reported]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(reported.workerReportedAt).toBeInstanceOf(Date);
+      await f.port.dispatch(event);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(reported);
+      const receipts=await db.select().from(mailbox).where(and(eq(mailbox.bindingId,f.binding.id),eq(mailbox.sourceEventId,event.sourceEventId)));
+      expect(receipts).toHaveLength(1);expect(receipts[0].references.boundary).toEqual(boundary);
+    }finally{await f.detach();}
+  });
+
+  it("does not revive an attested and released hold when its Runner stop event replays",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const event={sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}};
+      await f.port.dispatch(event);
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary:state.stop.boundary!,expectedRevision:state.stop.bindingRevision!,workerStopped:true});
+      await db.update(heartbeatRuns).set({status:"cancelled",finishedAt:new Date()}).where(eq(heartbeatRuns.id,f.runId));
+      const [attested]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(attested.workerUnknown).toBe(false);expect(attested.releasedAt).toBeInstanceOf(Date);
+      await db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)));
+      await f.port.dispatch(event);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(attested);
+      await db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)));
+    }finally{await f.detach();}
+  });
+
+  it("preserves reported worker stop and independent native uncertainty on Runner replay",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      await db.insert(operations).values({companyId:f.company.id,assignmentId:f.assignment.id,requestId:randomUUID(),digest:"pending",command:{action:"tool"},status:"pending"});
+      const event={sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}};
+      await f.port.dispatch(event);
+      const before=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.revoke(f.company.id,f.agent.id,f.operatorId,{bindingId:f.binding.id,generation:1,expectedRevision:before.revision});
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      const cleanup=await f.identity.authenticate(f.credentials.cleanupToken,"cleanup");
+      await f.broker.cleanup(cleanup,{command:"worker.quiescent",boundary:state.stop.boundary!,requestId:randomUUID()});
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary:state.stop.boundary!,expectedRevision:state.stop.bindingRevision!,workerStopped:true});
+      const [attested]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(attested.workerUnknown).toBe(false);expect(attested.nativeEffectsUnknown).toBe(true);expect(attested.releasedAt).toBeNull();
+      expect(attested.workerReportedAt).toBeInstanceOf(Date);expect(attested.operatorAttestedAt).toBeInstanceOf(Date);
+      await f.port.dispatch(event);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(attested);
+      await db.update(heartbeatRuns).set({status:"cancelled",finishedAt:new Date()}).where(eq(heartbeatRuns.id,f.runId));
+      await expect(db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)))).rejects.toThrow("unresolved");
+    }finally{await f.detach();}
+  });
+
+  it("retains an attested server fence when its distinct late Runner stop fact arrives",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const before=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.revoke(f.company.id,f.agent.id,f.operatorId,{bindingId:f.binding.id,generation:1,expectedRevision:before.revision});
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!,boundary=state.stop.boundary!;
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary,expectedRevision:state.stop.bindingRevision!,workerStopped:true});
+      const [attested]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      const event={sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}};
+      await f.port.dispatch(event);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(attested);
+      const [receipt]=await db.select().from(mailbox).where(and(eq(mailbox.bindingId,f.binding.id),eq(mailbox.sourceEventId,event.sourceEventId)));
+      expect(receipt.references.boundary).toEqual(boundary);
+    }finally{await f.detach();}
+  });
+
+  it("holds newly unresolved native effects without erasing an attested worker stop",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      await f.port.dispatch({sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}});
+      const state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.attestStop(f.company.id,f.agent.id,f.operatorId,{boundary:state.stop.boundary!,expectedRevision:state.stop.bindingRevision!,workerStopped:true});
+      await db.update(heartbeatRuns).set({status:"cancelled",finishedAt:new Date()}).where(eq(heartbeatRuns.id,f.runId));
+      const [attested]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(attested.releasedAt).toBeInstanceOf(Date);
+      await db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)));
+      await db.insert(operations).values({companyId:f.company.id,assignmentId:f.assignment.id,requestId:randomUUID(),digest:"recovered-pending",command:{action:"tool"},status:"pending"});
+      const event={sourceEventId:randomUUID(),payload:{kind:"authority_revoked",binding:f.ref}};
+      await f.port.dispatch(event);
+      const [held]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      expect(held.stopBoundary).toEqual(attested.stopBoundary);expect(held.operatorAttestedAt).toEqual(attested.operatorAttestedAt);
+      expect(held.workerReportedAt).toEqual(attested.workerReportedAt);expect(held.workerUnknown).toBe(false);
+      expect(held.nativeEffectsUnknown).toBe(true);expect(held.releasedAt).toBeNull();
+      await expect(db.transaction(tx=>withExternalAdmissionGuard(tx,f.company.id,f.agent.id,()=>assertNoExternalOverlap(tx,f.company.id,f.agent.id)))).rejects.toThrow("unresolved");
+      await f.port.dispatch(event);
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(held);
+    }finally{await f.detach();}
+  });
+
+  it("rejects a conflicting Runner source event before changing assignment or stop state",async()=>{
+    const f=await active();try {
+      await f.broker.act(f.subject,{version:1,command:"accept",assignmentId:f.assignment.id,requestId:randomUUID()});
+      const [offer]=await db.select().from(mailbox).where(and(eq(mailbox.assignmentId,f.assignment.id),eq(mailbox.kind,"assignment")));
+      const [before]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id));
+      await expect(f.port.dispatch({sourceEventId:offer.sourceEventId,payload:{kind:"authority_revoked",binding:f.ref}})).rejects.toThrow("event identity");
+      expect((await db.select().from(assignments).where(eq(assignments.id,f.assignment.id)))[0].status).toBe("accepted");
+      expect((await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id)))[0]).toEqual(before);
+    }finally{await f.detach();}
+  });
+
   it("denies already-dispatched native authority immediately at the qualification deadline",async()=>{
     const f=await active();try {
       await db.update(bindings).set({qualificationId:randomUUID(),qualificationExpiresAt:new Date(Date.now()-1)}).where(eq(bindings.id,f.binding.id));
