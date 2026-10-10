@@ -235,8 +235,8 @@ describe("evaluateIssueRewakeThrottle", () => {
     // Every run in this sample posted a comment and nothing else — the exact
     // shape of a heartbeat protocol that always confirms "nothing to report."
     // Without the cap, the newest run's comment would exempt every
-    // evaluation forever; this is the gap TIE-828/#14458's sibling bug left
-    // in the throttle after the stranded-sweep lane was bounded.
+    // evaluation forever; this is the gap #14458's sibling bug left in the
+    // throttle after the stranded-sweep lane was bounded.
     const runs = [
       runSample({ id: "r4", finishedSecondsAgo: 10 }),
       runSample({ id: "r3", finishedSecondsAgo: 40 }),

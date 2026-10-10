@@ -388,11 +388,12 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   });
 
   it("still throttles a loop where every run posts its own no-op comment and nothing else", async () => {
-    // This is TIE-828's exact shape: a heartbeat protocol that always posts a
-    // status/confirmation comment, even when there is nothing to report. Each
-    // of the three runs below leaves only an `issue.comment_added` activity
-    // row attributed to itself — no status change, no work product, no other
-    // state. Before this fix, the real activity-log mapping in heartbeat.ts
+    // This exercises the exact shape of a heartbeat protocol that always
+    // posts a status/confirmation comment, even when there is nothing to
+    // report. Each of the three runs below leaves only an
+    // `issue.comment_added` activity row attributed to itself — no status
+    // change, no work product, no other state. Before this fix, the real
+    // activity-log mapping in heartbeat.ts
     // fed every one of those comment rows into `runIdsWithIssueProgress`,
     // so the newest run always looked like it made progress and the
     // no-progress streak could never reach the threshold — this test would
