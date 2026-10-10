@@ -1,6 +1,6 @@
 # Boat environments
 
-Status: architecture selected; implementation and product verification pending.
+Status: architecture selected; implementation integrated; live product verification in progress.
 
 ## Problem and finish line
 
@@ -12,7 +12,7 @@ same desktop. A Vite server started by the agent remains available across warm
 turns and updates the human's browser through HMR.
 
 Ship behind `enableBoatEnvironments`, disabled by default, on an unmerged branch
-and PR. Verify locally and at `https://boat.staging.paperclip.app/` using the same
+and PR. Verify locally and at the designated experimental staging instance using the same
 source revision. V1 attaches computers; it does not provision or delete them.
 
 ## Usage (caller's view)
@@ -174,11 +174,9 @@ already accepted Boat stop. Reconcile the provider stop ID before new admission.
 - Core #15406 (`codex/plugin-task-execution`) separates attempts from machines,
   but its open contract does not yet have a native heartbeat startup consumer.
   Its identity lessons apply; cherry-picking it does not implement Boat.
-- Cloud #718 provides useful desktop lifetime/auth separation, but its Launcher
-  backend and tenant integration are not Boat's transport.
-- Cloud #684 and #687 manage a different provisioned-computer/volume lifecycle.
-  That stack is not required for attaching an existing Boat. In particular, its
-  destructive volume cleanup is incompatible with detach preserving Boat files.
+- Keep desktop access separate from task admission. Provisioned-computer stacks
+  that delete machine volumes on release do not fit attach-only Boat semantics.
+  Detach must preserve the existing computer and its files.
 
 ## Tradeoffs and risks
 
@@ -217,8 +215,10 @@ process/stop receipts, deployment campaign and serving SHA, costs, and final
 resource state. Run focused tests first, then required typecheck, tests, build,
 module boundaries, and UI token gates before PR handoff. Never merge to master.
 
-## Next implementation step
+## Current implementation status
 
-Build the computer ledger/backend and authority-tagged execution target, then
-prove one native Codex run through the existing heartbeat before expanding the
-acceptance matrix.
+The computer ledger, Boat backend, execution target, persistent file access, and
+Computer panel are integrated. Live verification is resolving first-use home and
+harness-probe behavior before the four runtime paths and warm-turn acceptance
+matrix. Legacy Codex and Claude use explicit CLI engines for in-place homes.
+Native Codex and Claude retain their native runner configuration.
