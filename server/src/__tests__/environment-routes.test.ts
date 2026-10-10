@@ -75,7 +75,9 @@ const mockSecretService = vi.hoisted(() => ({
   syncSecretRefsForTarget: vi.fn(),
   replaceSecretRefsForInstanceTarget: vi.fn(),
   describeSecretRefs: vi.fn(),
+  listBindingReferences: vi.fn(),
   remove: vi.fn(),
+  removeIfUnreferenced: vi.fn(),
 }));
 const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
 const mockValidatePluginSandboxProviderConfig = vi.hoisted(() => vi.fn());
@@ -334,6 +336,22 @@ describe("environment routes", () => {
     mockSecretService.describeSecretRefs.mockReset();
     mockSecretService.describeSecretRefs.mockResolvedValue([]);
     mockSecretService.remove.mockReset();
+    mockSecretService.listBindingReferences.mockReset();
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+    // Mirrors the service: remove the secret only when every remaining binding
+    // (the listBindingReferences fixture) is one the caller asked to ignore.
+    mockSecretService.removeIfUnreferenced.mockReset();
+    mockSecretService.removeIfUnreferenced.mockImplementation(
+      async (
+        secretId: string,
+        options: { ignoreBinding?: (binding: Record<string, string>) => boolean } = {},
+      ) => {
+        const bindings = await mockSecretService.listBindingReferences("company-1", secretId);
+        if (bindings.some((binding: Record<string, string>) => !options.ignoreBinding?.(binding))) return false;
+        await mockSecretService.remove(secretId);
+        return true;
+      },
+    );
     mockSecretService.create.mockResolvedValue({
       id: "11111111-1111-1111-1111-111111111111",
     });
@@ -1953,6 +1971,144 @@ describe("environment routes", () => {
         entityId: "env-ssh",
       }),
     );
+  });
+
+  describe("SSH private-key secret shared with other consumers", () => {
+    const sharedSecretId = "11111111-1111-1111-1111-111111111111";
+
+    function createSshEnvironment(id: string, secretId: string = sharedSecretId) {
+      return {
+        ...createEnvironment(),
+        id,
+        name: `SSH ${id}`,
+        driver: "ssh" as const,
+        config: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          privateKeySecretRef: { type: "secret_ref", secretId, version: "latest" },
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      };
+    }
+
+    function binding(targetType: string, targetId: string, configPath: string) {
+      return { secretId: sharedSecretId, companyId: "company-1", targetType, targetId, configPath };
+    }
+
+    function mockDeletableEnvironment(environment: ReturnType<typeof createSshEnvironment>) {
+      mockEnvironmentService.getById.mockResolvedValue(environment);
+      mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius());
+      mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    }
+
+    const boardActor = { type: "board", userId: "admin-1", source: "local_implicit" };
+
+    it("keeps a key secret that another environment and an agent still bind to", async () => {
+      mockDeletableEnvironment(createSshEnvironment("env-ssh"));
+      mockSecretService.listBindingReferences.mockResolvedValue([
+        binding("environment", "env-ssh", "privateKeySecretRef"),
+        binding("environment", "env-ssh-2", "privateKeySecretRef"),
+        binding("agent", "agent-1", "env.SSH_KEY"),
+      ]);
+
+      const res = await request(createApp(boardActor)).delete("/api/environments/env-ssh");
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.removeIfUnreferenced).toHaveBeenCalledWith(sharedSecretId, expect.any(Object));
+      expect(mockSecretService.remove).not.toHaveBeenCalled();
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: "environment.deleted", entityId: "env-ssh" }),
+      );
+    });
+
+    it("keeps a key secret that another SSH environment config references without a binding row", async () => {
+      mockDeletableEnvironment(createSshEnvironment("env-ssh"));
+      mockEnvironmentService.list.mockResolvedValue([
+        createSshEnvironment("env-ssh"),
+        createSshEnvironment("env-ssh-legacy"),
+      ]);
+
+      const res = await request(createApp(boardActor)).delete("/api/environments/env-ssh");
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.list).toHaveBeenCalledWith({ driver: "ssh" });
+      expect(mockSecretService.remove).not.toHaveBeenCalled();
+    });
+
+    it("removes a key secret that only the deleted environment binds to", async () => {
+      mockDeletableEnvironment(createSshEnvironment("env-ssh"));
+      mockSecretService.listBindingReferences.mockResolvedValue([
+        binding("environment", "env-ssh", "privateKeySecretRef"),
+      ]);
+      mockEnvironmentService.list.mockResolvedValue([
+        createSshEnvironment("env-ssh"),
+        createSshEnvironment("env-ssh-other", "22222222-2222-2222-2222-222222222222"),
+      ]);
+
+      const res = await request(createApp(boardActor)).delete("/api/environments/env-ssh");
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.remove).toHaveBeenCalledWith(sharedSecretId);
+    });
+
+    it("keeps the previous shared key secret when an environment's key is replaced", async () => {
+      const environment = createSshEnvironment("env-ssh");
+      mockEnvironmentService.getById.mockResolvedValue(environment);
+      mockEnvironmentService.update.mockResolvedValue(environment);
+      mockSecretService.create.mockResolvedValue({ id: "33333333-3333-3333-3333-333333333333" });
+      mockSecretService.listBindingReferences.mockResolvedValue([
+        binding("environment", "env-ssh", "privateKeySecretRef"),
+        binding("agent", "agent-1", "env.SSH_KEY"),
+      ]);
+
+      const res = await request(createApp(boardActor))
+        .patch("/api/environments/env-ssh")
+        .send({ config: { ...environment.config, privateKey: "replacement-key" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.create).toHaveBeenCalled();
+      expect(mockSecretService.remove).not.toHaveBeenCalled();
+    });
+
+    it("keeps the previous key secret on replacement when the same environment's env var still binds it", async () => {
+      const environment = createSshEnvironment("env-ssh");
+      mockEnvironmentService.getById.mockResolvedValue(environment);
+      mockEnvironmentService.update.mockResolvedValue(environment);
+      mockSecretService.create.mockResolvedValue({ id: "33333333-3333-3333-3333-333333333333" });
+      mockSecretService.listBindingReferences.mockResolvedValue([
+        binding("environment", "env-ssh", "privateKeySecretRef"),
+        binding("environment", "env-ssh", "env.SSH_KEY"),
+      ]);
+
+      const res = await request(createApp(boardActor))
+        .patch("/api/environments/env-ssh")
+        .send({ config: { ...environment.config, privateKey: "replacement-key" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.remove).not.toHaveBeenCalled();
+    });
+
+    it("removes the previous key secret on replacement when nothing else uses it", async () => {
+      const environment = createSshEnvironment("env-ssh");
+      mockEnvironmentService.getById.mockResolvedValue(environment);
+      mockEnvironmentService.update.mockResolvedValue(environment);
+      mockSecretService.create.mockResolvedValue({ id: "33333333-3333-3333-3333-333333333333" });
+      mockSecretService.listBindingReferences.mockResolvedValue([
+        binding("environment", "env-ssh", "privateKeySecretRef"),
+      ]);
+
+      const res = await request(createApp(boardActor))
+        .patch("/api/environments/env-ssh")
+        .send({ config: { ...environment.config, privateKey: "replacement-key" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.remove).toHaveBeenCalledWith(sharedSecretId);
+    });
   });
 
   it("rejects invalid SSH config on create", async () => {

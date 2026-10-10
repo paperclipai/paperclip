@@ -45,6 +45,7 @@ import {
   normalizeEnvironmentConfigForPersistence,
   normalizeEnvironmentConfigForProbe,
   readSshEnvironmentPrivateKeySecretId,
+  removeSshPrivateKeySecretIfUnreferenced,
   type ParsedEnvironmentConfig,
 } from "../services/environment-config.js";
 import { probeEnvironment } from "../services/environment-probe.js";
@@ -1201,6 +1202,7 @@ export function environmentRoutes(
                 userId: actor.actorType === "user" ? actor.actorId : null,
               },
               pluginWorkerManager: options.pluginWorkerManager,
+              environmentId: existing.id,
             }),
           }
         : {}),
@@ -1358,7 +1360,11 @@ export function environmentRoutes(
     );
     const secretId = readSshEnvironmentPrivateKeySecretId(existing);
     if (secretId) {
-      await secrets.remove(secretId);
+      await removeSshPrivateKeySecretIfUnreferenced({
+        db,
+        secretId,
+        environmentId: existing.id,
+      });
     }
     await logInstanceEnvironmentActivity({
       actor,
