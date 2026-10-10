@@ -1815,6 +1815,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     let immutableBinding: Record<string, unknown> | null = null;
     const dispatches: Array<Record<string, unknown>> = [];
     const sessionRequests: string[] = [];
+    let bearerRotated = false;
     const remoteHttpRequest = vi.fn(async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
       expect(headers.get("authorization")).toBe("Bearer synthetic-govna-bearer");
@@ -1931,6 +1932,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
           ...decision,
           jti: govnaDigest(3),
         });
+        if (!bearerRotated) {
+          bearerRotated = true;
+          await secretService(db).rotate(bearerSecret.id, {
+            value: "rotated-after-authority-proof",
+          });
+        }
         return new Response(JSON.stringify({ authority, ticket }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -1973,7 +1980,6 @@ describeEmbeddedPostgres("tool gateway service", () => {
       sessionToken: session.token,
       tool: tool.name,
       parameters: originalArguments,
-      idempotencyKey: "govna-exact-call-1",
     };
 
     await expect(gateway.executeTool(call)).rejects.toMatchObject({
@@ -1981,6 +1987,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
       details: { upstreamPending: { executionId: reservationId } },
     });
     expect(await db.select().from(toolActionRequests)).toHaveLength(0);
+    expect(dispatches).toHaveLength(0);
+
+    const pendingInvocation = (await db.select().from(toolInvocations))
+      .find((candidate) => candidate.idempotencyKey?.startsWith("govna:"));
+    expect(pendingInvocation?.idempotencyKey).toMatch(/^govna:/);
+    const [otherAgent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Other Gateway Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning();
+    const [otherIssue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Other gateway work",
+      status: "in_progress",
+      assigneeAgentId: otherAgent!.id,
+    }).returning();
+    const [otherRun] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: otherAgent!.id,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId: otherIssue!.id },
+    }).returning();
+    const otherSession = await gateway.createSession({
+      companyId: company.id,
+      agentId: otherAgent!.id,
+      runId: otherRun!.id,
+    });
+    await expect(gateway.executeTool({
+      ...call,
+      sessionToken: otherSession.token,
+      idempotencyKey: pendingInvocation!.idempotencyKey,
+    })).rejects.toMatchObject({ status: 409 });
     expect(dispatches).toHaveLength(0);
 
     const resumed = gateway.executeTool({
@@ -1996,6 +2039,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
     if (includeReceipt) {
       expect(operation).toMatchObject({ state: "succeeded" });
       expect(invocation).toMatchObject({ status: "succeeded", upstreamRequestId: "gcl_exact_call_1" });
+      await expect(gateway.executeTool(call)).resolves.toMatchObject({
+        status: "replayed",
+        invocationId: invocation!.id,
+      });
+      expect(dispatches).toHaveLength(1);
     } else {
       expect(operation).toMatchObject({ state: "outcome_unknown", errorCode: "dispatch_receipt_missing" });
       expect(invocation).toMatchObject({ status: "failed", errorCode: "govna_outcome_unknown" });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
@@ -353,6 +353,136 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
     await expect(claim).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     expect(operation).toMatchObject({ state: "approved", localClaimId: null });
+  });
+
+  it("locks policy mutations before their rows so dispatch cannot deadlock with an edit", async () => {
+    const f = await fixture();
+    let mutation!: Promise<unknown>;
+    await db.transaction(async (claimTx) => {
+      // Hold both the legacy company lock and the new global lock. A legacy
+      // BEFORE ROW trigger takes the tuple first and then blocks here, while
+      // the statement-level trigger blocks before touching any tuple.
+      await claimTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'paperclip:tool-policy:' + f.company.id}, 0))`);
+      await claimTx.execute(sql`select pg_advisory_xact_lock(hashtextextended('paperclip:tool-policy:global', 0))`);
+      mutation = db.transaction(async (mutationTx) => mutationTx
+        .update(toolPolicies)
+        .set({ enabled: false })
+        .where(eq(toolPolicies.id, f.policy.id)));
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      await claimTx.execute(sql`set local lock_timeout = '150ms'`);
+      await expect(claimTx
+        .select({ id: toolPolicies.id })
+        .from(toolPolicies)
+        .where(eq(toolPolicies.id, f.policy.id))
+        .for("update")).resolves.toHaveLength(1);
+    });
+    await mutation;
+  });
+
+  it.each(["denied", "expired", "revoked"] as const)(
+    "persists a signed %s decision before returning terminal",
+    async (state) => {
+      const f = await fixture();
+      const config = (f.connection.config as {
+        govnaApprovalAuthority: GovnaApprovalAuthorityConfig;
+      }).govnaApprovalAuthority;
+      const coordinator = govnaToolGatewayCoordinator(db, {
+        signingSecret: "test-only-signing-secret",
+        assertCurrentAuthority: async () => ({
+          localPolicyRevision: "policy-v1",
+          connectionGeneration: 1,
+        }),
+      });
+      const call = {
+        companyId: f.company.id,
+        invocationId: f.invocation.id,
+        connectionId: f.connection.id,
+        gatewayToolName: "send_email",
+        upstreamToolName: "send_email",
+        parameters: { to: "ops@example.com", body: "ship" },
+        config,
+        client: {
+          async prepare() {
+            return { payload: {
+              reservation_id: "arv_01m4hfpth0emf9wpckns4ngbxt",
+              approval_url: "https://app.govna.io/authority-approval?org=org_01m4hfpth0emf9wpckns4ngbxt&reservation=arv_01m4hfpth0emf9wpckns4ngbxt",
+              safe_summary: "Approve one exact send",
+              approval_expires_at: Math.floor(Date.now() / 1000) + 60,
+              operation_id: `paperclip:${f.invocation.id}`,
+            } };
+          },
+          async status() {
+            return { payload: { state } };
+          },
+          dispatch() {
+            throw new Error("terminal decisions must not dispatch");
+          },
+        },
+      };
+      await expect(coordinator.prepareOrResume(call)).resolves.toMatchObject({ kind: "pending" });
+      await expect(coordinator.prepareOrResume(call)).resolves.toMatchObject({ kind: "terminal", state });
+      const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(operation).toMatchObject({ state, completedAt: expect.any(Date) });
+      expect(invocation).toMatchObject({
+        status: state === "denied" ? "denied" : "failed",
+        errorCode: `govna_${state}`,
+        resultSummary: null,
+      });
+    },
+  );
+
+  it("serializes concurrent first preparation and returns one durable pending operation", async () => {
+    const f = await fixture();
+    const config = (f.connection.config as {
+      govnaApprovalAuthority: GovnaApprovalAuthorityConfig;
+    }).govnaApprovalAuthority;
+    let prepareCalls = 0;
+    let releasePrepare!: () => void;
+    const prepareGate = new Promise<void>((resolve) => { releasePrepare = resolve; });
+    const client = {
+      async prepare() {
+        prepareCalls += 1;
+        await prepareGate;
+        return { payload: {
+          reservation_id: "arv_01m4hfpth0emf9wpckns4ngbxt",
+          approval_url: "https://app.govna.io/authority-approval?org=org_01m4hfpth0emf9wpckns4ngbxt&reservation=arv_01m4hfpth0emf9wpckns4ngbxt",
+          safe_summary: "Approve one exact send",
+          approval_expires_at: Math.floor(Date.now() / 1000) + 60,
+          operation_id: `paperclip:${f.invocation.id}`,
+        } };
+      },
+      async status() {
+        return { payload: { state: "pending" } };
+      },
+      dispatch() {
+        throw new Error("pending preparation must not dispatch");
+      },
+    };
+    const coordinator = govnaToolGatewayCoordinator(db, {
+      signingSecret: "test-only-signing-secret",
+      assertCurrentAuthority: async () => ({ localPolicyRevision: "policy-v1", connectionGeneration: 1 }),
+    });
+    const call = {
+      companyId: f.company.id,
+      invocationId: f.invocation.id,
+      connectionId: f.connection.id,
+      gatewayToolName: "send_email",
+      upstreamToolName: "send_email",
+      parameters: { to: "ops@example.com", body: "ship" },
+      config,
+      client,
+    };
+    const first = coordinator.prepareOrResume(call);
+    const second = coordinator.prepareOrResume(call);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releasePrepare();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ kind: "pending" }),
+      expect.objectContaining({ kind: "pending" }),
+    ]);
+    expect(prepareCalls).toBe(1);
+    expect(await db.select().from(toolGovnaAuthorityOperations)).toHaveLength(1);
   });
 
   it("prepares, resumes, claims, and emits exact dispatch authority without persisting the ticket", async () => {

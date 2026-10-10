@@ -428,6 +428,7 @@ type RemoteHttpExecutionResult = {
 
 type GovnaRemoteDispatch = Extract<GovnaGatewayDisposition, { kind: "dispatch" }>["authority"] & {
   operationId: string;
+  credentialHeaders: Record<string, string>;
 };
 
 type RemoteHttpExecutionAudit = {
@@ -2857,7 +2858,7 @@ export function createToolGatewayService(
       hostPrivateKeyPem,
       request,
     });
-    return govnaCoordinator.prepareOrResume({
+    const disposition = await govnaCoordinator.prepareOrResume({
       companyId: input.session.companyId,
       invocationId: input.invocation.id,
       connectionId: connection.id,
@@ -2868,6 +2869,9 @@ export function createToolGatewayService(
       config: input.config,
       client,
     });
+    return disposition.kind === "dispatch"
+      ? { ...disposition, credentialHeaders }
+      : disposition;
   }
 
   function policyInputForTool(input: {
@@ -6156,7 +6160,7 @@ export function createToolGatewayService(
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
-    let credentialHeaders = {
+    let credentialHeaders = govnaAuthority?.credentialHeaders ?? {
       ...projectedConnectionHeaders(connection),
       ...(await resolveCredentialHeaders(session, connection, grant)),
     };
@@ -10727,7 +10731,7 @@ export function createToolGatewayService(
           })
           .where(eq(toolInvocations.id, invocationId));
       } else {
-        const decisionInput = policyInputForTool({
+        let decisionInput = policyInputForTool({
           session,
           tool,
           parameters: effectiveParameters,
@@ -10739,16 +10743,63 @@ export function createToolGatewayService(
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }
         const govnaConfig = await govnaConfigForDecision(tool, accessDecision);
+        if (govnaConfig && !input.idempotencyKey) {
+          const generatedIdempotencyKey = `govna:${stableHash({
+            companyId: session.companyId,
+            actorType: session.actorType ?? "agent",
+            actorId: session.actorId ?? session.agentId,
+            agentId: session.agentId,
+            runId: session.runId,
+            issueId: session.issueId,
+            gatewayId: session.gatewayId ?? null,
+            connectionId: tool.connectionId ?? null,
+            applicationId: tool.applicationId ?? null,
+            catalogEntryId: tool.catalogEntryId ?? null,
+            toolName: tool.name,
+            upstreamToolName: tool.upstreamToolName ?? tool.name,
+          })}`;
+          decisionInput = {
+            ...decisionInput,
+            request: { ...decisionInput.request, idempotencyKey: generatedIdempotencyKey },
+          };
+        }
         const recorded = await policyService.recordInvocation(
           decisionInput,
           accessDecision,
-          { createActionRequest: !govnaConfig },
+          {
+            createActionRequest: !govnaConfig,
+            allowArgumentDriftOnReplay: Boolean(govnaConfig && !input.idempotencyKey),
+          },
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
         const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;
+        if (recorded.replayed && recorded.invocation.status === "succeeded") {
+          await writeAudit({
+            session,
+            companyId: session.companyId,
+            agentId: session.agentId,
+            runId: session.runId,
+            issueId: session.issueId,
+            action: "tool_gateway.call_completed",
+            details: {
+              invocationId,
+              decision: "allow",
+              reasonCode: "idempotent_replay",
+              tool: tool.name,
+              ...toolAuditMetadata(tool),
+              replayed: true,
+            },
+          });
+          return {
+            invocationId,
+            status: "replayed" as const,
+            tool: tool.name,
+            result: recorded.invocation.resultSummary ?? null,
+          };
+        }
         if (accessDecision.decision === "require_approval" && govnaConfig) {
           const disposition = await coordinateGovnaToolCall({
             session,
@@ -10775,9 +10826,14 @@ export function createToolGatewayService(
             throw new ToolGatewayHttpError(409, disposition.message, disposition.reasonCode, { invocationId });
           }
           if (disposition.kind === "terminal") {
+            upstreamHandoffs.delete(invocationId);
             throw new ToolGatewayHttpError(409, "Govna approval is no longer dispatchable.", `govna_${disposition.state}`, { invocationId });
           }
-          govnaDispatch = { ...disposition.authority, operationId: disposition.operationId };
+          govnaDispatch = {
+            ...disposition.authority,
+            operationId: disposition.operationId,
+            credentialHeaders: disposition.credentialHeaders,
+          };
           effectiveParameters = disposition.parameters;
           effectiveArgumentsSummary = validateToolContent({
             value: effectiveParameters,

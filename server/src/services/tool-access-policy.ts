@@ -1581,7 +1581,10 @@ export function toolAccessPolicyService(db: Db) {
   async function recordInvocation(
     input: ToolAccessDecisionInput,
     accessDecision: ToolAccessDecision,
-    options: { createActionRequest?: boolean } = {},
+    options: {
+      createActionRequest?: boolean;
+      allowArgumentDriftOnReplay?: boolean;
+    } = {},
   ) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
@@ -1594,7 +1597,27 @@ export function toolAccessPolicyService(db: Db) {
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
-      if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+      if (existing) {
+        const sameBinding =
+          existing.actorType === ctx.actorType &&
+          existing.actorId === ctx.actorId &&
+          existing.agentId === ctx.agentId &&
+          existing.runId === ctx.heartbeatRunId &&
+          existing.issueId === ctx.issueId &&
+          existing.gatewayId === ctx.gatewayId &&
+          existing.applicationId === ctx.applicationId &&
+          existing.connectionId === ctx.connectionId &&
+          existing.catalogEntryId === ctx.catalogEntryId &&
+          existing.providerType === ctx.providerType &&
+          existing.applicationKey === ctx.applicationKey &&
+          existing.upstreamToolName === ctx.upstreamToolName &&
+          existing.toolName === ctx.toolName &&
+          (options.allowArgumentDriftOnReplay === true || existing.argumentsHash === argumentsHash);
+        if (!sameBinding) {
+          throw conflict("Tool invocation idempotency key is already bound to a different call context");
+        }
+        return { invocation: existing, replayed: true, actionRequest: null };
+      }
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"

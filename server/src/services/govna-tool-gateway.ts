@@ -102,7 +102,7 @@ export function govnaToolGatewayCoordinator(
     config: GovnaApprovalAuthorityConfig;
     client: AuthorityClient;
   }): Promise<GovnaGatewayDisposition> {
-    const [stored] = await db
+    let [stored] = await db
       .select()
       .from(toolGovnaAuthorityOperations)
       .where(and(
@@ -111,53 +111,77 @@ export function govnaToolGatewayCoordinator(
       ));
 
     if (!stored) {
-      const parameters = objectArguments(input.parameters);
-      const operationId = `paperclip:${input.invocationId}`;
-      const requestHash = authorityRequestHash(input.upstreamToolName, parameters);
-      const signedArguments = signToolArguments({
-        invocationId: input.invocationId,
-        toolName: input.gatewayToolName,
-        canonicalArguments: canonicalToolArguments(parameters),
-        executionOnApprove: true,
-        identityContextId: input.identityContextId ?? undefined,
-        signingSecret: options.signingSecret,
-      });
-      const body = {
-        trust_revision: input.config.trustRevision,
-        operation_id: operationId,
-        host_context_id: input.config.hostContextId,
-        local_policy_revision: input.config.localPolicyRevision,
-        connection_generation: input.config.connectionGeneration,
-        name: input.upstreamToolName,
-        arguments: parameters,
-      };
-      const prepared = await input.client.prepare(body, {
-        operation_id: operationId,
-        host_context_id: input.config.hostContextId,
-        local_policy_revision: input.config.localPolicyRevision,
-        connection_generation: input.config.connectionGeneration,
-        resource: input.config.resource,
-        tool_name: input.upstreamToolName,
-        request_hash: requestHash,
-        human_approval_required: true,
-      });
-      await operations.reserve({
+      const prepared = await operations.withPreparationLock({
         companyId: input.companyId,
         invocationId: input.invocationId,
-        connectionId: input.connectionId,
-        operationId,
-        hostContextId: input.config.hostContextId,
-        localPolicyRevision: input.config.localPolicyRevision,
-        connectionGeneration: input.config.connectionGeneration,
-        requestHash,
-        signedArguments,
-        authorityBinding: prepared.payload,
-        reservationId: String(prepared.payload.reservation_id),
-        approvalUrl: String(prepared.payload.approval_url),
-        safeSummary: String(prepared.payload.safe_summary),
-        approvalExpiresAt: new Date(Number(prepared.payload.approval_expires_at) * 1000),
+        run: async (lockedDb) => {
+          const [winner] = await lockedDb
+            .select()
+            .from(toolGovnaAuthorityOperations)
+            .where(and(
+              eq(toolGovnaAuthorityOperations.companyId, input.companyId),
+              eq(toolGovnaAuthorityOperations.invocationId, input.invocationId),
+            ));
+          if (winner) return { operation: winner, payload: null };
+          const parameters = objectArguments(input.parameters);
+          const operationId = `paperclip:${input.invocationId}`;
+          const requestHash = authorityRequestHash(input.upstreamToolName, parameters);
+          const signedArguments = signToolArguments({
+            invocationId: input.invocationId,
+            toolName: input.gatewayToolName,
+            canonicalArguments: canonicalToolArguments(parameters),
+            executionOnApprove: true,
+            identityContextId: input.identityContextId ?? undefined,
+            signingSecret: options.signingSecret,
+          });
+          const body = {
+            trust_revision: input.config.trustRevision,
+            operation_id: operationId,
+            host_context_id: input.config.hostContextId,
+            local_policy_revision: input.config.localPolicyRevision,
+            connection_generation: input.config.connectionGeneration,
+            name: input.upstreamToolName,
+            arguments: parameters,
+          };
+          const authority = await input.client.prepare(body, {
+            operation_id: operationId,
+            host_context_id: input.config.hostContextId,
+            local_policy_revision: input.config.localPolicyRevision,
+            connection_generation: input.config.connectionGeneration,
+            resource: input.config.resource,
+            tool_name: input.upstreamToolName,
+            request_hash: requestHash,
+            human_approval_required: true,
+          });
+          const lockedOperations = govnaAuthorityOperationService(lockedDb, {
+            assertCurrentAuthority: options.assertCurrentAuthority,
+          });
+          const reserved = await lockedOperations.reserve({
+            companyId: input.companyId,
+            invocationId: input.invocationId,
+            connectionId: input.connectionId,
+            operationId,
+            hostContextId: input.config.hostContextId,
+            localPolicyRevision: input.config.localPolicyRevision,
+            connectionGeneration: input.config.connectionGeneration,
+            requestHash,
+            signedArguments,
+            authorityBinding: authority.payload,
+            reservationId: String(authority.payload.reservation_id),
+            approvalUrl: String(authority.payload.approval_url),
+            safeSummary: String(authority.payload.safe_summary),
+            approvalExpiresAt: new Date(Number(authority.payload.approval_expires_at) * 1000),
+          });
+          return { operation: reserved.operation, payload: authority.payload };
+        },
       });
-      return pendingDisposition({ invocationId: input.invocationId, payload: prepared.payload });
+      if (prepared.payload) {
+        return pendingDisposition({ invocationId: input.invocationId, payload: prepared.payload });
+      }
+      stored = prepared.operation;
+      if (stored.state === "pending") {
+        return pendingDisposition({ invocationId: input.invocationId, payload: stored.authorityBinding });
+      }
     }
 
     const signed = readSignedToolArgumentsPayload({
@@ -183,7 +207,15 @@ export function govnaToolGatewayCoordinator(
       return pendingDisposition({ invocationId: input.invocationId, payload: status.payload });
     }
     if (status.payload.state !== "approved") {
-      return { kind: "terminal", invocationId: input.invocationId, state: String(status.payload.state) };
+      const terminalState = String(status.payload.state);
+      if (terminalState === "denied" || terminalState === "expired" || terminalState === "revoked") {
+        await operations.recordTerminalDecision({
+          companyId: input.companyId,
+          operationId: stored.operationId,
+          state: terminalState,
+        });
+      }
+      return { kind: "terminal", invocationId: input.invocationId, state: terminalState };
     }
     if (!status.ticket) {
       return {

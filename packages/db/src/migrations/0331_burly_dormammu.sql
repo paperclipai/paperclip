@@ -37,13 +37,13 @@ CREATE UNIQUE INDEX "tool_govna_authority_operations_company_reservation_uq" ON 
 CREATE UNIQUE INDEX "tool_govna_authority_operations_company_claim_uq" ON "tool_govna_authority_operations" USING btree ("company_id","local_claim_id");--> statement-breakpoint
 CREATE INDEX "tool_govna_authority_operations_company_state_idx" ON "tool_govna_authority_operations" USING btree ("company_id","state");
 --> statement-breakpoint
-CREATE FUNCTION "lock_tool_policy_company_mutation"() RETURNS trigger AS $$
+CREATE FUNCTION "lock_tool_policy_mutation"() RETURNS trigger AS $$
 BEGIN
-	PERFORM pg_advisory_xact_lock(hashtextextended('paperclip:tool-policy:' || COALESCE(NEW.company_id, OLD.company_id)::text, 0));
-	RETURN COALESCE(NEW, OLD);
+	PERFORM pg_advisory_xact_lock(hashtextextended('paperclip:tool-policy:global', 0));
+	RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 --> statement-breakpoint
-CREATE TRIGGER "tool_policies_company_mutation_lock"
+CREATE TRIGGER "tool_policies_mutation_lock"
 BEFORE INSERT OR UPDATE OR DELETE ON "tool_policies"
-FOR EACH ROW EXECUTE FUNCTION "lock_tool_policy_company_mutation"();
+FOR EACH STATEMENT EXECUTE FUNCTION "lock_tool_policy_mutation"();

@@ -1197,6 +1197,101 @@ export function govnaAuthorityOperationService(
     });
   }
 
+  async function withPreparationLock<T>(input: {
+    companyId: string;
+    invocationId: string;
+    run: (lockedDb: Db) => Promise<T>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${
+        `paperclip:govna-prepare:${input.companyId}:${input.invocationId}`
+      }, 0))`);
+      return input.run(tx as unknown as Db);
+    });
+  }
+
+  async function recordTerminalDecision(input: {
+    companyId: string;
+    operationId: string;
+    state: "denied" | "expired" | "revoked";
+  }) {
+    return db.transaction(async (tx) => {
+      const [operation] = await tx
+        .select()
+        .from(toolGovnaAuthorityOperations)
+        .where(and(
+          eq(toolGovnaAuthorityOperations.companyId, input.companyId),
+          eq(toolGovnaAuthorityOperations.operationId, input.operationId),
+        ))
+        .for("update");
+      if (!operation) {
+        throw new GovnaAuthorityStateError("not_approvable", "Govna authority operation not found");
+      }
+      if (operation.state === input.state) return operation;
+      if (operation.state !== "pending" && operation.state !== "approved") {
+        throw new GovnaAuthorityStateError("not_approvable", "Govna authority operation is already terminal");
+      }
+      const now = new Date();
+      const errorCode = `govna_${input.state}`;
+      const [updated] = await tx
+        .update(toolGovnaAuthorityOperations)
+        .set({ state: input.state, errorCode, completedAt: now, updatedAt: now })
+        .where(eq(toolGovnaAuthorityOperations.id, operation.id))
+        .returning();
+      const invocationStatus = input.state === "denied" ? "denied" : "failed";
+      const approvalState = input.state === "expired" ? "expired" : "rejected";
+      const [invocation] = await tx
+        .update(toolInvocations)
+        .set({
+          status: invocationStatus,
+          approvalState,
+          resultHash: null,
+          resultSummary: null,
+          resultSizeBytes: null,
+          errorCode,
+          errorMessage: `Govna approval was ${input.state}.`,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(toolInvocations.id, operation.invocationId),
+          eq(toolInvocations.companyId, input.companyId),
+        ))
+        .returning();
+      if (!invocation) {
+        throw new GovnaAuthorityStateError("invocation_invalid", "Govna invocation not found");
+      }
+      await tx.insert(toolCallEvents).values({
+        companyId: input.companyId,
+        invocationId: invocation.id,
+        actorType: invocation.actorType,
+        actorId: invocation.actorId,
+        agentId: invocation.agentId,
+        runId: invocation.runId,
+        issueId: invocation.issueId,
+        applicationId: invocation.applicationId,
+        connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId,
+        toolName: invocation.toolName,
+        eventType: "call_failed",
+        outcome: "failure",
+        decision: "require_approval",
+        matchedPolicyIds: invocation.matchedPolicyIds,
+        reasonCode: errorCode,
+        requestHash: operation.requestHash,
+        requestSummary: invocation.argumentsSummary,
+        errorCode,
+        metadata: {
+          authority: "govna",
+          authorityOperationId: operation.operationId,
+          reservationId: operation.reservationId,
+          terminalState: input.state,
+        },
+      });
+      return updated!;
+    });
+  }
+
   async function approve(input: AuthorityDispatchBinding) {
     return db.transaction(async (tx) => {
       const [operation] = await tx
@@ -1257,7 +1352,7 @@ export function govnaAuthorityOperationService(
       // tool-policy INSERT/UPDATE/DELETE, including write paths outside this
       // service. Taking it before current-policy evaluation prevents a new or
       // edited hard deny from committing between evaluation and claim.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'paperclip:tool-policy:' + input.companyId}, 0))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('paperclip:tool-policy:global', 0))`);
       if (operation.approvalExpiresAt.getTime() <= Date.now()) {
         throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority approval has expired");
       }
@@ -1454,5 +1549,13 @@ export function govnaAuthorityOperationService(
     });
   }
 
-  return { reserve, approve, claimDispatch, markOutcomeUnknown, complete };
+  return {
+    reserve,
+    withPreparationLock,
+    recordTerminalDecision,
+    approve,
+    claimDispatch,
+    markOutcomeUnknown,
+    complete,
+  };
 }
