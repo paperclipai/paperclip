@@ -4397,6 +4397,7 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
           // workspace coordinate. Resolve that recorded origin, never an arbitrary
           // run ID, before checking the physical lease and latest retirement.
           const origins = await input.db.select({
+            id: heartbeatRuns.id,
             status: heartbeatRuns.status,
             runnerProfileJson: heartbeatRuns.runnerProfileJson,
           }).from(heartbeatRuns).where(and(
@@ -4412,6 +4413,7 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
             const originExecution = parseNativeExecutionInput(originProfile.nativeExecutionInput);
             const originWorkspace = readNativeComputerWorkspaceReference(originProfile.nativeComputerWorkspace);
             if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(origin.status) ||
+                originExecution.binding.runId !== origin.id ||
                 originExecution.binding.executionWorkspaceId !== input.identity.environmentLeaseId ||
                 nativeSessionScopeKey(originExecution) !== nativeSessionScopeKey(priorExecution) ||
                 !originWorkspace || originWorkspace.remoteCwd !== priorWorkspace.remoteCwd ||
