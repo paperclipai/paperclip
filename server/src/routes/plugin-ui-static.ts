@@ -165,6 +165,37 @@ export function resolvePluginUiDir(
 }
 
 /**
+ * Postgres SQLSTATE for "invalid input syntax" (e.g. a non-UUID string
+ * passed to a `uuid` column).
+ */
+const POSTGRES_INVALID_TEXT_REPRESENTATION = "22P02";
+
+/**
+ * Detect whether an error (thrown by a `plugins.id` lookup) is a Postgres
+ * invalid-UUID-syntax error, meaning the lookup value is a plugin key
+ * (slug) rather than a UUID.
+ *
+ * drizzle-orm's postgres-js driver wraps the raw `postgres` `PostgresError`
+ * (which carries `.code`) in a `DrizzleQueryError`, whose own `.code` is
+ * `undefined` — the real SQLSTATE lives on `.cause`. Walk the `cause` chain
+ * so this check works whether the error is raw or wrapped.
+ */
+function isInvalidUuidError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    if (typeof current === "object" && "code" in current) {
+      if ((current as { code?: unknown }).code === POSTGRES_INVALID_TEXT_REPRESENTATION) {
+        return true;
+      }
+    }
+    current = typeof current === "object" && current !== null && "cause" in current
+      ? (current as { cause?: unknown }).cause
+      : undefined;
+  }
+  return false;
+}
+
+/**
  * Compute an ETag from file stat (size + mtime).
  * This is a lightweight approach that avoids reading the file content.
  */
@@ -248,11 +279,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
+      if (!isInvalidUuidError(error)) {
         throw error;
       }
     }
