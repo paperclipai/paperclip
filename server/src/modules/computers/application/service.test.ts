@@ -305,6 +305,62 @@ describe("computer ownership", () => {
     await Promise.all([first, second]);
     expect(f.backend.stop).toHaveBeenCalledOnce();
   });
+  it.each(["retire", "warm"] as const)("waits for terminal predecessor %s before admitting its follow-up", async (transition) => {
+    const f = fixture();
+    await f.attach();
+    const first = await f.admit();
+    const claim = await first.launch({ command: "runnerd" });
+    vi.mocked(f.repository.runState).mockResolvedValue("terminal");
+    const wait = vi.fn(async () => {
+      const incumbent = (await f.repository.get(f.scope)).ledger.owners.find(owner => owner.id === first.owner.ownerId)!;
+      expect(incumbent.phase).toBe("active");
+      expect(incumbent.generation).toBe(first.owner.generation);
+      expect(f.backend.retire).not.toHaveBeenCalled();
+      if (transition === "retire") await f.service.retire({ ...f.scope, owner: first.owner });
+      else await f.service.retainWarm({ ...f.scope, owner: first.owner, idleTimeoutMs: 60_000 });
+    });
+    const waiting = createComputerService(f.repository, f.backend, () => new Date("2026-10-10T12:00:00Z"), { admissionWaitMs: 2000, wait });
+    const next = await waiting.admit({ ...f.scope, agentId: "agent", runId: "follow-up", sessionKey: "session", idleTimeoutMs: 60_000 });
+    expect(wait).toHaveBeenCalledOnce();
+    expect(f.repository.runState).toHaveBeenCalledWith(expect.objectContaining(f.scope), "run", "agent");
+    if (transition === "warm") {
+      expect(next.owner.ownerId).toBe(first.owner.ownerId);
+      expect(next.owner.generation).toBe(first.owner.generation + 1);
+      expect((await next.inspectProcess()).claim?.nonce).toBe(claim.nonce);
+      expect(f.backend.retire).not.toHaveBeenCalled();
+    } else {
+      expect(next.owner.ownerId).not.toBe(first.owner.ownerId);
+      expect(f.backend.retire).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(["active", "missing"] as const)("does not wait on or supersede a %s predecessor", async (state) => {
+    const f = fixture();
+    await f.attach();
+    const first = await f.admit();
+    vi.mocked(f.repository.runState).mockResolvedValue(state);
+    const wait = vi.fn(async () => {});
+    const waiting = createComputerService(f.repository, f.backend, () => new Date("2026-10-10T12:00:00Z"), { admissionWaitMs: 2000, wait });
+    await expect(waiting.admit({ ...f.scope, agentId: "agent", runId: "follow-up", sessionKey: "session", idleTimeoutMs: 60_000 }))
+      .rejects.toMatchObject({ code: "conflict" });
+    expect(wait).not.toHaveBeenCalled();
+    expect(f.backend.retire).not.toHaveBeenCalled();
+    expect((await f.repository.get(f.scope)).ledger.owners[0]?.generation).toBe(first.owner.generation);
+  });
+
+  it("bounds the wait for terminal predecessor teardown without forcing retirement", async () => {
+    const f = fixture();
+    await f.attach();
+    await f.admit();
+    vi.mocked(f.repository.runState).mockResolvedValue("terminal");
+    const wait = vi.fn(async () => {});
+    const waiting = createComputerService(f.repository, f.backend, () => new Date("2026-10-10T12:00:00Z"), { admissionWaitMs: 2000, wait });
+    await expect(waiting.admit({ ...f.scope, agentId: "agent", runId: "follow-up", sessionKey: "session", idleTimeoutMs: 60_000 }))
+      .rejects.toMatchObject({ code: "conflict" });
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(f.backend.retire).not.toHaveBeenCalled();
+  });
+
   it("waits for a normal provider snapshot stop before admitting the next turn", async () => {
     const f = fixture();
     await f.attach();

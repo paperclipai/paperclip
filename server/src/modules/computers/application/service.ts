@@ -15,6 +15,14 @@ import {
 } from "../domain/ledger.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 
+// A terminal run can enqueue its successor before remote teardown has finished.
+// Keep the incumbent owner fenced until its own cleanup or warm handoff settles.
+class ComputerSessionBusyError extends ComputerError {
+  constructor(readonly runId: string | undefined, readonly agentId: string | undefined) {
+    super("conflict", "Computer session already has an active turn");
+  }
+}
+
 type Scope = { companyId: string; environmentId: string };
 export function createComputerService(
   repository: ComputerRepository,
@@ -54,8 +62,16 @@ export function createComputerService(
         )
           throw error;
         const current = await repository.get(scope);
-        if (current.ledger.status !== "attached" || !current.ledger.action)
-          throw error;
+        if (current.ledger.status !== "attached") throw error;
+        if (error instanceof ComputerSessionBusyError && error.runId && error.agentId) {
+          // A terminal database status does not prove the process has stopped.
+          // Wait for the existing owner transition; never retire it here or
+          // advance its generation while final commands might still run.
+          if (await repository.runState(scope, error.runId, error.agentId) !== "terminal") throw error;
+          await wait(1000);
+          continue;
+        }
+        if (!current.ledger.action) throw error;
         await reconcileRecord(current);
         if ((await repository.get(scope)).ledger.action) await wait(1000);
       }
@@ -366,10 +382,7 @@ finally:
           o.phase !== "retired",
       );
       if (owner && owner.phase !== "warm")
-        throw new ComputerError(
-          "conflict",
-          "Computer session already has an active turn",
-        );
+        throw new ComputerSessionBusyError(owner.runId, owner.agentId);
       if (owner && expired(owner, now()))
         throw new ComputerError(
           "conflict",
