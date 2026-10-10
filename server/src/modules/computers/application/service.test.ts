@@ -5,6 +5,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  mkdirSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -339,6 +341,85 @@ describe("computer ownership", () => {
     f.advance(5001);
     await f.service.reconcile();
     expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("returns foreground output without waiting for detached command descendants", async () => {
+    const f = fixture();
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-command-")));
+    let backgroundPid: number | undefined;
+    const runPath = join(temp, "systemd-run");
+    // The shim starts the real supervisor. Live Boat coverage additionally
+    // verifies systemd keeps the descendant in the owner slice and retires it.
+    writeFileSync(
+      runPath,
+      `#!/usr/bin/env python3
+import sys,subprocess,json
+args=sys.argv[1:]
+assert '--property=ExitType=cgroup' in args
+assert '--property=KillMode=control-group' in args
+assert '--wait' not in args
+output=next(v.split('append:',1)[1] for v in args if v.startswith('--property=StandardOutput='))
+error=next(v.split('append:',1)[1] for v in args if v.startswith('--property=StandardError='))
+cwd=next(v.split('=',1)[1] for v in args if v.startswith('--working-directory='))
+with open(output,'wb') as out,open(error,'wb') as err:
+ subprocess.Popen(args[args.index('--')+1:],stdout=out,stderr=err,cwd=cwd,start_new_session=True)
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(join(temp, "systemctl"), "#!/bin/sh\necho active\n", {
+      mode: 0o700,
+    });
+    vi.mocked(f.backend.runner).mockResolvedValue({
+      execute: async (input) => {
+        const payload = JSON.parse(input.stdin!);
+        const ownerRoot = join(temp, payload.owner);
+        mkdirSync(ownerRoot, { recursive: true });
+        writeFileSync(
+          join(ownerRoot, "generation"),
+          String(payload.generation),
+        );
+        const result = spawnSync(
+          input.command,
+          input.args!.map((arg) =>
+            arg.replaceAll("/home/user/.paperclip-owners/", `${temp}/`),
+          ),
+          {
+            input: input.stdin,
+            encoding: "utf8",
+            timeout: 5000,
+            env: { ...process.env, PATH: `${temp}:${process.env.PATH}` },
+          },
+        );
+        if (result.error) throw result.error;
+        return {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.status,
+          timedOut: false,
+        } as any;
+      },
+    });
+    try {
+      await f.attach();
+      const binding = await f.admit();
+      const result = await binding.runner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          "sleep 30 </dev/null >/dev/null 2>&1 & echo $!; read word; echo $word >&2; exit 7",
+        ],
+        cwd: temp,
+        stdin: "foreground-input\n",
+      });
+      backgroundPid = Number(result.stdout.trim());
+      expect(result.exitCode).toBe(7);
+      expect(result.stderr).toBe("foreground-input\n");
+      expect(backgroundPid).toBeGreaterThan(1);
+      expect(() => process.kill(backgroundPid!, 0)).not.toThrow();
+      expect(existsSync(join(temp, binding.owner.ownerId))).toBe(true);
+    } finally {
+      if (backgroundPid) process.kill(backgroundPid, "SIGKILL");
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
   it("realizes probe cwd before readiness without consuming the initial personal-home seed", async () => {
     const f = fixture();

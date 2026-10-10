@@ -192,26 +192,61 @@ export function createComputerService(
           args: [
             "-c",
             String.raw`
-import os,sys,json,fcntl,subprocess,time
+import os,sys,json,fcntl,subprocess,time,tempfile,shutil
 p=json.load(sys.stdin);root='/home/user/.paperclip-owners/'+p['owner'];os.makedirs(root,exist_ok=True)
-with open(root+'/lock','a') as lock:
- fcntl.flock(lock,fcntl.LOCK_EX)
- if os.path.exists(root+'/retired'):raise RuntimeError('computer owner retired')
- if p.get('processClaim'):
-  claim=json.load(open(root+'/claim.json'))
-  if any(claim[k]!=p['processClaim'][k] for k in ['nonce','unitName','bootId','launchGeneration']) or claim['bootId']!=open('/proc/sys/kernel/random/boot_id').read().strip():raise RuntimeError('computer process superseded')
- elif not os.path.exists(root+'/generation') or int(open(root+'/generation').read())!=p['generation']:raise RuntimeError('computer owner superseded')
- i=p['input'];args=['systemd-run','--user','--pipe','--wait','--collect','--unit='+p['unit'],'--slice=paperclip-'+p['owner']+'.slice','--property=KillMode=control-group','--working-directory='+i.get('cwd',p['cwd'])]
- for k,v in i.get('env',{}).items():args.append('--setenv='+k+'='+v)
- child=subprocess.Popen(args+['--',i['command']]+i.get('args',[]),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
- for n in range(200):
-  state=subprocess.run(['systemctl','--user','show',p['unit'],'--property=LoadState','--value'],capture_output=True,text=True).stdout.strip()
-  if state=='loaded' or child.poll() is not None:break
-  time.sleep(.01)
- else:
-  child.kill();raise RuntimeError('command admission unconfirmed')
-output,error=child.communicate(i.get('stdin',''))
-sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
+# A receipt reports foreground completion independently from cgroup lifetime.
+# ExitType=cgroup keeps nohup/setsid descendants owned until owner retirement.
+supervisor="""
+import os,sys,json,subprocess
+payload=sys.argv[1]
+with open(payload) as f:p=json.load(f)
+os.unlink(payload)
+i=p['input']
+try:
+ with open(p['stdin'],'rb') as source:
+  os.unlink(p['stdin'])
+  child=subprocess.Popen([i['command']]+i.get('args',[]),stdin=source)
+  code=child.wait()
+except Exception as error:
+ print(str(error),file=sys.stderr);code=127
+with open(p['receipt']+'.tmp','w') as f:json.dump({'exitCode':code},f)
+os.replace(p['receipt']+'.tmp',p['receipt'])
+"""
+work=None
+try:
+ with open(root+'/lock','a') as lock:
+  fcntl.flock(lock,fcntl.LOCK_EX)
+  if os.path.exists(root+'/retired'):raise RuntimeError('computer owner retired')
+  if p.get('processClaim'):
+   claim=json.load(open(root+'/claim.json'))
+   if any(claim[k]!=p['processClaim'][k] for k in ['nonce','unitName','bootId','launchGeneration']) or claim['bootId']!=open('/proc/sys/kernel/random/boot_id').read().strip():raise RuntimeError('computer process superseded')
+  elif not os.path.exists(root+'/generation') or int(open(root+'/generation').read())!=p['generation']:raise RuntimeError('computer owner superseded')
+  work=tempfile.mkdtemp(prefix='command-',dir=root)
+  output=work+'/stdout';error=work+'/stderr';receipt=work+'/receipt';payload=work+'/input.json';source=work+'/stdin'
+  for path in [output,error,source]:open(path,'wb').close()
+  i=p['input']
+  with open(source,'w') as f:f.write(i.get('stdin',''))
+  with open(payload,'w') as f:json.dump({'input':i,'stdin':source,'receipt':receipt},f)
+  args=['systemd-run','--user','--quiet','--collect','--unit='+p['unit'],'--slice=paperclip-'+p['owner']+'.slice','--property=Type=exec','--property=ExitType=cgroup','--property=KillMode=control-group','--property=StandardOutput=append:'+output,'--property=StandardError=append:'+error,'--working-directory='+i.get('cwd',p['cwd'])]
+  for k,v in i.get('env',{}).items():args.append('--setenv='+k+'='+v)
+  started=subprocess.run(args+['--','python3','-c',supervisor,payload],capture_output=True,text=True)
+  if started.returncode:sys.stderr.write(started.stderr);sys.exit(started.returncode)
+ with open(output,'rb') as out,open(error,'rb') as err:
+  while True:
+   done=os.path.exists(receipt)
+   for stream,dest in [(out,sys.stdout.buffer),(err,sys.stderr.buffer)]:
+    chunk=stream.read()
+    if chunk:dest.write(chunk);dest.flush()
+   if done:break
+   state=subprocess.run(['systemctl','--user','show',p['unit'],'--property=ActiveState','--value'],capture_output=True,text=True).stdout.strip()
+   if state not in ('active','activating','reloading'):
+    if os.path.exists(receipt):continue
+    raise RuntimeError('computer command stopped before completion')
+   time.sleep(.05)
+ with open(receipt) as f:code=json.load(f)['exitCode']
+ sys.exit(code if code>=0 else 128-code)
+finally:
+ if work:shutil.rmtree(work,ignore_errors=True)
 `,
           ],
           stdin: JSON.stringify({
