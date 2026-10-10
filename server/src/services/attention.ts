@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1099,6 +1099,43 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
+// A failed run stays in the feed until the same agent has a newer run on the
+// same issue (its issueId, else its taskId, as readRunIssueId reads them). Each
+// failed run asks the database whether such a run exists. The snapshot keys are
+// only ever index conditions here, answered by the (company_id, issueId/taskId,
+// created_at) indexes: reading a key's value from a row detoasts that run's
+// whole context snapshot.
+async function listFailedRunsWithNewerRun(
+  db: Db,
+  companyId: string,
+  failedRuns: Array<{ id: string; agentId: string; issueId: string | null; createdAt: Date }>,
+) {
+  if (failedRuns.length === 0) return new Set<string>();
+  // Run times reach this code in whole milliseconds, so "newer" means at least
+  // one millisecond later, as comparing the two dates did.
+  const failed = sql.join(
+    failedRuns.map((run) => sql`(${run.id}::uuid, ${run.agentId}::uuid, ${run.issueId}::text, ${new Date(run.createdAt.getTime() + 1).toISOString()}::timestamptz)`),
+    sql`, `,
+  );
+  const runIssueId = sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
+  const runTaskId = sql`(${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
+  const newerRunExists = (match: SQL) => sql`exists (
+    select 1 from ${heartbeatRuns}
+    where ${heartbeatRuns.companyId} = ${companyId}
+      and ${heartbeatRuns.agentId} = failed.agent_id
+      and ${heartbeatRuns.createdAt} >= failed.newer_from
+      and ${match}
+  )`;
+  const rows = await db.execute(sql`
+    select failed.id
+    from (values ${failed}) as failed (id, agent_id, issue_id, newer_from)
+    where ${newerRunExists(sql`${runIssueId} = failed.issue_id`)}
+      or ${newerRunExists(sql`${runTaskId} = failed.issue_id and ${runIssueId} is null`)}
+      or (failed.issue_id is null and ${newerRunExists(sql`coalesce(${runIssueId}, ${runTaskId}, '') = ''`)})
+  `) as unknown as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
+}
+
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
@@ -1717,12 +1754,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
-      const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
-      }, null);
-      const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
+      const [failedIssueMap, failedImageMap, failedRunsWithNewerRun] = await Promise.all([
         issueSummaryMap(
           db,
           companyId,
@@ -1730,38 +1762,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           readCondition,
         ),
         issueImageMap(db, companyId, failedIssueIds, readCondition),
-        oldestFailedRunCreatedAt && failedAgentIds.length > 0
-          ? db
-            .select({
-              agentId: heartbeatRuns.agentId,
-              createdAt: heartbeatRuns.createdAt,
-              // Project just the ids readRunIssueId needs; pulling the whole
-              // context_snapshot detoasts megabytes per feed build.
-              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
-            })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, failedAgentIds),
-              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
-            ))
-          : Promise.resolve([]),
+        listFailedRunsWithNewerRun(db, companyId, failedRows.map((row, index) => ({
+          id: row.id,
+          agentId: row.agentId,
+          issueId: failedIssueIds[index],
+          createdAt: row.createdAt,
+        }))),
       ]);
-      const latestRunCreatedAtByKey = new Map<string, Date>();
-      for (const newerRun of newerRuns) {
-        const newerRunIssueId = readRunIssueId({ issueId: newerRun.runIssueId, taskId: newerRun.runTaskId });
-        const newerRunKey = `${newerRun.agentId}:${newerRunIssueId ?? ""}`;
-        const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
-        if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
-          latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);
-        }
-      }
       for (const run of failedRows) {
         const issueId = readRunIssueId(run.contextSnapshot);
-        const runKey = `${run.agentId}:${issueId ?? ""}`;
-        const hasNewerRun = (latestRunCreatedAtByKey.get(runKey)?.getTime() ?? 0) > run.createdAt.getTime();
-        if (hasNewerRun) continue;
+        if (failedRunsWithNewerRun.has(run.id)) continue;
 
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         if (issueId && !issue) continue;
