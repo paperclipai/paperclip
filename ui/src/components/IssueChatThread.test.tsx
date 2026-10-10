@@ -1722,7 +1722,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("findLatestCommentMessageIndex prefers the last comment-anchored row (PAP-2672)", () => {
+  it("findLatestCommentMessageIndex prefers the visible latest comment row (PAP-2672)", () => {
     const messages = [
       { metadata: { custom: { anchorId: "comment-a" } } },
       { metadata: { custom: { anchorId: "run-1" } } },
@@ -1731,6 +1731,11 @@ describe("IssueChatThread", () => {
       { metadata: { custom: { anchorId: "activity-3" } } },
     ];
     expect(findLatestCommentMessageIndex(messages as never)).toBe(2);
+    // Newest-first lists the latest comment at index 0 — "latest" follows the
+    // displayed order, not the array tail.
+    expect(
+      findLatestCommentMessageIndex(messages as never, "newest_first"),
+    ).toBe(0);
     expect(
       findLatestCommentMessageIndex([
         { metadata: { custom: { anchorId: "run-only" } } },

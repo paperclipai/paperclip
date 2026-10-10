@@ -538,6 +538,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
+    threadFooter,
+    threadOrder = "oldest_first",
     browsers = EMPTY_BROWSERS,
     onOpenBrowser,
     hasOlderComments = false,
@@ -2951,6 +2953,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         <TaskChatWindowScroll
           contentKey={isMobile ? autoFollowContentKey : 0}
           enabled={isMobile && historyRevealed}
+          threadOrder={threadOrder}
         />
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
@@ -3038,12 +3041,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         {bottomBlockerLinks}
                       </div>
                     ) : null}
+                    {threadFooter ? (
+                      <div
+                        className={cn(
+                          "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                          streamlinedUiEnabled && "md:px-0",
+                        )}
+                      >
+                        {threadFooter}
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <TaskChatThreadView
                     items={items}
                     attachments={attachments}
                     header={threadHeaderWithBlockers}
+                    threadOrder={threadOrder}
+                    footer={threadFooter}
                     renderInteraction={renderInteraction}
                     renderBrief={renderBrief}
                     renderMessageActions={renderMessageActions}

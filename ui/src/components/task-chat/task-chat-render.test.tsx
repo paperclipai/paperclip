@@ -84,3 +84,64 @@ describe("Task chat thread rhythm", () => {
     host.remove();
   });
 });
+
+describe("Task chat thread order", () => {
+  const orderProbeItems: TaskChatItem[] = [
+    { id: "first", kind: "message", author: "human", text: "Earliest", timestamp: "9:00 AM" },
+    { id: "second", kind: "message", author: "agent", authorName: "Builder", text: "Middle", timestamp: "9:01 AM" },
+    { id: "third", kind: "message", author: "human", text: "Newest", timestamp: "9:02 AM" },
+  ];
+
+  function renderOrderProbe(threadOrder?: "oldest_first" | "newest_first") {
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    flushSync(() =>
+      root.render(
+        <ThemeProvider>
+          <TaskChatThreadView
+            items={orderProbeItems}
+            scroll={false}
+            threadOrder={threadOrder}
+            tail={<div data-testid="order-probe-tail">live</div>}
+            footer={<div data-testid="order-probe-footer">older</div>}
+          />
+        </ThemeProvider>,
+      ),
+    );
+    return { host, root };
+  }
+
+  function renderedAnchorIds(host: HTMLElement): string[] {
+    return [...host.querySelectorAll("[data-thread-anchor]")].map(
+      (el) => el.getAttribute("data-thread-anchor") ?? "",
+    );
+  }
+
+  it("renders items chronologically by default", () => {
+    const { host, root } = renderOrderProbe();
+    expect(renderedAnchorIds(host)).toEqual(["first", "second", "third"]);
+    flushSync(() => root.unmount());
+    host.remove();
+  });
+
+  it("reverses items and lifts the live tail to the top for newest_first", () => {
+    const { host, root } = renderOrderProbe("newest_first");
+    expect(renderedAnchorIds(host)).toEqual(["third", "second", "first"]);
+    const tail = host.querySelector('[data-testid="order-probe-tail"]');
+    const newest = host.querySelector('[data-thread-anchor="third"]');
+    const footer = host.querySelector('[data-testid="order-probe-footer"]');
+    expect(tail && newest && footer).toBeTruthy();
+    // Tail renders above the reversed history; the footer stays at the
+    // chronological end (bottom) of the list.
+    expect(
+      tail!.compareDocumentPosition(newest!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      newest!.compareDocumentPosition(footer!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    flushSync(() => root.unmount());
+    host.remove();
+  });
+});
