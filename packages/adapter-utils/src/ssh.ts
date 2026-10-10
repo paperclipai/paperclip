@@ -1342,6 +1342,20 @@ export async function runSshCommand(
   }
 }
 
+// Shell function shared by the launch and stop scripts: prints a value that
+// identifies a process and changes if the pid is reused (its start time), and
+// nothing for a process that is gone or a zombie. Linux hosts read /proc;
+// others fall back to `ps -o lstart`.
+const REMOTE_PROCESS_IDENT_FN = [
+  "paperclip_ident() {",
+  '  if [ -r "/proc/$1/stat" ]; then',
+  "    sed 's/^.*) //' \"/proc/$1/stat\" 2>/dev/null | cut -d' ' -f1,20 | { read st t; [ \"$st\" = Z ] || printf '%s' \"$t\"; }",
+  "  else",
+  "    ps -o lstart= -p \"$1\" 2>/dev/null | tr -s ' '",
+  "  fi",
+  "}",
+].join("\n");
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
@@ -1366,10 +1380,19 @@ export async function buildSshSpawnTarget(input: {
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   // Killing the local ssh client does not stop the remote command: without a
   // pty, sshd closes the channel and leaves it running. Record the remote
-  // pid and process group under a per-spawn token so stopRemote() can end
-  // them over a fresh connection. Recording never blocks the run.
+  // pid, process group and process start time under a per-spawn token so
+  // stopRemote() can end them over a fresh connection. Recording never blocks
+  // the run. The record is written before the stop marker is checked, and
+  // stopRemote() writes the marker before it reads the record, so a stop that
+  // arrives while the command is still starting is seen by one side or the
+  // other: either the stop finds the record, or the launch finds the marker
+  // and exits without starting the command.
   const runToken = randomUUID();
-  const recordRunStep = `{ d="$HOME/.paperclip/ssh-runs"; mkdir -p "$d" && find "$d" -type f -mtime +2 -exec rm -f {} + ; printf '%s %s\\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" > "$d/${runToken}"; } >/dev/null 2>&1 || true`;
+  const runDir = '"$HOME/.paperclip/ssh-runs"';
+  const recordRunStep = `{ ${REMOTE_PROCESS_IDENT_FN}
+{ d=${runDir}; mkdir -p "$d" && find "$d" -type f -mtime +2 -exec rm -f {} + ; printf '%s %s %s\\n' "$$" "$(ps -o pgid= -p $$ | tr -d ' ')" "$(paperclip_ident $$)" > "$d/${runToken}.tmp" && mv "$d/${runToken}.tmp" "$d/${runToken}"; } >/dev/null 2>&1 || true
+}`;
+  const stopCheckStep = `if [ -e ${runDir}/${runToken}.stop ]; then rm -f ${runDir}/${runToken} ${runDir}/${runToken}.stop; exit 143; fi`;
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
@@ -1387,6 +1410,7 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     recordRunStep,
+    stopCheckStep,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -1409,22 +1433,39 @@ export async function buildSshSpawnTarget(input: {
 }
 
 // Ends the remote command recorded under `runToken`: SIGTERM to its process
-// group, then SIGKILL after the grace period. Signals only the recorded group
-// (or the pid when no group was recorded), never the stop call's own group.
+// group, then SIGKILL once the grace period has passed, and returns when the
+// command is gone or the signals have been sent.
+//
+// The stop marker is written first, so a launch that has not recorded itself
+// yet finds it and does not start the command. The recorded process is only
+// signalled while it still has the start time that was recorded with its pid,
+// so a pid that the host has reused for other work is left alone. The group is
+// signalled only while it has been seen alive since that check, and the later
+// SIGKILL is sent only if that is still true immediately before it.
 async function stopSshRun(spec: SshConnectionConfig, runToken: string, graceSec: number): Promise<void> {
   const grace = Math.max(1, Math.min(60, Math.floor(Number(graceSec) || 1)));
   const script = [
-    `f="$HOME/.paperclip/ssh-runs/${runToken}"`,
+    REMOTE_PROCESS_IDENT_FN,
+    'd="$HOME/.paperclip/ssh-runs"',
+    `f="$d/${runToken}"`,
+    'mkdir -p "$d" 2>/dev/null',
+    ': > "$f.stop" 2>/dev/null',
     '[ -f "$f" ] || exit 0',
-    'read p g < "$f"; rm -f "$f"',
+    'read p g s < "$f"; rm -f "$f"',
     'case "$p" in ""|*[!0-9]*) exit 0;; esac',
+    '[ -n "$s" ] && [ "$(paperclip_ident "$p")" = "$s" ] || exit 0',
     'case "$g" in ""|*[!0-9]*|0|1) g="";; esac',
+    '[ -n "$g" ] && [ "$g" != "$(ps -o pgid= -p "$p" | tr -d \' \')" ] && g=""',
     '[ -n "$g" ] && [ "$g" = "$(ps -o pgid= -p $$ | tr -d \' \')" ] && exit 0',
-    't() { if [ -n "$g" ]; then kill -"$1" "-$g" 2>/dev/null; else kill -"$1" "$p" 2>/dev/null; fi; }',
-    't 0 || exit 0',
-    't TERM',
-    `i=0; while [ "$i" -lt ${grace} ] && t 0; do sleep 1; i=$((i+1)); done`,
-    't 0 && t KILL',
+    'alive() { if [ -n "$g" ]; then kill -0 "-$g" 2>/dev/null; else [ "$(paperclip_ident "$p")" = "$s" ]; fi; }',
+    'sig() { if [ -n "$g" ]; then kill "-$1" "-$g" 2>/dev/null; else kill "-$1" "$p" 2>/dev/null; fi; }',
+    'sig TERM',
+    'i=0',
+    'while alive; do',
+    `  if [ "$i" -ge ${grace} ]; then sig KILL; break; fi`,
+    '  sleep 1; i=$((i+1))',
+    'done',
+    'j=0; while alive && [ "$j" -lt 3 ]; do sleep 1; j=$((j+1)); done',
     'exit 0',
   ].join("\n");
   await runSshCommand(spec, script, { timeoutMs: (grace + 30) * 1000 });

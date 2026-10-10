@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -33,6 +33,21 @@ const UNREACHABLE_SSH_SPEC = {
   strictHostKeyChecking: false,
 } as const;
 let sshEnvLabUnsupportedReason: string | null = null;
+
+// True while the process exists and has not exited (a zombie waiting to be
+// reaped counts as gone).
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
 
 // One entry per fixture root directory, registered at creation time so
 // teardown survives a setup call that throws before the fixture starts, an
@@ -283,7 +298,7 @@ describe("ssh env-lab fixture", () => {
     expect(result.stdout).toBe("hello over ssh stdin\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
-  it("stops the remote command when a run over SSH is stopped", async () => {
+  it("stops the remote command before a stopped run over SSH returns", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");
 
@@ -310,19 +325,81 @@ describe("ssh env-lab fixture", () => {
     expect(result.timedOut).toBe(true);
     const pids = result.stdout.trim().split(/\s+/).map((value) => Number.parseInt(value, 10));
     expect(pids).toHaveLength(2);
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const deadline = Date.now() + 10_000;
-    while (pids.some(alive) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    // The run waits for the remote stop, so nothing is left running when it
+    // returns.
+    expect(pids.filter(processIsRunning)).toEqual([]);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("does not start a remote command whose run was stopped before it recorded itself", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH remote stop-first test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const ranPath = path.join(rootDir, "ran");
+
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "sh",
+      args: ["-c", `echo ran > ${JSON.stringify(ranPath)}`],
+      env: {},
+    });
+    try {
+      // The stop reaches the host before the original shell has recorded
+      // itself, which is what a cancel during a slow start looks like.
+      await target.stopRemote(1);
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        const child = spawn(target.command, target.args, { stdio: "ignore" });
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      expect(exitCode).toBe(143);
+      await expect(stat(ranPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await target.cleanup();
     }
-    expect(pids.filter(alive)).toEqual([]);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("does not signal a process that only shares the recorded pid", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH remote stop reuse test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    // Stands in for work that the host started after the run's pid was
+    // released and handed out again.
+    const bystander = spawn("sleep", ["60"], { stdio: "ignore", detached: true });
+    const bystanderPid = bystander.pid;
+    if (!bystanderPid) throw new Error("Failed to spawn the bystander process for this regression test.");
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "true",
+      args: [],
+      env: {},
+    });
+    const token = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(target.args.join(" "))?.[1];
+    if (!token) throw new Error("The spawn target does not expose its run token.");
+    const runsDir = path.join(process.env.HOME ?? os.homedir(), ".paperclip", "ssh-runs");
+    await mkdir(runsDir, { recursive: true });
+    try {
+      // A record whose process start time is not the bystander's: the pid and
+      // its group exist, but they are not the process the run recorded.
+      await writeFile(path.join(runsDir, token), `${bystanderPid} ${bystanderPid} 1\n`);
+      await target.stopRemote(1);
+      expect(processIsRunning(bystanderPid)).toBe(true);
+      await expect(stat(path.join(runsDir, token))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      try {
+        process.kill(-bystanderPid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+      await rm(path.join(runsDir, `${token}.stop`), { force: true });
+      await target.cleanup();
+    }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("does not treat an unrelated reused pid as the running fixture", async () => {

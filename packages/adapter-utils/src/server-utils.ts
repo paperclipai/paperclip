@@ -4792,6 +4792,10 @@ export async function runChildProcess(
         let childExited = false;
         let closed = false;
         let closeBoundTimer: ReturnType<typeof setTimeout> | null = null;
+        // Settles when the remote command of a stopped SSH run has been ended
+        // (or the attempt failed); the run does not resolve before then, so
+        // the caller never moves on while the old command still runs.
+        let remoteStop: Promise<void> = Promise.resolve();
         const armCloseBound = () => {
           if (!stopRequested || !childExited || closed || closeBoundTimer) return;
           closeBoundTimer = setTimeout(() => {
@@ -4971,14 +4975,14 @@ export async function runChildProcess(
           maybeArmTerminalResultCleanup();
           childExited = true;
           // A remote run must also stop on the host: killing the local ssh
-          // client leaves the command running there, and ssh exits 255 when it
-          // is signalled.
-          const remoteStopped = target.stopRemote != null && code === 255;
+          // client leaves the command running there. ssh exits 255 when it is
+          // signalled or loses the connection.
+          const remoteStopNeeded = target.stopRemote != null && (signal !== null || code === 255);
           // A child that a signal ended was stopped from outside.
-          if (signal !== null || remoteStopped) stopRequested = true;
+          if (signal !== null || remoteStopNeeded) stopRequested = true;
           armCloseBound();
-          if (target.stopRemote && (stopRequested || remoteStopped)) {
-            void target.stopRemote(Math.max(1, opts.graceSec)).catch((err) => {
+          if (target.stopRemote && remoteStopNeeded) {
+            remoteStop = target.stopRemote(Math.max(1, opts.graceSec)).catch((err) => {
               onLogError(err, runId, "failed to stop remote process");
             });
           }
@@ -4993,7 +4997,7 @@ export async function runChildProcess(
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
             void logChain.finally(() => {
-              void Promise.resolve()
+              void remoteStop
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({
