@@ -91,7 +91,7 @@ import {
 } from "../issue-queued-comment-queue.js";
 import {
   cancelNativeSession,
-  closeWarmNativeSessionsForEnvironment,
+  closeWarmNativeSessionsForRun,
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
@@ -292,36 +292,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (providerResourceDisposition === "destroy") {
       const closeResult = await (
         options.closeWarmNativeSessionsForRun ??
-        (async ({ runId, reason }) => {
-          const environmentIds = await db
-            .selectDistinct({ environmentId: environmentLeases.environmentId })
-            .from(environmentLeases)
-            .where(
-              and(
-                eq(environmentLeases.heartbeatRunId, runId),
-                eq(environmentLeases.status, "active"),
-              ),
-            )
-            .then((rows) =>
-              rows.flatMap((row) =>
-                typeof row.environmentId === "string" &&
-                row.environmentId.length > 0
-                  ? [row.environmentId]
-                  : [],
-              ),
-            );
-          const aggregate = { closed: 0, busy: 0, failed: 0 };
-          for (const environmentId of environmentIds) {
-            const result = await closeWarmNativeSessionsForEnvironment({
-              environmentId,
-              reason,
-            });
-            aggregate.closed += result.closed;
-            aggregate.busy += result.busy;
-            aggregate.failed += result.failed;
-          }
-          return aggregate;
-        })
+        closeWarmNativeSessionsForRun
       )({
         runId: input.runId,
         reason: "terminal heartbeat run destroyed its environment lease",

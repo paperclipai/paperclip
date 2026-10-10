@@ -1,3 +1,4 @@
+import { createComputerEnvironmentDriver } from "./computer-environment-driver.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
@@ -3839,6 +3840,7 @@ export function environmentRuntimeService(
   const defaultDrivers = [
     createLocalEnvironmentDriver(db),
     createSshEnvironmentDriver(db),
+    createComputerEnvironmentDriver(db),
     createSandboxEnvironmentDriver(db, {
       pluginWorkerManager: options.pluginWorkerManager,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,

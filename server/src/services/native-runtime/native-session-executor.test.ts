@@ -309,6 +309,7 @@ import {
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
+  closeWarmNativeSessionsForRun,
   claimWarmNativeInstructionCopy,
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
@@ -475,6 +476,28 @@ describe("remote controller restart adoption", () => {
     };
     return { execute, target };
   }
+  it("requires the exact durable computer owner generation and port on restart", async () => {
+    const { execute, target: sandbox } = fixture();
+    const { sandboxLeaseAcquisition, ...common } = sandbox;
+    const inspectProcess = vi.fn(async () => ({ running: true, claim: { nonce: "process-claim" } }));
+    const target = { ...common, transport: "computer", listenerPort: 45101,
+      resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: "owner", generation: 7 }, inspectProcess };
+    const computerClaim = { ...claim, remote: { ...claim.remote, providerLeaseId: "owner",
+      computerOwner: { computerId: "computer", ownerId: "owner", generation: 7, listenerPort: 45101 } } };
+    const adopted = await verifyRemoteRunnerReattachment({ claim: computerClaim, target: target as never,
+      identity, runId: "run", normalizedSessionId: "session" });
+    expect(adopted.pid).toBe(123);
+    expect(inspectProcess).toHaveBeenCalledOnce();
+    const readCount = execute.mock.calls.length;
+    await expect(verifyRemoteRunnerReattachment({ claim: { ...computerClaim, remote: {
+      ...computerClaim.remote, computerOwner: { ...computerClaim.remote.computerOwner, generation: 6 } } }, target: target as never,
+      identity, runId: "run", normalizedSessionId: "session" })).rejects.toThrow("computer_process_recovery_mismatch");
+    expect(execute).toHaveBeenCalledTimes(readCount);
+    await expect(verifyRemoteRunnerReattachment({ claim: { ...computerClaim, remote: {
+      ...computerClaim.remote, computerOwner: { ...computerClaim.remote.computerOwner, listenerPort: 45102 } } }, target: target as never,
+      identity, runId: "run", normalizedSessionId: "session" })).rejects.toThrow("computer_process_recovery_mismatch");
+  });
+
   it("adopts the exact live sandbox process without spawning or copying state", async () => {
     const { execute, target } = fixture();
     const adopted = await verifyRemoteRunnerReattachment({
@@ -7351,6 +7374,40 @@ describe("native warm session supervision", () => {
     expect(checkpointWarm.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!);
     expect(close.mock.invocationCallOrder[0]).toBeLessThan(collectStopped.mock.invocationCallOrder[0]!);
     expect(canonicalNote).toBe("before shutdown\nafter shutdown");
+  });
+
+  it("retains durable computer owners before ack and closes only the requested run", async () => {
+    const owners: Array<{ runId: string; close: ReturnType<typeof vi.fn>; retainWarm: ReturnType<typeof vi.fn>; retire: ReturnType<typeof vi.fn> }> = [];
+    for (const suffix of ["a", "b"]) {
+      const name = `computer-owner-${suffix}`;
+      const current = { ...execution, binding: { ...execution.binding, runId: name, agentId: name, executionWorkspaceId: name },
+        session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+      const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async () => undefined);
+      const target = { kind: "remote" as const, transport: "computer" as const, environmentId: "shared-computer",
+        remoteCwd: `/home/user/${name}`, listenerPort: suffix === "a" ? 45001 : 45002,
+        resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: name, generation: 1 },
+        fileAuthority: { kind: "remote-persistent", placementId: name, root: `/home/user/${name}`, agentHome: `/home/user/${name}/home` },
+        retainWarm, retire, inspectProcess: async () => ({ running: true, claim: {} }), launch: async () => ({}),
+        computerTool: { command: "cua-driver", args: ["mcp"] } };
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close });
+        return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: name,
+          normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      });
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+      expect(retainWarm).toHaveBeenCalledWith(60_000);
+      expect(retire).not.toHaveBeenCalled();
+      owners.push({ runId: name, close, retainWarm, retire });
+    }
+    const result = await closeWarmNativeSessionsForRun({ runId: owners[0]!.runId, reason: "cancel exact task" });
+    expect(result.closed).toBe(1);
+    expect(owners[0]!.close).toHaveBeenCalledOnce();
+    expect(owners[0]!.retire).toHaveBeenCalledOnce();
+    expect(owners[0]!.close.mock.invocationCallOrder[0]).toBeLessThan(owners[0]!.retire.mock.invocationCallOrder[0]!);
+    expect(owners[1]!.close).not.toHaveBeenCalled();
+    expect(owners[1]!.retire).not.toHaveBeenCalled();
+    await closeWarmNativeSessionsForRun({ runId: owners[1]!.runId, reason: "fixture cleanup" });
   });
 
   describe("managed directory warm checkpoints", () => {

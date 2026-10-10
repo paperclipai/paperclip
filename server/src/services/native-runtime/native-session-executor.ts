@@ -1,3 +1,4 @@
+import { adapterExecutionTargetIsCommandBacked, type AdapterComputerExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
 import { agents } from "@paperclipai/db";
 import { isCloudManagedInstance } from "../cloud-instance.js";
@@ -441,6 +442,8 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  computerTarget?: AdapterComputerExecutionTarget;
+  runId: string;
   instructionWorkingCopy?: NativeInstructionWorkingCopy;
   // Keep the admitted physical root independent of the per-run collection
   // capability, which instruction preparation adopts before final admission.
@@ -477,6 +480,7 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
       catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
       throw error;
     }
+    await entry.computerTarget?.retire();
     await entry.instructionWorkingCopy?.collectStopped();
     if (entry.instructionCopy?.runId !== preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
@@ -550,7 +554,7 @@ export async function claimWarmNativeInstructionCopy(input: {
 function instructionTargetIdentity(target?: AdapterExecutionTarget | null): string {
   return JSON.stringify(target?.kind === "remote" ? {
     environmentId: target.environmentId, cwd: target.remoteCwd,
-    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.spec,
+    providerLeaseId: target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : target.transport === "computer" ? target.resourceAuthority.computerId : target.spec,
   } : { kind: "local", environmentId: target?.environmentId });
 }
 
@@ -611,6 +615,11 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
+/** Cancel one attempt without closing other agents on its computer. */
+export async function closeWarmNativeSessionsForRun(input: { runId: string; reason: string }) {
+  return closeIdleWarmNativeSessions(input);
+}
+
 /** Suspend idle owners and persist their remote backup before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
@@ -624,6 +633,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
 
 async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
+  runId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
@@ -631,6 +641,7 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.runId !== undefined && entry.runId !== input.runId) continue;
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
@@ -6165,6 +6176,8 @@ async function releaseWarmNativeSession(
     } finally { entry.busy = false; }
     return;
   }
+  // Durable shared-computer ownership must be retained before completion is acknowledged.
+  await entry.computerTarget?.retainWarm(idleTimeoutMs);
   entry.idleTimer = setTimeout(() => {
     const current = warmNativeSessions.get(sessionId);
     if (current !== entry || current.busy) return;
@@ -8495,6 +8508,8 @@ async function executePaperclipNativeSessionWithinScope(
         entry.instructionPreparationRunId = undefined;
         entry.instructionWorkingCopy = input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy;
         entry.busy = true;
+        entry.runId = input.execution.binding.runId;
+        entry.computerTarget = input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined;
         entry.ownerToken = warmSessionOwnerToken;
         entry.environmentId =
           input.runnerExecutionTarget?.environmentId ?? null;
@@ -8861,6 +8876,8 @@ async function executePaperclipNativeSessionWithinScope(
                       ? input.execution.binding.runId
                       : undefined,
                     session,
+                    runId: input.execution.binding.runId,
+                    computerTarget: input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined,
                     ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
                     configuredEnvironmentDigest,
@@ -8875,6 +8892,10 @@ async function executePaperclipNativeSessionWithinScope(
                     lastActivityAt: new Date().toISOString(),
                   });
                 const owner = warmNativeSessions.get(warmSessionId);
+                if (owner) {
+                  owner.runId = input.execution.binding.runId;
+                  owner.computerTarget = input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "computer" ? input.runnerExecutionTarget : undefined;
+                }
                 if (owner && input.instructionWorkingCopy?.runId && input.instructionWorkingCopy.checkpointWarm) owner.instructionCopy = {
                   runId: input.instructionWorkingCopy.runId, root: input.instructionWorkingCopy.root, targetIdentity: instructionTargetIdentity(input.runnerExecutionTarget),
                   collectStopped: input.instructionWorkingCopy.collectStopped,
@@ -10681,18 +10702,22 @@ export async function verifyRemoteRunnerReattachment(input: {
 }) {
   const { claim, target, identity } = input;
   if (
-    target?.kind !== "remote" ||
-    target.transport !== "sandbox" ||
+    !adapterExecutionTargetIsCommandBacked(target) ||
     !target.runner ||
     claim.runId !== input.runId ||
     identity.runId !== input.runId ||
     identity.normalizedSessionId !== input.normalizedSessionId ||
-    claim.remote.providerLeaseId !==
-      target.sandboxLeaseAcquisition?.providerLeaseId ||
-    target.sandboxLeaseAcquisition.outcome === "replacement" ||
+    claim.remote.providerLeaseId !== (target.transport === "computer" ? target.resourceAuthority.ownerId : target.sandboxLeaseAcquisition?.providerLeaseId) ||
+    (target.transport === "sandbox" && target.sandboxLeaseAcquisition?.outcome === "replacement") ||
     claim.remote.remoteCwd !== target.remoteCwd
   ) {
     throw new Error("native_remote_recovery_lease_mismatch");
+  }
+  if (target.transport === "computer") {
+    const owner = claim.remote.computerOwner;
+    if (!owner || owner.computerId !== target.resourceAuthority.computerId || owner.ownerId !== target.resourceAuthority.ownerId ||
+        owner.generation !== target.resourceAuthority.generation || owner.listenerPort !== target.listenerPort ||
+        !(await target.inspectProcess()).running) throw new Error("computer_process_recovery_mismatch");
   }
   const runner = target.runner;
   const stateDirectory = posix.join(
@@ -10943,7 +10968,13 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
-      const launchResult = await runner.execute({
+      const launchResult = input.target.transport === "computer"
+        ? await input.target.launch({ command: "sh", args: ["-c", 'mkdir -p -- "$(dirname -- "$1")"; ' + REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+            "paperclip-runner-child", input.processIdentityPath, identityNonce, input.runnerInstanceId,
+            input.diagnosticsDirectory, input.remoteBinary, ...remoteArgs],
+            cwd: input.target.remoteCwd, env: processEnvironment(spec.environment) })
+            .then(() => ({ exitCode: 0, timedOut: false }))
+        : await runner.execute({
         command: "sh",
         args: [
           "-c",
@@ -11104,7 +11135,7 @@ export function resolveRemoteRunnerTransportMode(input: {
     throw new Error("runner_transport_ineligible: remote target is required");
   }
   const requiredMode =
-    input.target.transport === "sandbox" &&
+    adapterExecutionTargetIsCommandBacked(input.target) &&
     input.target.effectiveCapabilities?.runnerWebSocketIngress === true
       ? "listen_ws"
       : "dial_wss";
@@ -13056,7 +13087,7 @@ async function createRunnerdBackendWithinSessionClaim(
         HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         CODEX_HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
-        ...(remoteTarget!.transport === "sandbox"
+        ...(adapterExecutionTargetIsCommandBacked(remoteTarget)
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
           : {}),
       }
@@ -13305,7 +13336,8 @@ async function createRunnerdBackendWithinSessionClaim(
         baseInstructions: recoveryContext?.baseInstructions,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
-        externallySandboxed: remoteTarget?.transport === "sandbox",
+        externallySandboxed: adapterExecutionTargetIsCommandBacked(remoteTarget),
+        computerTool: remoteTarget?.transport === "computer" ? remoteTarget.computerTool : undefined,
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,

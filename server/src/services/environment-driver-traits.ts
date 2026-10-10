@@ -75,6 +75,7 @@ export const ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT: Record<
   EnvironmentDriver,
   EnvironmentDriverCapabilitySupport
 > = {
+  computer: { driver: "computer", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
   local: { driver: "local", supportedCapabilities: NO_CAPABILITY_SUPPORT },
   ssh: { driver: "ssh", supportedCapabilities: NO_CAPABILITY_SUPPORT },
   sandbox: { driver: "sandbox", supportedCapabilities: ALL_CAPABILITY_SUPPORT },
@@ -131,6 +132,7 @@ export interface EnvironmentDriverTraits {
  * it.
  */
 export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDriverTraits> = {
+  computer: { driver: "computer", realizesWorkspace: true, runsWorkspaceOffHost: true, confinesStagedProjects: false, hasLeaseCapabilityModel: true },
   local: {
     driver: "local",
     realizesWorkspace: true,

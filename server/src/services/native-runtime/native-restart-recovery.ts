@@ -1,3 +1,4 @@
+import { readNativeComputerWorkspaceReference } from "./native-workspace-sync.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
@@ -49,7 +50,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
-      remote: { providerLeaseId: string; remoteCwd: string };
+      remote: { providerLeaseId: string; remoteCwd: string;
+        computerOwner?: { computerId: string; ownerId: string; generation: number; listenerPort: number } };
     }
   | {
       kind: "resume_dead_runner";
@@ -615,8 +617,8 @@ export async function claimNativeRestartRecoveries(input: {
       const profile = row.run.runnerProfileJson ?? {};
       const remoteWorkspace = readNativeWorkspaceSyncReference(
         profile.nativeWorkspaceSync,
-      );
-      const remoteSandbox = profile.nativeWorkspaceSync != null;
+      ) ?? readNativeComputerWorkspaceReference(profile.nativeComputerWorkspace);
+      const remoteSandbox = profile.nativeWorkspaceSync != null || profile.nativeComputerWorkspace != null;
       const runnerPidAlive =
         !remoteSandbox && processIsAlive(row.run.processPid);
       const runnerGroupAlive =
@@ -1001,6 +1003,7 @@ export async function claimNativeRestartRecoveries(input: {
           remote: {
             providerLeaseId: remoteWorkspace!.providerLeaseId,
             remoteCwd: remoteWorkspace!.remoteCwd,
+            ...("computerOwner" in remoteWorkspace! ? { computerOwner: remoteWorkspace.computerOwner } : {}),
           },
         } satisfies NativeRestartRecoveryClaim;
       }
