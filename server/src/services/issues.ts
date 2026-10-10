@@ -188,6 +188,7 @@ import {
 import {
   classifyIssueGraphLiveness,
   classifyIssueReviewPaths,
+  hasScheduledIssueMonitorPath,
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
@@ -3995,15 +3996,72 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
+  // A cancelled blocker keeps its monitor fields (tree cancellation does not clear
+  // monitorNextCheckAt), but the dispatcher only wakes in_progress/in_review issues
+  // (tickDueIssueMonitors), so none of those retained fields can still fire. The same
+  // holds for its pending interactions and approvals. Admitting a cancelled node here
+  // would report it as covered and hide exactly the dead wake path this map exists to
+  // surface — the assigneeUserId branch below already carries the same guard.
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => node.status !== "done" && node.status !== "cancelled")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
+    // A scheduled monitor is a wake path the harness owns: the issue re-enters
+    // its assignee's queue at monitorNextCheckAt without any human action. The
+    // recovery liveness classifier already counts it (hasScheduledIssueMonitorPath),
+    // so blocker attention has to agree or it flags actively monitored blockers.
+    // Reuse that exact predicate rather than a bare monitorNextCheckAt > now
+    // comparison: it also drops monitors past timeoutAt or maxAttempts, which no
+    // longer fire and therefore must not read as covered.
+    const monitorNowMs = Date.now();
     for (const chunk of chunkList(
       explicitWaitCandidateIds,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
+      const monitorRows: Array<{
+        id: string;
+        companyId: string;
+        identifier: string | null;
+        title: string;
+        status: string;
+        executionPolicy: Record<string, unknown> | null;
+        executionState: Record<string, unknown> | null;
+        monitorNextCheckAt: Date | null;
+        monitorAttemptCount: number | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, chunk),
+            isNotNull(issues.monitorNextCheckAt),
+          ),
+        );
+      for (const row of monitorRows) {
+        // tickDueIssueMonitors only dispatches in_progress/in_review issues.
+        // A todo/backlog/blocked node can retain valid-looking monitor fields
+        // (e.g. moved back out of in_progress without clearing them) that will
+        // never fire — the same dead-field pattern as the cancelled guard
+        // above, just reached through a different status transition.
+        if (
+          (row.status === "in_progress" || row.status === "in_review") &&
+          hasScheduledIssueMonitorPath(row, monitorNowMs)
+        )
+          explicitWaitingIssueIds.add(row.id);
+      }
+
       const interactionRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)
