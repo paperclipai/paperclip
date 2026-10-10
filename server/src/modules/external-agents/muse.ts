@@ -50,9 +50,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
   async function visible(s:AgentConnectionSubject,database:Db|ExternalAdmissionTransaction=db):Promise<SQL> {
     return issueReadSqlCondition(database,agentActor(s));
   }
-  async function assertIssue(s:AgentConnectionSubject,issueId:string,runResponsibleUserId?:string|null) {
-    const conditions=[eq(issues.companyId,s.companyId),eq(issues.id,issueId),await issueReadSqlCondition(db,agentActor(s,undefined,runResponsibleUserId)),isNull(issues.hiddenAt),isNull(issues.harnessKind)];
-    const [issue]=await db.select().from(issues).where(and(...conditions));
+  async function assertIssue(s:AgentConnectionSubject,issueId:string,runResponsibleUserId?:string|null,database:Db|ExternalAdmissionTransaction=db) {
+    const conditions=[eq(issues.companyId,s.companyId),eq(issues.id,issueId),await issueReadSqlCondition(database,agentActor(s,undefined,runResponsibleUserId)),isNull(issues.hiddenAt),isNull(issues.harnessKind)];
+    const [issue]=await database.select().from(issues).where(and(...conditions));
     if(!issue) throw notFound("Task is unavailable to the current Muse agent and authorizer.");
     return issue;
   }
@@ -300,9 +300,9 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     async assertRunAuthority(execution:Execution) {const ref=execution.provider.binding;const [b]=await db.select().from(bindings).where(and(eq(bindings.id,ref.bindingId),eq(bindings.generation,ref.bindingGeneration),eq(bindings.companyId,ref.companyId),eq(bindings.agentId,ref.agentId),isNull(bindings.revokedAt)));if(!b||!await identity.enabled())throw forbidden("Muse binding unavailable.");await assertMuseCurrentAuthority(db,b);const [a]=await db.select().from(assignments).where(and(eq(assignments.runId,execution.binding.runId),eq(assignments.bindingId,b.id),eq(assignments.bindingGeneration,b.generation)));if(!a||a.status==="fenced")throw forbidden("Muse assignment unavailable.");},
     port:(execution:Execution):ExternalProviderPort & Required<Pick<ExternalProviderPort,"inputAvailable">>=>nativeBroker.port(execution),
   };
-  async function idleMutation(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"task.create"|"task.comment"}>) {
+  async function idleMutation(s:AgentConnectionSubject,c:Extract<MuseCommand,{command:"task.create"|"task.comment"}>,assignToSelf=false) {
     await subjectBinding(s);
-    const digest=externalOperationDigest("tool",{command:c});
+    const digest=externalOperationDigest("tool",assignToSelf?{command:c,assigneeAgentId:s.agentId}:{command:c});
     return db.transaction(async tx=>{
       // Task lock precedes admission and binding. Parent creation locks its
       // existing parent first; new issue rows cannot be owned by another tx.
@@ -315,15 +315,29 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         const [old]=await tx.select().from(idleReceipts).where(and(eq(idleReceipts.bindingId,b.id),eq(idleReceipts.bindingGeneration,b.generation),eq(idleReceipts.requestId,c.requestId)));
         if(old){if(old.digest!==digest)throw conflict("Request ID reused with changed input.");if(typeof old.outcome.issueId==="string")await assertIssue(s,old.outcome.issueId);return old.outcome;}
         const authorization=authorizationService(tx as unknown as Db);
-        const resource={type:"issue" as const,companyId:s.companyId,issueId:c.command==="task.comment"?c.issueId:undefined,parentIssueId:c.command==="task.create"?c.parentId:undefined,projectId:c.command==="task.create"?c.projectId:undefined};
-        for(const actor of [agentActor(s),authorizerActor(s)]) {const decision=await authorization.decide({actor,action:c.command==="task.comment"?"issue:comment":"issue:mutate",resource});if(!decision.allowed)throw forbidden(decision.explanation);}
+        const actors=[agentActor(s),authorizerActor(s)];
+        const assertWrite=async(issue:typeof issues.$inferSelect,action:"issue:comment"|"issue:mutate")=>{
+          const resource={type:"issue" as const,companyId:s.companyId,issueId:issue.id,projectId:issue.projectId,parentIssueId:issue.parentId,
+            status:issue.status,assigneeAgentId:issue.assigneeAgentId,assigneeUserId:issue.assigneeUserId,originKind:issue.originKind,originId:issue.originId};
+          for(const actor of actors){const decision=await authorization.decide({actor,action,resource});if(!decision.allowed)throw forbidden(decision.explanation);}
+        };
         let outcome:Record<string,unknown>;
         if(c.command==="task.comment") {
-          await assertIssue(s,c.issueId);
+          const issue=await assertIssue(s,c.issueId,undefined,tx);
+          await assertWrite(issue,"issue:comment");
           const comment=await issueService(db).addComment(c.issueId,c.body,{agentId:s.agentId,onBehalfOfUserId:s.authorizingUserId},{},tx);
           outcome={status:"commented",issueId:c.issueId,commentId:comment.id};
         } else {
-          const issue=await issueService(tx as unknown as Db).create(s.companyId,{title:c.title,description:c.description,parentId:c.parentId,projectId:c.projectId,status:"todo",createdByAgentId:s.agentId,responsibleUserId:s.authorizingUserId,actorResponsibleUserId:s.authorizingUserId},tx);
+          const parent=c.parentId?await assertIssue(s,c.parentId,undefined,tx):null;
+          if(parent)await assertWrite(parent,"issue:mutate");
+          const projectId=c.projectId??parent?.projectId??null;
+          const scope={projectId,parentIssueId:c.parentId??null,assigneeAgentId:assignToSelf?s.agentId:null,assigneeUserId:null};
+          for(const actor of actors){
+            if(projectId){const projectAccess=await authorization.decide({actor,action:"project:read",resource:{type:"project",companyId:s.companyId,projectId}});if(!projectAccess.allowed)throw forbidden(projectAccess.explanation);}
+            const decision=await authorization.decide({actor,action:"tasks:assign",resource:{type:"issue",companyId:s.companyId,...scope},scope});
+            if(!decision.allowed)throw forbidden(decision.explanation);
+          }
+          const issue=await issueService(tx as unknown as Db).create(s.companyId,{title:c.title,description:c.description,parentId:c.parentId,projectId,status:"todo",assigneeAgentId:scope.assigneeAgentId,createdByAgentId:s.agentId,responsibleUserId:s.authorizingUserId,actorResponsibleUserId:s.authorizingUserId},tx);
           outcome={status:"created",issueId:issue.id,identifier:issue.identifier};
         }
         await tx.insert(idleReceipts).values({companyId:s.companyId,bindingId:b.id,bindingGeneration:b.generation,requestId:c.requestId,digest,outcome});
@@ -337,14 +351,10 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     const requestKey=`muse-work:${b.id}:${b.generation}:${c.requestId}`;
     let issueId:string;
     if(c.command==="turn.request") {
-      const result=await idleMutation(s,{version:1,command:"task.create",requestId:c.requestId,title:c.prompt.slice(0,500),description:c.prompt});
+      // Reserve and assign ordinary intake in the same task transaction, with
+      // both principals checked against the exact self-assignment scope.
+      const result=await idleMutation(s,{version:1,command:"task.create",requestId:c.requestId,title:c.prompt.slice(0,500),description:c.prompt},true);
       issueId=String(result.issueId);
-      // Visible intake remains ordinary work; assigning it requires the current
-      // agent's task-assignment authority, not a receiver capability.
-      const issue=await assertIssue(s,issueId);
-      const decision=await authorizationService(db).decide({actor:agentActor(s),action:"tasks:assign",resource:{type:"issue",companyId:s.companyId,issueId}});
-      if(!decision.allowed)throw forbidden(decision.explanation);
-      if(!issue.assigneeAgentId)await issueService(db).update(issueId,{assigneeAgentId:s.agentId},{actorAgentId:s.agentId,actorResponsibleUserId:s.authorizingUserId});
     } else issueId=c.issueId;
     const issue=await assertIssue(s,issueId);
     if(issue.assigneeAgentId!==s.agentId||!["todo","in_progress"].includes(issue.status))throw conflict("Request work only for an eligible task assigned to this Muse agent.");
