@@ -4455,7 +4455,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const delivery = randomUUID();
         const send = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({ event, delivery, payload, webhookSecret: f.webhookSecret }));
         expect((await send()).status).toBeLessThan(300);
-        await expect.poll(async () => (await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id))).length).toBe(1);
+        // Webhook acknowledgement precedes the asynchronous admission transaction.
+        await expect.poll(async () => (await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id))).length, { timeout: 10_000 }).toBe(1);
         await send();
         const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id));
         expect(conversation.externalThreadId).toBe(`github:PaperclipAI/Paperclip:${event === "issues" || event === "issue_comment" ? "issue:" : ""}83${event === "pull_request_review_comment" ? ":rc:83000" : ""}`);
