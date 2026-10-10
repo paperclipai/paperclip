@@ -31,7 +31,9 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  toolRuntimeMetricCounters,
 } from "@paperclipai/db";
+import { TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "../services/tool-runtime-metrics.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
@@ -2085,5 +2087,87 @@ describeEmbeddedPostgres("tool gateway service", () => {
 
     expect(serialized).not.toContain("sk-secret-value");
     expect(serialized).toContain("***REDACTED***");
+  });
+
+  it("keeps a successful plugin tool call successful when the tool_call_events audit insert fails", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const auditWriteError = new Error("write CONNECTION_CLOSED 127.0.0.1:5432 (transient)");
+    type InsertFn = (table: unknown) => { values: (values: unknown) => unknown };
+    const realInsert = Reflect.get(db, "insert").bind(db) as unknown as InsertFn;
+    const failingAuditDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "insert") return Reflect.get(target, property, receiver);
+        return (table: unknown) => {
+          if (table !== toolCallEvents) {
+            return realInsert(table);
+          }
+          return {
+            values: (row: unknown) => {
+              const record = (Array.isArray(row) ? row[0] : row) as { eventType?: string } | undefined;
+              if (record?.eventType === "call_completed") {
+                return Promise.reject(auditWriteError);
+              }
+              return (realInsert(table) as { values: (values: unknown) => Promise<unknown> }).values(row);
+            },
+          };
+        };
+      },
+    });
+    const gateway = createTestToolGatewayService(failingAuditDb, {
+      pluginToolDispatcher: {
+        initialize: async () => {},
+        teardown: () => {},
+        listToolsForAgent: () => [
+          {
+            name: "fixture:read_status",
+            displayName: "Read status",
+            description: "Echoes a stable result.",
+            parametersSchema: { type: "object" },
+            pluginId: "fixture-plugin",
+          },
+        ],
+        getTool: () => null,
+        executeTool: async () => ({
+          pluginId: "fixture-plugin",
+          toolName: "read_status",
+          result: { ok: true },
+        }),
+        registerPluginTools: () => {},
+        unregisterPluginTools: () => {},
+        toolCount: () => 1,
+        getRegistry: () => {
+          throw new Error("not implemented");
+        },
+      },
+    });
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read fixture",
+      policyType: "allow",
+      selectors: { toolName: "fixture:read_status" },
+    });
+
+    const result = await gateway.executePluginTool({
+      actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
+      tool: "fixture:read_status",
+      parameters: { query: "ok" },
+      runContext: { companyId: company.id, agentId: agent.id, runId: run.id },
+    });
+
+    expect(result).toMatchObject({ pluginId: "fixture-plugin", result: { ok: true } });
+
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation).toMatchObject({ status: "succeeded", companyId: company.id });
+
+    const [counter] = await db
+      .select()
+      .from(toolRuntimeMetricCounters)
+      .where(
+        and(
+          eq(toolRuntimeMetricCounters.companyId, company.id),
+          eq(toolRuntimeMetricCounters.metric, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC),
+        ),
+      );
+    expect(counter?.count).toBeGreaterThanOrEqual(1);
   });
 });
