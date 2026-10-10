@@ -312,7 +312,7 @@ describe("New agent setup", () => {
   });
   it.each([
     ["codex_local", "OpenAI", undefined], ["claude_local", "Claude", undefined],
-    ["codex_local", "OpenAI", "acp"], ["claude_local", "Claude", "acp"],
+    ["claude_local", "Claude", "acp"],
   ])("shows Boat's CLI default before connecting and preserves an explicit engine for %s (%s, %s)", async (adapter, provider, choice) => {
     envApi.list.mockResolvedValue([
       { id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } },
@@ -323,6 +323,7 @@ describe("New agent setup", () => {
     const engine = container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')!;
     expect(engine).not.toBeNull();
     expect(engine.value).toBe("cli");
+    expect(Array.from(engine.options).some(option => option.value === "acp")).toBe(adapter === "claude_local");
     expect(engine.selectedOptions[0].textContent).toBe(adapter === "codex_local" ? "Codex CLI" : "Claude CLI");
     expect(api.testEnvironment).not.toHaveBeenCalled();
     if (choice) await act(async () => {

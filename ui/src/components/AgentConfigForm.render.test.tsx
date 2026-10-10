@@ -111,7 +111,7 @@ vi.mock("../adapters", () => ({
     // adapter, so a test can assert the plumbing without rendering a real
     // adapter's fields.
     ConfigFields: (props: AdapterConfigFieldsProps) => {
-      if (type === "paperclip_runner") return <CodexLocalConfigFields {...props} />;
+      if (type === "paperclip_runner" || (type === "codex_local" && props.allowExecutionEngineSelection)) return <CodexLocalConfigFields {...props} />;
       const { adapterType, hideInstructionsFile, managedSandboxOnly, allowExecutionEngineSelection } = props;
       return adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
@@ -3876,6 +3876,41 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     // The stored values stay untouched: hiding is presentation, and an import
     // that carries adapter configuration from another instance must still save.
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it.each(["acp", undefined])("requires explicit CLI repair before saving an unsupported Boat Codex engine (%s)", async engine => {
+    setManagedSandboxOnly(true);
+    const saveActions = vi.fn();
+    const result = await renderForm(
+      [makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } })],
+      { adapterType: "codex_local", defaultEnvironmentId: "boat-1", adapterConfig: { engine } },
+      { onSaveActionChange: saveActions, showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    expect(result.container.textContent).toContain("Choose Codex CLI before saving or testing");
+    expect(saveActions.mock.lastCall?.[0]).toBeNull();
+    expect(findButton(result.container, "Test")?.disabled).toBe(true);
+    expect(result.onSave).not.toHaveBeenCalled();
+    const engineSelect = Array.from(result.container.querySelectorAll("select")).find(select =>
+      Array.from(select.options).some(option => option.textContent === "Codex CLI"),
+    )!;
+    expect(engineSelect.value).toBe(engine ?? "auto");
+    expect(engineSelect.selectedOptions[0].disabled).toBe(true);
+    expect(Array.from(engineSelect.options).filter(option => !option.disabled).map(option => option.value)).toEqual(["cli"]);
+    await act(async () => {
+      engineSelect.value = "cli";
+      engineSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(result.container.textContent).not.toContain("Choose Codex CLI before saving or testing");
+    expect(saveActions.mock.lastCall?.[0]).toEqual(expect.any(Function));
+    await act(async () => saveActions.mock.lastCall![0]());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ engine: "cli" }) }));
   });
 
   it.each(["active", "archived"] as const)("only exposes the engine for a resolved active Boat, keeping managed host paths hidden (%s)", async status => {
