@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { chatActions, toolInvocations, type Db } from "@paperclipai/db";
 import {
@@ -52,6 +53,7 @@ export async function claimSlackRateLimitRetry(
       !(Date.parse(action.result.retryAt) <= Date.now())
     )
       return false;
+    await notifyChatPublicationWork(tx);
     await tx
       .update(chatActions)
       .set({ status: "received", updatedAt: new Date() })

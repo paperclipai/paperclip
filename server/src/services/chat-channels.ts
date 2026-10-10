@@ -23,7 +23,7 @@ import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
 import { assertSlackBoardWorkAllowed } from "./slack-board-resume.js";
-import { slackExplicitPublicationDuplicate } from "./connectors/slack-publication.js";
+import { slackExplicitPublicationDuplicate, unresolvedSlackPublicationCondition } from "./connectors/slack-publication.js";
 import { rememberVerifiedSlackSearchEvent, slackSearchActionToken } from "./connectors/slack-search-context.js";
 import { slackAuthorizationRevision } from "./connectors/slack-revision.js";
 import { slackPublicationAllowed } from "./connectors/slack-access.js";
@@ -16876,7 +16876,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  function normalizedDeliveryThreadId(delivery: DeliveryRow): string | null {
+  function normalizedDeliveryThreadId(delivery: Pick<DeliveryRow, "normalizedEvent">): string | null {
     const normalized = delivery.normalizedEvent as {
       conversation?: { externalThreadId?: unknown };
     };
@@ -16886,7 +16886,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   function normalizedLifecycleTargetEventId(
-    delivery: DeliveryRow,
+    delivery: Pick<DeliveryRow, "eventKind" | "normalizedEvent">,
   ): string | null {
     if (
       delivery.eventKind !== "message_updated" &&
@@ -16907,7 +16907,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   function normalizedLifecycleEffect(
-    delivery: DeliveryRow,
+    delivery: Pick<DeliveryRow, "normalizedEvent">,
   ): ChatProviderLifecycleEffect | null {
     const normalized = delivery.normalizedEvent as { lifecycle?: unknown };
     const value = normalized.lifecycle;
@@ -16962,6 +16962,48 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
+  function conversationDeliveryOrder() {
+    return [
+      asc(
+        sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
+      ),
+      // GitHub timestamps and Telegram message dates have one-second
+      // resolution. GitHub's numeric comment id and Telegram's message_id
+      // are monotonic within one conversation, so use them before receipt
+      // order. The Telegram update_id is a final provider-native tie-breaker
+      // for unusual payloads that lack a usable message_id.
+      asc(sql`coalesce(
+        case
+          when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence' ~ '^[0-9]+$'
+          then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence')::numeric
+          else null
+        end,
+        case
+          when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId' ~ '^[0-9]+$'
+          then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId')::numeric
+          else null
+        end
+      )`),
+      asc(sql`case
+        when ${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId' ~ '^[0-9]+$'
+        then (${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId')::numeric
+        else null
+      end`),
+      // GitHub exposes no sortable webhook sequence. When an edit and delete
+      // share its whole-second updated_at value, preserve the only valid
+      // lifecycle state transition: update before delete. Provider-native
+      // update ids (Telegram) remain the stronger preceding key.
+      asc(sql`case ${chatDeliveries.eventKind}
+        when 'message_updated' then 1
+        when 'message_deleted' then 2
+        when 'message_restored' then 3
+        else 0
+      end`),
+      asc(chatDeliveries.receivedAt),
+      asc(chatDeliveries.id),
+    ];
+  }
+
   async function earliestOpenConversationDelivery(
     endpointId: string,
     threadId: string,
@@ -16987,45 +17029,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           externalThreadIdentityCondition(externalThreadId, threadId),
         ),
       )
-      .orderBy(
-        asc(
-          sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
-        ),
-        // GitHub timestamps and Telegram message dates have one-second
-        // resolution. GitHub's numeric comment id and Telegram's message_id
-        // are monotonic within one conversation, so use them before receipt
-        // order. The Telegram update_id is a final provider-native tie-breaker
-        // for unusual payloads that lack a usable message_id.
-        asc(sql`coalesce(
-          case
-            when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence' ~ '^[0-9]+$'
-            then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence')::numeric
-            else null
-          end,
-          case
-            when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId' ~ '^[0-9]+$'
-            then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId')::numeric
-            else null
-          end
-        )`),
-        asc(sql`case
-          when ${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId' ~ '^[0-9]+$'
-          then (${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId')::numeric
-          else null
-        end`),
-        // GitHub exposes no sortable webhook sequence. When an edit and delete
-        // share its whole-second updated_at value, preserve the only valid
-        // lifecycle state transition: update before delete. Provider-native
-        // update ids (Telegram) remain the stronger preceding key.
-        asc(sql`case ${chatDeliveries.eventKind}
-          when 'message_updated' then 1
-          when 'message_deleted' then 2
-          when 'message_restored' then 3
-          else 0
-        end`),
-        asc(chatDeliveries.receivedAt),
-        asc(chatDeliveries.id),
-      )
+      .orderBy(...conversationDeliveryOrder())
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!candidate) return null;
@@ -38242,6 +38246,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   function publicationEligibility({ now, busyEndpointIds = [], coolingTeamsPublicationIds = [], attemptedIds = [] }: { now?: Date; busyEndpointIds?: string[]; coolingTeamsPublicationIds?: string[]; attemptedIds?: string[] } = {}) {
     const earlierPublication = alias(chatPublications, "earlier_chat_publications");
     return and(
+      sql`not (${unresolvedSlackPublicationCondition()})`,
       // An explicit Board send promises both delivery and work. Keep
       // its text/files pending until the durable wake has been accepted.
       sql`not exists (select 1 from chat_actions a where a.company_id = ${chatPublications.companyId} and a.endpoint_id = ${chatPublications.endpointId} and a.conversation_id = ${chatPublications.conversationId} and a.kind = 'slack_board_message' and a.status = 'received' and a.payload->>'commentId' = ${chatPublications.commentId}::text)`,
@@ -38608,7 +38613,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   let wakePublications = () => {};
 
   async function nextInboundDeliveryAt(): Promise<number | null> {
-    const [row] = await db.select({ at: sql<string | null>`min(case
+    const rows = await db.select({ delivery: {
+      id: chatDeliveries.id, endpointId: chatDeliveries.endpointId, providerEventId: chatDeliveries.providerEventId,
+      state: chatDeliveries.state, eventKind: chatDeliveries.eventKind,
+      // Retain scheduling metadata only, not message bodies or attachment data.
+      normalizedEvent: sql<DeliveryRow["normalizedEvent"]>`jsonb_build_object(
+        'conversation', ${chatDeliveries.normalizedEvent}->'conversation',
+        'lifecycle', ${chatDeliveries.normalizedEvent}->'lifecycle',
+        'message', jsonb_build_object(
+          'targetProviderEventId', ${chatDeliveries.normalizedEvent}->'message'->'targetProviderEventId',
+          'admissionDependencyEventId', ${chatDeliveries.normalizedEvent}->'message'->'admissionDependencyEventId'))`,
+    }, at: sql<string | null>`case
       when ${chatDeliveries.state} = 'processing' then ${chatDeliveries.updatedAt} + ${DELIVERY_PROCESSING_STALE_MS} * interval '1 millisecond'
       when ${chatDeliveries.state} = 'processed' then (
         select min(case when a.status = 'processing' then a.updated_at + ${DELIVERY_PROCESSING_STALE_MS} * interval '1 millisecond'
@@ -38616,13 +38631,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         from chat_actions a where a.delivery_id = chat_deliveries.id
           and a.company_id = chat_deliveries.company_id and a.endpoint_id = chat_deliveries.endpoint_id
           and a.kind = 'inbound_wakeup' and a.status in ('issued', 'processing'))
-      else coalesce(${chatDeliveries.nextAttemptAt}, now()) end)` })
+      else coalesce(${chatDeliveries.nextAttemptAt}, now()) end` })
       .from(chatDeliveries).where(and(
         sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and (e.provider = 'agentmail' or e.status in ('paused', 'attention')))`,
         or(inArray(chatDeliveries.state, ["received", "retry", "processing"]),
           and(eq(chatDeliveries.state, "processed"), pendingInboundWakeupCondition())),
-      ));
-    return row?.at == null ? null : new Date(row.at).getTime();
+      )).orderBy(...conversationDeliveryOrder());
+    // Only an ordered conversation head can run. Reaction and provider
+    // lifecycle receipts are independent; lifecycle edits may select their
+    // exact admission dependency before the chronologically earliest row.
+    const byEvent = new Map(rows.map(row => [`${row.delivery.endpointId}:${row.delivery.providerEventId}`, row]));
+    const conversations = new Set<string>();
+    let next: number | null = null;
+    for (let row of rows) {
+      const delivery = row.delivery;
+      const threadId = normalizedDeliveryThreadId(delivery);
+      if (threadId && !normalizedLifecycleEffect(delivery) && !["reaction_added", "reaction_removed"].includes(delivery.eventKind)) {
+        const key = conversationDrainKey(delivery.endpointId, threadId);
+        if (conversations.has(key)) continue;
+        conversations.add(key);
+        const dependency = normalizedLifecycleTargetEventId(delivery);
+        const target = dependency ? byEvent.get(`${delivery.endpointId}:${dependency}`) : undefined;
+        if (target && ["received", "retry", "processing"].includes(target.delivery.state)) row = target;
+      }
+      if (row.at !== null) {
+        const at = new Date(row.at).getTime();
+        next = next === null ? at : Math.min(next, at);
+      }
+    }
+    return next;
   }
 
   async function nextSlackReceiptAt(): Promise<number | null> {
