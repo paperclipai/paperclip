@@ -3,6 +3,20 @@ import { describe, expect, it } from "vitest";
 import { buildDuplicateAgentPayload, duplicateAgentName } from "./duplicate-agent-payload";
 import type { AgentDetail } from "@paperclipai/shared";
 
+const baseAgentConfig = {
+  model: "gpt-5.5",
+  instructionsBundleMode: "managed",
+  instructionsRootPath: "/tmp/original/instructions",
+  instructionsEntryFile: "AGENTS.md",
+  instructionsFilePath: "/tmp/original/instructions/AGENTS.md",
+  promptTemplate: "legacy prompt",
+  bootstrapPromptTemplate: "legacy bootstrap",
+};
+
+const baseAgentRuntimeConfig = {
+  heartbeat: { enabled: true },
+};
+
 const baseAgent: AgentDetail = {
   id: "agent-1",
   companyId: "company-1",
@@ -15,18 +29,13 @@ const baseAgent: AgentDetail = {
   reportsTo: "manager-1",
   capabilities: "Builds product features.",
   adapterType: "codex_local",
-  adapterConfig: {
-    model: "gpt-5.5",
-    instructionsBundleMode: "managed",
-    instructionsRootPath: "/tmp/original/instructions",
-    instructionsEntryFile: "AGENTS.md",
-    instructionsFilePath: "/tmp/original/instructions/AGENTS.md",
-    promptTemplate: "legacy prompt",
-    bootstrapPromptTemplate: "legacy bootstrap",
-  },
-  runtimeConfig: {
-    heartbeat: { enabled: true },
-  },
+  adapterConfig: baseAgentConfig,
+  runtimeConfig: baseAgentRuntimeConfig,
+  // Key names are derived from the configs above so this fixture cannot drift
+  // from the config it describes.
+  configurationAccess: "full",
+  adapterConfigKeys: Object.keys(baseAgentConfig),
+  runtimeConfigKeys: Object.keys(baseAgentRuntimeConfig),
   defaultEnvironmentId: "environment-1",
   budgetMonthlyCents: 500,
   spentMonthlyCents: 123,
