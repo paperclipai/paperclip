@@ -6580,6 +6580,179 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(repair?.contextSnapshot?.dispositionRepairInstruction)).not.toContain(bearerSecret);
   });
 
+  it.each([
+    { name: "old assignee cancelled before start", reassign: true, runStatus: "cancelled", started: false, monitor: true },
+    { name: "old assignee finished a failed attempt", reassign: true, runStatus: "failed", started: true, monitor: true },
+    { name: "current assignee cancelled before start", reassign: false, runStatus: "cancelled", started: false, monitor: true },
+    { name: "plugin-managed lifecycle", reassign: true, runStatus: "failed", started: true, monitor: false, originKind: "plugin:test" },
+  ] as const)("ignores stale successful-run handoff evidence: $name", async (scenario) => {
+    const { reassign, runStatus, started, monitor } = scenario;
+    const nextCheckAt = monitor ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus,
+      runErrorCode: started ? "adapter_failed" : "issue_assignee_changed",
+      runError: started ? "The old owner failed its handoff attempt." : "Issue owner changed before claim.",
+      monitorNextCheckAt: nextCheckAt,
+    });
+    const currentAgentId = reassign ? randomUUID() : agentId;
+    if (reassign) {
+      await db.insert(agents).values({
+        id: currentAgentId,
+        companyId,
+        name: "New task owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.update(issues).set({
+      assigneeAgentId: currentAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      ...("originKind" in scenario ? { originKind: scenario.originKind } : {}),
+    }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      startedAt: started ? new Date("2026-03-19T00:00:00.000Z") : null,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        sourceRunId: randomUUID(),
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({
+      skipped: 1,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      continuationRequeued: 0,
+      issueIds: [],
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: currentAgentId, monitorNextCheckAt: nextCheckAt });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "former owner's failed handoff", reassign: true, runStatus: "failed", started: true },
+    { name: "former owner's unstarted handoff", reassign: true, runStatus: "cancelled", started: false },
+    { name: "current owner's unstarted handoff", reassign: false, runStatus: "cancelled", started: false },
+    { name: "former owner's handoff with current-owner history", reassign: true, runStatus: "failed", started: true, ownHistory: true },
+  ] as const)("restores one current-owner execution path after $name", async (scenario) => {
+    const { reassign, runStatus, started } = scenario;
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus,
+      runErrorCode: started ? "adapter_failed" : "issue_assignee_changed",
+      runError: started ? "Former owner failed its handoff." : "Handoff cancelled before claim.",
+    });
+    const currentAgentId = reassign ? randomUUID() : agentId;
+    if (reassign) {
+      await db.insert(agents).values({
+        id: currentAgentId,
+        companyId,
+        name: "Current task owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.update(issues).set({ assigneeAgentId: currentAgentId, checkoutRunId: null, executionRunId: null })
+      .where(eq(issues.id, issueId));
+    const ownRunId = "ownHistory" in scenario ? randomUUID() : null;
+    if (ownRunId) {
+      await db.insert(heartbeatRuns).values({
+        id: ownRunId,
+        companyId,
+        agentId: currentAgentId,
+        status: "cancelled",
+        invocationSource: "assignment",
+        startedAt: null,
+        errorCode: "adapter_failed",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      });
+    }
+    await db.update(heartbeatRuns).set({
+      startedAt: started ? new Date("2026-03-19T00:00:00.000Z") : null,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    const enqueueWakeup = vi.fn<Parameters<typeof recoveryService>[1]["enqueueWakeup"]>(async (targetAgentId, options) => {
+      const [queued] = await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId: targetAgentId,
+        status: "queued",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        contextSnapshot: options?.contextSnapshot ?? {},
+      }).returning();
+      return queued ?? null;
+    });
+    const scheduleRecoveryRetry = vi.fn(async (retryOfRunId: string) => {
+      const [queued] = await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId: currentAgentId,
+        status: "queued",
+        invocationSource: "automation",
+        retryOfRunId,
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_continuation_needed" },
+      }).returning();
+      return queued ?? null;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry });
+
+    const first = await recovery.reconcileStrandedAssignedIssues();
+    expect(first).toMatchObject({ continuationRequeued: 1, successfulRunHandoffEscalated: 0, escalated: 0 });
+    for (let sweep = 0; sweep < 2; sweep++) {
+      expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({
+        continuationRequeued: 0, successfulRunHandoffEscalated: 0, escalated: 0, skipped: 1,
+      });
+    }
+    expect(enqueueWakeup).toHaveBeenCalledTimes(ownRunId ? 0 : 1);
+    if (ownRunId) {
+      expect(scheduleRecoveryRetry).toHaveBeenCalledOnce();
+      expect(scheduleRecoveryRetry).toHaveBeenCalledWith(ownRunId);
+    } else {
+      expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(currentAgentId);
+      expect(scheduleRecoveryRetry).not.toHaveBeenCalled();
+    }
+    const [queued] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+    expect(queued).toMatchObject({ agentId: currentAgentId, retryOfRunId: ownRunId });
+    expect(queued.contextSnapshot).toMatchObject({ issueId, wakeReason: "issue_continuation_needed" });
+    if (!ownRunId) expect(queued.contextSnapshot).toMatchObject({ source: "issue.continuation_recovery" });
+    expect(queued.contextSnapshot).not.toHaveProperty("handoffRequired");
+    expect(queued.contextSnapshot).not.toHaveProperty("retryOfRunId");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_progress", assigneeAgentId: currentAgentId });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
