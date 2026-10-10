@@ -11624,7 +11624,10 @@ async function createRunnerdBackendWithinSessionClaim(
     ? input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
     : resolvePaperclipRunnerBinary();
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
-  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
+  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() ||
+    (remoteTarget?.transport === "computer" && !explicitRemoteCodex
+      ? `@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`
+      : null);
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
     throw new Error("runner_remote_codex_source_conflict");
   }

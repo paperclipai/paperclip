@@ -13148,6 +13148,55 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it.each([
+    { override: undefined, expected: "@openai/codex@0.160.0" },
+    { override: "@openai/codex@0.159.0", expected: "@openai/codex@0.159.0" },
+  ])("installs compatible computer Codex privately with override=$override", async ({ override, expected }) => {
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      const script = command.args?.[1] ?? "";
+      let stdout = "";
+      if (command.args?.[0] === "--build-metadata") {
+        stdout = JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1",
+          binaryName: "paperclip-runnerd", packageName: "@paperclipai/paperclip-runner",
+          binaryContractVersion: 2,
+          durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"],
+          prpTransportModes: ["listen_ws"],
+        });
+      } else if (command.args?.[0] === "--version") {
+        if (command.command.includes("/harnesses/codex/")) throw new Error("reached-private-codex-verification");
+        stdout = "codex-cli 0.162.1";
+      } else if (script.includes("command -v paperclip-runnerd")) {
+        stdout = "/usr/local/bin/paperclip-runnerd\n";
+      } else if (script.includes("command -v codex")) {
+        stdout = "/usr/local/bin/codex\n";
+      }
+      return { exitCode: 0, signal: null, timedOut: false, stderr: "", stdout };
+    });
+    await createRunnerdBackend({
+      db: leaseDb(execution), execution, runnerInstanceId: "computer-codex-install",
+      runnerIngressAuthorized: true, runnerRemoteCodexNpmSpec: override,
+      runnerExecutionTarget: {
+        kind: "remote", transport: "computer", remoteCwd: "/workspace",
+        environmentId: "environment", leaseId: "lease", providerKey: "boat",
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        runner: { execute: remoteExecute }, processRunner: { execute: remoteExecute },
+      } as never,
+    });
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const transport = state.createTransport.mock.calls[0]![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+    };
+    await expect(transport.controlPlaneRegistration({})).rejects.toThrow("reached-private-codex-verification");
+    expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "npm",
+      args: ["install", "--prefix", "/workspace/.paperclip-runtime/paperclip-runner/harnesses/codex", "--no-audit", "--no-fund", expected],
+    }));
+    expect(remoteExecute.mock.calls.filter(([command]) => command.command === "npm")).toHaveLength(1);
+    expect(remoteExecute.mock.calls.some(([command]) => command.args?.includes("--global"))).toBe(false);
+  });
+
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {
     const remoteCwd = "/home/daytona/paperclip-workspace";
     const controllerArtifact = "/controller/artifacts/paperclip-runnerd";
