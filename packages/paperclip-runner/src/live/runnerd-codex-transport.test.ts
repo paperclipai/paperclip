@@ -7951,8 +7951,10 @@ it.each([true, false])("preserves prepared OpenCode cleanup errors (primary fail
   expect((failure as Error).message).not.toContain("fixture-secret");
 });
 
-it("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary", async () => {
+it("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary", async ({ onTestFinished }) => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
+  // Setup can fail before the transport/session cleanup boundary exists.
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
   // fleet. Qualify an owned copy with strict permissions, never chmod the host
   // runtime or weaken the launch boundary. Keep macOS's native runtime path

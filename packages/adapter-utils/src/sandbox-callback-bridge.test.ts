@@ -446,9 +446,10 @@ describe("sandbox callback bridge", () => {
     const processed: string[] = [];
     let signalStarted!: () => void;
     const started = new Promise<void>(resolve => { signalStarted = resolve; });
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client,
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -462,7 +463,8 @@ describe("sandbox callback bridge", () => {
       },
     });
 
-    await writeFile(
+    // Publish complete envelopes before the worker can stat/read them.
+    await client.writeTextFile(
       path.posix.join(directories.requestsDir, "req-a.json"),
       `${JSON.stringify({
         id: "req-a",
@@ -473,9 +475,8 @@ describe("sandbox callback bridge", () => {
         body: "",
         createdAt: new Date().toISOString(),
       })}\n`,
-      "utf8",
     );
-    await writeFile(
+    await client.writeTextFile(
       path.posix.join(directories.requestsDir, "req-b.json"),
       `${JSON.stringify({
         id: "req-b",
@@ -486,7 +487,6 @@ describe("sandbox callback bridge", () => {
         body: "",
         createdAt: new Date().toISOString(),
       })}\n`,
-      "utf8",
     );
 
     // Begin the short drain deadline only after the first handler has started.
