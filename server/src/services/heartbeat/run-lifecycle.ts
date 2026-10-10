@@ -150,6 +150,7 @@ import {
   reviewPathConsumedRefFromRun,
 } from "../recovery/review-path-recovery.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../successful-run-handoff-state.js";
+import { escalateExhaustedIssueReviewPathRecovery } from "../recovery/review-path-recovery-escalation.js";
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -1987,6 +1988,10 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       reviewAttention,
       existingWake: Boolean(existingWake),
     });
+    if (decision.kind === "exhausted") {
+      await escalateExhaustedIssueReviewPathRecovery(db, { run, issueId: issue.id });
+      return;
+    }
     if (decision.kind !== "enqueue") return;
 
     const recoveryRun = await enqueueWakeup(issue.assigneeAgentId, {
