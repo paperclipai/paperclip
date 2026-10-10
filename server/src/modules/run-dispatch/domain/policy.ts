@@ -147,6 +147,8 @@ export type QueuedRunFacts = {
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
+  /** Approval decision waking the agent that requested it, verified against the linked approval. */
+  isApprovalRequesterWake?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
   resumeIntent: boolean;
@@ -172,6 +174,7 @@ type OwnershipFacts = {
   isInteractionWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
+  isApprovalRequesterWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -187,6 +190,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isInteractionWake) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
+  if (facts.isApprovalRequesterWake) return "current_owner";
   return "reassigned";
 }
 
@@ -571,6 +575,7 @@ export function decideQueuedRunStaleness(
       facts.reviewParticipant.participantIsAgent &&
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
+    isApprovalRequesterWake: facts.isApprovalRequesterWake,
   });
   if (ownership === "reassigned") {
     return {

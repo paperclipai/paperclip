@@ -584,6 +584,30 @@ export function createPostgresRunDispatchAdapter(
             .limit(1)
             .then((rows) => Boolean(rows[0]))
         : false;
+    // An approval decision wakes the agent that requested it. That requester must run even when the
+    // linked issue is currently assigned to someone else (e.g. a reviewer), otherwise the decision is
+    // silently dropped as "assignee changed". Verified against the DB: the approval is decided, was
+    // requested by this agent, and is linked to this issue.
+    const approvalId = readNonEmptyString(context.approvalId);
+    const isApprovalRequesterWake =
+      issue && approvalId && (wakeReason === "approval_approved" || wakeReason === "approval_rejected"
+        || wakeReason === "approval_revision_requested")
+        ? await dbOrTx
+            .select({ id: approvals.id })
+            .from(issueApprovals)
+            .innerJoin(approvals, and(
+              eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
+            ))
+            .where(and(
+              eq(approvals.id, approvalId),
+              eq(approvals.companyId, input.companyId),
+              eq(approvals.requestedByAgentId, input.agentId),
+              eq(issueApprovals.issueId, issue.id),
+              inArray(approvals.status, ["approved", "rejected", "revision_requested"]),
+            ))
+            .limit(1)
+            .then((rows) => Boolean(rows[0]))
+        : false;
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
@@ -610,6 +634,7 @@ export function createPostgresRunDispatchAdapter(
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
       isAuthorizedSourceScopedRecovery,
+      isApprovalRequesterWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
