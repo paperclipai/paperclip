@@ -255,7 +255,7 @@ export function WhatNeedsMe() {
   const groups = useMemo<AttentionGroup[]>(() => {
     const filtered = filterAttentionItems(deskItems, filters);
     if (groupBy === "none") {
-      return buildDeskShelves(filtered, now);
+      return buildDeskShelves(filtered, now, sortOrder);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
