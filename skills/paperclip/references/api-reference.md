@@ -1201,6 +1201,69 @@ Best practice:
 - After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
 - When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
 
+### Suggested tasks (`suggest_tasks`)
+
+Use `suggest_tasks` to propose a batch of concrete child tasks that a responder accepts in one action. Every accepted item becomes a real subtask. When the items are not tasks to create, use `request_checkbox_confirmation` instead.
+
+All kind-specific content lives under `payload` with `"version": 1` and a `tasks` array. There is no free-text `body` field, and the create validator is a discriminated union, so payload fields do not belong at the top level.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "suggest_tasks",
+  "idempotencyKey": "suggest:{issueId}:batch1:r1",
+  "title": "Proposed child issues",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "tasks": [
+      {
+        "clientKey": "identify",
+        "title": "Project identification",
+        "description": "Identify all projects routing through the pipeline.",
+        "priority": "high"
+      },
+      {
+        "clientKey": "adapt",
+        "parentClientKey": "identify",
+        "title": "Pipeline adaptations",
+        "description": "Draft project-specific adaptation strategies."
+      }
+    ]
+  }
+}
+```
+
+Field rules:
+
+- `payload.version` is required and must be `1`. `payload.tasks` is required and holds 1–50 drafts.
+- Each task requires `clientKey` (1–120 chars, unique within the interaction) and `title` (1–240 chars). A repeated key is rejected with `clientKey must be unique within one interaction`.
+- Optional per task: `description` (multiline, up to 20,000 chars), `priority` (`critical`, `high`, `medium`, `low`), `workMode` (`standard`, `ask`, `planning`, `skill_test`), `parentClientKey` (the `clientKey` of another draft in the same batch, to nest suggestions) or `parentId` (an existing issue UUID), `projectId`, `goalId`, `billingCode` (up to 120 chars).
+- `labels` and `hiddenInPreview` also pass validation. `hiddenInPreview` only affects the preview card, and `labels` is **not** copied to the created subtask, so do not rely on either to classify accepted work.
+- A task may set `assigneeAgentId` **or** `assigneeUserId`, never both: `Suggested tasks can only target one assignee`.
+- Optional `payload.defaultParentId` (issue UUID) parents every draft under one issue, unless that draft sets its own `parentId` or `parentClientKey`.
+- Envelope fields behave as for the other interaction kinds: `idempotencyKey` (up to 255), `title` (up to 240), `summary` (up to 1,000), `continuationPolicy` (default `"wake_assignee"`), `resolverPolicy`, `addresseeAgentId`, `addresseeUserId`, `sourceCommentId`, `sourceRunId`.
+
+Accept is a responder action, not a board-only one. Under the default policy any teammate may accept: a board user, or an agent inside an authenticated run (without one the call returns `422 interaction_run_attribution_required`). Narrow it with `resolverPolicy: "human_only"` (an agent then gets `403 interaction_human_only`) or `"not_creator"` (the creating agent or creating run gets `403 interaction_creator_excluded`). An `addresseeUserId` excludes every agent; an `addresseeAgentId` limits acceptance to that agent or to a human.
+
+Accept a subset by `clientKey`, and include every selected draft's `parentClientKey` ancestors:
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+{ "selectedClientKeys": ["identify"] }
+```
+
+Omit `selectedClientKeys` to accept every draft. Do not send an empty array: the field accepts 1–50 unique keys, and an empty selection fails request validation with HTTP 400. To accept nothing, reject the interaction instead. Reject takes an optional `reason` (up to 4,000 chars).
+
+Selection rules, each a 422 when broken: an unknown key returns `Unknown suggested task clientKey: {clientKey}`, and a child selected without its parent returns `Suggested task {clientKey} requires its parent {parentClientKey} to also be selected`. `rememberAction` is accepted by the validator and ignored here; remembered permission applies to tool-review approvals only.
+
+The saved interaction keeps your request in `payload` and the outcome in `result`. Acceptance records `createdTasks[]` (`clientKey`, `issueId`, `identifier`, `title`, `parentIssueId`, `parentIdentifier`) and, for a partial accept, `skippedClientKeys[]` for the drafts nobody selected. Rejection records `rejectionReason`. Administrative outcomes use `outcome` (`skipped`, `withdrawn`, `issue_closed`, `addressee_deleted`) and may carry `reason`. Read `result` before you report which subtasks exist: a suggestion is not a subtask until it appears in `createdTasks`.
+
+Best practice:
+
+- Use a deterministic idempotency key such as `suggest:{issueId}:{batch}:r1` so a retry reuses the same card instead of stacking duplicates.
+- After creating the suggestion, move the source issue to `in_review` with a comment that names exactly what the responder is being asked to accept. A pending interaction is an explicit waiting path, not a synonym for `done`.
+
 ### Item verdict requests
 
 Use `request_item_verdicts` when the board must approve/reject/defer individual items from a known list, and partial responses should wake the assignee as durable progress. It is different from `request_checkbox_confirmation`: checkbox confirmation is one accept/reject decision with selected ids, while item verdicts store per-item terminal decisions over time.
@@ -1673,6 +1736,7 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+| Send `suggest_tasks` with a free-text `body` | No `body` field exists; drafts are structured | Use `payload.tasks: [{ clientKey, title, ... }]` |
 
 **Run-scoped agent connection access.**
 

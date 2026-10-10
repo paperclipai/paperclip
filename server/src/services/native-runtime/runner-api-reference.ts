@@ -321,6 +321,31 @@ export const runnerApiReference: Record<string, { section: string; description?:
       },
       {
         "body": {
+          "kind": "suggest_tasks",
+          "idempotencyKey": "suggest:{issueId}:batch1:r1",
+          "title": "Proposed child issues",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "tasks": [
+              {
+                "clientKey": "identify",
+                "title": "Project identification",
+                "description": "Identify all projects routing through the pipeline.",
+                "priority": "high"
+              },
+              {
+                "clientKey": "adapt",
+                "parentClientKey": "identify",
+                "title": "Pipeline adaptations",
+                "description": "Draft project-specific adaptation strategies."
+              }
+            ]
+          }
+        }
+      },
+      {
+        "body": {
           "kind": "request_item_verdicts",
           "idempotencyKey": "verdicts:{issueId}:generated-artifacts:{planRevisionId}",
           "title": "Review generated artifacts",
@@ -376,6 +401,13 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "selectedOptionIds": [
             "draft-report-march",
             "tmp-export-2025"
+          ]
+        }
+      },
+      {
+        "body": {
+          "selectedClientKeys": [
+            "identify"
           ]
         }
       }
