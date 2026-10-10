@@ -1036,6 +1036,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
             });
             if (running) {
+              // Lets the run settle when the child exits but a process outside
+              // its group keeps the output open.
+              running.markStopRequested?.();
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
