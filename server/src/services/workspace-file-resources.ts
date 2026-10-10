@@ -1385,14 +1385,14 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
           const hasExplicitTarget = Boolean(explicitTarget?.candidate);
           let lastNotFound: unknown = null;
           for (const candidate of candidates) {
-            if (candidate.placement) return availabilityResult(item.query, await statPersistentCandidate(candidate, item.normalizedPath, item.directory));
-            if (candidate.remote) {
+            if (candidate.remote && !candidate.placement) {
               if (hasExplicitTarget || item.query.workspace !== "auto") {
                 return availabilityResult(item.query, remoteResource(candidate, item.normalizedPath.relativePath));
               }
               continue;
             }
             try {
+              if (candidate.placement) return availabilityResult(item.query, await statPersistentCandidate(candidate, item.normalizedPath, item.directory));
               const resource = item.directory
                 ? (await statLocalDirectory(candidate, item.normalizedPath)).resource
                 : (await statLocalCandidate(candidate, item.normalizedPath)).resource;
@@ -1454,12 +1454,12 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.placement) return statPersistentCandidate(candidate, normalized, isDirectoryRequest);
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") return remoteResource(candidate, normalized.relativePath);
         continue;
       }
       try {
+        if (candidate.placement) return await statPersistentCandidate(candidate, normalized, isDirectoryRequest);
         return isDirectoryRequest
           ? (await statLocalDirectory(candidate, normalized)).resource
           : (await statLocalCandidate(candidate, normalized)).resource;
@@ -1513,7 +1513,17 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
     let firstUnavailable: { candidate: WorkspaceCandidate; reason: string } | null = null;
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.placement) return persistentList(candidate, { selector, mode, normalizedPath, q, normalizedQuery, limit, offset });
+      if (candidate.placement) {
+        try {
+          return await persistentList(candidate, { selector, mode, normalizedPath, q, normalizedQuery, limit, offset });
+        } catch (error) {
+          if (normalizedPath && !explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
+            lastNotFound = error;
+            continue;
+          }
+          throw error;
+        }
+      }
       if (candidate.remote) {
         firstUnavailable ??= { candidate, reason: "remote_workspace" };
         if (explicitTarget || selector !== "auto") {
@@ -1720,8 +1730,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.placement) return persistentContent(candidate, normalized);
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be previewed by the server", { code: "remote_workspace" });
         }
@@ -1729,6 +1738,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
       }
       let resolved: LocalResolvedFile;
       try {
+        if (candidate.placement) return await persistentContent(candidate, normalized);
         resolved = await statLocalCandidate(candidate, normalized);
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
@@ -1805,18 +1815,18 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
 
     let lastNotFound: unknown = null;
     for (const candidate of candidates) {
-      if (candidate.placement) {
-        const resource = await statPersistentCandidate(candidate, normalized);
-        const { bytes } = await (await placementFiles(candidate)).readBytes(normalized.relativePath);
-        return { resource: { ...resource, byteSize: bytes.length }, bytes };
-      }
-      if (candidate.remote) {
+      if (candidate.remote && !candidate.placement) {
         if (explicitTarget || selector !== "auto") {
           throw unprocessable("Remote workspaces cannot be downloaded by the server", { code: "remote_workspace" });
         }
         continue;
       }
       try {
+        if (candidate.placement) {
+          const resource = await statPersistentCandidate(candidate, normalized);
+          const { bytes } = await (await placementFiles(candidate)).readBytes(normalized.relativePath);
+          return { resource: { ...resource, byteSize: bytes.length }, bytes };
+        }
         return await statLocalCandidate(candidate, normalized);
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {

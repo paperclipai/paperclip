@@ -248,6 +248,71 @@ describeEmbeddedPostgres("workspace file resources", () => {
     } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
   });
 
+  it.each(["project", "discovery"])("falls through a missing persistent file to the existing automatic %s candidate", async (fallback) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, targetProjectRoot: workspace.targetProjectRoot, executionRoot: workspace.executionRoot });
+    const environmentId = crypto.randomUUID(), placementId = crypto.randomUUID();
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId, placementId } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    const root = fallback === "project" ? workspace.projectRoot : workspace.targetProjectRoot;
+    const workspaceId = fallback === "project" ? graph.projectWorkspaceId : graph.targetProjectWorkspaceId;
+    await fs.mkdir(path.join(root, "docs"));
+    await fs.writeFile(path.join(root, "docs", "guide.md"), "legitimate project fallback");
+    // A controller path with the same spelling is never the placement's authority.
+    await fs.mkdir(path.join(workspace.executionRoot, "docs"));
+    await fs.writeFile(path.join(workspace.executionRoot, "docs", "guide.md"), "stale controller copy");
+    const missing = Object.assign(new Error("Remote file missing"), { code: "not_found" });
+    const stat = vi.fn().mockRejectedValue(missing);
+    const listPage = vi.fn().mockRejectedValue(missing);
+    const readBytes = vi.fn();
+    const workspaceFiles = vi.fn(async () => ({ root: workspace.executionRoot, stat, listPage, readBytes }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const input = { path: "docs/guide.md" };
+      expect(await service.resolve(graph.issueId, input)).toMatchObject({ workspaceId });
+      expect(await service.readContent(graph.issueId, input)).toMatchObject({ resource: { workspaceId }, content: { data: "legitimate project fallback" } });
+      expect(await service.prepareDownload(graph.issueId, input)).toMatchObject({ resource: { workspaceId }, realPath: path.join(root, "docs", "guide.md") });
+      const availability = await service.availability(graph.issueId, { queries: [input] });
+      expect(availability.results[0]).toMatchObject({ openable: true, resource: { workspaceId } });
+      expect(await service.list(graph.issueId, { path: "docs/" })).toMatchObject({ items: [expect.objectContaining({ workspaceId, title: "guide.md" })] });
+      expect(readBytes).not.toHaveBeenCalled();
+      expect(workspaceFiles).toHaveBeenCalledWith({ companyId: graph.companyId, environmentId, placementId });
+      for (const method of [service.resolve, service.readContent, service.prepareDownload]) {
+        await expect(method(graph.issueId, { ...input, workspace: "execution" })).rejects.toMatchObject({ status: 404 });
+      }
+      await expect(service.list(graph.issueId, { path: "docs/", workspace: "execution" })).rejects.toMatchObject({ status: 404 });
+      expect((await service.availability(graph.issueId, { queries: [{ ...input, workspace: "execution" }] })).results[0])
+        .toMatchObject({ openable: false, unavailableReason: "not_found", resource: null });
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
+  it.each([["forbidden", 403], ["provider_error", 502]] as const)("does not fall back from a persistent %s error", async (code, status) => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: workspace.executionRoot,
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId: crypto.randomUUID(), placementId: crypto.randomUUID() } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    await fs.mkdir(path.join(workspace.projectRoot, "docs"));
+    await fs.writeFile(path.join(workspace.projectRoot, "docs", "guide.md"), "must not be returned");
+    const failure = Object.assign(new Error("Remote access failed"), { code });
+    const workspaceFiles = vi.fn(async () => ({ stat: vi.fn().mockRejectedValue(failure), listPage: vi.fn().mockRejectedValue(failure) }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      for (const method of [service.resolve, service.readContent, service.prepareDownload]) {
+        await expect(method(graph.issueId, { path: "docs/guide.md" })).rejects.toMatchObject({ status });
+      }
+      await expect(service.list(graph.issueId, { path: "docs/" })).rejects.toMatchObject({ status });
+      if (code === "forbidden") {
+        expect((await service.availability(graph.issueId, { queries: [{ path: "docs/guide.md" }] })).results[0]).toMatchObject({ openable: false, resource: null });
+      } else {
+        await expect(service.availability(graph.issueId, { queries: [{ path: "docs/guide.md" }] })).rejects.toMatchObject({ status });
+      }
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
+  });
+
   it("withholds private task files and private cross-project targets", async () => {
     const { projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
