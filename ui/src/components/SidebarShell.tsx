@@ -122,6 +122,19 @@ export function SidebarShell({
   // collapsed (the rail width is a fixed constant, not user-resizable).
   const canResize = resizable && open && !collapsed;
 
+  // The announcement well and the toast viewport are anchored to the viewport's
+  // bottom-left, which is this panel's footer — the account menu and the Share
+  // feedback button. They are siblings of the shell rather than descendants, so
+  // the width they have to clear goes on the root. Reserved width, not panel
+  // width: a peeking panel overlays content deliberately and is transient.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--sidebar-reserved-width", `${reservedWidth}px`);
+    return () => {
+      root.style.removeProperty("--sidebar-reserved-width");
+    };
+  }, [reservedWidth]);
+
   const reservedStyle = useMemo(
     () => ({ width: `${reservedWidth}px` }),
     [reservedWidth],
