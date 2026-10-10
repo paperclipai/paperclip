@@ -88,6 +88,23 @@ records without `attemptId` remain readable.
 These records use the instance run log and its configured storage. They add no
 Paperclip Telemetry or OpenTelemetry export.
 
+## Provider Quota Dispatch Holds
+
+A classified provider-quota failure with a parsed future reset time writes a
+warning `lifecycle` event when Paperclip activates the shared dispatch hold.
+The payload contains `providerQuotaHoldId` and `providerQuotaHoldUntil`.
+
+A queued run in the same provider scope writes an informational `lifecycle`
+event when the hold moves it to `scheduled_retry`. The payload contains
+`providerQuotaHoldId`, `providerQuotaSourceRunId`, and
+`providerQuotaHoldUntil`. Paperclip does not start a provider process for that
+run. The scheduled retry becomes eligible at the captured reset time. The next
+gate check releases an elapsed hold before dispatch.
+
+These records contain control-plane identifiers and the reset time. They do
+not contain provider error text, credentials, or quota amounts. They remain
+local run-log data and add no Paperclip Telemetry or OpenTelemetry export.
+
 ## Omitted Unsafe Workspace Export
 
 `workspace_export_omitted` is an informational system event in the local run log.

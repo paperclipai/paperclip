@@ -25,6 +25,7 @@ import { isUnresolvedWorkspaceBaseRefError, readUnresolvedWorkspaceBaseRefDiagno
 import { runnerGoalService } from "../runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
+import { recordProviderQuotaDispatchHold } from "../provider-quota-dispatch-hold.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
@@ -688,6 +689,28 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
       }
       const livenessRun = finalizedRun;
+      if (
+        outcome === "failed" &&
+        readHeartbeatRunErrorFamily(livenessRun) === "provider_quota"
+      ) {
+        const hold = await recordProviderQuotaDispatchHold(db, {
+          run: livenessRun,
+          agent,
+        });
+        if (hold) {
+          await appendRunEvent(livenessRun, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message:
+              "Captured provider quota reset and activated the shared dispatch hold",
+            payload: {
+              providerQuotaHoldId: hold.id,
+              providerQuotaHoldUntil: hold.holdUntil.toISOString(),
+            },
+          });
+        }
+      }
       await refreshContinuationSummaryForRun(livenessRun, agent);
       const skipRunIssueComment =
         parseObject(livenessRun.contextSnapshot).skipIssueComment === true;

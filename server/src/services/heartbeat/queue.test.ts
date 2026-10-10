@@ -8,6 +8,7 @@ import type { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
+import { recordProviderQuotaDispatchHold } from "../provider-quota-dispatch-hold.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 function callbacks(db: Db) {
@@ -183,5 +184,74 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled, { suppressImmediateRecovery: true });
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("parks a queued run at the provider quota reset before process dispatch", async () => {
+    const { run, agent, company } = await fixture("queued");
+    const resetAt = new Date(Date.now() + 60 * 60 * 1000);
+    const [sourceRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        errorCode: "provider_quota",
+        resultJson: {
+          errorFamily: "provider_quota",
+          providerQuotaRetryNotBefore: resetAt.toISOString(),
+        },
+      })
+      .returning();
+    await recordProviderQuotaDispatchHold(db, { run: sourceRun, agent });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(run)).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id))
+        .then((rows) => rows[0]),
+    ).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: "provider_quota_hold",
+      scheduledRetryAt: resetAt,
+      startedAt: null,
+    });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("applies terminal daily-cap admission before a provider quota hold", async () => {
+    const { run, agent, company } = await fixture("queued");
+    const [sourceRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        errorCode: "provider_quota",
+        resultJson: {
+          errorFamily: "provider_quota",
+          providerQuotaRetryNotBefore: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+      })
+      .returning();
+    await recordProviderQuotaDispatchHold(db, { run: sourceRun, agent });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue({
+      ...agent,
+      runtimeConfig: { heartbeat: { maxDailyRuns: 0 } },
+    });
+
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(run)).toBeNull();
+    const [cancelled] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id));
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      errorCode: "heartbeat.daily_run_limit",
+    });
   });
 });
