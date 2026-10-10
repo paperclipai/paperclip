@@ -4299,9 +4299,13 @@ export function heartbeatService(
 
         // Pause Durability: flip to "running" ONLY if the agent is still invokable.
         // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
+        // A reason from an earlier failed run stops being current the moment the
+        // agent works again; the terminal transition repopulates it if this run
+        // fails. Without this clear the agent runs with a dead error reason and,
+        // if the run dies before the terminal write, keeps it permanently.
         const runningAgent = await db
           .update(agents)
-          .set({ status: "running", updatedAt: new Date() })
+          .set({ status: "running", errorReason: null, updatedAt: new Date() })
           .where(
             and(
               eq(agents.id, agent.id),

@@ -451,7 +451,15 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       const nextAgentStatus = runningCount > 0 ? "running" : "idle";
       await tx
         .update(agents)
-        .set({ status: nextAgentStatus, lastHeartbeatAt: new Date(), updatedAt: new Date() })
+        .set({
+          status: nextAgentStatus,
+          // This fold always lands the agent on a healthy status, so any reason
+          // left over from an earlier failed run must go with it. Without the
+          // clear a recovered agent keeps reading as broken on the agent page.
+          errorReason: null,
+          lastHeartbeatAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(and(
           eq(agents.id, input.run.agentId),
           eq(agents.companyId, companyId),
