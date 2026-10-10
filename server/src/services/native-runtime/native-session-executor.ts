@@ -4385,11 +4385,12 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
       // This read cannot retire a live owner or accept a newer generation.
       try {
         // PRP historically calls the immutable execution-workspace coordinate
-        // environmentLeaseId. Computer placement records the actual lease. Only
-        // this exact prior workspace coordinate may resolve through that record.
-        // Explicit physical lease identities still preserve their warm lineage.
+        // environmentLeaseId. Resolve its recorded placement lease separately
+        // from the latest process owner: workspace identity survives warm turns
+        // and idle replacement. Explicit physical leases retain their own lineage.
         let workspaceRunId: string | null = input.identity.environmentLeaseId ===
           priorExecution.binding.executionWorkspaceId ? input.identity.runId : null;
+        let leaseWorkspace = priorWorkspace;
         let physicalLeaseId = workspaceRunId ? priorWorkspace.leaseId : input.identity.environmentLeaseId;
         if (!workspaceRunId) {
           // Warm attachment advances runId while retaining the process's original
@@ -4418,9 +4419,13 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
                 !originWorkspace || originWorkspace.remoteCwd !== priorWorkspace.remoteCwd ||
                 record(originProfile.nativeComputerWorkspace).placementId !== record(descriptor).placementId ||
                 originWorkspace.computerOwner.computerId !== priorWorkspace.computerOwner.computerId ||
-                originWorkspace.computerOwner.ownerId !== priorWorkspace.computerOwner.ownerId ||
-                originWorkspace.computerOwner.generation > priorWorkspace.computerOwner.generation) return "scope_mismatch";
+                (originWorkspace.computerOwner.ownerId === priorWorkspace.computerOwner.ownerId &&
+                  originWorkspace.computerOwner.generation > priorWorkspace.computerOwner.generation)) return "scope_mismatch";
+            // This coordinate outlives physical runner replacements. Its lease
+            // proves the recorded workspace origin, not ownership of the latest
+            // process. The latest exact generation is verified independently below.
             workspaceRunId = originExecution.binding.runId;
+            leaseWorkspace = originWorkspace;
             physicalLeaseId = originWorkspace.leaseId;
           }
         }
@@ -4436,12 +4441,14 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
         const leaseMetadata = record(physicalLease?.metadata);
         const leaseOwner = record(leaseMetadata.computerOwner);
         if ((workspaceRunId && physicalLease?.heartbeatRunId !== workspaceRunId) ||
-            physicalLease?.providerLeaseId !== priorWorkspace.computerOwner.ownerId ||
+            physicalLease?.providerLeaseId !== leaseWorkspace.computerOwner.ownerId ||
             leaseMetadata.agentId !== input.execution.binding.agentId ||
-            leaseOwner.computerId !== priorWorkspace.computerOwner.computerId ||
-            leaseOwner.ownerId !== priorWorkspace.computerOwner.ownerId ||
+            leaseOwner.computerId !== leaseWorkspace.computerOwner.computerId ||
+            leaseOwner.ownerId !== leaseWorkspace.computerOwner.ownerId ||
             !Number.isSafeInteger(leaseOwner.generation) || Number(leaseOwner.generation) < 1 ||
-            Number(leaseOwner.generation) > priorWorkspace.computerOwner.generation) return "scope_mismatch";
+            (workspaceRunId
+              ? Number(leaseOwner.generation) !== leaseWorkspace.computerOwner.generation
+              : Number(leaseOwner.generation) > leaseWorkspace.computerOwner.generation)) return "scope_mismatch";
         if (await computerService(input.db).isRetired({
           companyId: input.execution.binding.companyId,
           environmentId: target.environmentId,
