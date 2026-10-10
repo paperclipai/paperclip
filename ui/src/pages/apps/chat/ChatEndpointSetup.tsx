@@ -80,9 +80,16 @@ export function setupTestProgressMessage(
   provider: ChatProvider,
   agentName: string,
   status: ChatSetupTestStatus | undefined,
+  state: { confirmed: boolean; pending: boolean; finishFailed: boolean },
 ): { text: string; busy: boolean } | null {
   if (!status) return null;
-  if (status.ready) return { text: "Reply received. Finishing setup…", busy: true };
+  const button = "“I've sent the test message”";
+  if (status.ready) {
+    if (state.pending) return { text: "Reply received. Finishing setup…", busy: true };
+    if (state.finishFailed) return { text: `Reply received, but setup did not finish. Press ${button} to try again.`, busy: false };
+    if (state.confirmed) return { text: "Reply received. Finishing setup…", busy: true };
+    return { text: `Reply received. Press ${button} to finish setup.`, busy: false };
+  }
   const direct = provider === "telegram" || provider === "imessage-photon";
   switch (status.waitingFor) {
     case "message":
@@ -95,7 +102,12 @@ export function setupTestProgressMessage(
         busy: false,
       };
     case "agent_reply":
-      return { text: `Message received. Waiting for ${agentName} to reply. Setup finishes automatically.`, busy: true };
+      return {
+        text: state.confirmed
+          ? `Message received. Waiting for ${agentName} to reply. Setup finishes when the reply arrives.`
+          : `Message received. Waiting for ${agentName} to reply.`,
+        busy: true,
+      };
     default:
       return null;
   }
@@ -680,6 +692,7 @@ function ChatSdkEndpointSetup() {
                     : "disabled"
             }
             pending={testConnection.isPending}
+            finishFailed={testConnection.isError}
             onOpenAccess={() => navigate(`/apps/chat/${endpoint.id}/access`)}
             onTest={() => testConnection.mutate()}
             onSaveExit={() => navigate("/apps")}
@@ -1758,6 +1771,7 @@ function TryStep({
   providerUrl,
   guestIsolationState,
   pending,
+  finishFailed,
   onOpenAccess,
   onTest,
   onSaveExit,
@@ -1772,6 +1786,7 @@ function TryStep({
   providerUrl?: string | null;
   guestIsolationState: "loading" | "enabled" | "disabled" | "unknown";
   pending: boolean;
+  finishFailed: boolean;
   onOpenAccess: () => void;
   onTest: () => void;
   onSaveExit: () => void;
@@ -1785,19 +1800,34 @@ function TryStep({
     refetchInterval: 1_500,
   });
   const testReady = testStatusQuery.data?.ready === true;
-  const testProgress = setupTestProgressMessage(provider, agentName, testStatusQuery.data);
-  // Finish setup one time when the agent reply arrives. If that attempt fails,
-  // the button stays available and this does not try again.
+  const testWaiting = Boolean(testStatusQuery.data?.waitingFor);
+  // The operator confirms the test with the button. If the agent has not
+  // replied yet, the page keeps that confirmation and finishes setup one time
+  // when the reply arrives. The page never finishes setup without the button:
+  // other people in the chat can also complete the test conversation.
+  const [confirmed, setConfirmed] = useState(false);
   const autoFinishStarted = useRef(false);
   useEffect(() => {
     if (!testReady) {
       autoFinishStarted.current = false;
       return;
     }
-    if (autoFinishStarted.current || pending) return;
+    if (!confirmed || autoFinishStarted.current || pending) return;
     autoFinishStarted.current = true;
     onTest();
-  }, [testReady, pending, onTest]);
+  }, [confirmed, testReady, pending, onTest]);
+  const confirmTest = () => {
+    setConfirmed(true);
+    // The server would refuse the test now. Wait for the reply instead.
+    if (testWaiting) return;
+    autoFinishStarted.current = true;
+    onTest();
+  };
+  const testProgress = setupTestProgressMessage(provider, agentName, testStatusQuery.data, {
+    confirmed,
+    pending,
+    finishFailed,
+  });
   const principalsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
@@ -1979,7 +2009,7 @@ function TryStep({
             </a>
           </Button>
         )}
-        <Button disabled={pending} onClick={onTest}>
+        <Button disabled={pending} onClick={confirmTest}>
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           I've sent the test message
         </Button>
