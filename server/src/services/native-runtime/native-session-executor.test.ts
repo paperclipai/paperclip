@@ -2635,16 +2635,21 @@ describe("remote provider checkpoint restores", () => {
     await writeFile(targetPath, "previous verified binary");
     let inFlight = 0;
     let maxInFlight = 0;
+    let releaseFirstBatch!: () => void;
+    const firstBatch = new Promise<void>((resolve) => { releaseFirstBatch = resolve; });
     const execute = vi.fn(async (request: { command: string; args: string[]; stdin?: string }) => {
       expect(request.stdin?.length ?? 0).toBeLessThanOrEqual(Math.ceil(4 * 1024 * 1024 / 3) * 4);
-      inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (request.stdin) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        if (inFlight === 3) releaseFirstBatch();
+      }
       try {
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (request.stdin) await firstBatch;
         const stdin = corrupt && request.stdin ? Buffer.from("corrupt").toString("base64") : request.stdin;
         execFileSync(request.command, request.args, { input: stdin });
         return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
-      } finally { inFlight--; }
+      } finally { if (request.stdin) inFlight--; }
     });
     try {
       const stage = stageRemoteRunnerFile({
@@ -2670,10 +2675,16 @@ describe("remote provider checkpoint restores", () => {
     await writeFile(sourcePath, randomBytes(20 * 1024 * 1024));
     let active = 0;
     let peak = 0;
+    let releaseFirstBatch!: () => void;
+    const firstBatch = new Promise<void>((resolve) => { releaseFirstBatch = resolve; });
     const execute = vi.fn(async (request: { command: string; args: string[]; stdin?: string }) => {
-      if (request.stdin) { active++; peak = Math.max(peak, active); }
+      if (request.stdin) {
+        active++;
+        peak = Math.max(peak, active);
+        if (active === 8) releaseFirstBatch();
+      }
       try {
-        if (request.stdin) await new Promise((resolve) => setTimeout(resolve, 25));
+        if (request.stdin) await firstBatch;
         execFileSync(request.command, request.args, { input: request.stdin });
         return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
       } finally { if (request.stdin) active--; }
