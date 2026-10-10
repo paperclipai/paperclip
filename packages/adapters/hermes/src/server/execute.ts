@@ -28,6 +28,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 
 import {
+  appendWithCap,
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
@@ -211,6 +212,118 @@ export function buildPrompt(
     taskContextMarkdown,
     rendered,
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Prompt echo suppression
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-quiet `hermes chat -q <prompt>` prints the query straight back to stdout
+ * as "<label> <prompt>" before the agent starts (hermes_cli/cli_single_query.py
+ * `_run_single_query_mode`). A Paperclip prompt is tens of KB of agent
+ * instructions plus the wake payload, and the UI renders unrecognized stdout as
+ * assistant text — so without this the whole instruction bundle lands in the
+ * chat and in the parsed response.
+ *
+ * Hermes prints through Rich, which re-wraps the text (sometimes mid-token) and
+ * eats `[...]` spans as console markup, so the echo is not a substring of what
+ * we sent. Dropping bracket spans and whitespace from both sides makes them
+ * identical again, which keeps this a verified match rather than a guess.
+ */
+function normalizeForEchoMatch(text: string): string {
+  return text.replace(/\[[^\]]*\]/g, "").replace(/[[\]\s]+/g, "");
+}
+
+/** Shorter prompts echo harmlessly; matching them is not worth the risk. */
+const MIN_PROMPT_ECHO_CHARS = 200;
+
+/** Longest localized "Query:" label we accept in front of the echo. */
+const MAX_PROMPT_ECHO_LABEL_CHARS = 40;
+
+export interface PromptEchoFilter {
+  /** Filter one raw stdout chunk. Returns the text to keep. */
+  (chunk: string): string;
+  /** Release any held partial line. Call once the child has exited. */
+  flush(): string;
+}
+
+/** Quiet runs carry no echo, so the filter would only add risk. */
+export const PASS_THROUGH_ECHO_FILTER: PromptEchoFilter = Object.assign(
+  (chunk: string) => chunk,
+  { flush: () => "" },
+);
+
+/**
+ * Offset of the prompt inside the first echo line, which also carries the
+ * localized label. Returns -1 when this line cannot be the start of the echo.
+ */
+function promptOffsetInFirstLine(line: string, target: string): number {
+  const limit = Math.min(MAX_PROMPT_ECHO_LABEL_CHARS, line.length);
+  for (let offset = 0; offset <= limit; offset++) {
+    const rest = line.slice(offset);
+    if (rest && target.startsWith(rest)) return offset;
+  }
+  return -1;
+}
+
+/**
+ * Build a stdout filter that drops the prompt echo and passes everything else
+ * through untouched.
+ *
+ * Hermes writes the echo as whole lines and ends it with a newline, so the
+ * filter decides one complete line at a time and holds an unterminated tail
+ * until its newline arrives. Deciding on lines rather than on chunks is what
+ * makes it correct for any split: a pipe can break stdout anywhere, including
+ * inside the echo and between the echo and the first line of the answer.
+ *
+ * The filter stops at the first line that does not continue the prompt, and
+ * every exit path re-emits the text it was holding. A failed match therefore
+ * leaks the echo; it never swallows the answer. `flush()` covers the case where
+ * the child exits while a partial line is still held.
+ */
+export function createPromptEchoFilter(prompt: string): PromptEchoFilter {
+  const target = normalizeForEchoMatch(prompt);
+  let looking = target.length >= MIN_PROMPT_ECHO_CHARS;
+  let matched = 0;
+  let held = "";
+
+  /** Give up matching and return the held text from `from` onward. */
+  const release = (from: number): string => {
+    looking = false;
+    const rest = held.slice(from);
+    held = "";
+    return rest;
+  };
+
+  const filter = (chunk: string): string => {
+    if (!looking) return chunk;
+    held += chunk;
+
+    let consumed = 0; // raw chars of `held` confirmed to be echo
+    let newline: number;
+    while ((newline = held.indexOf("\n", consumed)) !== -1) {
+      const line = normalizeForEchoMatch(held.slice(consumed, newline + 1));
+      if (line) {
+        // Nothing is confirmed until the first line matches, so a mismatch
+        // there has to give back the whole buffer, blank lines included.
+        const offset = matched === 0 ? promptOffsetInFirstLine(line, target) : 0;
+        const rest = offset < 0 ? line : line.slice(offset);
+        if (offset < 0 || !target.startsWith(rest, matched)) {
+          return release(matched === 0 ? 0 : consumed);
+        }
+        matched += rest.length;
+      }
+      consumed = newline + 1;
+      if (matched >= target.length) return release(consumed);
+    }
+
+    held = held.slice(consumed);
+    return "";
+  };
+
+  filter.flush = () => (looking ? release(0) : "");
+  return filter;
 }
 
 // ---------------------------------------------------------------------------
@@ -544,8 +657,25 @@ export async function execute(
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
-  // Wrap onLog to reclassify benign stderr lines as stdout.
+  // Wrap onLog to reclassify benign stderr lines as stdout, and to drop the
+  // query echo non-quiet mode writes before the agent starts. The echo has to
+  // go here rather than after the run: runChildProcess streams every chunk
+  // through onLog, so this is the one place that sees both the live UI
+  // transcript and (via childStdout) the text the response is parsed from.
+  // -Q suppresses the echo at the source, so only a non-quiet run needs the
+  // filter. Running it on a quiet run could only ever discard a real answer
+  // that happens to open by quoting the prompt back.
+  const stripPromptEcho = useQuiet
+    ? PASS_THROUGH_ECHO_FILTER
+    : createPromptEchoFilter(prompt);
+  let childStdout = "";
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout") {
+      const kept = stripPromptEcho(chunk);
+      if (!kept) return;
+      childStdout = appendWithCap(childStdout, kept);
+      return ctx.onLog("stdout", kept);
+    }
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
@@ -574,8 +704,16 @@ export async function execute(
     onSpawn: ctx.onSpawn,
   });
 
+  // The child can exit while the filter still holds an unterminated line.
+  // Release it so a partial echo leaks rather than hiding a partial answer.
+  const heldByFilter = stripPromptEcho.flush();
+  if (heldByFilter) {
+    childStdout = appendWithCap(childStdout, heldByFilter);
+    await ctx.onLog("stdout", heldByFilter);
+  }
+
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseHermesOutput(childStdout, result.stderr || "");
 
   await ctx.onLog(
     "stdout",
