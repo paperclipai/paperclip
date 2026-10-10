@@ -8455,12 +8455,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .set({ status: "paused" })
           .where(eq(agents.id, agentId));
         release();
-        if (next!)
-          await vi.waitFor(async () =>
-            expect((await heartbeat.getRun(next!.id))?.status).not.toBe(
-              "running",
-            ),
-          );
+        // Wait for the released executor and its cleanup, not the default
+        // one-second polling window. The next case must not inherit live work.
+        await heartbeat.drainActiveRunExecutions();
+        if (next!) expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running");
       }
     },
   );
@@ -12100,7 +12098,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const legacyReviewBefore = withLegacyReview
       ? await db.select().from(issues).where(eq(issues.id, legacyReviewId))
       : [];
-    mockAdapterExecute.mockImplementationOnce(async () => {
+    let planOnlyRunId = "";
+    mockAdapterExecute.mockImplementationOnce(async (input?: unknown) => {
+      planOnlyRunId = (input as { runId: string }).runId;
       if (withLegacyReview) {
         // These pre-dispatch cancellations used to satisfy both the no-comment
         // and churn thresholds and suppress an otherwise valid continuation.
@@ -12124,17 +12124,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.reconcileStrandedAssignedIssues();
     await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 31_000));
     await heartbeat.resumeQueuedRuns();
+    // The continuation is produced by completion; wait for that durable boundary.
+    await heartbeat.drainActiveRunExecutions();
 
-    const livenessWake = await waitForValue(async () => {
+    expect(planOnlyRunId).not.toBe("");
+    const livenessWakes = await waitForValue(async () => {
       const rows = await db
         .select()
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.agentId, agentId));
-      return (
-        rows.find((row) => row.reason === "issue_disposition_repair") ?? null
-      );
+      // Follow-up repairs can already exist. Match this plan-only result,
+      // rather than relying on the database's unordered row order.
+      const matching = rows.filter((row) => row.reason === "issue_disposition_repair"
+        && row.payload?.retryOfRunId === planOnlyRunId);
+      return matching.length > 0 ? matching : null;
     });
-    expect(livenessWake).toBeTruthy();
+    expect(livenessWakes).toHaveLength(1);
+    const livenessWake = livenessWakes![0]!;
     expect(livenessWake?.payload).toMatchObject({
       issueId,
       dispositionRepairAttempt: 1,
@@ -12143,7 +12149,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const sourceRunId = (
       livenessWake?.payload as Record<string, unknown> | null
     )?.retryOfRunId;
-    expect(sourceRunId).toBeTruthy();
+    expect(sourceRunId).toBe(planOnlyRunId);
     const sourceRun = await db
       .select()
       .from(heartbeatRuns)
