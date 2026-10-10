@@ -418,7 +418,7 @@ describe("Claude ACP login probe control output", () => {
       controlOutput: { stdout: hello, stderr: "" },
     };
 
-    expect(await runProbe()).toEqual([]);
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
   });
 
   it("parses auth failure terminal fields from controls when numeric redaction corrupts display JSON", async () => {
@@ -485,7 +485,7 @@ describe("Claude ACP login probe control output", () => {
     expect((await runProbe()).map(check => check.code)).toEqual(["claude_hello_probe_auth_required", ADAPTER_AUTH_MISSING_CHECK_CODE]);
 
     probeResult.value = { exitCode: 0, timedOut: false, stdout: hello, stderr: "", controlOutput };
-    expect(await runProbe()).toEqual([]);
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
   });
 
   it("leaves an unchanged positive control healthy", async () => {
@@ -493,15 +493,15 @@ describe("Claude ACP login probe control output", () => {
       exitCode: 0, timedOut: false, stdout: hello, stderr: "", controlOutput: { stdout: hello, stderr: "" },
     };
 
-    expect(await runProbe()).toEqual([]);
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_hello_probe_passed", level: "info" })]);
   });
 
-  it("preserves the existing ACP exit-0 contract even for empty controls", async () => {
+  it("reports unavailable when empty controls cannot prove hello even on exit 0", async () => {
     probeResult.value = {
       exitCode: 0, timedOut: false, stdout: "", stderr: "", controlOutput: { stdout: "", stderr: "" },
     };
 
-    expect(await runProbe()).toEqual([]);
+    expect(await runProbe()).toEqual([expect.objectContaining({ code: "claude_acp_login_probe_unavailable", level: "warn" })]);
   });
 
   it.each([
