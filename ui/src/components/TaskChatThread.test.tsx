@@ -3232,6 +3232,180 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
   });
 });
 
+describe("TaskChatThread pending card takeover state", () => {
+  function pendingInteraction(
+    id: string,
+    kind: "request_checkbox_confirmation" | "suggest_tasks",
+    createdAt: string,
+    payload: Record<string, unknown>,
+  ): IssueThreadInteraction {
+    return {
+      ...questionInteraction(id, id, createdAt),
+      kind,
+      payload: { version: 1, ...payload },
+    } as IssueThreadInteraction;
+  }
+
+  function takeover() {
+    const element = container.querySelector(
+      '[data-testid="task-chat-composer-takeover"]',
+    );
+    expect(element).not.toBeNull();
+    return element!;
+  }
+
+  function tickedLabels() {
+    return Array.from(
+      takeover().querySelectorAll('[role="checkbox"][aria-checked="true"]'),
+    ).map((checkbox) => checkbox.closest("label")?.textContent);
+  }
+
+  async function click(element: Element | null | undefined) {
+    expect(element).toBeTruthy();
+    await act(async () => {
+      (element as HTMLElement).click();
+    });
+  }
+
+  function button(label: string) {
+    return Array.from(takeover().querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === label,
+    );
+  }
+
+  function checkbox(label: string) {
+    return Array.from(takeover().querySelectorAll("label"))
+      .find((candidate) => candidate.textContent === label)
+      ?.querySelector('[role="checkbox"]');
+  }
+
+  it("gives the next pending checkbox card its own ticks, submission and draft", async () => {
+    const first = pendingInteraction(
+      "checkbox-first",
+      "request_checkbox_confirmation",
+      "2026-08-25T18:00:02.000Z",
+      {
+        prompt: "First card",
+        options: [
+          { id: "first-a", label: "First A" },
+          { id: "first-b", label: "First B" },
+        ],
+        defaultSelectedOptionIds: ["first-a"],
+      },
+    );
+    const second = pendingInteraction(
+      "checkbox-second",
+      "request_checkbox_confirmation",
+      "2026-08-25T18:00:01.000Z",
+      {
+        prompt: "Second card",
+        options: [
+          { id: "second-a", label: "Second A" },
+          { id: "second-b", label: "Second B" },
+        ],
+        defaultSelectedOptionIds: ["second-b"],
+      },
+    );
+    const onAcceptInteraction = vi.fn(async () => {});
+    const props = {
+      issueId: "issue-1",
+      comments: [],
+      onAdd: async () => {},
+      onAcceptInteraction,
+      onRejectInteraction: async () => {},
+    };
+
+    render(<TaskChatThread {...props} interactions={[first, second]} />);
+    expect(takeover().textContent).toContain("First card");
+    await click(checkbox("First B"));
+    expect(tickedLabels()).toEqual(["First A", "First B"]);
+    await click(button("Confirm selection"));
+    expect(onAcceptInteraction).toHaveBeenLastCalledWith(first, undefined, [
+      "first-a",
+      "first-b",
+    ]);
+
+    render(
+      <TaskChatThread
+        {...props}
+        interactions={[{ ...first, status: "accepted" }, second]}
+      />,
+    );
+    expect(takeover().textContent).toContain("Second card");
+    expect(tickedLabels()).toEqual(["Second B"]);
+    expect(
+      JSON.parse(
+        localStorage.getItem(
+          "paperclip:task-input:issue-1:interaction:checkbox-second",
+        ) ?? "null",
+      ),
+    ).toEqual({ selected: ["second-b"], reason: "" });
+    await click(button("Confirm selection"));
+    expect(onAcceptInteraction).toHaveBeenLastCalledWith(second, undefined, [
+      "second-b",
+    ]);
+  });
+
+  it("gives the next pending suggested-tasks card its own selection", async () => {
+    const first = pendingInteraction(
+      "tasks-first",
+      "suggest_tasks",
+      "2026-08-25T18:00:02.000Z",
+      {
+        tasks: [
+          { clientKey: "first-a", title: "First A" },
+          { clientKey: "first-b", title: "First B" },
+        ],
+      },
+    );
+    const second = pendingInteraction(
+      "tasks-second",
+      "suggest_tasks",
+      "2026-08-25T18:00:01.000Z",
+      {
+        tasks: [
+          { clientKey: "second-a", title: "Second A" },
+          { clientKey: "second-b", title: "Second B" },
+        ],
+      },
+    );
+    const onAcceptInteraction = vi.fn(async () => {});
+    const props = {
+      issueId: "issue-1",
+      comments: [],
+      onAdd: async () => {},
+      onAcceptInteraction,
+      onRejectInteraction: async () => {},
+    };
+
+    render(<TaskChatThread {...props} interactions={[first, second]} />);
+    await click(checkbox("First B"));
+    expect(tickedLabels()).toEqual(["First A"]);
+    await click(button("Create selected"));
+    expect(onAcceptInteraction).toHaveBeenLastCalledWith(first, ["first-a"]);
+
+    render(
+      <TaskChatThread
+        {...props}
+        interactions={[{ ...first, status: "accepted" }, second]}
+      />,
+    );
+    expect(tickedLabels()).toEqual(["Second A", "Second B"]);
+    expect(
+      JSON.parse(
+        localStorage.getItem(
+          "paperclip:task-input:issue-1:interaction:tasks-second",
+        ) ?? "null",
+      ),
+    ).toEqual({ selected: ["second-a", "second-b"], reason: "" });
+    await click(button("Create selected"));
+    expect(onAcceptInteraction).toHaveBeenLastCalledWith(second, [
+      "second-a",
+      "second-b",
+    ]);
+  });
+});
+
 describe("TaskChatThread composer alignment", () => {
   it("matches the thread width at every breakpoint", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
