@@ -1,4 +1,4 @@
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { chatActions, chatEndpoints, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { CHAT_ACTION_QUEUES, type ScheduledChatAction } from "./chat-work-notifications.js";
@@ -29,15 +29,27 @@ export function chatActionDeadline(kind: ScheduledChatAction) {
     when ${chatActions.status} = 'failed' and ${chatActions.result}->>'retryable' = 'true' then ${retry} end`;
 }
 
+function pendingChatAction(kind: ScheduledChatAction) {
+  // Filter history before the endpoint join and aggregate. Failed reactions
+  // and stops only remain live when the saved result permits another attempt.
+  const status = kind === "slack_board_message"
+    ? eq(chatActions.status, "received")
+    : kind === "slash_task_start"
+      ? inArray(chatActions.status, ["queued", "provider_confirmed", "admitting", "resolving", "validating"])
+      : or(inArray(chatActions.status, ["received", "processing"]),
+        and(eq(chatActions.status, "failed"), sql`${chatActions.result}->>'retryable' = 'true'`));
+  return and(eq(chatActions.kind, kind), status);
+}
+
 export function dueChatAction(kind: ScheduledChatAction, now = Date.now()) {
-  return and(eq(chatActions.kind, kind), lte(chatActionDeadline(kind), now));
+  return and(pendingChatAction(kind), lte(chatActionDeadline(kind), now));
 }
 
 export async function nextChatActionAt(db: Db, kind: ScheduledChatAction): Promise<number | null> {
   const [row] = await db.select({ at: sql<string | null>`min(${chatActionDeadline(kind)})` })
     .from(chatActions)
     .leftJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
-    .where(eq(chatActions.kind, kind));
+    .where(pendingChatAction(kind));
   return row?.at == null ? null : Number(row.at);
 }
 
