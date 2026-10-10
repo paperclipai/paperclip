@@ -774,22 +774,28 @@ os.execve(command[0],command,env)
     expect(readFileSync(f.calls, "utf8")).toBe(expected.repeat(2));
   });
 
-  it("checks input on explicit Connect but reuses credentials without daemon work during presence", async () => {
+  it("requests a fresh stream on every Connect but reuses credentials during presence", async () => {
     const id = randomUUID();
     const scoped = { ...record, id, providerId: `bx_${id}` };
     const execute = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false, signal: null, pid: null, startedAt: "" }));
     sshFactory.mockReturnValue({ execute });
+    let streamNumber = 0;
     const fetcher = vi.fn(async (url: string | URL | Request) => String(url).endsWith("/sshkey")
       ? json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" })
-      : json({ desktopUrl: "https://fixture.on.boat.dev/" }));
+      : json({ desktopUrl: `https://fixture.on.boat.dev/stream.html#token=fixture-${++streamNumber}` }));
     const backend = boatBackend(async () => "fixture-key", fetcher);
     const viewer = await backend.desktop(scoped);
     expect(execute).toHaveBeenCalledOnce();
     expect(await backend.desktop(scoped, { checkInput: false })).toEqual(viewer);
     expect(execute).toHaveBeenCalledOnce();
-    expect(await backend.desktop(scoped)).toEqual(viewer);
+    const reconnected = await backend.desktop(scoped);
+    expect(reconnected.viewerUrl).not.toEqual(viewer.viewerUrl);
+    expect(new URL(reconnected.viewerUrl).hash).toBe("#token=fixture-2");
+    expect(new URL(reconnected.viewerUrl).searchParams.get("overlay")).toBe("0");
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/desktop"))).toHaveLength(1);
+    expect(await backend.desktop(scoped, { checkInput: false })).toEqual(reconnected);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/desktop"))).toHaveLength(2);
     sshFactory.mockReset();
   });
   it("rejects a symlink input directory without replacing the daemon", () => {
