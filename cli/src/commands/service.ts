@@ -10,6 +10,8 @@ import { buildLocalHealthUrl } from "../utils/health-url.js";
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
 
+const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
+
 function output(value: unknown, json: boolean | undefined): void {
   if (json) console.log(JSON.stringify(value, null, 2));
   else if (typeof value === "string") console.log(value);
@@ -39,12 +41,46 @@ async function probeHealth(instanceId: string): Promise<HealthResult> {
   }
 }
 
-async function waitForHealth(instanceId: string, expectedVersion: string | null, timeoutMs = 60_000): Promise<HealthResult> {
+/**
+ * Reads the version the server wrote into its hot-restart report for one restart request.
+ *
+ * A server that starts and finds a hot-restart intent writes a report keyed by that intent's
+ * `requestedAt`, carrying its own version as `newServerVersion`. The report is a local file, so
+ * it still identifies the running payload when the instance redacts the version from anonymous
+ * callers — which is what an `authenticated` deployment mode does.
+ */
+export async function probeRestartReportVersion(instanceId: string, requestedAt: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(path.join(resolvePaperclipInstanceRoot(instanceId), HOT_RESTART_REPORT_FILENAME), "utf8");
+    const report = JSON.parse(raw) as { requestedAt?: unknown; newServerVersion?: unknown };
+    if (report.requestedAt !== requestedAt) return null;
+    return typeof report.newServerVersion === "string" ? report.newServerVersion : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Polls `/api/health` until the service is up on the expected version.
+ *
+ * `requestedAt` is the hot-restart intent this restart wrote. On an `authenticated` instance the
+ * health route omits the version for anonymous callers, so the probe alone can never confirm the
+ * payload and the wait would time out on every restart. The report the restarted server writes
+ * for that same intent carries the version the probe is missing.
+ *
+ * The report fills only a version that the health route omits. When the route names a version,
+ * that live answer wins, so a report cannot turn a reported mismatch into a success.
+ */
+export async function waitForHealth(instanceId: string, expectedVersion: string | null, requestedAt: string | null = null, timeoutMs = 60_000): Promise<HealthResult> {
   const deadline = Date.now() + timeoutMs;
   let last: HealthResult = { ok: false, serverVersion: null };
   while (Date.now() < deadline) {
     last = await probeHealth(instanceId);
     if (last.ok && (!expectedVersion || last.serverVersion === expectedVersion)) return last;
+    if (last.ok && last.serverVersion === null && expectedVersion && requestedAt) {
+      const reportedVersion = await probeRestartReportVersion(instanceId, requestedAt);
+      if (reportedVersion === expectedVersion) return { ...last, serverVersion: reportedVersion };
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`Paperclip service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
@@ -122,7 +158,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
   const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
   const requestedAt = new Date().toISOString();
   await fs.mkdir(instanceRoot, { recursive: true });
-  await fs.rm(path.join(instanceRoot, "hot-restart-report.json"), { force: true });
+  await fs.rm(path.join(instanceRoot, HOT_RESTART_REPORT_FILENAME), { force: true });
   await fs.writeFile(path.join(instanceRoot, "hot-restart-intent.json"), `${JSON.stringify({
     version: 1,
     requestedAt,
@@ -135,7 +171,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
 }
 
 async function waitForRestartReport(instanceId: string, requestedAt: string, timeoutMs = 10_000): Promise<unknown | null> {
-  const reportPath = path.join(resolvePaperclipInstanceRoot(instanceId), "hot-restart-report.json");
+  const reportPath = path.join(resolvePaperclipInstanceRoot(instanceId), HOT_RESTART_REPORT_FILENAME);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -157,7 +193,7 @@ export async function restartManagedService(input: { instanceId?: string; expect
     const before = await detection.manager.status();
     const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
     await detection.manager.restart();
-    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
+    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion), intent.requestedAt);
     return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
   });
 }
