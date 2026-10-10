@@ -36,6 +36,9 @@ const mockAccessService = vi.hoisted(() => ({
       explanation: "The fixture actor can read the task.",
     })),
   hasPermission: vi.fn(),
+  // Comment routes now run a boundary decision for non-agent actors too; these
+  // cases are about the closed-workspace guard, so the boundary always allows.
+  decide: vi.fn(async () => ({ allowed: true, reason: "allow_self" })),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
