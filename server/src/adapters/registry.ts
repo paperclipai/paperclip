@@ -96,6 +96,17 @@ import {
   models as kimiModels,
 } from "@paperclipai/adapter-kimi-local";
 import {
+  execute as crushExecute,
+  testEnvironment as crushTestEnvironment,
+  sessionCodec as crushSessionCodec,
+  listCrushSkills,
+  syncCrushSkills,
+} from "@paperclipai/adapter-crush-local/server";
+import {
+  agentConfigurationDoc as crushAgentConfigurationDoc,
+  models as crushModels,
+} from "@paperclipai/adapter-crush-local";
+import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
@@ -857,6 +868,23 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const crushLocalAdapter: ServerAdapterModule = {
+  type: "crush_local",
+  runtimeToolDelivery: "environment",
+  execute: crushExecute,
+  testEnvironment: crushTestEnvironment,
+  listSkills: listCrushSkills,
+  syncSkills: syncCrushSkills,
+  sessionCodec: crushSessionCodec,
+  sessionManagement: getAdapterSessionManagement("crush_local") ?? undefined,
+  models: crushModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: crushAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   runtimeToolDelivery: "environment",
@@ -902,6 +930,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,
+    crushLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,
