@@ -14942,6 +14942,7 @@ export function toolAccessService(
       createdByActorId: binding.actorId,
       createdBySessionId: binding.sessionId,
       subjectUserId: authorizationSubjectUserId,
+      subjectAgentId: authorizationSubjectAgentId,
       requestedScopes: authorizationScopes,
       returnTo: input.returnTo,
       issueId: intentLink?.issueId ?? input.issueId,
@@ -16230,20 +16231,37 @@ export function toolAccessService(
     const expiresAt = token.expiresIn
       ? new Date(connectedAt.getTime() + token.expiresIn * 1000).toISOString()
       : null;
-    if (stateRow.subjectUserId) {
-      let personalCredentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs =
+    if (stateRow.subjectUserId || stateRow.subjectAgentId) {
+      const subjectUserId = stateRow.subjectUserId;
+      const subjectAgentId = stateRow.subjectAgentId;
+      const authorizingUserId =
+        subjectUserId ??
+        (stateRow.createdByActorType === "user"
+          ? stateRow.createdByActorId
+          : null);
+      if (!authorizingUserId) {
+        throw forbidden(
+          "A signed-in connection manager must authorize a dedicated agent identity",
+        );
+      }
+      const personalCredential = Boolean(subjectUserId);
+      const agentCredential = Boolean(subjectAgentId);
+      let scopedCredentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs =
         [];
       await db.transaction(async (tx) => {
         // Serialize callback persistence with suspension/removal. Those paths
-        // lock this same membership row before sweeping personal credentials.
+        // lock this same membership row before sweeping scoped credentials.
         const [membership] = await tx
-          .select({ id: companyMemberships.id })
+          .select({
+            id: companyMemberships.id,
+            membershipRole: companyMemberships.membershipRole,
+          })
           .from(companyMemberships)
           .where(
             and(
               eq(companyMemberships.companyId, connection.companyId),
               eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.principalId, stateRow.subjectUserId!),
+              eq(companyMemberships.principalId, authorizingUserId),
               eq(companyMemberships.status, "active"),
               ne(companyMemberships.membershipRole, "viewer"),
             ),
@@ -16255,23 +16273,59 @@ export function toolAccessService(
             "Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.",
           );
         }
+        if (agentCredential) {
+          const roleCanManage =
+            membership.membershipRole === "owner" ||
+            membership.membershipRole === "admin";
+          const [explicitManagerGrant] = roleCanManage
+            ? []
+            : await tx
+                .select({ id: principalPermissionGrants.id })
+                .from(principalPermissionGrants)
+                .where(
+                  and(
+                    eq(
+                      principalPermissionGrants.companyId,
+                      connection.companyId,
+                    ),
+                    eq(principalPermissionGrants.principalType, "user"),
+                    eq(
+                      principalPermissionGrants.principalId,
+                      authorizingUserId,
+                    ),
+                    eq(
+                      principalPermissionGrants.permissionKey,
+                      "tools:manage_connections",
+                    ),
+                  ),
+                )
+                .limit(1)
+                .for("update");
+          if (!roleCanManage && !explicitManagerGrant) {
+            throw forbidden(
+              "Only a connection manager can authorize a dedicated agent identity.",
+            );
+          }
+        }
         const txSecrets = secretService(tx);
         const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 
-        const [existingUserGrant] = await tx
+        const [existingScopedGrant] = await tx
           .select()
           .from(connectionGrants)
           .where(
             and(
               eq(connectionGrants.companyId, connection.companyId),
               eq(connectionGrants.connectionId, connection.id),
-              eq(connectionGrants.kind, "user"),
-              eq(connectionGrants.subjectUserId, stateRow.subjectUserId!),
+              eq(connectionGrants.kind, personalCredential ? "user" : "agent"),
+              personalCredential
+                ? eq(connectionGrants.subjectUserId, subjectUserId!)
+                : eq(connectionGrants.subjectAgentId, subjectAgentId!),
             ),
           )
           .limit(1);
         const subjectCredentialSecretRefs =
-          existingUserGrant?.credentialSecretRefs ?? [];
+          existingScopedGrant?.credentialSecretRefs ?? [];
         const accessRef = await createOrRotateOAuthSecret(
           {
             companyId: connection.companyId,
@@ -16281,7 +16335,7 @@ export function toolAccessService(
             value: token.accessToken,
             actor: input.actor,
             existingRefs: subjectCredentialSecretRefs,
-            ownerUserId: stateRow.subjectUserId!,
+            ownerUserId: personalCredential ? subjectUserId! : undefined,
           },
           txSecretContext,
         );
@@ -16304,7 +16358,7 @@ export function toolAccessService(
                 value: token.refreshToken,
                 actor: input.actor,
                 existingRefs: subjectCredentialSecretRefs,
-                ownerUserId: stateRow.subjectUserId!,
+                ownerUserId: personalCredential ? subjectUserId! : undefined,
               },
               txSecretContext,
             ),
@@ -16323,9 +16377,9 @@ export function toolAccessService(
         });
         const grantValues = {
           providerTenant: {
-            ...(existingUserGrant?.providerTenant ?? {}),
+            ...(existingScopedGrant?.providerTenant ?? {}),
             oauth: {
-              ...asRecord(asRecord(existingUserGrant?.providerTenant).oauth),
+              ...asRecord(asRecord(existingScopedGrant?.providerTenant).oauth),
               strategy: "direct_oauth",
               accessTokenExpiresAt: expiresAt ?? undefined,
               scopes: grantedScopes.scopes,
@@ -16346,23 +16400,24 @@ export function toolAccessService(
           revokedByUserId: null,
           updatedAt: new Date(),
         };
-        if (existingUserGrant) {
+        if (existingScopedGrant) {
           await tx
             .update(connectionGrants)
             .set(grantValues)
-            .where(eq(connectionGrants.id, existingUserGrant.id));
+            .where(eq(connectionGrants.id, existingScopedGrant.id));
         } else {
           await tx.insert(connectionGrants).values({
             companyId: connection.companyId,
             connectionId: connection.id,
-            kind: "user",
-            subjectUserId: stateRow.subjectUserId!,
+            kind: personalCredential ? "user" : "agent",
+            subjectUserId: subjectUserId ?? null,
+            subjectAgentId: subjectAgentId ?? null,
             ...grantValues,
             isDefault: false,
-            createdByUserId: stateRow.subjectUserId!,
+            createdByUserId: authorizingUserId,
           });
         }
-        personalCredentialSecretRefs = nextCredentialSecretRefs;
+        scopedCredentialSecretRefs = nextCredentialSecretRefs;
         const nextConfig = {
           ...connection.config,
           oauth: {
@@ -16405,17 +16460,19 @@ export function toolAccessService(
             credentialPolicy: connection.credentialPolicy,
             config: nextConfig,
             transportConfig: nextConfig,
-            // A personal-only connection keeps tokens exclusively on its user
-            // grant. Adding a personal identity to an existing shared/fallback
+            // A subject-scoped connection keeps tokens exclusively on its user
+            // or agent grant. Adding a personal identity to an existing shared
             // connection must not erase that connection's organization token.
             credentialRefs:
-              connection.credentialPolicy === "per_user"
+              connection.credentialPolicy === "per_user" ||
+              connection.credentialPolicy === "per_agent"
                 ? connection.credentialRefs.filter(
                     (ref) => ref.name !== "oauth.access_token",
                   )
                 : connection.credentialRefs,
             credentialSecretRefs:
-              connection.credentialPolicy === "per_user"
+              connection.credentialPolicy === "per_user" ||
+              connection.credentialPolicy === "per_agent"
                 ? connection.credentialSecretRefs.filter(
                     (ref) =>
                       ref.configPath !== "oauth.access_token" &&
@@ -16453,7 +16510,7 @@ export function toolAccessService(
             .set({
               status: "accepted",
               result: { version: 1, outcome: "accepted" },
-              resolvedByUserId: stateRow.subjectUserId!,
+              resolvedByUserId: authorizingUserId,
               resolvedAt: new Date(),
               updatedAt: new Date(),
             })
@@ -16466,8 +16523,9 @@ export function toolAccessService(
         }
         await syncCredentialBindings(
           connection,
-          connection.credentialPolicy === "per_user"
-            ? personalCredentialSecretRefs
+          connection.credentialPolicy === "per_user" ||
+            connection.credentialPolicy === "per_agent"
+            ? scopedCredentialSecretRefs
             : [],
           tx,
         );
@@ -16493,12 +16551,18 @@ export function toolAccessService(
         .where(eq(toolApplications.id, connection.applicationId));
       if (!application)
         throw new Error("OAuth connection application was not found");
-      const suggestedDefaults = galleryEntry
+      const recommendedDefaults = galleryEntry
         ? recommendedDefaultsForApp(
             galleryEntry,
             connectionMethodForConnection(galleryEntry, connection).key,
           )
         : { access: "all_agents" as const, askFirstRiskLevels: [] };
+      const suggestedDefaults = subjectAgentId
+        ? {
+            ...recommendedDefaults,
+            access: { agentIds: [subjectAgentId] } as const,
+          }
+        : recommendedDefaults;
       const finished = shouldFinalizeDefaults
         ? await finishOAuthCatalogWithRecommendedDefaults({
             interactionId: stateRow.interactionId,

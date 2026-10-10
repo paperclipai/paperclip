@@ -16095,6 +16095,268 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("keeps a pasted MCP OAuth identity and access scoped to its dedicated agent", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_EXAMPLE_TEST_CLIENT_ID",
+      "agent-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_EXAMPLE_TEST_CLIENT_SECRET",
+      "agent-client-secret",
+    );
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
+    const company = await createCompany(db);
+    const userId = `agent-oauth-manager-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:manage_connections"]);
+    const agent = await createAgent(db, company.id);
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner", userId),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://agent.example.test/mcp") {
+        const authorization = new Headers(init?.headers).get("authorization");
+        if (authorization) {
+          expect(authorization).toBe("Bearer dedicated-agent-access-token");
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: {
+              tools: [
+                { name: "agent_read", annotations: { readOnlyHint: true } },
+              ],
+            },
+          });
+        }
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "www-authenticate"
+                ? 'Bearer resource_metadata="https://agent.example.test/.well-known/oauth-protected-resource"'
+                : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (
+        href ===
+        "https://agent.example.test/.well-known/oauth-protected-resource"
+      ) {
+        return mcpHttpResponse({
+          authorization_endpoint: "https://agent.example.test/oauth/authorize",
+          token_endpoint: "https://agent.example.test/oauth/token",
+          scopes_supported: ["tools.read"],
+        });
+      }
+      if (href === "https://agent.example.test/oauth/token") {
+        return mcpHttpResponse({
+          access_token: "dedicated-agent-access-token",
+          refresh_token: "dedicated-agent-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "tools.read",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://agent.example.test/mcp",
+        name: "Dedicated agent OAuth MCP",
+        grantKind: "agent",
+        subjectAgentId: agent.id,
+      })
+      .expect(201);
+    const state = new URL(connectRes.body.auth.startUrl).searchParams.get(
+      "state",
+    )!;
+
+    await expect(
+      db
+        .select()
+        .from(toolOauthStates)
+        .where(eq(toolOauthStates.state, state)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        subjectAgentId: agent.id,
+        subjectUserId: null,
+      }),
+    ]);
+
+    const callbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "dedicated-agent-code" })
+      .expect(200);
+
+    expect(callbackRes.body.connection).toMatchObject({
+      credentialPolicy: "per_agent",
+      status: "active",
+      enabled: true,
+    });
+    expect(callbackRes.body.suggestedDefaults.access).toEqual({
+      agentIds: [agent.id],
+    });
+    expect(callbackRes.body.connection.credentialSecretRefs).toEqual([]);
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connectRes.body.connectionId));
+    expect(grants).toEqual([
+      expect.objectContaining({
+        kind: "agent",
+        subjectAgentId: agent.id,
+        subjectUserId: null,
+        status: "active",
+        isDefault: false,
+        credentialSecretRefs: expect.arrayContaining([
+          expect.objectContaining({ configPath: "oauth.access_token" }),
+          expect.objectContaining({ configPath: "oauth.refresh_token" }),
+        ]),
+      }),
+    ]);
+    const agentSecretIds = grants[0]!.credentialSecretRefs.map(
+      (ref) => ref.secretId,
+    );
+    const agentSecrets = await db
+      .select({ ownerUserId: companySecrets.ownerUserId })
+      .from(companySecrets)
+      .where(inArray(companySecrets.id, agentSecretIds));
+    expect(agentSecrets).toHaveLength(2);
+    expect(agentSecrets.every((secret) => secret.ownerUserId === null)).toBe(
+      true,
+    );
+    await expect(
+      db
+        .select({
+          targetType: toolConnectionInstalls.targetType,
+          targetId: toolConnectionInstalls.targetId,
+        })
+        .from(toolConnectionInstalls)
+        .where(
+          eq(toolConnectionInstalls.connectionId, connectRes.body.connectionId),
+        ),
+    ).resolves.toEqual([{ targetType: "agent", targetId: agent.id }]);
+  });
+
+  it("rejects a dedicated-agent OAuth callback after its manager loses authority", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_REVOKED_EXAMPLE_TEST_CLIENT_ID",
+      "agent-revoked-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_AGENT_REVOKED_EXAMPLE_TEST_CLIENT_SECRET",
+      "agent-revoked-client-secret",
+    );
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
+    const company = await createCompany(db);
+    const userId = `revoked-agent-oauth-manager-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:manage_connections"]);
+    const agent = await createAgent(db, company.id);
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://agent-revoked.example.test/mcp") {
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "www-authenticate"
+                ? 'Bearer resource_metadata="https://agent-revoked.example.test/.well-known/oauth-protected-resource"'
+                : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (
+        href ===
+        "https://agent-revoked.example.test/.well-known/oauth-protected-resource"
+      ) {
+        return mcpHttpResponse({
+          authorization_endpoint:
+            "https://agent-revoked.example.test/oauth/authorize",
+          token_endpoint: "https://agent-revoked.example.test/oauth/token",
+          scopes_supported: ["tools.read"],
+        });
+      }
+      if (href === "https://agent-revoked.example.test/oauth/token") {
+        return mcpHttpResponse({
+          access_token: "revoked-manager-access-token",
+          refresh_token: "revoked-manager-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "tools.read",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://agent-revoked.example.test/mcp",
+        name: "Revoked manager agent OAuth MCP",
+        grantKind: "agent",
+        subjectAgentId: agent.id,
+      })
+      .expect(201);
+    const state = new URL(connectRes.body.auth.startUrl).searchParams.get(
+      "state",
+    )!;
+    const secretsBeforeCallback = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, company.id));
+
+    await db
+      .delete(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, company.id),
+          eq(principalPermissionGrants.principalType, "user"),
+          eq(principalPermissionGrants.principalId, userId),
+          eq(
+            principalPermissionGrants.permissionKey,
+            "tools:manage_connections",
+          ),
+        ),
+      );
+
+    await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "revoked-manager-code" })
+      .expect(403);
+
+    await expect(
+      db
+        .select()
+        .from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connectRes.body.connectionId)),
+    ).resolves.toEqual([]);
+    await expect(
+      db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(eq(companySecrets.companyId, company.id)),
+    ).resolves.toEqual(secretsBeforeCallback);
+    await expect(
+      db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connectRes.body.connectionId)),
+    ).resolves.toEqual([]);
+  });
+
   it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
