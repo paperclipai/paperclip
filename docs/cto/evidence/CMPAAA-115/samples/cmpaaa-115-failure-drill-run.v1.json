@@ -1,0 +1,56 @@
+{
+  "drill_version": "v1",
+  "drill_id": "cmpaaa-115-20260430-ext2l1-failure-drill-01",
+  "source_issue": "CMPAAA-115",
+  "baseline_issue": "CMPAAA-49",
+  "source_binding": {
+    "source_table": "candidate_traceback_audit_events",
+    "schedule_id": "ext2-l1-smoke-2026-04-30",
+    "runbook_ref": "docs/cto/evidence/CMPAAA-49/cmpaaa-49-production-daily-inspection-runbook-v1.md",
+    "check_window_start_utc": "2026-04-30T04:00:00Z",
+    "check_window_end_utc": "2026-04-30T04:30:00Z"
+  },
+  "execution_context": {
+    "mode": "controlled_failure_replay",
+    "executor": "cto",
+    "reviewer": "risk-oncall",
+    "review_completed_at_utc": "2026-04-30T04:31:00Z"
+  },
+  "records": [
+    {
+      "sample_id": "TB-DRILL-20260430-0001",
+      "candidate_id": "cand-20260507-032",
+      "run_id": "exp-run-20260507-032",
+      "lineage_id": "lineage-exp-run-20260507-032",
+      "traceback_request_id": "trace-20260507-032",
+      "checked_at": "2026-04-30T04:15:00Z",
+      "traceback_status": "failed",
+      "missing_lineage_fields": [
+        "feature_snapshot_id"
+      ],
+      "root_cause_category": "lineage-field-missing",
+      "source_gate_decision_id": "dec-20260507-lg-0032",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-032",
+        "run://exp-run-20260507-032",
+        "traceback://trace-20260507-032"
+      ],
+      "alert_id": "rksalrt-cmpaaa115-20260430-0001",
+      "alert_priority": "P1",
+      "alert_trigger_code": "LINEAGE_MISSING_RATE_BREACH",
+      "escalation_receiver": "data-oncall",
+      "escalation_target_minutes": 30,
+      "escalation_sent_at": "2026-04-30T04:16:00Z",
+      "escalation_acknowledged_at": "2026-04-30T04:21:00Z",
+      "mitigation_started_at": "2026-04-30T04:24:00Z",
+      "resolved_at": "2026-04-30T04:34:00Z",
+      "handling_latency_minutes": 18
+    }
+  ],
+  "linkback_targets": [
+    {
+      "issue": "CMPAAA-112",
+      "purpose": "signoff_resumption_evidence_backlink"
+    }
+  ]
+}

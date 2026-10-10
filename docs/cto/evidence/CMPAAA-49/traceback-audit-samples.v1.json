@@ -1,0 +1,552 @@
+{
+  "sample_batch_id": "traceback-weekly-2026w19",
+  "window_start": "2026-05-07T01:00:00Z",
+  "window_end": "2026-05-07T08:45:00Z",
+  "owner": "cto",
+  "samples": [
+    {
+      "sample_id": "TB-001",
+      "candidate_id": "cand-20260507-001",
+      "run_id": "exp-run-20260507-001",
+      "lineage_id": "lineage-exp-run-20260507-001",
+      "traceback_request_id": "trace-20260507-001",
+      "checked_at": "2026-05-07T01:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0001",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-001",
+        "run://exp-run-20260507-001",
+        "traceback://trace-20260507-001"
+      ]
+    },
+    {
+      "sample_id": "TB-002",
+      "candidate_id": "cand-20260507-002",
+      "run_id": "exp-run-20260507-002",
+      "lineage_id": "lineage-exp-run-20260507-002",
+      "traceback_request_id": "trace-20260507-002",
+      "checked_at": "2026-05-07T01:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0002",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-002",
+        "run://exp-run-20260507-002",
+        "traceback://trace-20260507-002"
+      ]
+    },
+    {
+      "sample_id": "TB-003",
+      "candidate_id": "cand-20260507-003",
+      "run_id": "exp-run-20260507-003",
+      "lineage_id": "lineage-exp-run-20260507-003",
+      "traceback_request_id": "trace-20260507-003",
+      "checked_at": "2026-05-07T01:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0003",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-003",
+        "run://exp-run-20260507-003",
+        "traceback://trace-20260507-003"
+      ]
+    },
+    {
+      "sample_id": "TB-004",
+      "candidate_id": "cand-20260507-004",
+      "run_id": "exp-run-20260507-004",
+      "lineage_id": "lineage-exp-run-20260507-004",
+      "traceback_request_id": "trace-20260507-004",
+      "checked_at": "2026-05-07T01:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0004",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-004",
+        "run://exp-run-20260507-004",
+        "traceback://trace-20260507-004"
+      ]
+    },
+    {
+      "sample_id": "TB-005",
+      "candidate_id": "cand-20260507-005",
+      "run_id": "exp-run-20260507-005",
+      "lineage_id": "lineage-exp-run-20260507-005",
+      "traceback_request_id": "trace-20260507-005",
+      "checked_at": "2026-05-07T02:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0005",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-005",
+        "run://exp-run-20260507-005",
+        "traceback://trace-20260507-005"
+      ]
+    },
+    {
+      "sample_id": "TB-006",
+      "candidate_id": "cand-20260507-006",
+      "run_id": "exp-run-20260507-006",
+      "lineage_id": "lineage-exp-run-20260507-006",
+      "traceback_request_id": "trace-20260507-006",
+      "checked_at": "2026-05-07T02:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0006",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-006",
+        "run://exp-run-20260507-006",
+        "traceback://trace-20260507-006"
+      ]
+    },
+    {
+      "sample_id": "TB-007",
+      "candidate_id": "cand-20260507-007",
+      "run_id": "exp-run-20260507-007",
+      "lineage_id": "lineage-exp-run-20260507-007",
+      "traceback_request_id": "trace-20260507-007",
+      "checked_at": "2026-05-07T02:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0007",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-007",
+        "run://exp-run-20260507-007",
+        "traceback://trace-20260507-007"
+      ]
+    },
+    {
+      "sample_id": "TB-008",
+      "candidate_id": "cand-20260507-008",
+      "run_id": "exp-run-20260507-008",
+      "lineage_id": "lineage-exp-run-20260507-008",
+      "traceback_request_id": "trace-20260507-008",
+      "checked_at": "2026-05-07T02:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0008",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-008",
+        "run://exp-run-20260507-008",
+        "traceback://trace-20260507-008"
+      ]
+    },
+    {
+      "sample_id": "TB-009",
+      "candidate_id": "cand-20260507-009",
+      "run_id": "exp-run-20260507-009",
+      "lineage_id": "lineage-exp-run-20260507-009",
+      "traceback_request_id": "trace-20260507-009",
+      "checked_at": "2026-05-07T03:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0009",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-009",
+        "run://exp-run-20260507-009",
+        "traceback://trace-20260507-009"
+      ]
+    },
+    {
+      "sample_id": "TB-010",
+      "candidate_id": "cand-20260507-010",
+      "run_id": "exp-run-20260507-010",
+      "lineage_id": "lineage-exp-run-20260507-010",
+      "traceback_request_id": "trace-20260507-010",
+      "checked_at": "2026-05-07T03:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0010",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-010",
+        "run://exp-run-20260507-010",
+        "traceback://trace-20260507-010"
+      ]
+    },
+    {
+      "sample_id": "TB-011",
+      "candidate_id": "cand-20260507-011",
+      "run_id": "exp-run-20260507-011",
+      "lineage_id": "lineage-exp-run-20260507-011",
+      "traceback_request_id": "trace-20260507-011",
+      "checked_at": "2026-05-07T03:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0011",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-011",
+        "run://exp-run-20260507-011",
+        "traceback://trace-20260507-011"
+      ]
+    },
+    {
+      "sample_id": "TB-012",
+      "candidate_id": "cand-20260507-012",
+      "run_id": "exp-run-20260507-012",
+      "lineage_id": "lineage-exp-run-20260507-012",
+      "traceback_request_id": "trace-20260507-012",
+      "checked_at": "2026-05-07T03:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0012",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-012",
+        "run://exp-run-20260507-012",
+        "traceback://trace-20260507-012"
+      ]
+    },
+    {
+      "sample_id": "TB-013",
+      "candidate_id": "cand-20260507-013",
+      "run_id": "exp-run-20260507-013",
+      "lineage_id": "lineage-exp-run-20260507-013",
+      "traceback_request_id": "trace-20260507-013",
+      "checked_at": "2026-05-07T04:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0013",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-013",
+        "run://exp-run-20260507-013",
+        "traceback://trace-20260507-013"
+      ]
+    },
+    {
+      "sample_id": "TB-014",
+      "candidate_id": "cand-20260507-014",
+      "run_id": "exp-run-20260507-014",
+      "lineage_id": "lineage-exp-run-20260507-014",
+      "traceback_request_id": "trace-20260507-014",
+      "checked_at": "2026-05-07T04:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0014",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-014",
+        "run://exp-run-20260507-014",
+        "traceback://trace-20260507-014"
+      ]
+    },
+    {
+      "sample_id": "TB-015",
+      "candidate_id": "cand-20260507-015",
+      "run_id": "exp-run-20260507-015",
+      "lineage_id": "lineage-exp-run-20260507-015",
+      "traceback_request_id": "trace-20260507-015",
+      "checked_at": "2026-05-07T04:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0015",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-015",
+        "run://exp-run-20260507-015",
+        "traceback://trace-20260507-015"
+      ]
+    },
+    {
+      "sample_id": "TB-016",
+      "candidate_id": "cand-20260507-016",
+      "run_id": "exp-run-20260507-016",
+      "lineage_id": "lineage-exp-run-20260507-016",
+      "traceback_request_id": "trace-20260507-016",
+      "checked_at": "2026-05-07T04:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0016",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-016",
+        "run://exp-run-20260507-016",
+        "traceback://trace-20260507-016"
+      ]
+    },
+    {
+      "sample_id": "TB-017",
+      "candidate_id": "cand-20260507-017",
+      "run_id": "exp-run-20260507-017",
+      "lineage_id": "lineage-exp-run-20260507-017",
+      "traceback_request_id": "trace-20260507-017",
+      "checked_at": "2026-05-07T05:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0017",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-017",
+        "run://exp-run-20260507-017",
+        "traceback://trace-20260507-017"
+      ]
+    },
+    {
+      "sample_id": "TB-018",
+      "candidate_id": "cand-20260507-018",
+      "run_id": "exp-run-20260507-018",
+      "lineage_id": "lineage-exp-run-20260507-018",
+      "traceback_request_id": "trace-20260507-018",
+      "checked_at": "2026-05-07T05:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0018",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-018",
+        "run://exp-run-20260507-018",
+        "traceback://trace-20260507-018"
+      ]
+    },
+    {
+      "sample_id": "TB-019",
+      "candidate_id": "cand-20260507-019",
+      "run_id": "exp-run-20260507-019",
+      "lineage_id": "lineage-exp-run-20260507-019",
+      "traceback_request_id": "trace-20260507-019",
+      "checked_at": "2026-05-07T05:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0019",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-019",
+        "run://exp-run-20260507-019",
+        "traceback://trace-20260507-019"
+      ]
+    },
+    {
+      "sample_id": "TB-020",
+      "candidate_id": "cand-20260507-020",
+      "run_id": "exp-run-20260507-020",
+      "lineage_id": "lineage-exp-run-20260507-020",
+      "traceback_request_id": "trace-20260507-020",
+      "checked_at": "2026-05-07T05:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0020",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-020",
+        "run://exp-run-20260507-020",
+        "traceback://trace-20260507-020"
+      ]
+    },
+    {
+      "sample_id": "TB-021",
+      "candidate_id": "cand-20260507-021",
+      "run_id": "exp-run-20260507-021",
+      "lineage_id": "lineage-exp-run-20260507-021",
+      "traceback_request_id": "trace-20260507-021",
+      "checked_at": "2026-05-07T06:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0021",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-021",
+        "run://exp-run-20260507-021",
+        "traceback://trace-20260507-021"
+      ]
+    },
+    {
+      "sample_id": "TB-022",
+      "candidate_id": "cand-20260507-022",
+      "run_id": "exp-run-20260507-022",
+      "lineage_id": "lineage-exp-run-20260507-022",
+      "traceback_request_id": "trace-20260507-022",
+      "checked_at": "2026-05-07T06:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0022",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-022",
+        "run://exp-run-20260507-022",
+        "traceback://trace-20260507-022"
+      ]
+    },
+    {
+      "sample_id": "TB-023",
+      "candidate_id": "cand-20260507-023",
+      "run_id": "exp-run-20260507-023",
+      "lineage_id": "lineage-exp-run-20260507-023",
+      "traceback_request_id": "trace-20260507-023",
+      "checked_at": "2026-05-07T06:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0023",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-023",
+        "run://exp-run-20260507-023",
+        "traceback://trace-20260507-023"
+      ]
+    },
+    {
+      "sample_id": "TB-024",
+      "candidate_id": "cand-20260507-024",
+      "run_id": "exp-run-20260507-024",
+      "lineage_id": "lineage-exp-run-20260507-024",
+      "traceback_request_id": "trace-20260507-024",
+      "checked_at": "2026-05-07T06:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0024",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-024",
+        "run://exp-run-20260507-024",
+        "traceback://trace-20260507-024"
+      ]
+    },
+    {
+      "sample_id": "TB-025",
+      "candidate_id": "cand-20260507-025",
+      "run_id": "exp-run-20260507-025",
+      "lineage_id": "lineage-exp-run-20260507-025",
+      "traceback_request_id": "trace-20260507-025",
+      "checked_at": "2026-05-07T07:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0025",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-025",
+        "run://exp-run-20260507-025",
+        "traceback://trace-20260507-025"
+      ]
+    },
+    {
+      "sample_id": "TB-026",
+      "candidate_id": "cand-20260507-026",
+      "run_id": "exp-run-20260507-026",
+      "lineage_id": "lineage-exp-run-20260507-026",
+      "traceback_request_id": "trace-20260507-026",
+      "checked_at": "2026-05-07T07:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0026",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-026",
+        "run://exp-run-20260507-026",
+        "traceback://trace-20260507-026"
+      ]
+    },
+    {
+      "sample_id": "TB-027",
+      "candidate_id": "cand-20260507-027",
+      "run_id": "exp-run-20260507-027",
+      "lineage_id": "lineage-exp-run-20260507-027",
+      "traceback_request_id": "trace-20260507-027",
+      "checked_at": "2026-05-07T07:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0027",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-027",
+        "run://exp-run-20260507-027",
+        "traceback://trace-20260507-027"
+      ]
+    },
+    {
+      "sample_id": "TB-028",
+      "candidate_id": "cand-20260507-028",
+      "run_id": "exp-run-20260507-028",
+      "lineage_id": "lineage-exp-run-20260507-028",
+      "traceback_request_id": "trace-20260507-028",
+      "checked_at": "2026-05-07T07:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0028",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-028",
+        "run://exp-run-20260507-028",
+        "traceback://trace-20260507-028"
+      ]
+    },
+    {
+      "sample_id": "TB-029",
+      "candidate_id": "cand-20260507-029",
+      "run_id": "exp-run-20260507-029",
+      "lineage_id": "lineage-exp-run-20260507-029",
+      "traceback_request_id": "trace-20260507-029",
+      "checked_at": "2026-05-07T08:00:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0029",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-029",
+        "run://exp-run-20260507-029",
+        "traceback://trace-20260507-029"
+      ]
+    },
+    {
+      "sample_id": "TB-030",
+      "candidate_id": "cand-20260507-030",
+      "run_id": "exp-run-20260507-030",
+      "lineage_id": "lineage-exp-run-20260507-030",
+      "traceback_request_id": "trace-20260507-030",
+      "checked_at": "2026-05-07T08:15:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0030",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-030",
+        "run://exp-run-20260507-030",
+        "traceback://trace-20260507-030"
+      ]
+    },
+    {
+      "sample_id": "TB-031",
+      "candidate_id": "cand-20260507-031",
+      "run_id": "exp-run-20260507-031",
+      "lineage_id": "lineage-exp-run-20260507-031",
+      "traceback_request_id": "trace-20260507-031",
+      "checked_at": "2026-05-07T08:30:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0031",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-031",
+        "run://exp-run-20260507-031",
+        "traceback://trace-20260507-031"
+      ]
+    },
+    {
+      "sample_id": "TB-032",
+      "candidate_id": "cand-20260507-032",
+      "run_id": "exp-run-20260507-032",
+      "lineage_id": "lineage-exp-run-20260507-032",
+      "traceback_request_id": "trace-20260507-032",
+      "checked_at": "2026-05-07T08:45:00Z",
+      "traceback_status": "success",
+      "missing_lineage_fields": [],
+      "root_cause_category": null,
+      "source_gate_decision_id": "dec-20260507-lg-0032",
+      "audit_evidence_refs": [
+        "lineage://lineage-exp-run-20260507-032",
+        "run://exp-run-20260507-032",
+        "traceback://trace-20260507-032"
+      ]
+    }
+  ]
+}
