@@ -3394,6 +3394,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it.each(["managed_isolated", "shared"] as const)("prepares a fresh native chat configured source safely: %s", async (mode) => {
+    await withTempPaperclipHome(async () => {
+      const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      const instanceRoot = resolvePaperclipInstanceRoot();
+      await fs.mkdir(instanceRoot, { recursive: true });
+      const cwd = path.join(instanceRoot, "source-repository");
+      await fs.mkdir(cwd, { recursive: true });
+      execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+      await fs.writeFile(path.join(cwd, "report.txt"), "source bytes");
+      execFileSync("git", ["add", "report.txt"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Source"], { cwd, stdio: "ignore" });
+      const [project] = await db.insert(projects).values({ companyId, name: "Chat source" }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId, projectId: project.id, name: "Source", cwd, isPrimary: true }).returning();
+      await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-luna" } }).where(eq(agents.id, agentId));
+      await db.update(issues).set({ originKind: "chat_channel", projectWorkspaceId: source.id,
+        workspaceSelection: { version: 1, source: "channel", selection: { kind: "configured_source", projectWorkspaceId: source.id, mode } },
+        executionWorkspaceSettings: { mode: mode === "managed_isolated" ? "isolated_workspace" : "shared_workspace" },
+      }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", runtimeModeResolvedAt: new Date(), nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId));
+      const nativeSessionBackendFactory = vi.fn((_execution: { workspace: { cwd: string } }) => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      const heartbeat = heartbeatService(db, { nativeSessionBackendFactory });
+      await heartbeat.resumeQueuedRuns();
+      await waitForValue(async () => nativeSessionBackendFactory.mock.calls.length > 0 || Boolean((await heartbeat.getRun(runId))?.errorCode), 15_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      if (mode === "shared") {
+        expect(nativeSessionBackendFactory).not.toHaveBeenCalled();
+        expect((await heartbeat.getRun(runId))?.error).toContain("External chat requires a task-owned isolated workspace");
+      } else {
+        expect(nativeSessionBackendFactory).toHaveBeenCalledTimes(1);
+        const input = nativeSessionBackendFactory.mock.calls[0]![0];
+        expect(await fs.realpath(input.workspace.cwd)).not.toBe(await fs.realpath(cwd));
+        expect(await fs.readFile(path.join(input.workspace.cwd, "report.txt"), "utf8")).toBe("source bytes");
+        const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+        const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+        expect(workspace).toMatchObject({ sourceIssueId: issueId, projectId: project.id, mode: "isolated_workspace", strategyType: "git_worktree", cwd: input.workspace.cwd, providerRef: input.workspace.cwd });
+      }
+      expect(await fs.readFile(path.join(cwd, "report.txt"), "utf8")).toBe("source bytes");
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    });
+  });
+
   it("carries the ordinary initial description provenance through native heartbeat assembly", async () => {
     await withTempPaperclipHome(async () => {
       const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();

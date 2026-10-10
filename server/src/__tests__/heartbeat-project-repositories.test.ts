@@ -223,6 +223,62 @@ suite("task project repository provisioning", () => {
     }
   }, 40_000);
 
+  it.each(["task_directory", "configured_source"] as const)("keeps organizational environment separate from %s files", async (kind) => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceProjectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "source");
+    await mkdir(cwd, { recursive: true });
+    await db.insert(companies).values({ id: companyId, name: "Environment ownership", issuePrefix: `V${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Task project", env: { PROJECT_VALUE: "task", TASK_ONLY: "present" } },
+      { id: sourceProjectId, companyId, name: "File source", env: { PROJECT_VALUE: "source", SOURCE_ONLY: "must-not-leak" } },
+    ]);
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId: sourceProjectId, name: "Source", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Use task environment", status: "todo", assigneeAgentId: agentId, executionWorkspaceSettings: { mode: "shared_workspace" },
+      projectWorkspaceId: kind === "configured_source" ? sourceId : null,
+      workspaceSelection: { version: 1, source: "explicit", selection: kind === "configured_source"
+        ? { kind, projectWorkspaceId: sourceId, mode: "shared" } : { kind } },
+    });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const call = execute.mock.calls.find(([input]) => input.runId === run!.id)![0];
+    expect(call.config.env).toMatchObject({ PROJECT_VALUE: "task", TASK_ONLY: "present" });
+    expect(call.config.env.SOURCE_ONLY).toBeUndefined();
+    expect(call.context.projectId).toBe(projectId);
+    if (kind === "configured_source") expect(await realpath(call.context.paperclipWorkspace.cwd)).toBe(await realpath(cwd));
+  }, 25_000);
+
+  it.each([
+    { policy: "organization", selection: "task_directory" },
+    { policy: "organization", selection: "configured_source" },
+    { policy: "source", selection: "configured_source" },
+  ] as const)("retains $policy low-trust restrictions with $selection", async ({ policy, selection }) => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceProjectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "source");
+    await mkdir(cwd, { recursive: true });
+    await db.insert(companies).values({ id: companyId, name: "Policy ownership", issuePrefix: `L${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    const restricted = { authorizationPolicy: { trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId, issueIds: [issueId] } } };
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Task project", executionWorkspacePolicy: policy === "organization" ? restricted : null },
+      { id: sourceProjectId, companyId, name: "File source", executionWorkspacePolicy: policy === "source" ? restricted : null },
+    ]);
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId: sourceProjectId, name: "Source", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Do not relax policy", status: "todo", assigneeAgentId: agentId, executionWorkspaceSettings: { mode: "shared_workspace" },
+      projectWorkspaceId: selection === "configured_source" ? sourceId : null,
+      workspaceSelection: { version: 1, source: "explicit", selection: selection === "configured_source"
+        ? { kind: selection, projectWorkspaceId: sourceId, mode: "shared" } : { kind: selection } },
+    });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed" }); }, { timeout: 15_000 });
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
+    expect((await heartbeat.getRun(run!.id))?.contextSnapshot).toMatchObject({ executionPolicy: { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { issueIds: [issueId] } } } });
+  }, 25_000);
+
   it.each(["shared_workspace", "isolated_workspace"] as const)("blocks shared source adapter admission after grant revocation with retained mode %s", async (retainedMode) => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const cwd = path.join(root, companyId, "protected-shared-source");

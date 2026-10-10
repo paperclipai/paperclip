@@ -45,7 +45,7 @@ import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-po
 import { emailConnectionService } from "./email-connections.js";
 import { secretService } from "./secrets.js";
 import { authorizationService } from "./authorization.js";
-import { assertChatExecutionDefaultsAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
+import { assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -1316,41 +1316,43 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         }
         if (!conversation) {
           const placement = await inboundPlacement(
-            endpoint.companyId,
-            endpoint.assignedAgentId,
+            current.companyId,
+            current.assignedAgentId,
           );
-          const defaults = resolveChatExecutionDefaults(endpoint.executionDefaults, null);
+          const defaults = resolveChatExecutionDefaults(current.executionDefaults, null);
           // A channel default cannot widen the receiving agent's trust boundary.
           if ("projectId" in placement && defaults.projectId !== undefined && defaults.projectId !== placement.projectId) {
             throw forbidden("Default project conflicts with the assigned agent's trust boundary");
           }
-          await assertChatExecutionDefaultsAccess(db, {
-            companyId: endpoint.companyId,
-            assigneeAgentId: endpoint.assignedAgentId,
-            actor: endpoint.sponsorUserId ? { type: "board", userId: endpoint.sponsorUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
-            defaults,
+          await assertChatTaskCreationAccess(db, {
+            companyId: current.companyId,
+            assigneeAgentId: current.assignedAgentId,
+            actor: current.sponsorUserId ? { type: "board", userId: current.sponsorUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
+            defaults: { ...defaults, ...("projectId" in placement ? { projectId: placement.projectId } : {}) },
+            parentIssueId: "parentId" in placement ? placement.parentId : null,
           }, tx);
-          await assertChatExecutionDefaultsAccess(db, {
-            companyId: endpoint.companyId,
-            assigneeAgentId: endpoint.assignedAgentId,
-            actor: { type: "agent", agentId: endpoint.assignedAgentId, companyId: endpoint.companyId, onBehalfOfUserId: endpoint.sponsorUserId, source: "agent_key" },
-            defaults,
+          await assertChatTaskCreationAccess(db, {
+            companyId: current.companyId,
+            assigneeAgentId: current.assignedAgentId,
+            actor: { type: "agent", agentId: current.assignedAgentId, companyId: current.companyId, onBehalfOfUserId: current.sponsorUserId, source: "agent_key" },
+            defaults: { ...defaults, ...("projectId" in placement ? { projectId: placement.projectId } : {}) },
+            parentIssueId: "parentId" in placement ? placement.parentId : null,
           }, tx);
           const task = await issueService(db).create(
-            endpoint.companyId,
+            current.companyId,
             {
               ...(defaults.projectId !== undefined ? { projectId: defaults.projectId } : {}),
               ...placement,
               ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
-              description: `Email conversation for ${endpoint.botExternalId}`,
+              description: `Email conversation for ${current.botExternalId}`,
               status: "todo",
               priority: "medium",
-              assigneeAgentId: endpoint.assignedAgentId,
-              responsibleUserId: endpoint.sponsorUserId,
+              assigneeAgentId: current.assignedAgentId,
+              responsibleUserId: current.sponsorUserId,
               originKind: "chat_channel",
-              originId: `email:${endpoint.id}:${message.thread_id}`,
-              idempotencyKey: `email:${endpoint.id}:${message.thread_id}`,
+              originId: `email:${current.id}:${message.thread_id}`,
+              idempotencyKey: `email:${current.id}:${message.thread_id}`,
             },
             tx,
           );

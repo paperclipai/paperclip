@@ -3,14 +3,21 @@ import { type Db, projects } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
-import { notFound } from "../errors.js";
+import { forbidden, notFound } from "../errors.js";
+import { accessService } from "./access.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DefaultsAccessInput = {
+  companyId: string;
+  actor: AuthorizationActor;
+  assigneeAgentId?: string | null;
+  defaults: ChatExecutionDefaults | null | undefined;
+};
 
 /** Configuration selects resources; it never grants their access to future senders. */
 export async function assertChatExecutionDefaultsAccess(
   db: Db,
-  input: { companyId: string; actor: AuthorizationActor; assigneeAgentId?: string | null; defaults: ChatExecutionDefaults | null | undefined },
+  input: DefaultsAccessInput,
   reader: Db | DbTransaction = db,
 ): Promise<void> {
   const defaults = chatExecutionDefaultsSchema.parse(input.defaults ?? {});
@@ -24,6 +31,29 @@ export async function assertChatExecutionDefaultsAccess(
   if (defaults.workspace) await executionWorkspaceService(db).validateSelection({
     companyId: input.companyId, actor: input.actor, selection: defaults.workspace, assigneeAgentId: input.assigneeAgentId,
   }, reader);
+}
+
+/** Apply defaults and assignment authority together in the task creation transaction. */
+export async function assertChatTaskCreationAccess(
+  db: Db,
+  input: DefaultsAccessInput & { assigneeAgentId: string; parentIssueId?: string | null },
+  transaction: Db | DbTransaction,
+): Promise<void> {
+  await assertChatExecutionDefaultsAccess(db, input, transaction);
+  if (!input.defaults?.projectId) return;
+  const scope = {
+    projectId: input.defaults.projectId,
+    parentIssueId: input.parentIssueId ?? null,
+    assigneeAgentId: input.assigneeAgentId,
+    assigneeUserId: null,
+  };
+  const decision = await accessService(transaction as Db).decide({
+    actor: input.actor,
+    action: "tasks:assign",
+    resource: { type: "issue", companyId: input.companyId, ...scope },
+    scope,
+  });
+  if (!decision.allowed) throw forbidden(decision.explanation);
 }
 
 /** Resolve once when a conversation creates its task. Later endpoint edits are irrelevant. */

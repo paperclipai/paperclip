@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
+import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces, heartbeatRuns, issues, principalPermissionGrants, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
@@ -285,6 +286,52 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(svc.requestTaskRepository({ ...f, actor, request: deniedRepository })).rejects.toThrow("modification is not allowed");
     expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toEqual(before);
     expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, f.workspaceId))).toHaveLength(1);
+  });
+
+  it.each(["binding", "configured_source"] as const)("enforces source authority on legacy PATCH %s and rolls back denied edits", async kind => {
+    const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      await db.insert(authUsers).values({ id: userId, name: "Workspace selector", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+      const [assignee, nextAssignee] = await db.insert(agents).values(["Current worker", "Next worker"].map(name => ({ companyId: f.companyId, name, status: "idle", runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } } }))).returning();
+      await db.update(issues).set({ assigneeAgentId: assignee.id }).where(eq(issues.id, f.issueId));
+      const [project, organization] = await db.insert(projects).values([
+        { companyId: f.companyId, name: "Protected source", executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } },
+        { companyId: f.companyId, name: "Organization" },
+      ]).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Source", cwd: `/tmp/source-${f.issueId}` }).returning();
+      await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: source.id }).where(eq(executionWorkspaces.id, f.workspaceId));
+      const actor = { type: "board" as const, source: "session" as const, userId, companyIds: [f.companyId], isInstanceAdmin: false };
+      const beforeMetadata = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0].metadata;
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", taskWorkspaceRoutes(db));
+      app.use("/api", issueRoutes(db, {} as never));
+      app.use(errorHandler);
+      const patch = kind === "binding" ? { executionWorkspaceId: f.workspaceId } : { projectWorkspaceId: source.id, executionWorkspaceSettings: { mode: "shared_workspace" } };
+      const selection = kind === "binding" ? { kind: "existing", workspaceId: f.workspaceId } : { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" };
+      expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send({ selection, expectedBindingRevision: 0, requestKey: "denied" })).status).toBe(403);
+      const denied = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+      const readTask = () => db.select().from(issues).where(eq(issues.id, f.issueId)).then(rows => rows[0]);
+      expect(await readTask()).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null, workspaceBindingRevision: 0 });
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0].metadata).toEqual(beforeMetadata);
+      const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: assignee.id } }).returning();
+      // The same transaction must check the final assignee, not the old row.
+      await expect(issueService(db).update(f.issueId, { ...patch, assigneeAgentId: nextAssignee.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
+      expect(await readTask()).toMatchObject({ assigneeAgentId: assignee.id, workspaceBindingRevision: 0 });
+      const allowed = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      const bound = await readTask();
+      expect(bound).toMatchObject({ ...patch, projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+      const organized = await request(app).patch(`/api/issues/${f.issueId}`).send({ projectId: organization.id });
+      expect(organized.status, JSON.stringify(organized.body)).toBe(200);
+      expect(await readTask()).toMatchObject({ projectId: organization.id, executionWorkspaceId: bound.executionWorkspaceId, projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 
   it("requires source project assignment authority for shared files while preserving isolated reads", async () => {

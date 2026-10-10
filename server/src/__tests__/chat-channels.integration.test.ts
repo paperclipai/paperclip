@@ -7600,6 +7600,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await service.get(endpoint.id)).executionDefaults).toEqual({ workspace: { kind: "task_directory" } });
   });
 
+  it("checks both linked sender and agent assignment grants for protected organizational defaults", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
+    const [project] = await db.insert(projects).values({ companyId: fixture.companyId, name: "Protected task project",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    const defaults = { projectId: project.id, workspace: { kind: "task_directory" as const } };
+    // Saving readable defaults does not grant future senders assignment authority.
+    await service.update(endpoint.id, { executionDefaults: defaults }, "owner-user");
+    await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "agent",
+      principalId: fixture.assignedAgentId, status: "active", membershipRole: "member" });
+    const send = async (id: string) => {
+      const thread = makeThread({ channelId: "C-ASSIGNMENT", id: `slack:C-ASSIGNMENT:${id}`, name: "assignment" });
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+        message: makeMessage({ id, text: "@maya create a report", mentioned: true, userId: "UBOARD" }), trigger: "mention" });
+    };
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    await expect(send("8310.1")).rejects.toMatchObject({ status: 403, message: expect.stringContaining("protected") });
+    expect(await tasks()).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    const [senderGrant] = await db.insert(principalPermissionGrants).values({ companyId: fixture.companyId,
+      principalType: "user", principalId: "owner-user", permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: fixture.assignedAgentId } }).returning();
+    await expect(send("8310.2")).rejects.toMatchObject({ status: 403, message: expect.stringContaining("protected") });
+    expect(await tasks()).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    await db.insert(principalPermissionGrants).values({ companyId: fixture.companyId,
+      principalType: "agent", principalId: fixture.assignedAgentId, permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: fixture.assignedAgentId } });
+    await send("8310.3");
+    expect(await tasks()).toEqual([expect.objectContaining({ projectId: project.id,
+      assigneeAgentId: fixture.assignedAgentId,
+      workspaceSelection: { version: 1, selection: { kind: "task_directory" }, source: "channel" } })]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, senderGrant.id));
+    await expect(send("8310.4")).rejects.toMatchObject({ status: 403, message: expect.stringContaining("protected") });
+    expect(await tasks()).toHaveLength(1);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(1);
+  });
+
+  it("checks protected organizational defaults against the assignee locked at creation", async () => {
+    const fixture = await seedCompany();
+    let endpointId = "";
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, {
+      linkedBoardUser: true,
+      reachAuthorizationBarrier: async () => {
+        await db.update(chatEndpoints).set({ assignedAgentId: fixture.replacementAgentId }).where(eq(chatEndpoints.id, endpointId));
+      },
+    });
+    endpointId = endpoint.id;
+    const [project] = await db.insert(projects).values({ companyId: fixture.companyId, name: "Protected reassignment",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    await service.update(endpoint.id, { executionDefaults: { projectId: project.id, workspace: { kind: "task_directory" } } }, "owner-user");
+    await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "agent",
+      principalId: fixture.assignedAgentId, status: "active", membershipRole: "member" });
+    await db.insert(principalPermissionGrants).values([
+      { companyId: fixture.companyId, principalType: "user", principalId: "owner-user", permissionKey: "tasks:assign_scope",
+        scope: { projectId: project.id, assigneeAgentId: fixture.assignedAgentId } },
+      { companyId: fixture.companyId, principalType: "agent", principalId: fixture.assignedAgentId, permissionKey: "tasks:assign_scope",
+        scope: { projectId: project.id, assigneeAgentId: fixture.assignedAgentId } },
+    ]);
+    const thread = makeThread({ channelId: "C-REASSIGNED", id: "slack:C-REASSIGNED:8320.1", name: "reassigned" });
+    await expect(deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id: "8320.1", text: "@maya create a report", mentioned: true, userId: "UBOARD" }), trigger: "mention" }))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("protected") });
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
   it("authorizes protected channel workspace defaults for the endpoint's assigned agent", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });

@@ -50,7 +50,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
-import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy, gateProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings, resolveExecutionWorkspaceMode } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -1419,6 +1419,29 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   /** Ordinary issue edits participate in the same binding revision transaction. */
+  async function assertTaskWorkspaceUpdateAccess(input: {
+    task: typeof issues.$inferSelect; actor: AuthorizationActor; isolatedWorkspacesEnabled: boolean;
+  }, tx: DbTransaction) {
+    const { task, actor } = input;
+    if (task.executionWorkspaceId) {
+      await assertTaskWorkspaceAccess(tx, actor, task.companyId, task.executionWorkspaceId, { write: true, issueId: task.id });
+      return;
+    }
+    if (!task.projectWorkspaceId) return;
+    const [source] = await tx.select({ projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projectWorkspaces).innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
+      .where(and(eq(projectWorkspaces.id, task.projectWorkspaceId), eq(projectWorkspaces.companyId, task.companyId),
+        await projectReadSqlCondition(tx, actor)));
+    if (!source) throw notFound("Workspace source is unavailable or inaccessible");
+    const projectPolicy = gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(source.executionWorkspacePolicy), input.isolatedWorkspacesEnabled);
+    const issueSettings = parseIssueExecutionWorkspaceSettings(task.executionWorkspaceSettings);
+    const mode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: null });
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy, issueSettings, mode, legacyUseProjectWorkspace: null });
+    await assertTaskWorkspaceSourceProjectAccess(tx, actor, task.companyId, source.projectId, {
+      issueId: task.id, write: resolveEffectiveWorkspaceStrategyType(mode, config) !== "git_worktree",
+    });
+  }
+
   async function prepareTaskWorkspaceUpdate(input: {
     companyId: string; issueId: string; patch: TaskWorkspaceBindingPatch;
   }, tx: DbTransaction) {
@@ -2052,7 +2075,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     requestTaskRepository: executionWorkspaceRepositoryService(db).request,
     listTaskRepositories: executionWorkspaceRepositoryService(db).list,
     prepareTaskRepositoriesForAdmission: executionWorkspaceRepositoryService(db).prepareForAdmission,
-    validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate,
+    validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,

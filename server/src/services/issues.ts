@@ -10866,6 +10866,7 @@ export function issueService(db: Db) {
         actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
       },
       dbOrTx: any = db,
@@ -10914,6 +10915,7 @@ export function issueService(db: Db) {
         actorRunStopId,
         actorUserId,
         companyGuard,
+        workspaceSelectionActor,
         expectedExecutionPolicy,
         ...issueData
       } = data;
@@ -11281,6 +11283,14 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (workspaceSelectionActor && updated.workspaceBindingRevision !== receiptExisting.workspaceBindingRevision) {
+          // Authorize the persisted target inside this transaction so a combined
+          // assignment/workspace edit checks the actual new assignee. A denial
+          // rolls back the binding, revision and retained-privacy trigger too.
+          await executionWorkspaceService(db).assertTaskWorkspaceUpdateAccess({
+            task: updated, actor: workspaceSelectionActor, isolatedWorkspacesEnabled,
+          }, tx);
+        }
         if (issueData.description !== undefined) await attachOwnedDraftImages(tx, updated, updated.description,
           { userId: actorUserId, agentId: actorAgentId });
         if (changesPrivacy && updated.visibility === "private") {

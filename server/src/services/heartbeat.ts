@@ -2472,7 +2472,7 @@ export function heartbeatService(
           .where(and(eq(projectWorkspaces.id, issueContext.projectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
       const executionProjectId = boundSourceWorkspace ? boundSourceWorkspace.projectId
         : taskWorkspaceIntentRow?.intent?.selection.kind === "task_directory" ? null : selectedWorkspaceSource?.projectId ?? issueContext?.projectId ?? contextProjectId;
-      const projectContext = executionProjectId
+      const loadProjectContext = async (projectId: string | null | undefined) => projectId
         ? await db
             .select({
               id: projects.id,
@@ -2491,12 +2491,20 @@ export function heartbeatService(
             .from(projects)
             .where(
               and(
-                eq(projects.id, executionProjectId),
+                eq(projects.id, projectId),
                 eq(projects.companyId, agent.companyId),
               ),
             )
             .then((rows) => rows[0] ?? null)
         : null;
+      const taskProjectId = issueContext ? issueContext.projectId : contextProjectId;
+      const taskProjectContext = await loadProjectContext(taskProjectId);
+      if (issueContext) {
+        if (taskProjectId) context.projectId = taskProjectId;
+        else delete context.projectId;
+      }
+      const workspaceProjectContext = executionProjectId === taskProjectId
+        ? taskProjectContext : await loadProjectContext(executionProjectId);
       const acceptedPlanContinuationWake = issueContext && !isConversation(issueContext)
         ? readNonEmptyString(context.workspaceRefreshReason) ===
             "accepted_plan_confirmation" ||
@@ -2607,7 +2615,7 @@ export function heartbeatService(
       }
       const parsedProjectExecutionWorkspacePolicy =
         parseProjectExecutionWorkspacePolicy(
-          projectContext?.executionWorkspacePolicy,
+          workspaceProjectContext?.executionWorkspacePolicy,
         );
       const projectExecutionWorkspacePolicy =
         applyDefaultIsolatedExecutionWorkspacePolicy({
@@ -2618,7 +2626,7 @@ export function heartbeatService(
           defaultIsolatedWorkspacesEnabled,
           // Projects without workspace configuration get a plain managed
           // directory. The operator default cannot turn it into a worktree.
-          hasProjectWorkspace: projectContext?.hasWorkspace ?? false,
+          hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
         });
       const retainedTrust = await resolveAndRetainRunTrustPreset(db, {
         companyId: agent.companyId,
@@ -2628,12 +2636,12 @@ export function heartbeatService(
           companyId: agent.companyId,
           permissions: agent.permissions,
         },
-        project: projectContext
-          ? {
-              companyId: agent.companyId,
-              // Workspace feature gates must not erase authorization policy.
-              executionWorkspacePolicy: projectContext.executionWorkspacePolicy,
-            }
+        project: taskProjectContext
+          ? { companyId: agent.companyId, executionWorkspacePolicy: taskProjectContext.executionWorkspacePolicy }
+          : null,
+        // Selecting files cannot erase the task's policy or relax the source's.
+        workspaceSourceProject: workspaceProjectContext && workspaceProjectContext.id !== taskProjectContext?.id
+          ? { companyId: agent.companyId, executionWorkspacePolicy: workspaceProjectContext.executionWorkspacePolicy }
           : null,
         issue: issueContext
           ? {
@@ -3153,7 +3161,7 @@ export function heartbeatService(
         const workspaceRequiringAccess = reusableExistingExecutionWorkspace ?? boundSourceWorkspace;
         if (workspaceRequiringAccess) {
           await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true, issueId });
-        } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || projectContext?.hasWorkspace)) {
+        } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || workspaceProjectContext?.hasWorkspace)) {
           // Check source authority before resolution can clone or expose files.
           await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, sourceWorkspaceConfig) !== "git_worktree", issueId });
         }
@@ -3283,7 +3291,7 @@ export function heartbeatService(
         admittedCwd: persistedNativeExecutionInput && persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v6"
           ? persistedNativeExecutionInput.workspace.cwd : null,
       });
-      const nativeChatExpectedCwd = nativeChatWorkspaceScope
+      let nativeChatExpectedCwd = nativeChatWorkspaceScope
         ? nativeChatWorkspaceCwd(
             nativeChatWorkspaceScope,
             reusableExistingExecutionWorkspace,
@@ -3306,13 +3314,20 @@ export function heartbeatService(
           "native_chat_workspace_scope_mismatch",
         );
       }
+      const materializeNativeChatWorktree = Boolean(
+        nativeChatWorkspaceScope?.projectId && !persistedNativeExecutionInput && !existingExecutionWorkspace &&
+        taskWorkspaceIntentRow?.intent?.selection.kind === "configured_source" &&
+        taskWorkspaceIntentRow.intent.selection.mode === "managed_isolated" &&
+        requestedExecutionWorkspaceMode === "isolated_workspace" &&
+        resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, sourceWorkspaceConfig) === "git_worktree",
+      );
       if (
         nativeChatWorkspaceScope &&
-        (!nativeChatExpectedCwd ||
+        ((!nativeChatExpectedCwd && !materializeNativeChatWorktree) ||
           executionProjectId !== nativeChatWorkspaceScope.projectId)
       ) {
         throw new ConfigurationIncompleteFailure(
-          "External chat requires a task-owned isolated workspace. Configure and select an existing isolated worktree for this project task; shared project workspaces cannot be used for external chat.",
+          "External chat requires a task-owned isolated workspace. Select a managed isolated source or an existing task-owned isolated worktree; shared project workspaces cannot be used for external chat.",
           {
             configurationIncomplete: {
               reason: "native_chat_workspace_isolation_required",
@@ -3437,7 +3452,7 @@ export function heartbeatService(
         trustPreset: trustPreset.kind,
         environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
         mode: requestedExecutionWorkspaceMode,
-        hasProjectWorkspace: projectContext?.hasWorkspace ?? false,
+        hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
         projectWorkspaceId: issueRef.projectWorkspaceId,
         workspaceStrategies: [
           config.workspaceStrategy,
@@ -3498,11 +3513,11 @@ export function heartbeatService(
           environmentId: selectedEnvironmentForConfig?.id ?? null,
           environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
           environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
-          projectId: projectContext?.id ?? null,
+          projectId: taskProjectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
           executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          projectEnv: aiBinding ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
           routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
@@ -3640,9 +3655,9 @@ export function heartbeatService(
                 ? issueContext.updatedAt.toISOString()
                 : (issueContext?.updatedAt ?? null),
             projectConfigRevisionAt:
-              projectContext?.updatedAt instanceof Date
-                ? projectContext.updatedAt.toISOString()
-                : (projectContext?.updatedAt ?? null),
+              workspaceProjectContext?.updatedAt instanceof Date
+                ? workspaceProjectContext.updatedAt.toISOString()
+                : (workspaceProjectContext?.updatedAt ?? null),
             projectPolicy: projectExecutionWorkspacePolicy,
             issueSettings: issueExecutionWorkspaceSettings,
             reusableExecutionWorkspaceConfig:
@@ -3678,7 +3693,7 @@ export function heartbeatService(
             executionPolicy,
           },
           environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
-          projectEnv: projectContext?.env ?? null,
+          projectEnv: taskProjectContext?.env ?? null,
           routineEnv: routineEnvContext.env,
           secretManifest,
           runtimeSkills: runtimeSkillEntries,
@@ -4674,6 +4689,11 @@ export function heartbeatService(
         catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
       }
       const remoteExecution = realizationResult.remoteExecution;
+      if (nativeChatWorkspaceScope && materializeNativeChatWorktree) {
+        // The fresh plan is not filesystem authority. Validate the realized,
+        // durable task-owned worktree before exposing it to the native runner.
+        nativeChatExpectedCwd = nativeChatWorkspaceCwd(nativeChatWorkspaceScope, persistedExecutionWorkspace, true);
+      }
       if (
         nativeChatWorkspaceScope &&
         (executionTarget?.kind === "remote" ||
@@ -5001,7 +5021,7 @@ export function heartbeatService(
         delete context.paperclipRuntimeServiceIntents;
       }
       if (
-        executionWorkspace.projectId &&
+        !issueContext && executionWorkspace.projectId &&
         !readNonEmptyString(context.projectId)
       ) {
         context.projectId = executionWorkspace.projectId;

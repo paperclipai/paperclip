@@ -39,6 +39,10 @@ Source inspection and isolated copies require source-project read access. Writab
 
 Channel defaults use optional properties (inherit), explicit null (clear), concrete value (override). Resource override beats endpoint. Defaults are captured once at task creation and reauthorized on use. Changing/deleting/revoking configuration cannot relocate existing tasks. Project choice and workspace choice are independent; choosing a source does not silently assign organizational project. Endpoints without configuration work normally.
 
+The organizational task project retains task identity, environment, and secret scope regardless of the filesystem source. Both task-project and source-project policies constrain run trust; source policy controls workspace realization. Channel task creation separately checks assignment authority for the effective organizational project and actual assignee against locked endpoint values inside its transaction. Saving defaults does not grant future senders that authority.
+
+New native chat tasks may realize an authorized managed-isolated Git worktree before their first binding exists. The resulting durable task-owned worktree must pass the existing chat-root guard before provider dispatch; shared roots and mismatched admitted recovery roots remain rejected.
+
 Active root selection stores pending intent and returns next-normal-admission, without interrupting or scheduling a new model turn. If atomic safe nested acquisition/capture is supported, repository preparation may add a new contained subtree to the active root; otherwise it records preparation for next admission with explicit capability result. Never claim a host-only checkout is available in the running remote environment.
 
 ## Sharing and durability

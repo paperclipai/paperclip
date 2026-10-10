@@ -491,6 +491,50 @@ describe("AgentMail durable email pipeline", () => {
     expect(await tasks()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceSelection: null })]));
   });
 
+  it("checks sponsor and agent assignment grants for protected email organizational defaults", async () => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected email tasks",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    // Change defaults after provider fetch has captured the endpoint, before the
+    // creation transaction locks it. Only the locked defaults are authoritative.
+    const fetcher = vi.mocked(f.fetcher);
+    const fetch = fetcher.getMockImplementation()!;
+    let changedDefaults = false;
+    fetcher.mockImplementation(async (...args) => {
+      if (!changedDefaults && String(args[0]).includes("/threads/")) {
+        changedDefaults = true;
+        await db.update(chatEndpoints).set({ executionDefaults: { projectId: project.id, workspace: { kind: "task_directory" } } })
+          .where(eq(chatEndpoints.id, f.endpointId));
+      }
+      return fetch(...args);
+    });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent",
+      principalId: f.agentId, status: "active", membershipRole: "member" });
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    const [sponsorGrant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "user", principalId: "email-board", permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } }).returning();
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } });
+    await f.receive(f.message());
+    expect(await tasks()).toEqual([expect.objectContaining({ projectId: project.id,
+      assigneeAgentId: f.agentId,
+      workspaceSelection: { version: 1, selection: { kind: "task_directory" }, source: "channel" } })]);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, sponsorGrant.id));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(1);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId))).toHaveLength(1);
+  });
+
   it("deduplicates events/messages, keeps identical subjects separate, and never grants sender board identity", async () => {
     const f = await fixture();
     const m = f.message();
