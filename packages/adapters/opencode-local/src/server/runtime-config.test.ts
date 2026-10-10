@@ -30,6 +30,13 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
   return root;
 }
 
+const runtimeMcpServer = {
+  name: "paperclip-assigned",
+  url: "https://paperclip.example/mcp/gateways/current",
+  token: "run-scoped-token",
+  connectionId: "connection-current",
+};
+
 describe("prepareOpenCodeRuntimeConfig", () => {
   it("allows all tools and connected tools by default", async () => {
     const configHome = await makeConfigHome({
@@ -306,6 +313,84 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
     expect(runtimeConfig.provider).toBeUndefined();
+    await prepared.cleanup();
+  });
+
+  it("merges run-scoped MCP servers without changing an explicit permission policy", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "ask" },
+      mcp: {
+        calendar: { type: "remote", url: "https://calendar.example/mcp" },
+        "paperclip-assigned": { type: "remote", url: "https://stale.example/mcp" },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      runtimeMcpServers: [runtimeMcpServer],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    expect(prepared.env.XDG_CONFIG_HOME).not.toBe(configHome);
+    const runtimeConfigPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    const runtimeConfig = JSON.parse(await fs.readFile(runtimeConfigPath, "utf8")) as {
+      permission: unknown;
+      mcp: Record<string, unknown>;
+    };
+    expect(runtimeConfig.permission).toEqual({ read: "ask" });
+    expect(runtimeConfig.mcp).toMatchObject({
+      calendar: { type: "remote", url: "https://calendar.example/mcp" },
+      "paperclip-assigned": {
+        type: "remote",
+        url: runtimeMcpServer.url,
+        headers: { Authorization: `Bearer ${runtimeMcpServer.token}` },
+        oauth: false,
+        timeout: 30_000,
+      },
+    });
+    expect((await fs.stat(runtimeConfigPath)).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(path.join(configHome, "opencode", "opencode.json"), "utf8")).not.toContain(
+      runtimeMcpServer.token,
+    );
+
+    await prepared.cleanup();
+  });
+
+  it("writes runtime MCP configuration to a private copy of a symlinked config", async () => {
+    const configHome = await makeConfigHome();
+    const targetConfigPath = path.join(configHome, "original-opencode.json");
+    const originalConfig = {
+      permission: { read: "ask" },
+      mcp: { calendar: { type: "remote", url: "https://calendar.example/mcp" } },
+    };
+    const originalContents = `${JSON.stringify(originalConfig, null, 2)}\n`;
+    await fs.writeFile(targetConfigPath, originalContents, { mode: 0o640 });
+    const originalMode = (await fs.stat(targetConfigPath)).mode & 0o777;
+    await fs.symlink(targetConfigPath, path.join(configHome, "opencode", "opencode.json"));
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      runtimeMcpServers: [runtimeMcpServer],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfigPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    const runtimeConfig = JSON.parse(await fs.readFile(runtimeConfigPath, "utf8")) as {
+      mcp: Record<string, unknown>;
+    };
+    expect((await fs.lstat(runtimeConfigPath)).isSymbolicLink()).toBe(false);
+    expect((await fs.stat(runtimeConfigPath)).mode & 0o777).toBe(0o600);
+    expect(runtimeConfig.mcp).toMatchObject({
+      calendar: originalConfig.mcp.calendar,
+      "paperclip-assigned": {
+        headers: { Authorization: `Bearer ${runtimeMcpServer.token}` },
+        url: runtimeMcpServer.url,
+      },
+    });
+    expect(await fs.readFile(targetConfigPath, "utf8")).toBe(originalContents);
+    expect((await fs.stat(targetConfigPath)).mode & 0o777).toBe(originalMode);
+
     await prepared.cleanup();
   });
 
