@@ -50,6 +50,12 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
 
+### Code Review Checklist
+
+Reviewers (human or Code Reviewer) must walk [`doc/reviews/code-review-checklist.md`](doc/reviews/code-review-checklist.md) before approving behaviour, schema/API, auth, data, or release-tooling changes. The checklist covers correctness, safety, tests, backwards compatibility, observability, operability, performance, and documentation, plus change-class approval gates.
+
+Branch-protection and review expectations (CI, Greptile, CODEOWNERS, high-risk dual approval) are documented in [`doc/reviews/README.md`](doc/reviews/README.md).
+
 ### Link Issues or Describe Them In-PR
 
 We do not gate PRs on a pre-existing issue. Two acceptable paths:
@@ -121,6 +127,8 @@ We use [Greptile](https://greptile.com) for automated code review. Your PR must 
 - **No open follow-ups**
 
 We hold the bar high here on purpose — we want code quality to be as high as possible. If Greptile leaves comments, fix them (or, if a comment is wrong, reply explaining why) and request a re-review.
+
+Greptile does **not** replace the human / Code Reviewer pass against [`doc/reviews/code-review-checklist.md`](doc/reviews/code-review-checklist.md).
 
 ## Helping Other Contributors
 
