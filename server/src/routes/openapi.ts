@@ -1,3 +1,4 @@
+import { updateFastResponseSchema } from "@paperclipai/shared";
 import { slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
@@ -1383,6 +1384,11 @@ const computerOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/fast-response",
+  "PUT /api/companies/{companyId}/fast-response",
+  "GET /api/companies/{companyId}/fast-response/models",
+  "GET /api/companies/{companyId}/fast-response/availability",
+  "POST /api/companies/{companyId}/fast-response/test",
   "GET /api/companies/{companyId}/decision-model",
   "PUT /api/companies/{companyId}/decision-model",
   "POST /api/companies/{companyId}/decision-model/test",
@@ -10939,6 +10945,16 @@ registerCurrentRoute({
 });
 
 // --- Tool access -------------------------------------------------------------
+
+for (const [method, suffix, summary] of [
+  ["get", "", "Get fast response settings and compatible shared API connections"],
+  ["put", "", "Configure the company fast response model"],
+  ["get", "/models", "List models for an authorized API connection"],
+  ["get", "/availability", "Check fast response configuration without contacting the provider"],
+  ["post", "/test", "Generate a fixed billed fast response sample"],
+  ["get", "/history", "List fast response accounting and publication outcomes"],
+] as const) registerCurrentRoute({ method, path: `/api/companies/{companyId}/fast-response${suffix}`, tags: ["fast-responses"], summary,
+  ...(method === "put" ? { body: updateFastResponseSchema } : {}), responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable } });
 
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model", tags: ["decision-models"],

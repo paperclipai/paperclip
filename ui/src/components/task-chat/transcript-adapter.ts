@@ -2069,6 +2069,7 @@ export function attachSettledTurns(
       item.settled &&
       prev?.kind === "message" &&
       prev.author === "agent" &&
+      prev.origin !== "fast_response" &&
       !prev.interstitial &&
       !prev.streaming &&
       prev.attachedTurn == null

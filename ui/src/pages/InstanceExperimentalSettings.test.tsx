@@ -105,6 +105,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
+    enableFastResponses: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
@@ -470,6 +471,17 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableDecisions: true,
     });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the fast responses experimental toggle", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Experimental fast responses");
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle fast responses experimental setting"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle?.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableFastResponses: true });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 

@@ -40,7 +40,7 @@ export const costEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    usageKindCheck: check("cost_events_usage_kind_check", sql`${table.usageKind} = 'decision' or (${table.usageKind} = 'agent' and ${table.agentId} is not null)`),
+    usageKindCheck: check("cost_events_usage_kind_check", sql`${table.usageKind} in ('decision', 'fast_response') or (${table.usageKind} = 'agent' and ${table.agentId} is not null)`),
     receiptUniqueIdx: uniqueIndex("cost_events_company_receipt_idx").on(table.companyId, table.idempotencyKey),
     providerRequestIdx: index("cost_events_provider_request_idx").on(table.companyId, table.biller, table.providerRequestId),
     nonnegativeAmounts: check("cost_events_nonnegative_amounts", sql`${table.costCents} >= 0 and ${table.inputTokens} >= 0 and ${table.cachedInputTokens} >= 0 and ${table.outputTokens} >= 0`),

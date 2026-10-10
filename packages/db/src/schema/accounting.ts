@@ -54,6 +54,7 @@ export const budgetReservations = pgTable("budget_reservations", {
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "cascade" }),
   decisionInvocationId: uuid("decision_invocation_id"),
+  fastResponseRequestId: uuid("fast_response_request_id"),
   agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
   projectId: uuid("project_id"),
   amountCents: numeric("amount_cents", { precision: 24, scale: 7 }).notNull(),
@@ -62,8 +63,9 @@ export const budgetReservations = pgTable("budget_reservations", {
   settledAt: timestamp("settled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, table => ({
+  fastResponse: uniqueIndex("budget_reservations_fast_response_idx").on(table.companyId, table.fastResponseRequestId),
   decision: uniqueIndex("budget_reservations_decision_idx").on(table.companyId, table.decisionInvocationId),
-  source: check("budget_reservations_source_check", sql`(${table.runId} is not null)::int + (${table.decisionInvocationId} is not null)::int = 1`),
+  source: check("budget_reservations_source_check", sql`(${table.runId} is not null)::int + (${table.decisionInvocationId} is not null)::int + (${table.fastResponseRequestId} is not null)::int = 1`),
   run: uniqueIndex("budget_reservations_run_idx").on(table.companyId, table.runId),
   active: index("budget_reservations_active_idx").on(table.companyId, table.agentId, table.projectId).where(sql`${table.state} = 'held'`),
   stateCheck: check("budget_reservations_state_check", sql`${table.state} in ('held', 'settled', 'released')`),
