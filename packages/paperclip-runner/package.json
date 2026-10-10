@@ -11,7 +11,8 @@
     "paperclip-runner-eval-session": "./dist/cli/eval-session.js",
     "paperclip-runner-codex-proxy": "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-opencode-proxy": "./dist/cli/opencode-app-server-proxy.js",
-    "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js"
+    "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+    "paperclip-runner-copilot-metadata-probe": "./dist/cli/copilot-metadata-probe.js"
   },
   "exports": {
     ".": {
@@ -53,7 +54,10 @@
     "dist-issue-thread",
     "protocol",
     "styles.css",
-    "README.md"
+    "README.md",
+    "scripts/install-copilot-assets.mjs",
+    "scripts/materialize-copilot-binary.mjs",
+    "scripts/copilot-inner-distribution.mjs"
   ],
   "publishConfig": {
     "executableFiles": [
@@ -64,7 +68,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run check:capability-contract && pnpm run check:capability-inventory && pnpm run check:protocol-coverage && pnpm run check:semantic-contracts && pnpm run check:runner-workflow-traceability && pnpm run build:binary && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check",
-    "build:typescript": "pnpm run check:acpx-profiles && pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs",
+    "build:typescript": "pnpm run check:acpx-profiles && pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs && node scripts/install-copilot-assets.mjs",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:binary": "cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/stage-runner-binary.mjs",
     "stage:release-binaries": "node scripts/stage-release-runner-binaries.mjs",
@@ -81,7 +85,7 @@
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm run test:typescript && pnpm run test:rust",
     "test:typescript": "pnpm run test:typescript:prep && vitest run",
-    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs test/acpx-model-selection-package-contract.test.mjs test/acpx-message-boundaries-package-contract.test.mjs test/acpx-rich-extensions-package-contract.test.mjs test/acpx-pi-receipt-package-contract.test.mjs test/acpx-response-delivery-package-contract.test.mjs scripts/candidate-provider-pack.test.mjs scripts/cursor-provisioner-layout.test.mjs scripts/release-provider-pack.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs scripts/installed-package-pack.test.mjs scripts/runner-package-executable.test.mjs scripts/stage-runner-binary.test.mjs",
+    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs test/acpx-model-selection-package-contract.test.mjs test/acpx-message-boundaries-package-contract.test.mjs test/acpx-rich-extensions-package-contract.test.mjs test/acpx-pi-receipt-package-contract.test.mjs test/acpx-response-delivery-package-contract.test.mjs scripts/candidate-provider-pack.test.mjs scripts/cursor-provisioner-layout.test.mjs scripts/release-provider-pack.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs scripts/installed-package-pack.test.mjs scripts/runner-package-executable.test.mjs scripts/stage-runner-binary.test.mjs scripts/provider-pack-executable-shims.test.mjs && pnpm run test:copilot:contracts",
     "test:typescript:vitest": "node ./scripts/run-pr-vitest-lane.mjs",
     "test:rust": "cargo test --release --manifest-path runner/Cargo.toml --locked --workspace",
     "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",
@@ -169,7 +173,10 @@
     "verify:rootless": "bash scripts/verify-rootless-linux.sh",
     "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs",
     "generate:acpx-profiles": "node scripts/generate-acpx-profiles.mjs",
-    "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check"
+    "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check",
+    "check:copilot-profile": "node scripts/copilot-profile-identity.mjs --check",
+    "test:copilot:contracts": "node --test scripts/build-copilot-distribution.test.mjs scripts/copilot-inner-distribution.test.mjs scripts/copilot-smoke-resources.test.mjs scripts/discover-copilot-acp.test.mjs scripts/materialize-copilot-binary.test.mjs scripts/install-copilot-assets.test.mjs scripts/probe-copilot-acp.test.mjs scripts/qualify-copilot-acp.test.mjs test/acpx-message-boundaries-package-contract.test.mjs",
+    "postinstall": "node scripts/install-copilot-assets.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.73.0",

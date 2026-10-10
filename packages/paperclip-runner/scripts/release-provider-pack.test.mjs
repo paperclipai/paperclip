@@ -21,6 +21,9 @@ function fixture() {
     providers: { cursor: { version: profiles.profiles.cursor.agentServerVersion, profileDigest: profiles.profiles.cursor.commandDigest,
       closureDigest: `sha256:${distributions.platforms["linux-x64"].closureSha256}`, qualification: "qualified",
       path: "provider-assets/cursor/linux-x64", sha256: digest } } };
+  payload.providers.copilot = { version: profiles.profiles.copilot.agentServerVersion,
+    profileDigest: profiles.profiles.copilot.commandDigest, closureDigest: "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
+    qualification: "qualified", path: "provider-assets/copilot/linux-x64", sha256: digest };
   return payload;
 }
 function seal(payload) { return { schema: "paperclip-runner/remote-provider-pack/v1", payload,
@@ -76,4 +79,17 @@ test("release assembly rejects rehashed stale or missing packs before staging an
       delete manifest.remoteProviderPack;
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const field of ["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"]) {
+  test(`rejects an independently rehashed stale Copilot ${field}`, () => {
+    const payload = fixture(); payload.providers.copilot[field] = "stale";
+    assert.throws(() => verifyReleaseProviderPack(seal(payload), revision), /Copilot identity/);
+  });
+}
+test("rejects omitted Copilot and a duplicate candidate inventory", () => {
+  const missing = fixture(); delete missing.providers.copilot;
+  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision), /Copilot identity/);
+  const mixed = fixture(); mixed.candidateProviders = { copilot: mixed.providers.copilot };
+  assert.throws(() => verifyReleaseProviderPack(seal(mixed), revision), /Copilot identity/);
 });

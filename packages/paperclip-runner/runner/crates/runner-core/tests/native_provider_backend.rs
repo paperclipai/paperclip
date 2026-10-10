@@ -1024,6 +1024,109 @@ fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
 }
 
 #[test]
+fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_provider() {
+    let directory = temporary_directory("acpx-provider-death");
+    let mode = "turns-provider-death";
+    let mut config = acpx_config(&directory, mode);
+    let mut payload = prepare_payload_with_mode(&directory, "codex", mode);
+    let identity: Value = serde_json::from_str(include_str!(
+        "../../../../test/fixtures/copilot-profile-v36-identity.json"
+    ))
+    .unwrap();
+    let digest = identity["commandDigest"].as_str().unwrap();
+    *config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .last_mut()
+        .unwrap() = digest.to_owned();
+    let provider = &mut payload["provider"];
+    provider["agent"] = json!("copilot");
+    provider["model"] = json!("gpt-5.6-luna");
+    provider["permissionMode"] = json!("approve-paperclip");
+    provider["agentServerPackage"] = json!("@github/copilot");
+    provider["agentServerVersion"] = json!("1.0.88");
+    provider["agentRuntimePackage"] = Value::Null;
+    provider["agentRuntimeVersion"] = Value::Null;
+    provider["providerPolicy"] = json!({"readOnly":false});
+    provider["commandDigest"] = json!(digest);
+    provider["sidecarArgs"][3] = json!(digest);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Write", "turnId":"provider-turn-dead"}),
+        ))
+        .unwrap();
+    let mut events = Vec::new();
+    for _ in 0..20 {
+        let batch = executor.poll_events().unwrap();
+        executor.acknowledge_events(batch.len()).unwrap();
+        events.extend(batch);
+        if events
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let expired = events
+        .iter()
+        .position(|event| event.event_type == "runtime_request.expired")
+        .unwrap_or_else(|| panic!("provider death did not expire input: {events:?}"));
+    let failed = events
+        .iter()
+        .position(|event| event.event_type == "turn.failed")
+        .unwrap();
+    assert!(expired < failed);
+    assert_eq!(events[expired].payload["reason"], "provider_process_lost");
+    assert_eq!(events[expired].payload["replayAllowed"], false);
+    assert_eq!(
+        events[failed].payload["providerTurnId"],
+        "provider-turn-dead"
+    );
+    assert_eq!(
+        events[failed].payload["error"]["code"],
+        "ACPX_PROVIDER_PROCESS_LOST"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "turn.failed")
+            .count(),
+        1
+    );
+    let snapshot = executor
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap()
+        .result;
+    assert_eq!(snapshot["status"], "closed");
+    assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
+    assert_eq!(snapshot["warmAttachReady"], false);
+    assert!(executor
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"text":"Replay", "turnId":"replay-turn"})
+        ))
+        .is_err());
+    executor
+        .execute(&command(6, "session.close", json!({})))
+        .unwrap();
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let directory = temporary_directory("acpx-cold-idle-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");

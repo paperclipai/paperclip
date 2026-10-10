@@ -29,6 +29,141 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it.each(["blocked", "ended"] as const)("settles a %s Copilot stream on verified provider death without replaying the permission", async (streamState) => {
+    const pending = pendingExtensionTurn("death-turn");
+    if (streamState === "ended") pending.turn.events = (async function* () {})();
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    const child = fakeChild();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(child);
+    let exit!: () => void;
+    const providerExit = new Promise<void>(resolve => { exit = resolve; });
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(command);
+    options.profile = { ...options.profile, agent: "copilot" };
+    options.permissionMode = "approve-paperclip";
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: () => providerExit,
+      createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
+    });
+    let answer!: (value: { outcome: "allow_once" }) => void;
+    let callbackSignal!: AbortSignal;
+    const handler = vi.fn((_request, context) => {
+      callbackSignal = context.signal;
+      return new Promise<{ outcome: "allow_once" }>(resolve => { answer = resolve; });
+    });
+    const turn = port.startTurn({ text: "Write the file", requestId: "death-turn", onPermissionRequest: handler });
+    await turn.promptStarted;
+    const events = turn.events[Symbol.asyncIterator]();
+    const draining = expect(events.next()).rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+    const settled = expect(turn.result).rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+    const request = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal: new AbortController().signal });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    // The guardian remains live: only independent provider EOF proves death.
+    expect(child.exitCode).toBeNull();
+    exit();
+    await Promise.all([draining, settled]);
+    expect(callbackSignal.aborted).toBe(true);
+    answer({ outcome: "allow_once" });
+    await expect(request).resolves.toEqual({ outcome: "cancel" });
+    expect(() => port.startTurn({ text: "Replay", requestId: "replay" })).toThrow("provider exited");
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    pending.settle();
+    await port.close({ reason: "test finished" });
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it("refuses Copilot replay when native disconnection precedes the independent exit proof", async () => {
+    const pending = pendingExtensionTurn("disconnect-turn");
+    let disconnect!: () => void;
+    const failed = new Promise<{ status: "failed"; error: { code: "RUNTIME"; detailCode: "AGENT_DISCONNECTED"; message: string } }>(resolve => {
+      disconnect = () => resolve({ status: "failed", error: { code: "RUNTIME", detailCode: "AGENT_DISCONNECTED", message: "Native ACP transport disconnected" } });
+    });
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue({ ...pending.turn, result: failed });
+    const child = fakeChild();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(child);
+    let exit!: () => void;
+    const providerExit = new Promise<void>(resolve => { exit = resolve; });
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(command);
+    options.profile = { ...options.profile, agent: "copilot" };
+    options.permissionMode = "approve-paperclip";
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: () => providerExit,
+      createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
+    });
+    let answer!: (value: { outcome: "allow_once" }) => void;
+    let callbackSignal!: AbortSignal;
+    const handler = vi.fn((_request, context) => {
+      callbackSignal = context.signal;
+      return new Promise<{ outcome: "allow_once" }>(resolve => { answer = resolve; });
+    });
+    try {
+      const turn = port.startTurn({ text: "Write", requestId: "disconnect-turn", onPermissionRequest: handler });
+      await turn.promptStarted;
+      const request = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal: new AbortController().signal });
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+      disconnect();
+      await expect(turn.result).rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+      await expect((async () => { for await (const _event of turn.events) { /* drain */ } })())
+        .rejects.toMatchObject({ code: "ACPX_PROVIDER_PROCESS_LOST" });
+      expect(callbackSignal.aborted).toBe(true);
+      answer({ outcome: "allow_once" });
+      await expect(request).resolves.toEqual({ outcome: "cancel" });
+      expect(() => port.startTurn({ text: "Replay", requestId: "replay" })).toThrow("provider exited");
+      expect(runtime.startTurn).toHaveBeenCalledOnce();
+      // A typed disconnect does not manufacture independent process-exit proof.
+      // Cleanup still owns the live guardian and waits for the separate proof.
+      expect(child.exitCode).toBeNull();
+    } finally {
+      pending.settle();
+      exit();
+      await port.close({ reason: "disconnect race verified" });
+    }
+  });
+
+  it("keeps a Copilot callback deliverable when only the guardian exits", async () => {
+    const pending = pendingExtensionTurn("preserved-turn");
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    const child = fakeChild();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(child);
+    let exit!: () => void;
+    const providerExit = new Promise<void>(resolve => { exit = resolve; });
+    const options = openOptions(command);
+    options.profile = { ...options.profile, agent: "copilot" };
+    options.permissionMode = "approve-paperclip";
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished, awaitProviderExit: () => providerExit,
+      createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
+    });
+    let answer!: (value: { outcome: "allow_once" }) => void;
+    const handler = vi.fn(() => new Promise<{ outcome: "allow_once" }>(resolve => { answer = resolve; }));
+    const turn = port.startTurn({ text: "Write", requestId: "preserved-turn", onPermissionRequest: handler });
+    const request = created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1" }, inferredKind: "edit" } as never, { signal: new AbortController().signal });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    // Guardian exit cannot replace the provider-only lifetime observation.
+    await new Promise(resolve => setTimeout(resolve, 10));
+    answer({ outcome: "allow_once" });
+    await expect(request).resolves.toEqual({ outcome: "allow_once" });
+    pending.settle();
+    await expect(turn.result).resolves.toMatchObject({ status: "completed" });
+    exit();
+    await port.close({ reason: "test finished" });
+  });
+
   it("installs per-connection policy authority only for Copilot and rejects native commands before a turn starts", async () => {
     for (const agent of ["copilot", "codex", "claude", "grok"] as const) {
       const runtime = fakeRuntime();

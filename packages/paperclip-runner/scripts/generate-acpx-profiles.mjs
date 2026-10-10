@@ -39,7 +39,7 @@ const { commandDigest, ...attestation } = contract;
 assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
 assert.equal(contract.acpxPatchSha256, createHash("sha256")
   .update(await readFile(new URL("../../patches/acpx@0.13.1.patch", root))).digest("hex"));
-for (const [agent, path] of [["pi", "test-fixtures/pi-acp/profile-v22-identity.json"], ["copilot", "test/fixtures/copilot-profile-v17-identity.json"]]) {
+for (const [agent, path] of [["pi", "test-fixtures/pi-acp/profile-v22-identity.json"], ["copilot", "test/fixtures/copilot-profile-v36-identity.json"]]) {
   const identity = await readJson(path);
   assert.equal(manifest.profiles[agent].agentProfileVersion, identity.declaration.agentProfileVersion);
   assert.equal(manifest.profiles[agent].commandDigest, identity.commandDigest);

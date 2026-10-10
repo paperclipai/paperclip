@@ -813,9 +813,10 @@ describe("managed Codex credentials", () => {
   it.runIf(process.platform !== "win32")(
     "shares the four-slot parent filesystem budget across fresh modules",
     async () => {
-      const fixtures = await Promise.all(
-        Array.from({ length: 5 }, () => credentialFixture()),
-      );
+      // Reserve fixture quorum candidates before holding filesystem operations.
+      // Otherwise an unrelated loopback listener can reject staging before
+      // fourOpens resolves, leaving an unhandled rejection and a false timeout.
+      const fixtures = await credentialFixturesWithAvailableQuorum(5);
       const retainedHomes = new Set(
         fixtures.slice(0, 4).map((fixture) => fixture.home),
       );
@@ -1650,6 +1651,38 @@ async function credentialFixture(): Promise<{ root: string; home: string }> {
   await mkdir(home, { mode: 0o700 });
   await chmod(home, 0o700);
   return { root, home: await realpath(home) };
+}
+
+async function credentialFixturesWithAvailableQuorum(count: number) {
+  const fixtures: Awaited<ReturnType<typeof credentialFixture>>[] = [];
+  const reservations: Array<Awaited<ReturnType<typeof listenSilently>>> = [];
+  try {
+    for (let index = 0; index < count; index++) {
+      let prepared = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const fixture = await credentialFixture();
+        const owned: Array<Awaited<ReturnType<typeof listenSilently>>> = [];
+        try {
+          for (const port of credentialLeasePorts(fixture.home)) {
+            owned.push(await listenSilently(port));
+          }
+          fixtures.push(fixture);
+          reservations.push(...owned);
+          prepared = true;
+          break;
+        } catch (error) {
+          await Promise.all(owned.map((listener) => listener.close()));
+          if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || attempt === 7) throw error;
+        }
+      }
+      if (!prepared) throw new Error("Credential fixture quorum preparation failed");
+    }
+    return fixtures;
+  } finally {
+    // Fixture setup alone may choose another unused home. Production staging
+    // still runs once, and a foreign bind racing this handoff remains a failure.
+    await Promise.all(reservations.map((listener) => listener.close()));
+  }
 }
 
 async function silentPrimaryQuorumFixture(

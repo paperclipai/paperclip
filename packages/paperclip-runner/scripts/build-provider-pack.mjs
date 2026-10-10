@@ -152,7 +152,15 @@ try {
   mkdirSync(dirname(stableNodeCommand), { recursive: true, mode: 0o755 });
   copyFileSync(process.execPath, stableNodeCommand);
   chmodSync(stableNodeCommand, 0o755);
-  const relocatedNode = spawnSync(stableNodeCommand, ["--version"], {
+  // A freshly copied x64 Mach-O can stall when launched directly from a
+  // translated Node process. Select Rosetta explicitly for this build probe;
+  // native Intel and every other platform still execute the copied bytes directly.
+  const translated = process.platform === "darwin" && process.arch === "x64"
+    && spawnSync("/usr/sbin/sysctl", ["-n", "sysctl.proc_translated"], {
+      encoding: "utf8", timeout: 1_000,
+    }).stdout?.trim() === "1";
+  const relocatedNode = spawnSync(translated ? "/usr/bin/arch" : stableNodeCommand,
+    translated ? ["-x86_64", stableNodeCommand, "--version"] : ["--version"], {
     cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: buildNodeStartupTimeout(),
   });
   if (relocatedNode.status !== 0 || relocatedNode.stdout.trim() !== `v${process.versions.node}`) {
@@ -167,7 +175,7 @@ try {
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: (provider === "cursor" || provider === "pi") ? "qualified" : "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -198,6 +206,7 @@ try {
   writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
   writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
+  writePortableNodeShim("paperclip-runner-copilot-metadata-probe", "../dist/cli/copilot-metadata-probe.js");
   writePortableNodeShim(
     "claude-agent-acp",
     "@agentclientprotocol/claude-agent-acp/dist/index.js",

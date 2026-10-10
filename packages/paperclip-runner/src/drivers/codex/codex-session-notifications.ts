@@ -150,6 +150,26 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    if (notification.method === "paperclip/runtimeRequestExpired") {
+      const payload = record(params.payload);
+      const requestId = text(payload.requestId);
+      const pending = state.pendingRuntimeRequestMap.get(requestId);
+      if (pending === undefined) return;
+      if (pending.request.turnId !== turnId || payload.requestKind !== pending.request.requestKind
+        || payload.requestType !== (pending.request.input === undefined ? "permission" : "input")
+        || payload.replayAllowed !== false || typeof payload.reason !== "string" || !payload.reason) {
+        state.failProtocol("turn_binding_mismatch", "Canonical request expiry changed its callback binding.");
+        return;
+      }
+      state.pendingRuntimeRequestMap.delete(requestId);
+      // Preserve durable expiry evidence with the same facade identity used
+      // when creating this callback. Terminal handling must not cancel it again.
+      state.emit("runtime_request.expired", { ...payload,
+        turnId: pending.request.turnId, itemId: pending.request.itemId,
+      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
+      return;
+    }
     if (notification.method === "paperclip/canonicalProviderEvent") {
       if (!isCanonicalProviderEventType(params.eventType)) {
         state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");

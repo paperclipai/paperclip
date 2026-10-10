@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { nativeSystemInstructions } from "./backends/runtime-context.js";
 
 import type {
   CheckpointControlPlaneSessionOptions,
@@ -2004,7 +2005,12 @@ export async function executeNativeSession(
     // state). Prove the provider attachment before opening durable
     // control-plane state because ControlPlanePort has no rollback operation.
     try {
-      await options.existingSession.attachRun({ identity });
+      await options.existingSession.attachRun({ identity,
+        ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
+          ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
+              instructions: nativeSystemInstructions(input) } }
+          : {}),
+      });
     } catch (error) {
       // attachRun has no transactional guarantee: a provider may bind the new
       // run before reporting a later failure. Conservatively quarantine the

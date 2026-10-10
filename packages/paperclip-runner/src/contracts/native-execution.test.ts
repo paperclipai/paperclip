@@ -407,6 +407,30 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("does not match");
   });
 
+  it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] as const)("decodes closed Copilot profile history at version %s without admitting a future version", (agentProfileVersion) => {
+    const { qualificationModel: _qualificationModel, reportedModelId: _reportedModelId,
+      permissionPolicy, qualificationStatus: _qualificationStatus, modelPolicy: _modelPolicy,
+      ...snapshot } = QUALIFIED_ACPX_PROFILES.copilot;
+    const provider = {
+      kind: "acpx", agent: "copilot", model: "gpt-5.6-luna", permissionPolicy,
+      profile: { ...snapshot, agentProfileVersion },
+    } as const;
+    const value = { ...input, session: { ...input.session, driverKind: "acpx_runtime" }, provider };
+    const parsed = parseNativeExecutionInput(value);
+    expect(parsed.provider).toEqual(provider);
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    for (const unsupportedVersion of [0, QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion + 1, 1.5, "34", null]) {
+      expect(() => parseNativeExecutionInput({
+        ...value, provider: { ...provider, profile: { ...provider.profile, agentProfileVersion: unsupportedVersion } },
+      })).toThrow("qualified ACPX v1 profile");
+    }
+    expect(() => parseNativeExecutionInput({
+      ...value, provider: { ...provider, profile: { ...provider.profile, agent: "pi" } },
+    })).toThrow("qualified ACPX v1 profile");
+    expect(() => parseNativeExecutionInput({
+      ...value, session: { ...value.session, driverKind: "opencode_server" },
+    })).toThrow("does not match");
+  });
   it.each(Object.values(QUALIFIED_ACPX_PROFILES))(
     "admits the current $agent profile through the native execution boundary",
     (declaration) => {
@@ -563,6 +587,46 @@ describe("native task context ownership", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
   }
+
+  const { qualificationModel: _copilotQualificationModel, reportedModelId: _copilotReportedModelId,
+    permissionPolicy: _copilotPermissionPolicy, qualificationStatus: _copilotQualificationStatus, modelPolicy: _copilotModelPolicy,
+    ...copilotSnapshot } = QUALIFIED_ACPX_PROFILES.copilot;
+
+  it.each([
+    { driverKind: "acpx_runtime", provider: { kind: "acpx", agent: "copilot", model: "gpt-5.6-luna", permissionMode: "deny-all", profile: copilotSnapshot } },
+    { driverKind: "opencode_server", provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny" } },
+    { driverKind: "acpx_runtime", provider: {
+      kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "deny-all",
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "pi", agentProfileVersion: 1,
+        agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", agentRuntimePackage: "@earendil-works/pi-coding-agent",
+        agentRuntimeVersion: "0.84.2", commandDigest: `sha256:${"a".repeat(64)}` },
+    } },
+    { driverKind: "openai_dot_mcp", provider: {
+      kind: "openai_dot", model: null,
+      binding: { bindingId: "dot-binding", bindingGeneration: 1, companyId: input.binding.companyId, agentId: input.binding.agentId,
+        acceptByUnixMs: 1_000, expiresAtUnixMs: 2_000 },
+    } },
+  ])("preserves an unregistered saved prompt for $provider.kind", ({ driverKind, provider }) => {
+    const current = currentInput();
+    if (!("runtimeContext" in current)) throw new Error("Expected a runtime context");
+    const text = "Saved instructions absent from the current release.";
+    const context = { ...current.runtimeContext,
+      prompt: { revision: "saved-prompt-before-upgrade", text, digest: createHash("sha256").update(text).digest("hex") } };
+    context.aggregateDigest = canonicalNativeRuntimeContextDigest(context);
+    const persisted = JSON.parse(JSON.stringify({
+      ...current, provider, session: { ...current.session, driverKind }, runtimeContext: context,
+      ...(provider.kind === "openai_dot" ? {
+        schema: NATIVE_EXECUTION_INPUT_SCHEMA_V6,
+        workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
+        credentialBindings: [],
+      } : {}),
+    }));
+    const recovered = parseNativeExecutionInput(persisted);
+    expect(recovered.runtimeContext).toEqual(context);
+    expect(recovered.provider).toEqual(provider);
+    expect(recovered.session.driverKind).toBe(driverKind);
+    expect(parseNativeExecutionInput(recovered)).toEqual(recovered);
+  });
 
   it("carries an opaque provider mode without a vendor restriction and fences obsolete field names", () => {
     const current = currentInput();

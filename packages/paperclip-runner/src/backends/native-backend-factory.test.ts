@@ -600,8 +600,9 @@ describe("native backend factory", () => {
   it("selects prepared transport only for v5 native input and retains prepared constraints", async () => {
     const input = preparedExecution(execution());
     const transport = new FakeCodexTransport();
+    let currentInstructions: string | undefined;
     const backend = createCodexNativeSessionBackend(input, {
-      transportFactory: () => transport,
+      transportFactory: (context) => { currentInstructions = context?.baseInstructions; return transport; },
       workingDirectoryAuthority: "remote_runner",
       environment: { PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
     });
@@ -619,6 +620,8 @@ describe("native backend factory", () => {
     expect(
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({ conversationMode: "prepared" });
+    expect(currentInstructions).toContain("Keep assigned instructions.");
+    expect(currentInstructions).toBe(transport.calls.find((call) => call.method === "thread/start")?.params.developerInstructions);
     expect(backend.preparedTaskConstraints).toEqual(
       expect.arrayContaining([
         expect.stringContaining("Obtain one accepted result"),

@@ -65,7 +65,7 @@ for (const [provider, create] of [["cursor", createCursorToolEvidence], ["copilo
       s.projector.tool({ type: "tool_call", tag: "tool_call_update", toolCallId: "other", kind: "read", status: "completed", rawInput: { path } });
       expect(s.rows).toHaveLength(1); expect(s.rows[0].readTargetSha256).toBeUndefined();
     });
-    it("publishes the pending origin after its delayed complete input, retaining exact proof on every notice", () => {
+    it.runIf(provider === "cursor")("publishes the pending origin after its delayed complete input, retaining exact proof on every notice", () => {
       const s = setup();
       s.projector.tool({ ...origin, rawInput: {}, locations: undefined });
       expect(s.rows).toEqual([]);

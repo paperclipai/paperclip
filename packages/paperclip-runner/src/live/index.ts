@@ -7,6 +7,7 @@ export * from "./turn-stream.js";
 export * from "./linux-process-start.js";
 
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxPiInstallation } from "../drivers/acpx/installation-integrity.js";
+export { probeCopilotMetadata, validateCopilotMetadata, type CopilotMetadataResult } from "../drivers/copilot-metadata-probe.js";
 
 export { probeAcpxCursorInstallation } from "../drivers/acpx/profile-installation.js";
 

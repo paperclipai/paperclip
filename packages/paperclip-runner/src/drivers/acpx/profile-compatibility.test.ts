@@ -19,6 +19,19 @@ describe("historical ACPX profile decoding", () => {
       expect(isSupportedAcpxProfileVersion(agent, 6)).toBe(false);
     }
   });
+  it("decodes retained Copilot revisions and the current profile without widening other providers", () => {
+    for (const version of [1, 5, 6, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]) {
+      expect(isSupportedAcpxProfileVersion("copilot", version)).toBe(true);
+    }
+    expect(isSupportedAcpxProfileVersion("copilot", QUALIFIED_ACPX_PROFILE_DATA.copilot.agentProfileVersion + 1)).toBe(false);
+    for (const agent of ["cursor", "pi", "claude", "codex", "grok"]) {
+      expect(isSupportedAcpxProfileVersion(agent, 23)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 24)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 25)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 26)).toBe(false);
+      expect(isSupportedAcpxProfileVersion(agent, 27)).toBe(false);
+    }
+  });
   it.each([0, 1.5, "11", null, undefined, NaN])("rejects invalid revisions: %s", version => {
     expect(isSupportedAcpxProfileVersion("cursor", version)).toBe(false);
   });

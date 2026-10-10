@@ -1286,7 +1286,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("initialization and cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(credential.close).not.toHaveBeenCalled();
-    expect(fixture.commandClose).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
     expect(retainedAdmissionCleanup).not.toBeNull();
     let cleanupSettled = false;
     void retainedAdmissionCleanup!.finally(() => {
@@ -1299,6 +1299,7 @@ describe("ACPX runtime host", () => {
     await retainedAdmissionCleanup;
     expect(cleanupSettled).toBe(true);
     expect(credential.close).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("retains credential ownership when runtime shutdown fails until retry succeeds", async () => {
@@ -1376,7 +1377,7 @@ describe("ACPX runtime host", () => {
 
     const first = host.close({ reason: "runtime close pending" });
     await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
-    await waitForAcpxOperation(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
+    expect(fixture.commandClose).not.toHaveBeenCalled();
     const second = host.close({ reason: "same exact close" });
     await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
     await expect(
@@ -1394,6 +1395,7 @@ describe("ACPX runtime host", () => {
       undefined,
       undefined,
     ]);
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
     const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
@@ -1406,9 +1408,10 @@ describe("ACPX runtime host", () => {
     await contender.close();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
-  it("retains the exact pending cleanup while independent resources close", async () => {
+  it("retains the exact pending cleanup and command snapshot until runtime retirement", async () => {
     const fixture = await hostFixture();
-    const firstClose = new Promise<void>(() => undefined);
+    let resolveRuntimeClose!: () => void;
+    const firstClose = new Promise<void>(resolve => { resolveRuntimeClose = resolve; });
     const runtime = runtimePort({
       onClose: vi
         .fn()
@@ -1436,6 +1439,9 @@ describe("ACPX runtime host", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+    resolveRuntimeClose();
+    await Promise.all([first, second]);
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 

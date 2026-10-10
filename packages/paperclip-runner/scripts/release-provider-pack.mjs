@@ -28,5 +28,15 @@ export function verifyReleaseProviderPack(identity, sourceRevision) {
       throw new Error("Remote provider-pack Cursor identity does not match this release");
     }
   }
+  const copilot = payload.providers?.copilot;
+  const copilotProfile = profiles.profiles.copilot;
+  if (Object.hasOwn(payload.candidateProviders ?? {}, "copilot") || !copilot
+    || copilot.version !== copilotProfile.agentServerVersion || copilot.profileDigest !== copilotProfile.commandDigest
+    || copilot.closureDigest !== "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07"
+    || copilot.qualification !== "qualified" || copilot.path !== "provider-assets/copilot/linux-x64"
+    || Object.keys(copilot).sort().join(",") !== "closureDigest,path,profileDigest,qualification,sha256,version"
+    || !/^sha256:[a-f0-9]{64}$/.test(copilot.sha256 ?? "")) {
+    throw new Error("Remote provider-pack Copilot identity does not match this release");
+  }
   return identity;
 }

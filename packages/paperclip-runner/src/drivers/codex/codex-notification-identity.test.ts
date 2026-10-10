@@ -16,6 +16,10 @@ describe("provider notification authority", () => {
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "provider.notice.recorded" }, "root"],
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "tool.execution.started" }, "invalid_authority"],
     ["item/started", { threadId: "root", turnId: "active" }, "root"],
+    ["paperclip/runtimeRequestExpired", { threadId: "root", turnId: "active" }, "root"],
+    ["paperclip/runtimeRequestExpired", { threadId: "child", turnId: "active" }, "invalid_authority"],
+    ["paperclip/runtimeRequestExpired", { threadId: null, turnId: "active" }, "invalid_authority"],
+    ["paperclip/runtimeRequestExpired", { threadId: "root", turnId: "old" }, "stale_turn"],
     ["turn/completed", { threadId: "root", turnId: "old" }, "stale_turn"],
     [
       "turn/completed",
