@@ -91,6 +91,11 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  // Tells the run that something outside it is stopping the child (a cancel,
+  // watchdog or shutdown). The run then settles even when a process outside the
+  // child's group keeps its output open. Callers that stop a registered
+  // process by pid call this first; `signalRunningProcess` calls it itself.
+  markStopRequested?: () => void;
 }
 
 interface SpawnTarget {
@@ -99,6 +104,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stopRemote?: (graceSec: number) => Promise<void>;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -122,9 +128,10 @@ function resolveProcessGroupId(child: ChildProcess) {
 
 // Exported so the direct-child fallback branch can be unit-tested directly.
 export function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId">,
+  running: Pick<RunningProcess, "child" | "processGroupId" | "markStopRequested">,
   signal: NodeJS.Signals,
 ) {
+  running.markStopRequested?.();
   if (
     process.platform !== "win32" &&
     running.processGroupId &&
@@ -3653,6 +3660,7 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stopRemote: spawnTarget.stopRemote,
     };
   }
 
@@ -4773,10 +4781,40 @@ export async function runChildProcess(
                 })
             : Promise.resolve();
 
+        // A stopped run (timeout, cancel, watchdog, terminal-result cleanup)
+        // must end even when a process outside its group keeps stdout/stderr
+        // open: "close" waits for every holder of the pipes, and the group kill
+        // does not reach a process that left the group. Once a stop has been
+        // requested and the child has exited, whichever came last, close the
+        // pipes if "close" has not arrived after the grace period plus five
+        // seconds. A run that ends on its own is not bounded.
+        let stopRequested = false;
+        let childExited = false;
+        let closed = false;
+        let closeBoundTimer: ReturnType<typeof setTimeout> | null = null;
+        // Settles when the remote command of a stopped SSH run has been ended
+        // (or the attempt failed); the run does not resolve before then, so
+        // the caller never moves on while the old command still runs.
+        let remoteStop: Promise<void> = Promise.resolve();
+        const armCloseBound = () => {
+          if (!stopRequested || !childExited || closed || closeBoundTimer) return;
+          closeBoundTimer = setTimeout(() => {
+            closeBoundTimer = null;
+            if (closed) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }, (Math.max(5, opts.graceSec) + 5) * 1000);
+        };
+        const markStopRequested = () => {
+          stopRequested = true;
+          armCloseBound();
+        };
+
         runningProcesses.set(runId, {
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          markStopRequested,
         });
 
         let timedOut = false;
@@ -4843,6 +4881,7 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
+            markStopRequested();
             terminalCleanupSignal = "SIGTERM";
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(
@@ -4861,6 +4900,7 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                markStopRequested();
                 clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(
@@ -4931,18 +4971,33 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
+        child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
+          childExited = true;
+          // A remote run must also stop on the host: killing the local ssh
+          // client leaves the command running there. ssh exits 255 when it is
+          // signalled or loses the connection.
+          const remoteStopNeeded = target.stopRemote != null && (signal !== null || code === 255);
+          // A child that a signal ended was stopped from outside.
+          if (signal !== null || remoteStopNeeded) stopRequested = true;
+          armCloseBound();
+          if (target.stopRemote && remoteStopNeeded) {
+            remoteStop = target.stopRemote(Math.max(1, opts.graceSec)).catch((err) => {
+              onLogError(err, runId, "failed to stop remote process");
+            });
+          }
         });
 
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
+            closed = true;
+            if (closeBoundTimer) clearTimeout(closeBoundTimer);
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
             void logChain.finally(() => {
-              void Promise.resolve()
+              void remoteStop
                 .then(() => target.cleanup?.())
                 .finally(() => {
                   resolve({

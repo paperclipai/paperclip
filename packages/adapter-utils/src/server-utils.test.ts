@@ -714,6 +714,163 @@ describe("runChildProcess", () => {
     },
   );
 
+  // A process that left the run's process group (its own session here; a shared
+  // ssh connection's master in production) survives the group kill and holds
+  // the stdout pipe, so "close" never fires on its own. A stopped run must still
+  // settle shortly after the child it started has exited.
+  const ESCAPED_HOLDER_SOURCE = [
+    "const { spawn } = require('node:child_process');",
+    "const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+    "holder.unref();",
+    "process.stdout.write('holder:' + holder.pid + '\\n');",
+  ];
+
+  // Runs `childSource` with an escaped holder on its stdout. The pid arrives
+  // through onLog, so the holder is killed in `finally` even when the run never
+  // settles; the wait is bounded below the test timeout so `finally` always runs.
+  async function runWithEscapedHolder(input: {
+    childSource: string[];
+    options?: Partial<Parameters<typeof runChildProcess>[3]>;
+    afterHolderStarted?: (runId: string) => void | Promise<void>;
+    // A line the child prints once it is ready for `afterHolderStarted`.
+    readyMarker?: string;
+    settleBoundMs?: number;
+  }) {
+    const runId = randomUUID();
+    let observed = "";
+    let holderPid: number | null = null;
+    const startedAt = Date.now();
+    try {
+      const resultPromise = runChildProcess(
+        runId,
+        process.execPath,
+        ["-e", [...ESCAPED_HOLDER_SOURCE, ...input.childSource].join(" ")],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          onLog: async (_stream, chunk) => {
+            observed += chunk;
+          },
+          onSpawn: async () => {},
+          ...input.options,
+        },
+      );
+      const pidMatch = await waitForTextMatch(() => observed, /holder:(\d+)/, 5_000);
+      holderPid = Number.parseInt(pidMatch?.[1] ?? "", 10);
+      expect(Number.isInteger(holderPid) && holderPid > 0).toBe(true);
+      if (input.readyMarker) {
+        const ready = await waitForTextMatch(() => observed, new RegExp(input.readyMarker), 5_000);
+        expect(ready, "the child reported that it is ready").not.toBeNull();
+      }
+      await input.afterHolderStarted?.(runId);
+      const outcome = await Promise.race([
+        resultPromise,
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), input.settleBoundMs ?? 20_000)),
+      ]);
+      expect(outcome, "the run settled without waiting for the escaped process").not.toBe("hung");
+      // The escaped process is still alive: the run did not wait for it.
+      expect(isPidAlive(holderPid)).toBe(true);
+      return { result: outcome as Awaited<typeof resultPromise>, elapsedMs: Date.now() - startedAt };
+    } finally {
+      runningProcesses.delete(runId);
+      if (holderPid && isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
+    }
+  }
+
+  describe.skipIf(process.platform === "win32").concurrent("a stopped run whose output stays open", () => {
+    it("settles when the time limit stops a child that is still running", async () => {
+      const { result } = await runWithEscapedHolder({
+        childSource: ["setInterval(() => {}, 1000);"],
+        options: { timeoutSec: 1 },
+      });
+      expect(result.timedOut).toBe(true);
+    }, 30_000);
+
+    it("settles when the time limit fires after the child already exited", async () => {
+      const { result } = await runWithEscapedHolder({
+        childSource: ["process.exit(0);"],
+        options: { timeoutSec: 2 },
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.exitCode).toBe(0);
+    }, 30_000);
+
+    it("settles when terminal-result cleanup starts after the child already exited", async () => {
+      const { result } = await runWithEscapedHolder({
+        childSource: ["process.stdout.write('{\"type\":\"result\"}\\n');", "process.exit(0);"],
+        options: {
+          terminalResultCleanup: {
+            graceMs: 100,
+            hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+          },
+        },
+      });
+      expect(result.terminalResultCleanup).toMatchObject({ stopped: true });
+    }, 30_000);
+
+    it("settles when an outside stop signals a child that catches it and exits normally", async () => {
+      const { result } = await runWithEscapedHolder({
+        // The handler is installed before the child reports that it is ready,
+        // and the signal is sent only after that report.
+        childSource: [
+          "process.on('SIGTERM', () => process.exit(0));",
+          "process.stdout.write('ready\\n');",
+          "setInterval(() => {}, 1000);",
+        ],
+        readyMarker: "ready",
+        afterHolderStarted: (runId) => {
+          const running = runningProcesses.get(runId);
+          expect(running).toBeDefined();
+          signalRunningProcess(running!, "SIGTERM");
+        },
+      });
+      expect(result.signal).toBeNull();
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+    }, 30_000);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "keeps waiting for the output of a run that exits on its own",
+    async () => {
+      const runId = randomUUID();
+      let observed = "";
+      let holderPid: number | null = null;
+      try {
+        const resultPromise = runChildProcess(
+          runId,
+          process.execPath,
+          ["-e", [...ESCAPED_HOLDER_SOURCE, "process.exit(0);"].join(" ")],
+          {
+            cwd: process.cwd(),
+            env: {},
+            timeoutSec: 0,
+            graceSec: 1,
+            onLog: async (_stream, chunk) => {
+              observed += chunk;
+            },
+            onSpawn: async () => {},
+          },
+        );
+        const pidMatch = await waitForTextMatch(() => observed, /holder:(\d+)/, 5_000);
+        holderPid = Number.parseInt(pidMatch?.[1] ?? "", 10);
+        const race = await Promise.race([
+          resultPromise.then(() => "settled" as const),
+          new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 1_000)),
+        ]);
+        expect(race).toBe("pending");
+        process.kill(holderPid, "SIGKILL");
+        await expect(resultPromise).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+      } finally {
+        runningProcesses.delete(runId);
+        if (holderPid && isPidAlive(holderPid)) process.kill(holderPid, "SIGKILL");
+      }
+    },
+    30_000,
+  );
+
   it.skipIf(process.platform === "win32")(
     "signalRunningProcess escalates SIGKILL on the direct-child fallback after SIGTERM is sent",
     async () => {
