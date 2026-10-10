@@ -4368,20 +4368,28 @@ export async function verifyPriorRunnerdStateForSessionScope(input: {
       // are authoritative even though no local runner-state.json exists.
       // This read cannot retire a live owner or accept a newer generation.
       try {
-        // Warm turns advance the attempt lease while the physical runner keeps
-        // its initial PRP lease identity. Verify that original lease belongs to
-        // this exact owner lineage instead of requiring the latest attempt id.
+        // PRP historically calls the immutable execution-workspace coordinate
+        // environmentLeaseId. Computer placement records the actual lease. Only
+        // this exact prior workspace coordinate may resolve through that record.
+        // Explicit physical lease identities still preserve their warm lineage.
+        const workspaceCoordinate = input.identity.environmentLeaseId ===
+          priorExecution.binding.executionWorkspaceId;
+        const physicalLeaseId = workspaceCoordinate
+          ? priorWorkspace.leaseId
+          : input.identity.environmentLeaseId;
         const [physicalLease] = await input.db.select({
           providerLeaseId: environmentLeases.providerLeaseId,
+          heartbeatRunId: environmentLeases.heartbeatRunId,
           metadata: environmentLeases.metadata,
         }).from(environmentLeases).where(and(
-          eq(environmentLeases.id, input.identity.environmentLeaseId),
+          eq(environmentLeases.id, physicalLeaseId),
           eq(environmentLeases.companyId, input.execution.binding.companyId),
           eq(environmentLeases.environmentId, target.environmentId),
         )).limit(1);
         const leaseMetadata = record(physicalLease?.metadata);
         const leaseOwner = record(leaseMetadata.computerOwner);
-        if (physicalLease?.providerLeaseId !== priorWorkspace.computerOwner.ownerId ||
+        if ((workspaceCoordinate && physicalLease?.heartbeatRunId !== input.identity.runId) ||
+            physicalLease?.providerLeaseId !== priorWorkspace.computerOwner.ownerId ||
             leaseMetadata.agentId !== input.execution.binding.agentId ||
             leaseOwner.computerId !== priorWorkspace.computerOwner.computerId ||
             leaseOwner.ownerId !== priorWorkspace.computerOwner.ownerId ||
