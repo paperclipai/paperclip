@@ -99,6 +99,7 @@ Protocol version 1 has the following exact Cloud-public method/path set. Paths a
 | GET | /api/muse/v1/assets/1/manifest.json | Public immutable digests/version |
 | GET | /api/muse/v1/assets/1/client.py | Private worker client source |
 | GET | /api/muse/v1/assets/1/detector.sh | Managed detector source |
+| GET | /api/muse/v1/assets/1/instructions.md | Discoverable client instructions |
 | POST | /api/muse/v1/pair | Single-use ticket exchange |
 | POST | /api/muse/v1/refresh | Refresh rotation |
 | GET | /api/muse/v1/signal | Opaque signal; narrow bearer credential |
