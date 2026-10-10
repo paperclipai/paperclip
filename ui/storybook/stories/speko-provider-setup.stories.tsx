@@ -6,7 +6,7 @@ import { voiceStoryLifecycle } from "../fixtures/voiceStoryLifecycle";
 function Fixture(props: Partial<SpekoProviderSetupProps>) {
   const [credentials, setCredentials] = useState(props.credentials ?? {});
   const [connected, setConnected] = useState(false);
-  return connected ? <p role="status">Credentials saved. Continue to the test conversation.</p> : <SpekoProviderSetup onSaveExit={() => {}} agentName="Company Phone Agent" callbackUrl="https://paperclip.example/api/voice-webhooks/endpoint/tools" {...props} credentials={credentials} onChange={setCredentials} onConnect={(values) => { if (!props.repairing && !values.signingSecret?.startsWith("whsec_")) throw new Error("Missing signing secret"); setConnected(true); }} />;
+  return connected ? <p role="status">Credentials saved. Continue to the test conversation.</p> : <SpekoProviderSetup onSaveExit={() => {}} agentName="Company Phone Agent" callbackUrl="https://paperclip.example/api/voice-webhooks/endpoint/tools" {...props} credentials={credentials} onChange={setCredentials} onConnect={(values) => { if ((!props.repairing || props.signingSecretConfigured === false) && !values.signingSecret?.startsWith("whsec_")) throw new Error("Missing signing secret"); setConnected(true); }} />;
 }
 const meta: Meta<typeof SpekoProviderSetup> = { ...voiceStoryLifecycle, title: "Connections/Speko/Provider setup", component: SpekoProviderSetup, parameters: { layout: "padded" } };
 export default meta;
@@ -34,6 +34,19 @@ export const KeyboardValidationAndConnect: Story = {
     await userEvent.tab();
     await expect(canvas.getByRole("button", { name: "Connect Speko" })).toHaveFocus();
     await userEvent.keyboard("{Enter}");
+    await expect(canvas.getByRole("status")).toHaveTextContent("Credentials saved");
+  },
+};
+
+export const InterruptedBeforeCredentials: Story = {
+  render: () => <Fixture repairing signingSecretConfigured={false} />,
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    const connect = canvas.getByRole("button", {name: "Reconnect Speko"});
+    await expect(connect).toBeDisabled();
+    await userEvent.type(canvas.getByRole("textbox", {name: "Speko agent ID"}), "agent_fixture");
+    await userEvent.type(canvas.getByLabelText("Speko API key"), "synthetic-not-a-key");
+    await userEvent.click(connect);
     await expect(canvas.getByRole("status")).toHaveTextContent("Credentials saved");
   },
 };
