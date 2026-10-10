@@ -132,10 +132,19 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
     };
   }
 
+  function operationService() {
+    return govnaAuthorityOperationService(db, {
+      assertCurrentAuthority: async () => ({
+        localPolicyRevision: "policy-v1",
+        connectionGeneration: 1,
+      }),
+    });
+  }
+
   it("replays an identical reservation and rejects operation-id substitution", async () => {
     const f = await fixture();
     const input = pendingInput(f);
-    const service = govnaAuthorityOperationService(db);
+    const service = operationService();
 
     const first = await service.reserve(input);
     const replay = await service.reserve(input);
@@ -149,7 +158,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
   it("allows exactly one local dispatch claim and records the intent atomically", async () => {
     const f = await fixture();
     const input = pendingInput(f);
-    const service = govnaAuthorityOperationService(db);
+    const service = operationService();
     await service.reserve(input);
     await service.approve({
       companyId: f.company.id,
@@ -170,6 +179,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
         localPolicyRevision: input.localPolicyRevision,
         connectionGeneration: input.connectionGeneration,
         ticketGeneration: 1,
+        ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
       }),
       service.claimDispatch({
         companyId: f.company.id,
@@ -179,6 +189,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
         localPolicyRevision: input.localPolicyRevision,
         connectionGeneration: input.connectionGeneration,
         ticketGeneration: 1,
+        ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
       }),
     ]);
 
@@ -201,7 +212,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
   it("marks a claimed call outcome unknown and never makes it claimable again", async () => {
     const f = await fixture();
     const input = pendingInput(f);
-    const service = govnaAuthorityOperationService(db);
+    const service = operationService();
     await service.reserve(input);
     await service.approve({
       companyId: f.company.id,
@@ -211,6 +222,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       localPolicyRevision: input.localPolicyRevision,
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
+      ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
     });
     await service.claimDispatch({
       companyId: f.company.id,
@@ -220,6 +232,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       localPolicyRevision: input.localPolicyRevision,
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
+      ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
     });
 
     await service.markOutcomeUnknown({
@@ -236,6 +249,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       localPolicyRevision: input.localPolicyRevision,
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
+      ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
     })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     const [invocation] = await db.select().from(toolInvocations);
@@ -246,7 +260,7 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
   it("rechecks the live connection and local policy inside the dispatch claim", async () => {
     const f = await fixture();
     const input = pendingInput(f);
-    const service = govnaAuthorityOperationService(db);
+    const service = operationService();
     await service.reserve(input);
     await service.approve({
       companyId: f.company.id,
@@ -267,6 +281,58 @@ describeEmbeddedPostgres("Govna approval authority durable state", () => {
       localPolicyRevision: input.localPolicyRevision,
       connectionGeneration: input.connectionGeneration,
       ticketGeneration: 1,
+      ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
+    })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    expect(operation).toMatchObject({ state: "approved", localClaimId: null });
+  });
+
+  it("lets a newly applicable local hard deny defeat an older Govna approval", async () => {
+    const f = await fixture();
+    const input = pendingInput(f);
+    const service = govnaAuthorityOperationService(db, {
+      assertCurrentAuthority: async ({ db: transaction, invocation }) => {
+        const currentPolicies = await transaction
+          .select()
+          .from(toolPolicies)
+          .where(eq(toolPolicies.companyId, f.company.id))
+          .for("update");
+        if (currentPolicies.some((policy) =>
+          policy.enabled &&
+          policy.policyType === "block" &&
+          (policy.selectors as Record<string, unknown>)?.toolName === invocation.toolName)) {
+          throw new GovnaAuthorityStateError("not_dispatchable", "A current local hard deny applies");
+        }
+        return { localPolicyRevision: "policy-v1", connectionGeneration: 1 };
+      },
+    });
+    await service.reserve(input);
+    await service.approve({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    });
+    await db.insert(toolPolicies).values({
+      companyId: f.company.id,
+      name: "Emergency local stop",
+      policyType: "block",
+      selectors: { toolName: "send_email" },
+      enabled: true,
+    });
+
+    await expect(service.claimDispatch({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+      ticketExpiresAt: Math.floor(Date.now() / 1000) + 30,
     })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     expect(operation).toMatchObject({ state: "approved", localClaimId: null });

@@ -797,7 +797,14 @@ async function readAuthorityResponse(response: Response): Promise<Record<string,
       chunks.push(value);
     }
   }
-  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  let body: string;
+  try {
+    body = new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))),
+    );
+  } catch {
+    throw new GovnaAuthorityTransportError(502, "invalid_utf8", "Govna authority returned invalid UTF-8");
+  }
   if (!response.ok) {
     if (body.length !== 0) {
       throw new GovnaAuthorityTransportError(502, "invalid_error_body", "Govna authority returned a non-empty error body");
@@ -806,7 +813,7 @@ async function readAuthorityResponse(response: Response): Promise<Record<string,
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body);
+    parsed = parseJsonNoDuplicateKeys(body);
   } catch {
     throw new GovnaAuthorityTransportError(502, "invalid_response", "Govna authority returned invalid JSON");
   }
@@ -830,11 +837,16 @@ export function createGovnaAuthorityHttpClient(input: {
   hostPrivateKeyPem: string;
   request: (url: string, init: RequestInit) => Promise<Response>;
   now?: () => number;
+  requestTimeoutMs?: number;
 }) {
   const bearer = authorityBearerToken(input.authorization);
   const privateKey = createPrivateKey(input.hostPrivateKeyPem);
   const publicKey = createPublicKey(input.config.statementPublicKeyPem);
   const now = input.now ?? (() => Math.floor(Date.now() / 1000));
+  const requestTimeoutMs = input.requestTimeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000) {
+    throw new Error("Invalid Govna authority request timeout");
+  }
 
   async function authorityCall(args: {
     operation: "prepare" | "status" | "cancel";
@@ -897,18 +909,32 @@ export function createGovnaAuthorityHttpClient(input: {
         throw new GovnaAuthorityTransportError(500, "expected_binding_incomplete", "Govna status expected binding is incomplete");
       }
     }
-    const response = await input.request(args.endpoint, {
-      method: "POST",
-      redirect: "manual",
-      headers: {
-        Authorization: input.authorization,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "Govna-Authority-Proof": proof,
-      },
-      body: JSON.stringify(args.body),
-    });
-    const result = await readAuthorityResponse(response);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    timer.unref?.();
+    let result: Record<string, unknown>;
+    try {
+      const response = await input.request(args.endpoint, {
+        method: "POST",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          Authorization: input.authorization,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Govna-Authority-Proof": proof,
+        },
+        body: JSON.stringify(args.body),
+      });
+      result = await readAuthorityResponse(response);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new GovnaAuthorityTransportError(504, "authority_timeout", "Govna authority request timed out");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     const authority = verifyAuthorityStatement({
       compact: result.authority as string,
       publicKey,
@@ -945,8 +971,6 @@ export function createGovnaAuthorityHttpClient(input: {
       if (coherentFields.some((field) => !sameJson(authority.payload[field], ticket!.payload[field]))) {
         throw new GovnaAuthorityTransportError(502, "ticket_mismatch", "Govna status and dispatch ticket do not match");
       }
-    } else if (args.type === "status" && authority.payload.state === "approved") {
-      throw new GovnaAuthorityTransportError(502, "ticket_missing", "Govna approved status omitted its dispatch ticket");
     }
     return { authority: result.authority as string, payload: authority.payload, ticket };
   }
@@ -1112,7 +1136,21 @@ function assertReservationReplay(
  * A dispatch claim and its local audit intent are committed together. Once a
  * claim exists, callers must reconcile its outcome and must never replay it.
  */
-export function govnaAuthorityOperationService(db: Db) {
+export function govnaAuthorityOperationService(
+  db: Db,
+  options: {
+    /**
+     * Re-evaluate the complete current local policy/context inside this same
+     * transaction, locking or epoch-checking every mutation source. It must
+     * throw when any current hard deny or scope change applies.
+     */
+    assertCurrentAuthority?: (input: {
+      db: Db;
+      operation: typeof toolGovnaAuthorityOperations.$inferSelect;
+      invocation: typeof toolInvocations.$inferSelect;
+    }) => Promise<{ localPolicyRevision: string; connectionGeneration: number }>;
+  } = {},
+) {
   async function reserve(input: ReserveAuthorityOperationInput) {
     assertPositiveSafeInteger(input.connectionGeneration, "connection generation");
     assertJsonValue(input.authorityBinding);
@@ -1176,7 +1214,7 @@ export function govnaAuthorityOperationService(db: Db) {
     });
   }
 
-  async function claimDispatch(input: AuthorityDispatchBinding) {
+  async function claimDispatch(input: AuthorityDispatchBinding & { ticketExpiresAt: number }) {
     return db.transaction(async (tx) => {
       const [operation] = await tx
         .select()
@@ -1249,6 +1287,28 @@ export function govnaAuthorityOperationService(db: Db) {
         currentConfig.connectionGeneration !== operation.connectionGeneration
       ) {
         throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority configuration or local policy changed");
+      }
+      if (!options.assertCurrentAuthority) {
+        throw new GovnaAuthorityStateError("not_dispatchable", "Current local authority evaluator is unavailable");
+      }
+      const currentAuthority = await options.assertCurrentAuthority({
+        db: tx as unknown as Db,
+        operation,
+        invocation,
+      });
+      if (
+        currentAuthority.localPolicyRevision !== operation.localPolicyRevision ||
+        currentAuthority.connectionGeneration !== operation.connectionGeneration
+      ) {
+        throw new GovnaAuthorityStateError("not_dispatchable", "Current local authority binding changed");
+      }
+      const claimNow = Date.now();
+      if (
+        operation.approvalExpiresAt.getTime() <= claimNow ||
+        !Number.isSafeInteger(input.ticketExpiresAt) ||
+        input.ticketExpiresAt * 1000 <= claimNow
+      ) {
+        throw new GovnaAuthorityStateError("not_dispatchable", "Govna authority approval or ticket has expired");
       }
       const localClaimId = `gcl_${randomUUID()}`;
       const now = new Date();
