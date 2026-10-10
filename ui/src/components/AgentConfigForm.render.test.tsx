@@ -3923,6 +3923,31 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ engine: "cli" }) }));
   });
 
+  it.each(["codex_local", "claude_local"] as const)("does not apply Boat engine restrictions when Kubernetes overrides %s execution", async adapterType => {
+    setManagedSandboxOnly(true);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "kubernetes" });
+    const saveActions = vi.fn();
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } }),
+        makeEnvironment({ id: "kubernetes-1", name: "Kubernetes", driver: "sandbox", status: "active", config: { provider: "kubernetes" } }),
+      ],
+      { adapterType, defaultEnvironmentId: "boat-1", adapterConfig: { engine: "acp" } },
+      { onSaveActionChange: saveActions, showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    expect(result.container.textContent).not.toContain("CLI before saving or testing");
+    expect(fieldLabels(result.container)).not.toContain("Execution engine");
+    expect(findButton(result.container, "Test")?.disabled).toBe(false);
+    expect(saveActions.mock.lastCall?.[0]).toEqual(expect.any(Function));
+  });
+
   it.each(["active", "archived"] as const)("only exposes the engine for a resolved active Boat, keeping managed host paths hidden (%s)", async status => {
     setManagedSandboxOnly(true);
     const result = await renderForm(
