@@ -15,6 +15,7 @@ export function sanitizedSetupErrorMessage(
   error: unknown,
   submittedValues: Record<string, string> | undefined,
 ): string {
+  // query-error-ok: this is the sanitizer that produces the copy; the raw text is redacted and trimmed before it is shown
   let message = error instanceof Error ? error.message.trim() : "";
   if (!message) return chatSetupErrorFallback;
 

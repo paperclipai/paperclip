@@ -10,6 +10,8 @@ import {
   type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
+import { useQueryView } from "@/components/QueryView";
 import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
@@ -86,6 +88,7 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
+  const accountsView = useQueryView(accounts);
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
   const selectDefault = useMutation({
     mutationFn: async (result: NonNullable<typeof savedAccount>) => {
@@ -150,14 +153,14 @@ export function AiConnectionField({
         agentId={agentId ?? ""}
         agentName={agentName}
         readOnly={readOnly}
-        loading={accounts.isPending}
-        error={accounts.error?.message}
+        loading={accounts.isPending || accountsView.kind === "reconnecting"}
+        error={accountsView.kind === "error" ? describeError(accounts.error).body : undefined}
         onChange={(binding) =>
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
-        onRetry={() => void accounts.refetch()}
+        onRetry={accountsView.retry}
       />}
       <Dialog
         open={Boolean(pendingAdoption)}
@@ -226,7 +229,7 @@ export function AiConnectionField({
           </label>}
           {savedAccount ? <div className="space-y-4">
             {selectDefault.error ? <>
-              <p role="alert" className="text-sm text-destructive">{selectDefault.error.message}</p>
+              <p role="alert" className="text-sm text-destructive">{describeError(selectDefault.error).body}</p>
               <Button onClick={() => selectDefault.mutate(savedAccount)}>Retry default selection</Button>
             </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
           </div> :

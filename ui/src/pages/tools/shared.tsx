@@ -7,8 +7,8 @@ import type {
 import { AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { QueryErrorState } from "@/components/QueryView";
 import { StatusBadge } from "@/components/StatusBadge";
-import { ApiError } from "@/api/client";
 
 /** Risk classification badge for a catalog tool. */
 export function RiskBadge({ risk }: { risk: ToolRiskLevel | null | undefined }) {
@@ -166,45 +166,22 @@ export function LoadingState({ label = "Loading…" }: { label?: string }) {
   );
 }
 
-/** Actionable error surface — surfaces the server message and HTTP status. */
-export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
-  let message: string;
-  if (error instanceof ApiError) {
-    if (error.status === 403) {
-      message = "You do not have permission to view this. Tools & Access requires board/admin access.";
-    } else if (error.status === 404 || /route not found/i.test(error.message)) {
-      // Snapshot-skew window: the route exists in this build but not on the live server snapshot yet.
-      message = "Tools & Access isn't available on this server yet — try refreshing after the next deployment.";
-    } else {
-      message = error.message;
-    }
-  } else if (error instanceof Error) {
-    message = error.message;
-  } else {
-    message = "Something went wrong.";
-  }
-  return (
-    <Card className="border-destructive/40">
-      <CardContent className="flex flex-col gap-3 py-6">
-        <div className="flex items-start gap-2 text-sm text-destructive">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <p className="font-medium">Could not load this view</p>
-            <p className="text-destructive/80">{message}</p>
-          </div>
-        </div>
-        {onRetry ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="self-start rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
-          >
-            Retry
-          </button>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
+/**
+ * Compatibility wrapper over the shared `QueryErrorState`. Reads in this folder
+ * gate on `useQueryView` and render `QueryErrorState` directly; this stays
+ * exported only because `ui/src/pages/AgentToolsTab.tsx` (owned by another
+ * task) still imports it. Remove after that migration lands.
+ */
+export function ErrorState({
+  error,
+  onRetry,
+  action,
+}: {
+  error: unknown;
+  onRetry?: () => void;
+  action?: string;
+}) {
+  return <QueryErrorState error={error} action={action ?? "load Tools & Access"} onRetry={onRetry} size="panel" />;
 }
 
 /**

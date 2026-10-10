@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DECISION_MODELS, type DecisionConnectionChoice, type DecisionModelSettings, type DecisionProvider, type DecisionResult, type UpdateDecisionModel } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { decisionModelsApi } from "@/api/decision-models";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ToggleField } from "@/components/agent-config-primitives";
@@ -90,6 +92,7 @@ export function DecisionModelSettingsSection({ companyId }: { companyId: string 
   const client = useQueryClient();
   const key = ["decision-model", companyId];
   const query = useQuery({ queryKey: key, queryFn: () => decisionModelsApi.settings(companyId) });
+  const view = useQueryView(query);
   const [adding, setAdding] = useState(false);
   const [provider, setProvider] = useState<DecisionProvider | null>(null);
   const [newlyConnectedId, setNewlyConnectedId] = useState<string | null>(null);
@@ -100,12 +103,15 @@ export function DecisionModelSettingsSection({ companyId }: { companyId: string 
   const save = useMutation({ mutationFn: (settings: UpdateDecisionModel) => decisionModelsApi.update(companyId, settings), onSuccess: settings => {
     setNewlyConnectedId(null); test.reset(); client.setQueryData(key, { ...query.data, settings });
   } });
-  if (query.isPending) return <p className="text-sm text-muted-foreground">Loading decision model…</p>;
-  if (query.error) return <div role="alert" className="space-y-2"><p className="text-sm text-destructive">Could not load decision settings.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>;
+  // Loaded settings stay on screen through an outage (`stale`); only a real
+  // failure with nothing cached shows the error.
+  if (view.kind === "loading" || view.kind === "reconnecting") return <QueryPlaceholder size="inline" label="Loading decision model" />;
+  if (view.kind === "error") return <QueryErrorState size="panel" error={query.error} action="load decision settings" onRetry={view.retry} retrying={view.isFetching} />;
   if (!query.data?.canManage || !query.data.settings) return null;
+  const testError = test.variables === settingsRevision ? test.error : null;
   return <>
     <DecisionModelSettingsView settings={query.data.settings} choices={query.data.choices} saving={save.isPending} testing={test.isPending}
-      error={save.error?.message ?? (test.variables === settingsRevision ? test.error?.message : undefined)}
+      error={save.error ? describeError(save.error).body : testError ? describeError(testError).body : undefined}
       result={test.variables === settingsRevision ? test.data : null} newlyConnectedId={newlyConnectedId}
       onSave={value => save.mutate(value)} onTest={() => test.mutate(settingsRevision)} onAdd={() => { setProvider(null); setAdding(true); }} />
     <Dialog open={adding} onOpenChange={setAdding}>

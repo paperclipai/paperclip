@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { experimentalSettingKey } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
+import { describeError } from "@/api/errors";
 
 type WorktreeRunExecutionDisplayState =
   | { kind: "off" }
@@ -136,6 +138,7 @@ export function InstanceExperimentalSettings() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const experimentalView = useQueryView(experimentalQuery);
 
   const toggleMutation = useMutation<
     InstanceExperimentalSettingsWithManaged,
@@ -173,21 +176,23 @@ export function InstanceExperimentalSettings() {
       if (context?.previousSettings) {
         queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
       }
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (experimentalQuery.isLoading) {
+  if (experimentalQuery.isLoading || experimentalView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
   }
 
-  if (experimentalQuery.error) {
+  if (experimentalView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {experimentalQuery.error instanceof Error
-          ? experimentalQuery.error.message
-          : "Failed to load experimental settings."}
-      </div>
+      <QueryErrorState
+        size="page"
+        error={experimentalQuery.error}
+        action="load experimental settings"
+        onRetry={experimentalView.retry}
+        retrying={experimentalView.isFetching}
+      />
     );
   }
 

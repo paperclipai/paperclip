@@ -13,6 +13,8 @@ import { AgentMailIntentSetup } from "./AgentMailIntentSetup";
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { defaultAiConnectionName } from "@/components/ai-connections/model";
@@ -121,6 +123,10 @@ export function ConnectionIntentInteractionBody({
     enabled: isAddressee && isPending,
     refetchInterval: isPending && (open || interaction.payload.phase === "authorizing") ? 2_000 : false,
   });
+  const setupView = useQueryView(setupQuery);
+  // Loaded options stay usable through a transient refetch failure (`stale`);
+  // only a real failure, or nothing loaded yet, shows the setup placeholder.
+  const setupUnavailable = setupQuery.isLoading || setupView.kind === "reconnecting" || setupView.kind === "error";
 
   useEffect(() => {
     const current = setupQuery.data?.interaction;
@@ -336,7 +342,8 @@ export function ConnectionIntentInteractionBody({
             <span className="shrink-0 text-muted-foreground">{tool.permission === "allowed" ? "Allowed" : "Ask first"}</span>
           </li>)}
         </ul>
-        {setupQuery.isError || completeMutation.isError || declineMutation.isError ? <p role="alert" className="text-sm text-destructive">{(completeMutation.error ?? declineMutation.error ?? setupQuery.error)?.message ?? "Couldn’t update this access request."}</p> : null}
+        {setupView.kind === "error" ? <QueryErrorState size="inline" error={setupQuery.error} action="load this access request" onRetry={setupView.retry} retrying={setupView.isFetching} /> : null}
+        {completeMutation.error || declineMutation.error ? <p role="alert" className="text-sm text-destructive">{describeError(completeMutation.error ?? declineMutation.error).body}</p> : null}
         {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">Connection manager required.</p> : null}
         <div className="flex items-center justify-between gap-2">
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>Not now</Button>
@@ -353,28 +360,19 @@ export function ConnectionIntentInteractionBody({
   const readyForAdoption = setupQuery.data?.aiConnectionRequiresAdoption
     ? adoptionConnectionId ?? (selectedReady ? repair.connection.id : null)
     : null;
-  const setupContent = setupQuery.isLoading ? (
+  const setupContent = setupQuery.isLoading || setupView.kind === "reconnecting" ? (
                 <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" /> Loading
                   connection options…
                 </div>
-              ) : setupQuery.isError ? (
-                <div className="py-8 text-center">
-                  <p className="font-medium text-foreground">
-                    Couldn’t load connection setup
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {setupQuery.error instanceof Error
-                      ? setupQuery.error.message
-                      : "Try again."}
-                  </p>
-                  <Button
-                    className="mt-4"
-                    variant="outline"
-                    onClick={() => setupQuery.refetch()}
-                  >
-                    Try again
-                  </Button>
+              ) : setupView.kind === "error" ? (
+                <div className="py-6">
+                  <QueryErrorState
+                    error={setupQuery.error}
+                    action="load connection setup"
+                    onRetry={setupView.retry}
+                    retrying={setupView.isFetching}
+                  />
                 </div>
               ) : setupProps ? (
                 renderSetup ? renderSetup(setupProps) : <ConnectionSetupFlow {...setupProps} />
@@ -382,7 +380,7 @@ export function ConnectionIntentInteractionBody({
   const aiConnection = setupQuery.data?.aiConnection;
   const needsOwnAiConnection = isAi && (!repair || setupQuery.data?.aiConnectionRequiresAdoption) && aiConnection?.mode === "responsible_user";
   const aiProviderName = aiConnection ? AI_CONNECTION_CAPABILITIES[aiConnection.provider].name : serviceName;
-  const inlineContent = setupQuery.isLoading || setupQuery.isError ? setupContent
+  const inlineContent = setupUnavailable ? setupContent
     : readyForAdoption ? <div className="space-y-3">
         <p className="text-sm">
           Use your {aiProviderName} connection for {interaction.payload.requestingAgentName}? This replaces the agent’s existing authentication
@@ -477,7 +475,7 @@ export function ConnectionIntentInteractionBody({
           </p>
         ) : null}
 
-        {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
+        {isEmail ? setupUnavailable ? <>
           {setupContent}
           <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
         </> : <AgentMailIntentSetup
@@ -537,28 +535,22 @@ export function ConnectionIntentInteractionBody({
         </div>}
         {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
-        {(!isEmail && completeMutation.isError) ||
-        (selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation) ||
-        adoptMutation.isError ||
-        declineMutation.isError ||
-        phaseMutation.isError ? (
+        {(!isEmail && completeMutation.error) ||
+        (selectAiAccountMutation.error && selectAiAccountMutation.variables?.generation === generation) ||
+        adoptMutation.error ||
+        declineMutation.error ||
+        phaseMutation.error ? (
           <p className="mt-3 text-sm text-destructive" role="alert">
-            {(completeMutation.error ??
-              selectAiAccountMutation.error ??
-              adoptMutation.error ??
-              declineMutation.error ??
-              phaseMutation.error) instanceof Error
-              ? (
-                  completeMutation.error ??
-                  selectAiAccountMutation.error ??
-                  adoptMutation.error ??
-                  declineMutation.error ??
-                  phaseMutation.error
-                )?.message
-              : "Couldn’t update this connection request."}
+            {describeError(
+              completeMutation.error ??
+                selectAiAccountMutation.error ??
+                adoptMutation.error ??
+                declineMutation.error ??
+                phaseMutation.error,
+            ).body}
           </p>
         ) : null}
-        {selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation && (
+        {selectAiAccountMutation.error && selectAiAccountMutation.variables?.generation === generation && (
           <Button className="mt-3" onClick={() => selectAiAccountMutation.mutate(selectAiAccountMutation.variables!)}>
             Retry using this connection
           </Button>

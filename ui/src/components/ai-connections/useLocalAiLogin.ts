@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
@@ -65,7 +66,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         // browser visit; sign-in never requires repeated Connect clicks.
         if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
+        if (!cancelled) setError(describeError(cause).body);
       } finally { checking = false; }
     }
     const onFocus = () => { if (!document.hidden) void check(); };

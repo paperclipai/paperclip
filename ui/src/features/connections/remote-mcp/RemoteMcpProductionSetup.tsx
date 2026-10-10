@@ -9,6 +9,7 @@ import { readConnectionIntentOAuthOutcome, type ConnectionSetupFlowProps } from 
 import { agentsApi } from "@/api/agents";
 import { toolsApi } from "@/api/tools";
 import { resolveAccountUserId } from "@/api/companies-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCompany } from "@/context/CompanyContext";
 import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useNavigate, useSearchParams } from "@/lib/router";
@@ -18,6 +19,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
 import { remoteMcpProviders, type RemoteMcpProviderId } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
+import { describeError } from "@/api/errors";
 
 function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
   try {
@@ -76,6 +78,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     ...(requestedAgentId ? { allAgents: false, agentIds: [requestedAgentId] } : {}),
   }));
   const installs = useQuery({ queryKey: queryKeys.tools.connectionInstalls(connection?.id ?? "__new__"), queryFn: () => toolsApi.getConnectionInstalls(connection!.id), enabled: !!connection });
+  const installsView = useQueryView(installs);
   const agents = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId,
   });
@@ -220,7 +223,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       popup.current?.close();
       popup.current = null;
       onPhaseChange?.("needs_retry");
-      edit({ connectStatus: "idle", notice: error instanceof Error ? error.message : "Could not connect. Please try again." });
+      edit({ connectStatus: "idle", notice: describeError(error).body });
     } finally { busy.current = false; }
   };
   const actions: RemoteMcpSetupActions = {
@@ -250,9 +253,12 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     connections={existingConnections} pendingId={choicePending} error={choiceError}
     onCancel={onCancel} onConnectNew={() => setShowChoices(false)} onSelect={(id) => {
       setChoicePending(id); setChoiceError(null);
-      void onUseExisting(id).catch((error) => { setChoiceError(error instanceof Error ? error.message : "Could not use this connection."); setChoicePending(null); });
+      void onUseExisting(id).catch((error) => { setChoiceError(describeError(error).body); setChoicePending(null); });
     }} />;
-  if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
+  // Saved access already loaded stays in place through a transient refetch failure.
+  if (connection && !installs.data) return <div className="space-y-3 p-8">{installsView.kind === "error"
+    ? <QueryErrorState error={installs.error} action="load saved access" onRetry={installsView.retry} retrying={installsView.isFetching} />
+    : <p>Loading saved access…</p>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.
   return <RemoteMcpConnectionSetup additionalSettings={template && instructions ? <ConnectionInstructionsEditor provider={provider.name} template={template} value={instructions} onChange={setInstructions} disabled={state.connectStatus === "connecting"} /> : undefined} settingsValid={instructionsValid} companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;

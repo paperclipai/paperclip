@@ -68,6 +68,7 @@ import {
   writeStoredImportJob,
 } from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
+import { describeError } from "@/api/errors";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -1056,7 +1057,6 @@ export function CompanyImport() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   // Each Runner provider choice fails closed until its own opt-in and the
   // shared adapter's availability are known. Dot does not enable other providers.
@@ -1199,7 +1199,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Preview failed",
-        body: err instanceof Error ? err.message : "Failed to preview import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1353,7 +1353,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Import failed",
-        body: err instanceof Error ? err.message : "Failed to apply import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1407,7 +1407,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Package read failed",
-        body: err instanceof Error ? err.message : "Failed to read folder.",
+        body: describeError(err).body,
       });
     }
   }
@@ -1606,7 +1606,7 @@ export function CompanyImport() {
         }
         nextActivated.add(item.key);
       } catch (err) {
-        nextFailures[item.key] = err instanceof Error ? err.message : "Activation failed.";
+        nextFailures[item.key] = describeError(err).body;
       }
     }
     setActivatedKeys(nextActivated);
@@ -2071,15 +2071,13 @@ export function CompanyImport() {
             </p>
           </div>
         )}
-        {previewMutation.isError &&
+        {previewMutation.isError && // query-error-ok: mutation outcome for the upload the user just started, not a read
           !previewMutation.isPending &&
           previewMutation.variables === previewGenerationRef.current && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
             <p className="text-xs text-destructive">
               Preview failed:{" "}
-              {previewMutation.error instanceof Error
-                ? previewMutation.error.message
-                : "the request did not complete."}{" "}
+              {describeError(previewMutation.error).body}{" "}
               Retry, or re-export the package without large attachments to shrink it.
             </p>
           </div>
@@ -2169,13 +2167,11 @@ export function CompanyImport() {
               </p>
             </div>
           )}
-          {importMutation.isError && !importMutation.isPending && (
+          {importMutation.isError && !importMutation.isPending && ( // query-error-ok: mutation outcome for the import the user just started, not a read
             <div className="mx-5 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
               <p className="text-xs text-destructive">
                 Import failed:{" "}
-                {importMutation.error instanceof Error
-                  ? importMutation.error.message
-                  : "the request did not complete."}{" "}
+                {describeError(importMutation.error).body}{" "}
                 Nothing may have been created, or the import stopped partway — check the target company
                 before retrying.
               </p>

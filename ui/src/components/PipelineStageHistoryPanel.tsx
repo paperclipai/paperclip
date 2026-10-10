@@ -8,8 +8,10 @@ import { useToastActions } from "../context/ToastContext";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 import { cn } from "../lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { describeError } from "@/api/errors";
 
 /**
  * Compact revisions panel for a per-stage instructions document. Mirrors the
@@ -46,6 +48,7 @@ export function PipelineStageHistoryPanel({
     },
     enabled: open && hasDocument,
   });
+  const revisionsView = useQueryView(revisionsQuery);
 
   const restore = useMutation({
     mutationFn: (revisionId: string) => pipelinesApi.restoreDocumentRevision(pipelineId, documentKey, revisionId),
@@ -64,7 +67,7 @@ export function PipelineStageHistoryPanel({
     onError: (error) => {
       pushToast({
         title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -93,12 +96,19 @@ export function PipelineStageHistoryPanel({
           <p className="px-4 py-3 text-xs text-muted-foreground">
             No history yet. Save the instructions to create the first revision.
           </p>
-        ) : revisionsQuery.isLoading ? (
-          <p className="px-4 py-3 text-xs text-muted-foreground">Loading revisions…</p>
-        ) : revisionsQuery.error ? (
-          <p className="px-4 py-3 text-xs text-destructive">
-            {revisionsQuery.error instanceof Error ? revisionsQuery.error.message : "Could not load revisions."}
-          </p>
+        ) : revisionsView.kind === "loading" || revisionsView.kind === "reconnecting" ? (
+          <QueryPlaceholder size="inline" label="Loading revisions" className="px-4 py-3" />
+        ) : revisionsView.kind === "error" ? (
+          // Loaded revisions stay listed through an outage; this is only a
+          // real failure with nothing cached.
+          <QueryErrorState
+            size="inline"
+            className="px-4 py-3"
+            error={revisionsQuery.error}
+            action="load revisions"
+            onRetry={revisionsView.retry}
+            retrying={revisionsView.isFetching}
+          />
         ) : revisions.length === 0 ? (
           <p className="px-4 py-3 text-xs text-muted-foreground">No revisions recorded yet.</p>
         ) : (

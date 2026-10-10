@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
+import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -341,10 +342,10 @@ describe("Connectors landing page", () => {
     assistantConnectionsMock.mockRejectedValue(new Error("offline"));
     await renderBrowse(false);
     await clickButton("Installed", container);
-    expect(container.textContent).toContain("Couldn’t load your connection status");
+    expect(container.textContent).toContain("Couldn't load your connection status");
     expect(container.textContent).not.toContain("No connectors match");
     assistantConnectionsMock.mockResolvedValue([assistantGrant]);
-    await clickButton("Try again", container);
+    await clickButton("Retry", container);
     await flushReact();
     expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
   });
@@ -592,6 +593,39 @@ describe("Connectors landing page", () => {
     await act(() => Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")!.click());
     await flushReact();
     expect(syncComposioAppsMock).toHaveBeenCalledWith("conn-notion", true);
+  });
+
+  it("keeps the last known aggregator accounts without a load-error notice when a refetch fails transiently", async () => {
+    composioFixture();
+    const client = await renderBrowse();
+    const circleback = () => container.querySelector('[data-app-slug="circleback"]');
+    expect(circleback()?.textContent).toContain("Meeting notes");
+    expect(circleback()?.querySelector('[title="Connected"]')).toBeTruthy();
+
+    listComposioAppsMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tools", "aggregator-apps"] }); });
+    await flushReact();
+
+    expect(circleback()?.textContent).toContain("Meeting notes");
+    expect(circleback()?.querySelector('[title="Connected"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Last known account · Refresh to verify");
+    expect(container.textContent).not.toContain("Couldn’t load Composio accounts");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("reports a real aggregator account failure while keeping the last known accounts", async () => {
+    composioFixture();
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="circleback"]')?.textContent).toContain("Meeting notes");
+
+    listComposioAppsMock.mockRejectedValue(new ApiError("Boom", 500, { error: "Boom" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tools", "aggregator-apps"] }); });
+    await flushReact();
+
+    expect(container.querySelector('[data-app-slug="circleback"]')?.textContent).toContain("Meeting notes");
+    expect(container.textContent).toContain("Couldn’t load Composio accounts. Use Refresh in the connection’s menu to try again.");
+    expect(container.textContent).toContain("Last known account · Refresh to verify");
   });
 
   it("refreshes only the selected Composio account while another account is syncing", async () => {
@@ -1490,14 +1524,14 @@ describe("Connectors landing page", () => {
 
     await renderBrowse();
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Couldn’t load every connector",
+    expect(container.querySelector('[data-query-view="error"]')?.textContent).toContain(
+      "Couldn't load every connector",
     );
     expect(container.textContent).toContain("Internal search");
     expect(container.textContent).toContain("search.internal.example");
     expect(
       Array.from(container.querySelectorAll("button")).some(
-        (button) => button.textContent === "Try again",
+        (button) => button.textContent === "Retry",
       ),
     ).toBe(true);
   });

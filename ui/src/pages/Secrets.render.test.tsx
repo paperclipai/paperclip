@@ -798,6 +798,87 @@ describe("Secrets page layout", () => {
     });
   });
 
+  it("keeps the loaded secrets list visible when a refetch fails during an outage", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("OPENAI_API_KEY");
+
+    mockSecretsApi.list.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list("company-1") });
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockSecretsApi.list).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("OPENAI_API_KEY");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows readable copy and a Retry button when the secrets list fails to load", async () => {
+    mockSecretsApi.list
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue([makeCompanySecret()]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await waitForReact(() => container.querySelector('[data-query-view="error"]') !== null);
+
+    const errorState = container.querySelector('[data-query-view="error"]');
+    expect(errorState?.textContent).toContain("Couldn't load secrets");
+    expect(errorState?.textContent).toContain("Boom");
+    expect(container.querySelector('[data-testid="secrets-list-container"]')).toBeNull();
+    const retryButton = [...(errorState?.querySelectorAll("button") ?? [])].find(
+      (button) => button.textContent?.includes("Retry"),
+    ) as HTMLButtonElement | undefined;
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.click();
+    });
+    await waitForReact(() => container.textContent?.includes("OPENAI_API_KEY") ?? false);
+
+    expect(mockSecretsApi.list).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("creates an each-user secret from the unified New secret dialog", async () => {
     const definition = makeUserSecretDefinition({ name: "Personal GitHub token" });
     mockSecretsApi.createUserSecretDefinition.mockResolvedValueOnce(definition);

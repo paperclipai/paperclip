@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "@/api/client";
 import { decisionModelsApi } from "@/api/decision-models";
 import { DecisionModelSettingsSection, DecisionModelSettingsView } from "./DecisionModelSettings";
 import { choices, configured, result } from "../../../storybook/stories/decision-models/fixtures";
@@ -55,4 +56,56 @@ it("clears test feedback when another manager changes the saved configuration", 
     });
     expect(container.textContent).not.toContain("Decision model is working");
   } finally { act(() => root.unmount()); client.clear(); test.mockRestore(); container.remove(); }
+});
+
+it("keeps loaded decision settings on screen when a refetch fails transiently", async () => {
+  const container = document.createElement("div"); document.body.appendChild(container);
+  const root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = ["decision-model", configured.companyId];
+  client.setQueryData(key, { canManage: true, settings: configured, choices });
+  const settings = vi.spyOn(decisionModelsApi, "settings").mockRejectedValue(
+    new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+  );
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter>
+      <DecisionModelSettingsSection companyId={configured.companyId} />
+    </MemoryRouter></QueryClientProvider>));
+    expect(container.textContent).toContain("Enable decisions");
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: key });
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+    expect(settings).toHaveBeenCalled();
+    expect(container.textContent).toContain("Enable decisions");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  } finally { act(() => root.unmount()); client.clear(); settings.mockRestore(); container.remove(); }
+});
+
+it("shows readable copy and Retry when decision settings fail to load", async () => {
+  const container = document.createElement("div"); document.body.appendChild(container);
+  const root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const settings = vi.spyOn(decisionModelsApi, "settings")
+    .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+    .mockResolvedValue({ canManage: true, settings: configured, choices });
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter>
+      <DecisionModelSettingsSection companyId={configured.companyId} />
+    </MemoryRouter></QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load decision settings");
+    expect(container.textContent).not.toContain("Enable decisions");
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry");
+    expect(retry, "Retry button").toBeTruthy();
+    await act(async () => {
+      retry!.click();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+    expect(container.textContent).toContain("Enable decisions");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+  } finally { act(() => root.unmount()); client.clear(); settings.mockRestore(); container.remove(); }
 });

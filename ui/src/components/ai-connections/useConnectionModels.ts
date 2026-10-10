@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { aiRoutingModel, type AiConnectionBinding, type AiProviderRouting } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
+import { useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function useConnectionModels(
@@ -30,8 +31,8 @@ export function useConnectionModels(
     queryFn: () => agentsApi.adapterModels(companyId!, "opencode_local", { provider: "openrouter" }),
     enabled: Boolean(companyId && discover),
     staleTime: 60_000,
-    retry: false,
   });
+  const catalogView = useQueryView(catalog);
   const effectiveRouting: AiProviderRouting | undefined = routing ?? (openRouter
     ? { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] }
     : undefined);
@@ -44,8 +45,8 @@ export function useConnectionModels(
           id: aiRoutingModel(effectiveRouting, harness, m.id),
           label: m.label ?? m.id,
         })),
-        isLoading: discover && catalog.isLoading,
-        error: discover ? catalog.error : null,
+        isLoading: discover && (catalog.isLoading || catalogView.kind === "reconnecting"),
+        error: discover && catalogView.kind === "error" ? catalog.error : null,
         refreshing: discover && catalog.isFetching,
         refreshModels: discover ? async () => { await catalog.refetch(); } : undefined,
         resolveModel: (model: string) =>

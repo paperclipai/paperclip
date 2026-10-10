@@ -2,7 +2,9 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
@@ -45,6 +47,9 @@ export function ManagedAiConnectionDetails({
     queryKey: ["ai-connection-grants", connection.id],
     queryFn: () => toolsApi.listConnectionGrants(connection.id),
   });
+  const runsView = useQueryView(runs);
+  const accountsView = useQueryView(accounts);
+  const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
   const makeDefault = useMutation({
     mutationFn: (id: string) =>
@@ -64,21 +69,27 @@ export function ManagedAiConnectionDetails({
     (a) => a.id === connection.id,
   );
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
-  const error =
-    accounts.error ??
-    grants.error ??
-    makeDefault.error ??
-    stop.error;
-  if (error)
+  const failedView = [accountsView, grantsView].find((view) => view.kind === "error");
+  if (failedView)
+    return (
+      <QueryErrorState
+        error={failedView.error}
+        action="load this AI account"
+        onRetry={failedView.retry}
+        retrying={failedView.isFetching}
+      />
+    );
+  const mutationError = makeDefault.error ?? stop.error;
+  if (mutationError)
     return (
       <p role="alert" className="text-sm text-destructive">
-        {error.message}
+        {describeError(mutationError).body}
       </p>
     );
   if (!account || !grant)
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        {accounts.isPending || grants.isPending
+        {accounts.isPending || grants.isPending || accountsView.kind === "reconnecting" || grantsView.kind === "reconnecting"
           ? "Loading AI account…"
           : "This account is not available to you."}
       </p>
@@ -94,10 +105,14 @@ export function ManagedAiConnectionDetails({
         onRevoke={() => revoke.mutateAsync(grant.id).then(() => undefined)}
         revocationDetails={
           <div className="space-y-2">
-            {runs.error && (
-              <p role="alert">
-                Could not load active runs. Retry before revoking.
-              </p>
+            {runsView.kind === "error" && (
+              <QueryErrorState
+                size="inline"
+                error={runs.error}
+                action="load active runs"
+                onRetry={runsView.retry}
+                retrying={runsView.isFetching}
+              />
             )}
             {runs.data?.map((run) => (
               <div

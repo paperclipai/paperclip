@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
 import { AiConnectionField } from "./AiConnectionField";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 
@@ -146,4 +147,31 @@ it("uses the server's connection-manager permission for company-wide access", as
   await mount([], true);
   await click("Connect another account");
   expect(credentialProps).toMatchObject({ allAgents: true });
+});
+
+it("keeps loaded connections usable when a refetch fails during an outage", async () => {
+  await mount([account()]);
+  expect(document.body.textContent).toContain("Reconnect account");
+  mocks.list.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+  await client.invalidateQueries();
+  await settle();
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
+  expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+  expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+});
+
+it("shows readable copy with a retry when connections cannot be loaded", async () => {
+  mocks.list.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+  await mount([account()]);
+  const alerts = Array.from(document.querySelectorAll('[role="alert"]')).map(node => node.textContent).join(" ");
+  expect(alerts).toContain("An unexpected error occurred");
+  expect(document.body.textContent).not.toContain("internal_error");
+  expect(document.body.textContent).not.toContain("Request failed: 500");
+  expect(document.body.textContent).not.toContain("Reconnect account");
+  await click("Retry connections");
+  await settle();
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
 });

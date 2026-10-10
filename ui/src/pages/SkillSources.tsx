@@ -8,6 +8,8 @@ import { useCompany } from '@/context/CompanyContext';
 import { useBreadcrumbs } from '@/context/BreadcrumbContext';
 import { queryKeys } from '@/lib/queryKeys';
 import { skillSourcesApi } from '@/api/skillSources';
+import { describeError } from '@/api/errors';
+import { QueryErrorState, useQueryView } from '@/components/QueryView';
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
 import { appSourceConnectHref } from './apps/app-connect-policy';
 import { Button } from '@/components/ui/button';
@@ -32,12 +34,13 @@ export function SkillSources() {
   const companyId = selectedCompanyId ?? '';
   useEffect(() => { setBreadcrumbs([{ label: 'Skills', href: '/skills' }, { label: 'Sources' }]); }, [setBreadcrumbs]);
   const query = useQuery({ queryKey: sourceKey(companyId), queryFn: () => skillSourcesApi.list(companyId), enabled: Boolean(companyId) });
+  const view = useQueryView(query);
   async function invalidate() {
     await Promise.all([client.invalidateQueries({ queryKey: sourceKey(companyId) }), client.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) })]);
   }
   const refresh = useMutation({ mutationFn: (id: string) => skillSourcesApi.refresh(companyId, id), onSuccess: async result => {
     setResults(prev => ({ ...prev, [result.source.id]: result.warnings.join(' · ') })); await invalidate();
-  }, onError: (error, id) => { setResults(prev => ({ ...prev, [id]: error.message })); void invalidate(); } });
+  }, onError: (error, id) => { setResults(prev => ({ ...prev, [id]: describeError(error).body })); void invalidate(); } });
   const disconnect = useMutation({ mutationFn: (id: string) => skillSourcesApi.disconnect(companyId, id), onSuccess: invalidate });
   const activeSource = query.data?.find(source => source.id === sourceId);
   if (!companyId) return <p className="p-6 text-sm text-muted-foreground">Select a company to manage skill sources.</p>;
@@ -47,9 +50,9 @@ export function SkillSources() {
       <Button onClick={() => navigate('/skills/sources/new')}><Plus className="size-4" />Import from GitHub</Button>
     </header>
     <Link to="/skills" className="text-sm text-muted-foreground hover:text-foreground">Installed skills</Link>
-    {query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading sources…</p>}
-    {query.error && <p role="alert" className="text-sm text-destructive">{query.error.message} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Try again</Button></p>}
-    {disconnect.error && <p role="alert" className="text-sm text-destructive">{disconnect.error.message}</p>}
+    {(query.isPending || view.kind === 'reconnecting') && <p role="status" className="text-sm text-muted-foreground">Loading sources…</p>}
+    {view.kind === 'error' && <QueryErrorState error={query.error} action="load skill sources" onRetry={view.retry} retrying={view.isFetching} />}
+    {disconnect.error && <p role="alert" className="text-sm text-destructive">{describeError(disconnect.error).body}</p>}
     {query.data?.length === 0 && <div className="flex flex-col items-start gap-3 py-8"><p className="text-sm text-muted-foreground">No repositories added yet. Import your skills to make them available in {selectedCompany?.name ?? 'this company'}.</p><Button variant="outline" onClick={() => navigate('/skills/sources/new')}>Import from GitHub</Button></div>}
     <div className="divide-y divide-border">
       {query.data?.map(source => {
@@ -110,7 +113,9 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const [discovery, setDiscovery] = useState<SkillSourceDiscovery | null>(draft.discovery ?? null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(draft.selectedPaths ?? (source ? source.entries.filter(entry => entry.selection !== 'excluded').map(entry => entry.path) : [])));
   const [excludedFolders, setExcludedFolders] = useState<string[]>(draft.excludedFolders ?? source?.excludedFolders ?? []);
-  const repositories = useQuery({ queryKey: queryKeys.skillSources.repositories(companyId), queryFn: () => skillSourcesApi.repositories(companyId), refetchOnMount: 'always', retry: false });
+  const repositories = useQuery({ queryKey: queryKeys.skillSources.repositories(companyId), queryFn: () => skillSourcesApi.repositories(companyId), refetchOnMount: 'always' });
+  const repositoriesView = useQueryView(repositories);
+  const repositoriesLoading = repositories.isPending || repositoriesView.kind === 'reconnecting';
   const availableRepositories = repositories.data?.repositories ?? [];
   const parsedRepository = parseGitHubSkillRepositoryUrl(repositoryUrl);
   const matchingRepository = availableRepositories.find(repo => parseGitHubSkillRepositoryUrl(repo.url)?.repositoryUrl === parsedRepository?.repositoryUrl);
@@ -169,7 +174,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
             </div>
             <Button asChild variant="outline" size="sm"><Link onClick={rememberReturn} to={connectHref}><Plus className="size-4" />Add repos</Link></Button>
           </div>}
-          {repositories.isPending && <p role="status" className="text-sm text-muted-foreground">Loading your GitHub repositories…</p>}
+          {repositoriesLoading && <p role="status" className="text-sm text-muted-foreground">Loading your GitHub repositories…</p>}
           {availableRepositories.length > 0 && <Command className="h-auto border border-border" label="Source repositories">
               <CommandInput placeholder="Search repositories…" aria-label="Search repositories" disabled={busy} />
               <CommandList className="max-h-48">
@@ -187,12 +192,12 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
                 </CommandGroup>
               </CommandList>
           </Command>}
-          {(repositories.error || Boolean(repositories.data?.failedConnectionCount)) && <p role="alert" className="text-xs text-destructive">
+          {(repositoriesView.kind === 'error' || Boolean(repositories.data?.failedConnectionCount)) && <p role="alert" className="text-xs text-destructive">
             {availableRepositories.length ? 'Some GitHub connections could not load repositories.' : 'Could not load GitHub repositories.'}{' '}
             <Button variant="ghost" size="sm" disabled={repositories.isFetching} onClick={() => void repositories.refetch()}>Try again</Button>
             <Link to="/apps" className="underline">Manage connections</Link>
           </p>}
-          {!repositories.isPending && availableRepositories.length === 0 && <Button asChild variant="outline" className="h-28 w-full flex-col gap-3 whitespace-normal text-center">
+          {!repositoriesLoading && availableRepositories.length === 0 && <Button asChild variant="outline" className="h-28 w-full flex-col gap-3 whitespace-normal text-center">
             <Link onClick={rememberReturn} to={connectHref}><GithubIcon className="size-6" />Connect GitHub to see your repos</Link>
           </Button>}
           <Button type="button" variant="link" size="sm" className="h-auto self-end p-0 text-xs font-normal text-muted-foreground underline" disabled={busy} aria-expanded={showRepositoryUrl} aria-controls="source-repository-url" onClick={() => setShowRepositoryUrl(true)}>... or add public repo by URL</Button>
@@ -208,7 +213,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
       {ready && !save.isPending && <SkillSourceTree onPreview={(skill, filePath) => setPreview({ skill, filePath })} candidates={candidates} selected={selected} excludedFolders={excludedFolders} onChange={(paths, folders) => { setSelected(paths); setExcludedFolders(folders); }} disabled={busy} />}
       {discovery?.warnings.map(warning => <p key={warning} className="text-xs text-muted-foreground">{warning}</p>)}
       {skippedCount > 0 && <p className="text-sm text-muted-foreground">{skippedCount} selected {skippedCount === 1 ? 'skill has' : 'skills have'} validation errors and will be skipped.</p>}
-      {error && <p role="alert" className="text-sm text-destructive">{error.message}{' '}<Link onClick={rememberReturn} to={connectHref} className="underline">Connect a GitHub account</Link></p>}
+      {error && <p role="alert" className="text-sm text-destructive">{describeError(error).body}{' '}<Link onClick={rememberReturn} to={connectHref} className="underline">Connect a GitHub account</Link></p>}
       {scan.isPending && <SkillImportProgress repository={parsedRepository?.fullName ?? repositoryUrl} progress={progress} found={found} />}
       {save.isPending && <SkillImportProgress importing repository={source?.fullName ?? discovery!.fullName} count={eligibleCount}
         found={candidates.filter(candidate => selected.has(candidate.path) && !candidate.error).map(candidate => ({ ...candidate, fileCount: candidate.inspection?.files.length ?? 1 }))} />}

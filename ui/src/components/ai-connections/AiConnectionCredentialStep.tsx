@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 import { environmentsApi } from "@/api/environments";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { resolveAdapterTestEnvironmentId, resolveLocalDefaultEnvironmentId, resolveManagedSandboxEnvironmentId } from "@/lib/adapter-test-environment";
@@ -47,6 +49,12 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const settings = useQuery({ queryKey: queryKeys.instance.settings, queryFn: instanceSettingsApi.get });
   const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: instanceSettingsApi.getExperimental });
   const general = useQuery({ queryKey: queryKeys.instance.generalSettings, queryFn: instanceSettingsApi.getGeneral });
+  const envsView = useQueryView(envs);
+  const capsView = useQueryView(caps);
+  const settingsView = useQueryView(settings);
+  const experimentalView = useQueryView(experimental);
+  const generalView = useQueryView(general);
+  const views = [envsView, capsView, settingsView, experimentalView, generalView];
   const forced = resolveForcedKubernetesEnvironment(general.data?.executionMode, envs.data ?? []);
   let environmentId: string | null = null;
   let environmentError: string | undefined;
@@ -59,7 +67,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(envs.data),
       visibleEnvironmentIds: envs.data?.map((env) => env.id),
     });
-  } catch (error) { environmentError = error instanceof Error ? error.message : "Could not resolve the sign-in environment."; }
+  } catch (error) { environmentError = describeError(error).body; }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
     env.status === "active" && (env.driver === "local" || (env.driver === "sandbox" &&
     typeof env.config.provider === "string" &&
@@ -74,8 +82,8 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const environment = envs.data?.find((env) => env.id === environmentId);
   const sandboxProvider = typeof environment?.config.provider === "string" ? environment.config.provider : "";
   const canLogin = environment?.driver === "sandbox" && caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
-  const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending);
-  const error = environmentError ?? [envs, caps, settings, experimental, general].find((query) => query.error)?.error?.message;
+  const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || views.some((view) => view.kind === "reconnecting");
+  const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-6">
     {!hideName && <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>}
@@ -83,7 +91,8 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       <SelectTrigger aria-label="Sign-in environment"><SelectValue placeholder="Sign-in environment" /></SelectTrigger>
       <SelectContent>{loginEnvironments.map((env) => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
     </Select>}
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {loadError ? <QueryErrorState size="inline" error={loadError.error} action="prepare sign-in" onRetry={loadError.retry} retrying={loadError.isFetching} />
+      : environmentError ? <p role="alert" className="text-sm text-destructive">{environmentError}</p> : null}
     {defaults}
     {loading ? <p role="status" className="text-sm text-muted-foreground">Preparing sign-in…</p> : <AgentProviderConnection
       key={environmentId ?? "local"}
@@ -95,7 +104,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       onBack={onCancel}
       onConnected={() => {}}
       testConnection={async () => false}
-      managedAccount={{ intent, nameForMethod, initialMethod, fixedMethod: fixedMethod ?? Boolean(connectionId), disabled: disabled || loading || Boolean(error) || !name.trim(), onComplete: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); void client.invalidateQueries({ queryKey: ["tools"] }); onComplete(result); } }}
+      managedAccount={{ intent, nameForMethod, initialMethod, fixedMethod: fixedMethod ?? Boolean(connectionId), disabled: disabled || loading || Boolean(environmentError) || Boolean(loadError) || !name.trim(), onComplete: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); void client.invalidateQueries({ queryKey: ["tools"] }); onComplete(result); } }}
     />}
   </div>;
 }
@@ -111,7 +120,7 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
   });
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
     {!hideName && <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>}
-    {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
+    {save.error && <p role="alert" className="text-sm text-destructive">{describeError(save.error).body}</p>}
     <ProviderApiKeyCard providerName={provider === "google" ? "Google" : "OpenRouter"} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={disabled || save.isPending} placeholder="Enter API key here" autoFocus />
     {defaults}
     <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={disabled || !name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>

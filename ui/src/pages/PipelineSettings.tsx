@@ -48,6 +48,8 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { ApiError } from "../api/client";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import type {
   PipelineCaseChildRow,
   PipelineCompanyCaseEvent,
@@ -1336,6 +1338,7 @@ export function PipelineSettings() {
     queryFn: () => pipelinesApi.get(pipelineId!),
     enabled: !!pipelineId && !!selectedCompanyId,
   });
+  const pipelineView = useQueryView(pipelineQuery);
 
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
@@ -1351,7 +1354,6 @@ export function PipelineSettings() {
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
 
   const healthQuery = useQuery({
@@ -1908,7 +1910,7 @@ export function PipelineSettings() {
     onError: async (error) => {
       pushToast({
         title: "Failed to save stage",
-        body: error instanceof Error ? error.message : "Paperclip could not save the stage.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1937,11 +1939,7 @@ export function PipelineSettings() {
     onError: async (error) => {
       pushToast({
         title: "Failed to save secrets",
-        body: error instanceof ApiError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : "Paperclip could not save the stage secrets.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -2018,7 +2016,7 @@ export function PipelineSettings() {
     onError: (error) => {
       pushToast({
         title: "Failed to delete stage",
-        body: error instanceof Error ? error.message : "Paperclip could not delete the stage.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -2050,7 +2048,7 @@ export function PipelineSettings() {
       setStrictTransitionsEnabled(pipeline?.enforceTransitions ?? false);
       pushToast({
         title: "Failed to update transition rules",
-        body: error instanceof Error ? error.message : "Paperclip could not update transition rules.",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -2130,12 +2128,23 @@ export function PipelineSettings() {
     return <EmptyState icon={Hexagon} message="No pipeline selected." />;
   }
 
-  if (pipelineQuery.isLoading) {
+  if (pipelineQuery.isLoading || pipelineView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
   }
 
-  if (pipelineQuery.error) {
-    return <p className="text-sm text-destructive">{pipelineQuery.error.message}</p>;
+  if (pipelineView.kind === "error") {
+    if (pipelineView.errorKind === "not_found") {
+      return <EmptyState icon={Hexagon} message="Pipeline not found." />;
+    }
+    return (
+      <QueryErrorState
+        size="page"
+        error={pipelineQuery.error}
+        action="load the pipeline"
+        onRetry={pipelineView.retry}
+        retrying={pipelineView.isFetching}
+      />
+    );
   }
 
   if (!pipeline) {
@@ -2621,7 +2630,7 @@ export function PipelineSettings() {
           ) : null}
         </div>
         {savePipelineDetails.error ? (
-          <p className="mt-3 text-sm text-destructive">{savePipelineDetails.error.message}</p>
+          <p className="mt-3 text-sm text-destructive">{describeError(savePipelineDetails.error).body}</p>
         ) : null}
       </form>
 
@@ -3291,7 +3300,7 @@ export function PipelineSettings() {
                 </div>
               </div>
 
-              {saveStage.error ? <p className="text-sm text-destructive">{saveStage.error.message}</p> : null}
+              {saveStage.error ? <p className="text-sm text-destructive">{describeError(saveStage.error).body}</p> : null}
 
               {stageDirty || saveStage.isPending ? (
                 <div className="sticky bottom-0 z-10 -mx-6 mt-6 flex items-center justify-between gap-3 border-t border-border bg-background/95 px-6 py-3 backdrop-blur motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2">
@@ -3344,7 +3353,7 @@ export function PipelineSettings() {
               </p>
             )}
             {deleteStage.error ? (
-              <p className="text-sm text-destructive">{deleteStage.error.message}</p>
+              <p className="text-sm text-destructive">{describeError(deleteStage.error).body}</p>
             ) : null}
           </div>
           <DialogFooter>
@@ -3394,7 +3403,7 @@ export function PipelineSettings() {
               />
             </label>
             {archivePipeline.error ? (
-              <p className="text-sm text-destructive">{archivePipeline.error.message}</p>
+              <p className="text-sm text-destructive">{describeError(archivePipeline.error).body}</p>
             ) : null}
           </div>
           <DialogFooter>

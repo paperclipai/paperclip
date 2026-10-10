@@ -3,7 +3,9 @@ import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SkillSource } from '@paperclipai/shared';
 import { SkillSources } from './SkillSources';
+import { ApiError } from '@/api/client';
 import { skillSourcesApi } from '@/api/skillSources';
 
 const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new' }));
@@ -25,6 +27,11 @@ const repos = {
   ],
 };
 const discovery = { repositoryId: '1', repositoryUrl: 'https://github.com/acme/team-skills', fullName: 'acme/team-skills', trackingRef: 'feature/new-skills', commitSha: 'a'.repeat(40), candidates: [], warnings: [] };
+const connectedSource: SkillSource = {
+  id: 'source-1', companyId: 'company-1', repositoryId: '1', repositoryUrl: 'https://github.com/acme/team-skills', fullName: 'acme/team-skills',
+  trackingRef: 'HEAD', connectionId: 'shared', excludedFolders: [], enabled: true, revision: 1,
+  lastAttemptAt: null, lastSuccessAt: null, lastScanCommit: null, lastError: null, entries: [],
+};
 let root: Root;
 let host: HTMLDivElement;
 let client: QueryClient;
@@ -188,5 +195,41 @@ describe('GitHub skill source import', () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('Some GitHub connections could not load repositories.');
     expect([...document.querySelectorAll('a')].find(el => el.textContent === 'Manage connections')?.getAttribute('href')).toBe('/apps');
     expect(button('Try again')).toBeTruthy();
+  });
+});
+
+describe('Skill sources list read resilience', () => {
+  it('keeps loaded sources visible when a refetch fails during an outage', async () => {
+    context.sourceId = '';
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([connectedSource]);
+    await mount();
+    expect(document.body.textContent).toContain('acme/team-skills');
+
+    vi.mocked(skillSourcesApi.list).mockRejectedValue(new ApiError('Paperclip is restarting.', 503, { error: 'tenant_app_unavailable' }));
+    await act(async () => { await client.invalidateQueries(); });
+    await flush(); await flush();
+
+    expect(skillSourcesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('acme/team-skills');
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Paperclip is restarting.');
+  });
+  it('shows readable copy and a Retry button when the sources list fails to load', async () => {
+    context.sourceId = '';
+    vi.mocked(skillSourcesApi.list).mockRejectedValueOnce(new ApiError('Boom', 500, { error: 'Boom' })).mockResolvedValue([connectedSource]);
+    await mount();
+
+    const errorState = document.querySelector('[data-query-view="error"]');
+    expect(errorState?.textContent).toContain("Couldn't load skill sources");
+    expect(errorState?.textContent).toContain('Boom');
+    expect(document.body.textContent).not.toContain('No repositories added yet');
+    expect(button('Retry')).toBeTruthy();
+
+    await act(async () => button('Retry').click());
+    await flush(); await flush();
+
+    expect(skillSourcesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('acme/team-skills');
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

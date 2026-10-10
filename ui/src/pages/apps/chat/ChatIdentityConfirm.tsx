@@ -5,6 +5,7 @@ import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
 import { healthApi } from "@/api/health";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, useSearchParams } from "@/lib/router";
 
@@ -22,20 +23,21 @@ export function ChatIdentityConfirm() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const [confirmed, setConfirmed] = useState(false);
-  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, retry: false });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  const healthView = useQueryView(health);
   const local = health.data?.deploymentMode === "local_trusted";
   const session = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
+  const sessionView = useQueryView(session);
   const preview = useQuery({
     queryKey: ["chat-identity-link-preview", token],
     queryFn: () => chatEndpointsApi.previewIdentityLink(token),
     enabled: token.length >= 32 && (local || Boolean(session.data)),
     refetchInterval: confirmed ? false : 3_000,
-    retry: false,
   });
+  const previewView = useQueryView(preview);
   const confirm = useMutation({
     mutationFn: () => chatEndpointsApi.confirmIdentityLink(token),
     onSuccess: () => setConfirmed(true),
@@ -44,11 +46,22 @@ export function ChatIdentityConfirm() {
   const requestAccess = useMutation({
     mutationFn: () => chatEndpointsApi.requestIdentityAccess(token),
   });
-  if (health.isError || (!local && session.isError)) return <main className="mx-auto max-w-lg px-6 py-12 text-sm text-destructive">Couldn&apos;t load your account. Refresh to try again.</main>;
+  const accountFailure = healthView.kind === "error" ? healthView : !local && sessionView.kind === "error" ? sessionView : null;
+  if (accountFailure) {
+    return (
+      <main className="mx-auto max-w-lg px-6 py-12">
+        <QueryErrorState size="page" error={accountFailure.error} action="load your account" onRetry={accountFailure.retry} retrying={accountFailure.isFetching} />
+      </main>
+    );
+  }
   if (health.isSuccess && !local && session.isSuccess && !session.data) {
     return <Navigate to={`/auth?next=${encodeURIComponent(`/chat-identity/confirm?token=${token}`)}`} replace />;
   }
-  if (token.length < 32 || (!confirmed && preview.isError)) {
+  // The server rejects a bad, expired, used, or foreign link with a client
+  // error; an outage or server fault is not a verdict on the link.
+  const previewRejected = !confirmed && previewView.kind === "error"
+    && previewView.errorKind !== "transient" && previewView.errorKind !== "unknown";
+  if (token.length < 32 || previewRejected) {
     return (
       <main className="mx-auto max-w-lg space-y-4 px-6 py-12">
         <h1 className="text-xl font-bold">This identity link is unavailable</h1>
@@ -59,7 +72,15 @@ export function ChatIdentityConfirm() {
       </main>
     );
   }
-  if (health.isPending || preview.isLoading || (!local && session.isLoading) || !preview.data) {
+  if (!confirmed && previewView.kind === "error") {
+    return (
+      <main className="mx-auto max-w-lg px-6 py-12">
+        <QueryErrorState size="page" error={preview.error} action="load the identity link" onRetry={previewView.retry} retrying={previewView.isFetching} />
+      </main>
+    );
+  }
+  if (health.isPending || healthView.kind === "reconnecting" || preview.isLoading || previewView.kind === "reconnecting"
+    || (!local && (session.isLoading || sessionView.kind === "reconnecting")) || !preview.data) {
     return (
       <main className="flex items-center justify-center gap-2 px-6 py-12 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -124,17 +145,17 @@ export function ChatIdentityConfirm() {
         identity. Paperclip will check your current organization membership on
         every action.
       </p>
-      {confirm.isError && (
+      {confirm.error ? (
         <p className="text-sm text-destructive">
           This link could not be confirmed. It may have expired or been revoked.
         </p>
-      )}
+      ) : null}
       {identity.canConfirm === false ? (
         <div className="space-y-3">
           <p className="text-sm">You need membership in {identity.companyName} before linking this account.</p>
           {requestAccess.isSuccess ? <p role="status" className="text-sm">Access requested. An admin can approve it in Paperclip. After approval, return here to confirm; if this link expires, send the connect command in Slack again.</p>
             : <Button disabled={requestAccess.isPending || !identity.selfService} onClick={() => requestAccess.mutate()}>Request access</Button>}
-          {requestAccess.isError && <p role="alert" className="text-sm text-destructive">Couldn&apos;t request access. The link may have expired. Send the connect command again and retry.</p>}
+          {requestAccess.error ? <p role="alert" className="text-sm text-destructive">Couldn&apos;t request access. The link may have expired. Send the connect command again and retry.</p> : null}
         </div>
       ) : <Button disabled={confirm.isPending} onClick={() => confirm.mutate()}>
         {confirm.isPending && <Loader2 className="h-4 w-4 animate-spin" />}

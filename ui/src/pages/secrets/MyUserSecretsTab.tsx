@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySecret } from "@paperclipai/shared";
-import { AlertCircle, KeyRound, Trash2, UserRound } from "lucide-react";
+import { KeyRound, Trash2, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
@@ -16,6 +17,7 @@ import {
   myValueState,
   myValueTone,
 } from "./my-value-state";
+import { describeError } from "@/api/errors";
 
 /**
  * Secrets → My secrets tab. Lists every company user-secret definition paired
@@ -32,6 +34,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
     queryKey: queryKeys.secrets.myUserSecrets(companyId),
     queryFn: () => secretsApi.listMyUserSecrets(companyId),
   });
+  const mySecretsView = useQueryView(mySecretsQuery);
   const entries = mySecretsQuery.data ?? [];
 
   const clear = useMutation({
@@ -43,7 +46,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
     onError: (err) =>
       pushToast({
         title: "Could not clear value",
-        body: err instanceof Error ? err.message : undefined,
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -70,15 +73,16 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
       </div>
 
       <div>
-        {mySecretsQuery.isError ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4" /> Failed to load your secrets:{" "}
-            {(mySecretsQuery.error as Error).message}
-            <Button variant="ghost" size="sm" onClick={() => mySecretsQuery.refetch()}>
-              Retry
-            </Button>
+        {mySecretsView.kind === "error" ? (
+          <div className="py-4">
+            <QueryErrorState
+              error={mySecretsQuery.error}
+              action="load your secrets"
+              onRetry={mySecretsView.retry}
+              retrying={mySecretsView.isFetching}
+            />
           </div>
-        ) : entries.length === 0 && !mySecretsQuery.isPending ? (
+        ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
           <EmptyState
             icon={KeyRound}
             message="No user secrets are defined for this organization yet. An admin defines which credentials each member supplies."

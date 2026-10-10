@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { CompanyProvider, useCompany } from "@/context/CompanyContext";
+import { queryKeys } from "@/lib/queryKeys";
 import { InstanceAccess } from "./InstanceAccess";
 
 const mocks = vi.hoisted(() => ({
@@ -108,13 +109,13 @@ describe("InstanceAccess company directory", () => {
     mocks.directory.mockRejectedValue(new Error("Unavailable"));
     await renderPage();
     await eventually(() => {
-      expect(container.textContent).toContain("Failed to load organizations.");
+      expect(container.textContent).toContain("Couldn't load organizations");
       expect(container.querySelector("nav")?.textContent).toBe("Company A");
     });
     expect(button("Save organization access")).toBeUndefined();
     expect(mocks.setUserCompanyAccess).not.toHaveBeenCalled();
     mocks.directory.mockResolvedValue([companyA, companyB]);
-    await act(async () => button("Try again")!.click());
+    await act(async () => button("Retry")!.click());
     await eventually(() => expect(button("Save organization access")).toBeDefined());
   });
 
@@ -122,6 +123,41 @@ describe("InstanceAccess company directory", () => {
     mocks.searchAdminUsers.mockRejectedValue(new ApiError("Forbidden", 403, {}));
     await renderPage();
     await eventually(() => expect(container.textContent).toContain("Instance admin access is required"));
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
     expect(mocks.directory).not.toHaveBeenCalled();
+  });
+});
+
+describe("InstanceAccess read resilience", () => {
+  it("keeps the loaded user list when a refetch fails transiently", async () => {
+    await renderPage();
+    await eventually(() => expect(button("Save organization access")).toBeDefined());
+    expect(container.textContent).toContain("admin@example.com");
+
+    mocks.searchAdminUsers.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.access.adminUsers("") });
+    });
+    await eventually(() => expect(mocks.searchAdminUsers).toHaveBeenCalledTimes(2));
+
+    expect(container.textContent).toContain("admin@example.com");
+    expect(button("Save organization access")).toBeDefined();
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when users fail to load", async () => {
+    mocks.searchAdminUsers.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    await renderPage();
+    await eventually(() => expect(container.textContent).toContain("Couldn't load users"));
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Instance admin access is required");
+
+    await act(async () => button("Retry")!.click());
+    await eventually(() => expect(button("Save organization access")).toBeDefined());
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

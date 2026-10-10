@@ -260,7 +260,10 @@ describe("CompanyExport", () => {
     await renderPage();
 
     expect(container.textContent).toContain("Export preview failed");
-    expect(container.textContent).toContain("Failed to fetch");
+    // A network failure is explained in shared readable copy, never as the
+    // browser's raw "Failed to fetch".
+    expect(container.textContent).toContain("Paperclip is temporarily unavailable.");
+    expect(container.textContent).not.toContain("Failed to fetch");
     expect(container.textContent).not.toContain("Loading export data");
 
     const retry = Array.from(container.querySelectorAll("button")).find((button) =>

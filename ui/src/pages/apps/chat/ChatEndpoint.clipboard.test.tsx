@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEndpoint, ChatProvider } from "@/api/chatEndpoints";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
@@ -191,9 +192,56 @@ describe("chat setup and identity-link clipboard actions", () => {
     client.removeQueries({ queryKey: [...queryKeys.chatEndpoints.activity("endpoint-a"), "older-cursor"] });
     mocks.listActivityPage.mockRejectedValue(new Error("Offline"));
     await click("Next");
-    expect(container.textContent).toContain("Connection activity could not be loaded");
+    expect(container.textContent).toContain("Couldn't load the connection activity");
     await click("Previous");
     expect(container.textContent).toContain("Page 1");
+  });
+
+  // The people list renders its own inline error (a span); other sections of
+  // the Access tab (personal Slack search) have unmocked reads in this suite.
+  const peopleList = () => container.querySelector('[role="list"][aria-label="People"]');
+  const peopleError = () => container.querySelector('span[data-query-view="error"]');
+
+  it("keeps the loaded people list on screen when a refetch fails transiently", async () => {
+    await render("slack", true);
+    expect(peopleList()?.textContent).toContain("Test person");
+    mocks.listPrincipals.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.principals("endpoint-a") });
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy with Retry when the people list fails to load", async () => {
+    mocks.listPrincipals.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+    await render("slack", true);
+    const alert = peopleError();
+    expect(alert?.textContent).toContain("An unexpected error occurred");
+    expect(alert?.textContent).not.toContain("internal_error");
+    expect(peopleList()).toBeNull();
+    const retry = alert!.querySelector("button")!;
+    expect(retry.textContent).toContain("Retry");
+    flushSync(() => retry.click());
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+  });
+
+  it("keeps loaded Slack channels on screen when a refetch fails transiently", async () => {
+    mocks.tab = "settings";
+    mocks.listResources.mockResolvedValue([
+      { id: "channel-general", type: "channel", label: "#general", providerResourceId: "CGENERAL", availability: "available", enabled: true },
+    ]);
+    await render("slack", true);
+    expect(container.textContent).toContain("#general");
+    mocks.listResources.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.resources("endpoint-a") });
+    await settle();
+    expect(container.textContent).toContain("#general");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
   });
 
   it.each(["slack", "microsoft-teams"] as const)(

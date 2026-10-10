@@ -25,6 +25,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapte
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
+import { describeError } from "@/api/errors";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
@@ -43,6 +44,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, selectTriggerClassName } from "@/components/ui/select";
@@ -372,7 +374,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
-    retry: false,
   });
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
@@ -383,7 +384,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["secret-proposals", "none"],
     queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
     enabled: Boolean(selectedCompanyId) && !isCreate,
-    retry: false,
   });
   const agentBindingProposals = useMemo(
     () =>
@@ -396,7 +396,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const adapterPickerDisabledTypes = useMemo(() => {
     const next = new Set(disabledTypes);
@@ -430,12 +429,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
-    retry: false,
   });
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
-    retry: false,
   });
 
   const { data: environments = [] } = useQuery<Environment[]>({
@@ -907,11 +904,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelQueryKey = selectedCompanyId
     ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
     : ["agents", "none", "adapter-models", adapterType];
-  const {
-    data: fetchedModels,
-    error: fetchedModelsError,
-    isLoading: fetchingModels,
-  } = useQuery({
+  const fetchedModelsQuery = useQuery({
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
@@ -919,10 +912,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }),
     enabled: Boolean(selectedCompanyId) && !connectionModels,
   });
+  const { data: fetchedModels, error: fetchedModelsError, isLoading: fetchingModels } = fetchedModelsQuery;
+  const fetchedModelsView = useQueryView(fetchedModelsQuery);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
-  const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
+  // `useConnectionModels` owns its own query and exposes only `error`; the
+  // adapter-models read is gated on its view below, so a transient refetch
+  // failure keeps the cached list without an error line.
+  const connectionModelsError = connectionModels?.error ?? null;
   const adapterCommandField = "command";
   const {
     data: detectedModelData,
@@ -1017,7 +1015,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // server resolves the driver and probes the host in that case.
       //
       // Test can be clicked before the settings query settles (or after it
-      // failed with retry:false), so when the agent relies on the instance
+      // failed), so when the agent relies on the instance
       // default, resolve the settings here rather than trusting the
       // render-time cache. A fetch that still fails FAILS the test with an
       // honest diagnostic — silently probing the host instead would report
@@ -1183,7 +1181,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     try {
       return await testEnvironment.mutateAsync();
     } catch (error) {
-      setTestActionError(error instanceof Error ? error.message : "Environment test failed");
+      setTestActionError(describeError(error).body);
       throw error;
     } finally {
       setTestActionPending(false);
@@ -1233,11 +1231,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (!props.onTestFeedbackChange) return;
     props.onTestFeedbackChange({
       errorMessage: testActionError
-        ?? (testEnvironment.error instanceof Error
-          ? testEnvironment.error.message
-          : testEnvironment.error
-            ? "Environment test failed"
-            : null),
+        ?? (testEnvironment.error ? describeError(testEnvironment.error).body : null),
       result: testEnvironment.data ?? null,
       // `showAdapterLogin` already requires a selected company and a non-empty
       // environment id, so both are present here.
@@ -1274,7 +1268,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      setRefreshModelsError(describeError(error).body);
     } finally {
       setRefreshingModels(false);
     }
@@ -1692,10 +1686,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {testActionError
-                ?? (testEnvironment.error instanceof Error
-                  ? testEnvironment.error.message
-                  : "Environment test failed")}
+              {testActionError ?? describeError(testEnvironment.error).body}
             </div>
           )}
 
@@ -1746,7 +1737,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {isLocal && (<>
               <ModelDropdown
                 models={models}
-                loadingModels={connectionModels?.isLoading ?? fetchingModels}
+                loadingModels={connectionModels?.isLoading ?? (fetchingModels || fetchedModelsView.kind === "reconnecting")}
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(adapterType, v);
@@ -1791,14 +1782,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {(refreshModelsError || modelError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (modelError instanceof Error
-                      ? modelError.message
-                      : "Failed to load adapter models.")}
-                </p>
-              )}
+              {refreshModelsError ? (
+                <p className="text-xs text-destructive">{refreshModelsError}</p>
+              ) : connectionModelsError ? (
+                <p className="text-xs text-destructive">{describeError(connectionModelsError).body}</p>
+              ) : !connectionModels && fetchedModelsView.kind === "error" ? (
+                <QueryErrorState
+                  size="inline"
+                  error={fetchedModelsError}
+                  action="load adapter models"
+                  onRetry={fetchedModelsView.retry}
+                  retrying={fetchedModelsView.isFetching}
+                />
+              ) : null}
               {adapterType === "opencode_local"
                 && !connectionModels
                 && currentDefaultEnvironment
@@ -2171,7 +2167,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           variant={isDotRunner ? "prerequisites" : "connection"}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
-          error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
+          error={testActionError ?? (testEnvironment.error ? describeError(testEnvironment.error).body : null)}
           onTest={triggerTestEnvironment}
           disabled={testEnvironmentDisabled}
         />
@@ -2422,7 +2418,7 @@ function DisplayedCodeLoginPanel({
       setSessionId(session.sessionId);
     },
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -2439,7 +2435,7 @@ function DisplayedCodeLoginPanel({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
     onSuccess: clearActiveSession,
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -2459,7 +2455,6 @@ function DisplayedCodeLoginPanel({
         throw error;
       }
     },
-    retry: false,
     // Never answered from cache. This read decides whether to adopt a running
     // session or start a new one, and a cached "none" from an earlier mount is
     // exactly wrong after Back: the panel would read `isFetched` immediately,
@@ -2468,6 +2463,7 @@ function DisplayedCodeLoginPanel({
     gcTime: 0,
     staleTime: 0,
   });
+  const activeSessionView = useQueryView(activeSessionQuery);
 
   // While the panel releases a resumed session it cannot recover (see below),
   // it keeps showing the login as active rather than dropping back to idle, so
@@ -2479,11 +2475,8 @@ function DisplayedCodeLoginPanel({
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
     enabled: Boolean(sessionId) && !releasingResumedSession,
     // A status 404 is unrecoverable: the server removed the row, so a retry
-    // cannot bring it back. Stop at once and fail loudly.
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 3;
-    },
+    // cannot bring it back. The shared retry policy never retries a 4xx, so
+    // it stops at once and fails loudly; only transient errors are retried.
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
@@ -2579,13 +2572,9 @@ function DisplayedCodeLoginPanel({
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
-    if (activeSessionQuery.isError) {
+    if (activeSessionView.kind === "error") {
       autoStartedRef.current = true;
-      setStartError(
-        activeSessionQuery.error instanceof Error
-          ? activeSessionQuery.error.message
-          : "Could not check for an active login.",
-      );
+      setStartError(describeError(activeSessionQuery.error).body);
       return;
     }
     if (!activeSessionQuery.isSuccess) return;
@@ -2595,7 +2584,7 @@ function DisplayedCodeLoginPanel({
   }, [
     autoStart,
     activeSessionQuery.isSuccess,
-    activeSessionQuery.isError,
+    activeSessionView.kind,
     activeSessionQuery.data,
     activeSessionQuery.error,
   ]);
@@ -2965,10 +2954,6 @@ function SubmittedBrowserCodeLoginPanel({
         throw error;
       }
     },
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 2;
-    },
   });
   const storedToken = storedTokenQuery.data ?? null;
 
@@ -2995,7 +2980,7 @@ function SubmittedBrowserCodeLoginPanel({
       setSessionId(session.sessionId);
     },
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3022,7 +3007,7 @@ function SubmittedBrowserCodeLoginPanel({
         clearActiveSession();
         return;
       }
-      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3063,7 +3048,6 @@ function SubmittedBrowserCodeLoginPanel({
         throw error;
       }
     },
-    retry: false,
     // Never answered from cache. This read decides whether to adopt a running
     // session or start a new one, and a cached "none" from an earlier mount is
     // exactly wrong after Back: the panel would read `isFetched` immediately,
@@ -3072,6 +3056,7 @@ function SubmittedBrowserCodeLoginPanel({
     gcTime: 0,
     staleTime: 0,
   });
+  const activeSessionView = useQueryView(activeSessionQuery);
 
   // While the panel releases a resumed session it cannot recover (see below),
   // it keeps showing the login as active rather than dropping back to idle, so
@@ -3090,11 +3075,8 @@ function SubmittedBrowserCodeLoginPanel({
     queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
     enabled: pollingEnabled,
     // A status 404 is terminal. The server removes a cleaned-up session at once,
-    // so a retry cannot recover it. Stop at once and fail loudly.
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 3;
-    },
+    // so a retry cannot recover it. The shared retry policy never retries a
+    // 4xx, so it stops at once and fails loudly; only transient errors are retried.
     refetchInterval: (query) => {
       if (timedOut || statusGone) return false;
       const status = query.state.data?.status;
@@ -3186,7 +3168,7 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: (code: string) =>
       agentsApi.submitClaudeSetupTokenBrowserCode(companyId, sessionId!, code),
     onError: (error) => {
-      setStartError(error instanceof Error ? error.message : "Could not submit the browser code.");
+      setStartError(describeError(error).body);
     },
   });
 
@@ -3314,13 +3296,9 @@ function SubmittedBrowserCodeLoginPanel({
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
-    if (activeSessionQuery.isError) {
+    if (activeSessionView.kind === "error") {
       autoStartedRef.current = true;
-      setStartError(
-        activeSessionQuery.error instanceof Error
-          ? activeSessionQuery.error.message
-          : "Could not check for an active login.",
-      );
+      setStartError(describeError(activeSessionQuery.error).body);
       return;
     }
     if (!activeSessionQuery.isSuccess) return;
@@ -3330,7 +3308,7 @@ function SubmittedBrowserCodeLoginPanel({
   }, [
     autoStart,
     activeSessionQuery.isSuccess,
-    activeSessionQuery.isError,
+    activeSessionView.kind,
     activeSessionQuery.data,
     activeSessionQuery.error,
   ]);

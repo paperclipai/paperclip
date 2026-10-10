@@ -3450,6 +3450,87 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Authenticated");
     expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
   });
+
+  it("keeps the loaded adapter models when a refetch fails transiently", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({ adapterConfig: { model: "gpt-6-astra" } })}
+                onSave={vi.fn()}
+                hidePromptTemplate
+                showAdapterTypeField={false}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(container.textContent).toContain("gpt-6-astra");
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
+
+    mockAgentsApi.adapterModels.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flushUntil(() => mockAgentsApi.adapterModels.mock.calls.length > 1);
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(container.textContent).not.toContain("Loading models…");
+
+    // The cached list is still the dropdown's content.
+    const trigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(trigger).toBeTruthy();
+    await clickElement(trigger);
+    expect(document.body.textContent).toContain("gpt-5.6-sol");
+  });
+
+  it("shows readable copy and a Retry button when the adapter models fail to load", async () => {
+    mockAgentsApi.adapterModels
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue([{ id: "gpt-6-astra", label: "gpt-6-astra" }]);
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') !== null);
+
+    expect(result.container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(result.container.textContent).toContain("Boom");
+    expect(result.container.textContent).not.toContain("Failed to load adapter models.");
+    const retry = findButton(result.container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await clickElement(retry);
+    await flushUntil(() => result.container.querySelector('[data-query-view="error"]') === null);
+
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2);
+    expect(result.container.querySelector('[data-query-view="error"]')).toBeNull();
+  });
 });
 
 const FIXED_CLAUDE_OAUTH_BINDING = {

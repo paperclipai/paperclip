@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppStoreDefinition } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
@@ -712,6 +713,40 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("Loading tools…");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("keeps the loaded connection visible when a refetch fails transiently", async () => {
+    mockParams.tab = "permissions";
+    const client = await renderAppDetail();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+
+    getConnectionMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry for a real connection failure", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+
+    await renderAppDetail();
+
+    const errorView = container.querySelector('[data-query-view="error"]');
+    expect(errorView?.textContent).toContain("Couldn't load the connection");
+    expect(container.textContent).not.toContain("Which agents can use this connection?");
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+    await act(async () => retry!.click());
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Which agents can use this connection?");
   });
 
   it("redirects the retired Test tab into Permissions", async () => {

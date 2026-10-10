@@ -10,6 +10,7 @@ import type {
   InstanceExperimentalSettingsWithManaged,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -1182,5 +1183,79 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
     expect(container.textContent).toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
+  });
+});
+
+describe("InstanceExperimentalSettings — read resilience", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  let queryClient: QueryClient;
+
+  async function renderPage() {
+    root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("keeps loaded toggles on screen when a refetch fails transiently", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Enable Environments");
+
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status).toBe("error");
+    expect(container.textContent).toContain("Enable Environments");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when settings fail to load", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    await renderPage();
+
+    expect(container.textContent).toContain("Couldn't load experimental settings");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Enable Environments");
+
+    const retryButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Retry",
+    );
+    expect(retryButton).toBeDefined();
+    await act(() => retryButton!.click());
+    await flushReact();
+
+    expect(container.textContent).toContain("Enable Environments");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

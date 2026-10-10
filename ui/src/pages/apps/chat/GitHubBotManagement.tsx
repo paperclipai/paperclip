@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import {
   ExternalLink,
   GitPullRequest,
@@ -36,6 +37,7 @@ import {
   GitHubPolicyEditor,
   GitHubToggle,
 } from "./GitHubBotConfiguration";
+import { describeError } from "@/api/errors";
 
 export function GitHubRepositoryAccess({
   endpointId,
@@ -61,6 +63,7 @@ export function GitHubRepositoryAccess({
     initialPageParam: 0,
     getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
   });
+  const listView = useQueryView(list);
   const rows = list.data?.pages.flatMap((page) => page.items) ?? [];
   const summary = list.data?.pages[0];
   const disableAll = (summary?.enabledCount ?? 0) > 0;
@@ -68,13 +71,13 @@ export function GitHubRepositoryAccess({
     if (scroller.current) scroller.current.scrollTop = 0;
   }, [search]);
   useEffect(() => {
-    if (!list.hasNextPage || list.isFetching || list.isError || pending || !more.current || typeof IntersectionObserver === "undefined") return;
+    if (!list.hasNextPage || list.isFetching || listView.kind === "error" || pending || !more.current || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(([entry]) => {
       if (entry?.isIntersecting) void list.fetchNextPage({ cancelRefetch: false });
     }, { root: scroller.current });
     observer.observe(more.current);
     return () => observer.disconnect();
-  }, [list.hasNextPage, list.isFetching, list.isError, list.fetchNextPage, pending]);
+  }, [list.hasNextPage, list.isFetching, listView.kind, list.fetchNextPage, pending]);
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -122,9 +125,9 @@ export function GitHubRepositoryAccess({
       {summary && <p className="text-xs text-muted-foreground">
         {summary.enabledCount} of {summary.totalCount} repositories enabled. Toggle all applies across the entire connection.
       </p>}
-      {list.isError && <p role="alert" className="text-sm text-destructive">
-        Could not load repositories. <Button variant="link" size="sm" onClick={() => void list.refetch()}>Try again</Button>
-      </p>}
+      {listView.kind === "error" && (
+        <QueryErrorState error={list.error} action="load repositories" onRetry={listView.retry} retrying={listView.isFetching} />
+      )}
       <div ref={scroller} role="region" aria-label="Repositories" tabIndex={0}
         className="max-h-96 overflow-y-auto overscroll-contain border-y border-border">
         <div className="divide-y divide-border">
@@ -147,7 +150,7 @@ export function GitHubRepositoryAccess({
           </div>
         ))}
         </div>
-        {list.isPending ? <p role="status" className="py-4 text-sm text-muted-foreground">Loading repositories…</p> : rows.length === 0 && !list.isError && (
+        {list.isPending || listView.kind === "reconnecting" ? <p role="status" className="py-4 text-sm text-muted-foreground">Loading repositories…</p> : (listView.kind === "ready" || listView.kind === "stale") && rows.length === 0 && (
           <p className="py-4 text-sm text-muted-foreground">
             {search ? "No repositories match your search." : "No repositories available. Add repository access on GitHub, then refresh."}
           </p>
@@ -175,6 +178,7 @@ export function GitHubBotManagement({
     queryKey: ["github-bot-configuration", endpoint.id],
     queryFn: () => githubChatApi.configuration(endpoint.id),
   });
+  const configurationView = useQueryView(query);
   const [draft, setDraft] = useState<GitHubConfigurationRecord | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
   const [scoreText, setScoreText] = useState<string | null>(null);
@@ -208,24 +212,19 @@ export function GitHubBotManagement({
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save changes.");
+      setError(describeError(e).body);
     } finally {
       setPending(false);
     }
   };
-  if (query.isError)
+  if (configurationView.kind === "error")
     return (
-      <p role="alert" className="text-sm text-destructive">
-        Could not load the bot configuration.{" "}
-        <Button
-          variant="link"
-          onClick={() => {
-            void query.refetch();
-          }}
-        >
-          Try again
-        </Button>
-      </p>
+      <QueryErrorState
+        error={query.error}
+        action="load the bot configuration"
+        onRetry={configurationView.retry}
+        retrying={configurationView.isFetching}
+      />
     );
   if (!record)
     return (
@@ -589,38 +588,42 @@ export function GitHubReviews({
     queryFn: async () => reviewId ? [await githubChatApi.review(endpointId, reviewId)] : githubChatApi.reviews(endpointId),
     refetchInterval: 5000,
   });
-  if (query.isError)
-    return (
-      <p role="alert" className="text-sm text-destructive">
-        {reviewId ? "This review could not be loaded or was not found in this connection." : "Reviews could not be loaded."}{" "}
-        <Button variant="link" onClick={() => void query.refetch()}>
-          Try again
-        </Button>
+  const view = useQueryView(query);
+  const missingReview = (
+    <div className="space-y-3">
+      <p role="alert" className="text-sm text-muted-foreground">
+        This review was not found in this connection.
       </p>
+      <Link
+        to={`/apps/chat/${endpointId}/reviews`}
+        className="text-sm underline"
+      >
+        All reviews
+      </Link>
+    </div>
+  );
+  if (view.kind === "error") {
+    if (reviewId && view.errorKind === "not_found") return missingReview;
+    return (
+      <QueryErrorState
+        error={query.error}
+        action={reviewId ? "load the review" : "load reviews"}
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     );
-  if (query.isPending)
+  }
+  if (query.isPending || view.kind === "reconnecting")
     return (
       <p role="status" className="text-sm text-muted-foreground">
         Loading reviews…
       </p>
     );
   if (reviewId) {
-    const review = query.data.find((review) => review.id === reviewId);
+    const review = query.data?.find((review) => review.id === reviewId);
     return review ? (
       <GitHubReviewDetail endpointId={endpointId} review={review} />
-    ) : (
-      <div className="space-y-3">
-        <p role="alert" className="text-sm text-muted-foreground">
-          This review was not found in this connection.
-        </p>
-        <Link
-          to={`/apps/chat/${endpointId}/reviews`}
-          className="text-sm underline"
-        >
-          All reviews
-        </Link>
-      </div>
-    );
+    ) : missingReview;
   }
-  return <GitHubReviewList endpointId={endpointId} reviews={query.data} />;
+  return <GitHubReviewList endpointId={endpointId} reviews={query.data ?? []} />;
 }

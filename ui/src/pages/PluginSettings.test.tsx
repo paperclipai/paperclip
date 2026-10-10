@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { PluginSettings } from "./PluginSettings";
 
@@ -212,6 +213,90 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps loaded local folder statuses on screen when their refetch fails transiently", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, {});
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PluginSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("No local folder path is configured.");
+
+    mockPluginsApi.listLocalFolders.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders("plugin-1", "company-1") });
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.listLocalFolders).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Wiki root");
+    expect(container.textContent).toContain("No local folder path is configured.");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows readable copy with Retry instead of leaving the page when the plugin fails to load", async () => {
+    mockPluginsApi.get
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue(basePlugin());
+
+    const root = await renderSettings(container);
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load this plugin");
+    expect(container.textContent).not.toContain("E2B Sandbox Provider");
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retryButton, "Retry button").toBeTruthy();
+
+    await act(async () => {
+      retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("E2B Sandbox Provider");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
 
     await act(async () => {
       root.unmount();

@@ -45,8 +45,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
+import { describeError } from "@/api/errors";
 
 type Step = "pick" | "scanning" | "select" | "result";
 export type SkillSelection = { workspaceId: string; path: string; slug?: string };
@@ -217,11 +219,7 @@ export function isValidSelectionSlug(selection: SkillSelection): boolean {
 }
 
 function readableErrorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.message || `Request failed: ${error.status}`;
-  }
-  if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return describeError(error).body;
 }
 
 export function isGrantError(error: unknown): boolean {
@@ -301,6 +299,7 @@ export function ImportSkillsFromProjectDialog({
     queryFn: () => projectsApi.list(companyId),
     enabled: open,
   });
+  const projectsView = useQueryView(projectsQuery);
 
   // Reset all local state on each open transition.
   useEffect(() => {
@@ -532,8 +531,10 @@ export function ImportSkillsFromProjectDialog({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-live="polite">
           {step === "pick" && (
             <PickProjectStep
-              loading={projectsQuery.isLoading}
-              error={projectsQuery.error}
+              loading={projectsQuery.isLoading || projectsView.kind === "reconnecting"}
+              error={projectsView.kind === "error" ? projectsQuery.error : null}
+              onRetry={projectsView.retry}
+              retrying={projectsView.isFetching}
               projects={filteredProjects}
               totalProjects={projects.length}
               filter={projectFilter}
@@ -641,7 +642,10 @@ export function ImportSkillsFromProjectDialog({
 
 interface PickProjectStepProps {
   loading: boolean;
+  /** The query error when projects could not load; null while data (even stale) is available. */
   error: unknown;
+  onRetry: () => void;
+  retrying: boolean;
   projects: Project[];
   totalProjects: number;
   filter: string;
@@ -652,6 +656,8 @@ interface PickProjectStepProps {
 function PickProjectStep({
   loading,
   error,
+  onRetry,
+  retrying,
   projects,
   totalProjects,
   filter,
@@ -677,13 +683,13 @@ function PickProjectStep({
         {loading ? (
           <div className="p-6 text-center text-sm text-muted-foreground">Loading projects…</div>
         ) : error ? (
-          <div
-            className="m-5 flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-            role="alert"
-          >
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>{readableErrorMessage(error)}</div>
-          </div>
+          <QueryErrorState
+            className="m-5"
+            error={error}
+            action="load projects"
+            onRetry={onRetry}
+            retrying={retrying}
+          />
         ) : totalProjects === 0 ? (
           <EmptyState icon={Layers} message="This organization has no projects yet." />
         ) : projects.length === 0 ? (
@@ -803,6 +809,7 @@ function ProjectSkillBrowser({
     }),
     enabled: Boolean(workspaceId),
   });
+  const browseView = useQueryView(browseQuery);
   const result = browseQuery.data;
 
   function changeWorkspace(nextWorkspaceId: string) {
@@ -851,12 +858,18 @@ function ProjectSkillBrowser({
         <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{result?.path ?? folderPath}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {browseQuery.isLoading ? (
+        {browseQuery.isLoading || browseView.kind === "reconnecting" ? (
           <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading folder…
           </div>
-        ) : browseQuery.error ? (
-          <div className="p-6 text-sm text-destructive">{readableErrorMessage(browseQuery.error)}</div>
+        ) : browseView.kind === "error" ? (
+          <QueryErrorState
+            className="m-6"
+            error={browseQuery.error}
+            action="load the folder"
+            onRetry={browseView.retry}
+            retrying={browseView.isFetching}
+          />
         ) : result?.entries.length ? (
           <ul className="divide-y divide-border/60">
             {result.entries.map((entry: CompanySkillProjectBrowseEntry) => {

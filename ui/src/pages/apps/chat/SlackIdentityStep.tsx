@@ -5,6 +5,7 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
+import { useQueryView } from "@/components/QueryView";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -18,13 +19,16 @@ export function SlackIdentityStep({ endpointId, command, testStartedAt, onConnec
   const client = useQueryClient();
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
-  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: authApi.getSession, retry: false });
+  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: authApi.getSession });
+  const sessionView = useQueryView(session);
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  const healthView = useQueryView(health);
   const identities = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
     refetchInterval: 1_500,
   });
+  const identitiesView = useQueryView(identities);
   const local = health.data?.deploymentMode === "local_trusted";
   const userId = local ? "local-board" : session.data?.user.id;
   const userLabel = local ? "Local Board" : session.data?.user.name || session.data?.user.email;
@@ -60,7 +64,7 @@ export function SlackIdentityStep({ endpointId, command, testStartedAt, onConnec
       <p className="text-sm">
         <a href="https://app.slack.com/" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4">Open Slack <ExternalLink className="inline size-3" /></a>, send the command in your workspace, then return here.
       </p>
-      {identities.isError ? (
+      {identitiesView.kind === "error" ? (
         <p role="alert" className="text-sm text-destructive">Couldn&apos;t check for your Slack account. We&apos;ll keep trying.</p>
       ) : candidates.length === 0 ? (
         <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Waiting for your connect command…</p>
@@ -87,8 +91,8 @@ export function SlackIdentityStep({ endpointId, command, testStartedAt, onConnec
           })}
         </div>
       )}
-      {!userId && !session.isPending && !health.isPending && <p role="alert" className="text-sm text-destructive">Sign in to Paperclip to link your Slack account. Refresh this page after signing in.</p>}
-      {link.isError && <p role="alert" className="text-sm text-destructive">Couldn&apos;t link your account. Check that you are a member of this company and try again.</p>}
+      {!userId && !session.isPending && !health.isPending && sessionView.kind !== "reconnecting" && healthView.kind !== "reconnecting" && <p role="alert" className="text-sm text-destructive">Sign in to Paperclip to link your Slack account. Refresh this page after signing in.</p>}
+      {link.error ? <p role="alert" className="text-sm text-destructive">Couldn&apos;t link your account. Check that you are a member of this company and try again.</p> : null}
       <div className="flex items-center justify-between gap-3">
         <Button variant="ghost" className="text-muted-foreground" onClick={onSaveExit}>Save &amp; exit</Button>
         {linkedToMe && <Button onClick={onConnected}>Continue to message test</Button>}

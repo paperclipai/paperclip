@@ -9,6 +9,7 @@ import {
   type GitHubChatConfiguration,
   type GitHubTaskReview,
 } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
 import { ChatEndpointDetail } from "./ChatEndpointDetail";
 import { GitHubReviewList, orderedGitHubReviews } from "./GitHubBotManagement";
 import { GitHubPolicyEditor } from "./GitHubBotConfiguration";
@@ -278,12 +279,25 @@ describe("GitHub bot management", () => {
     expect(container.querySelector('button[aria-label="Disable all repositories"]')?.hasAttribute("disabled")).toBe(false);
   });
   it("keeps repository failures visible and allows a retry", async () => {
-    mocks.repositoryPage.mockRejectedValueOnce(new Error("Unavailable"));
+    mocks.repositoryPage.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
     await render("access");
-    await vi.waitFor(() => expect(container.textContent).toContain("Could not load repositories"));
-    await click("Try again");
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load repositories"));
+    expect(container.textContent).not.toContain("internal_error");
+    await click("Retry");
     await vi.waitFor(() => expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1));
-    expect(container.textContent).not.toContain("Could not load repositories");
+    expect(container.textContent).not.toContain("Couldn't load repositories");
+  });
+  it("keeps loaded repositories on screen when a refetch fails transiently", async () => {
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1));
+    mocks.repositoryPage.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["github-bot-repository-pages", "bot"] });
+    });
+    expect(container.querySelectorAll('[role="region"] [role="switch"]')).toHaveLength(1);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
   });
   it("automatically loads the next 20 repositories when the scroll sentinel becomes visible", async () => {
     let intersect!: IntersectionObserverCallback;
@@ -467,7 +481,7 @@ describe("GitHub bot management", () => {
     mocks.reviewId = "review-1";
     mocks.reviews.mockResolvedValue([]);
     mocks.review.mockImplementation(async (_endpoint, id) => {
-      if (id !== "review-1") throw new Error("not found");
+      if (id !== "review-1") throw new ApiError("Review not found", 404, { error: "Review not found" });
       return review("review-1", "repo", 1, "2026-10-07T10:00:00Z");
     });
     await render("reviews");
