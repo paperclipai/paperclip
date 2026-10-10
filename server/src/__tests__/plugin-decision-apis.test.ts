@@ -12,6 +12,7 @@ import {
   decisionRetention,
   decisionTriage,
   decisionTriageEvents,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -60,6 +61,7 @@ describeEmbeddedPostgres("plugin attention and decision APIs", () => {
     await db.delete(decisionQueues);
     await db.delete(decisionRetention);
     await db.delete(approvals);
+    await db.delete(issues);
     await db.delete(companyMemberships);
     await db.delete(companies);
   });
@@ -105,6 +107,43 @@ describeEmbeddedPostgres("plugin attention and decision APIs", () => {
     const feed = await services().attention.list({ companyId }, invokedBy(companyId, viewerUserId));
     expect(feed.companyId).toBe(companyId);
     expect(feed.items.map((item) => `${item.sourceKind}:${item.subject.id}`)).toContain(`approval:${approvalId}`);
+  });
+
+  it("omits private issues the invoking user may not read from the attention feed", async () => {
+    const { companyId, viewerUserId } = await seedCompany();
+    const privateIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: privateIssueId,
+      companyId,
+      identifier: `${issuePrefix(companyId)}-1`,
+      title: "Confidential review",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: "private-owner",
+      originKind: "manual",
+      originFingerprint: "default",
+      executionState: {
+        status: "pending",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "private-owner" },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: "private-owner",
+    });
+
+    const feed = await services().attention.list({ companyId }, invokedBy(companyId, viewerUserId));
+
+    expect(feed.items.map((item) => item.subject.title)).not.toContain("Confidential review");
+    expect(JSON.stringify(feed)).not.toContain(privateIssueId);
   });
 
   it("acts only for the invoking user and ignores a user the plugin names", async () => {

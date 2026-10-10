@@ -3042,6 +3042,9 @@ export function buildHostServices(
         return (await attention.list(companyId, {
           userId: actor.userId,
           includeDismissed: params.includeDismissed === true,
+          // Filter private issues to what the invoking user may read, as the
+          // board route does.
+          actor,
           archived: params.archived === true,
           all,
           activitySince: params.activitySince,
