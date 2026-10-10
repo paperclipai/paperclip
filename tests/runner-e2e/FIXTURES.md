@@ -405,8 +405,12 @@ gate and cannot pass from this local observation.
 
 `hermes-image-input` adds one local and one Daytona image-code cell using a
 separate vision-capable candidate profile. The existing UI helper uploads the
-PNG before creating the assigned task. The code is an eight-character challenge
-rendered only in pixels; prompt and filename disclose no answer. Independent
+PNG as part of task creation. The composer keeps executable work in Backlog until
+all uploads finish, then binds the selected receipts and activates the task in one
+mutation. The code is an eight-character challenge rendered only in pixels; prompt
+and filename disclose no answer. Image definition version 4 uses a checksum-pinned
+raster of the bundled Inter font; version 3 block-font failures remain historical
+failures. Exact-answer and attachment-authorization assertions are unchanged. Independent
 checks download the company/task-bound image and compare exact PNG bytes, MIME,
 size and SHA-256. Native tool history allows only semantic completion, task
 context, title and progress operations, rejecting file reads, shell/OCR and

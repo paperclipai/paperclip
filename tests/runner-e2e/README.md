@@ -1676,7 +1676,10 @@ input and tools; this metadata is preparation, not inference qualification.
 The existing DeepSeek profile remains text-only. Direct API profiles use their
 selected Claude/OpenAI models; successful inference is required to qualify image input.
 
-The browser uploads a generated PNG in the ordinary task-creation flow. Its
+The browser uploads a generated PNG in the ordinary task-creation flow and starts
+the task only after all selected files are bound to its wake comment. Definition
+version 4 renders ordinary Inter text from a pinned glyph raster; version 3 used
+a block font and its failed attempts remain failed. Its
 eight-character hexadecimal code is present only in pixels, absent from the
 prompt, filename and PNG text metadata. An exact native final response must
 contain that undisclosed code once. Public attachment metadata and a downloaded

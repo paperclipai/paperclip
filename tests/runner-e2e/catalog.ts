@@ -1245,9 +1245,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       qualificationCandidate: "hermes", credential: "OPENROUTER_API_KEY", model: HERMES_IMAGE_INPUT_MODEL,
       modelQualification: { source: "candidate_runner_profile", qualificationId: "hermes:v2026.9.24:openrouter:gemini-2.5-flash-lite:vision:catalog-2026-10-08:pending" },
     }), ...hermesBasicApiProfiles],
-    definitionMetadata: { version: 3, qualification: "pending", scheduling: "explicit-only", providerTurns: 1,
+    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", providerTurns: 1,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: HERMES_API_CONNECTION_BUDGET_CENTS, lifecycle: "per-turn",
-      input: "browser-upload-authorized-native-image", oracle: "undisclosed-pixel-code-exact-bytes-no-file-tools",
+      input: "browser-upload-authorized-native-image", renderer: "inter-500-112px-grayscale.v1", oracle: "undisclosed-pixel-code-exact-bytes-no-file-tools",
       billing: "reported-openrouter-or-estimated-direct-api-cost-and-budget-health", sourceDigest: hermesApiConnectionDefinitionDigest },
   },
   {

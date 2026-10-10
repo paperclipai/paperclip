@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import type { AiProviderRouting } from "../../packages/shared/src/ai-provider-routing.js";
 import { hasAcpxNativeOrigin } from "./acpx-native-origin.js";
 import type { Page } from "@playwright/test";
@@ -109,36 +109,28 @@ export const hermesNativeQuestionStopTask: RunnerTaskFixture = {
 /** An undisclosed code exists only in PNG pixels, never in the filename or prompt. */
 export function hermesImageChallenge(nonce: string) {
   const code = createHash("sha256").update(`hermes-image-pixels:${nonce}`).digest("hex").slice(0, 8).toUpperCase();
-  const glyphs: Record<string, readonly string[]> = {
-    "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-    "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-    "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-    "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-    "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
-    "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
-    "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-    "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-    "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
-    A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-    B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
-    C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
-    D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
-    E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-    F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  // Versioned, ordinary text glyphs from the repository's Inter font. Keep
+  // vision transport qualification independent from decoding a block font.
+  const glyphs = JSON.parse(readFileSync(new URL("./hermes-image-glyphs.json", import.meta.url), "utf8")) as {
+    width: number; height: number; characters: string; rawSha256: string; deflateBase64: string;
   };
-  const width = 640, height = 180, scale = 12;
+  const raster = inflateSync(Buffer.from(glyphs.deflateBase64, "base64"));
+  if (glyphs.width !== 96 || glyphs.height !== 144 || glyphs.characters !== "0123456789ABCDEF"
+    || raster.length !== 16 * 96 * 144
+    || createHash("sha256").update(raster).digest("hex") !== glyphs.rawSha256) {
+    throw new Error("Hermes image fixture glyph integrity failed");
+  }
+  const width = 880, height = 192;
   const pixels = Buffer.alloc((width * 3 + 1) * height, 255);
   for (let y = 0; y < height; y++) pixels[y * (width * 3 + 1)] = 0;
-  [...code].forEach((character, index) => glyphs[character]!.forEach((row, y) => {
-    [...row].forEach((value, x) => {
-      if (value !== "1") return;
-      for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) {
-        const offset = (48 + y * scale + dy) * (width * 3 + 1) + 1 + (38 + index * 6 * scale + x * scale + dx) * 3;
-        pixels.fill(0, offset, offset + 3);
-      }
-    });
-  }));
+  [...code].forEach((character, index) => {
+    const glyph = glyphs.characters.indexOf(character);
+    for (let y = 0; y < glyphs.height; y++) for (let x = 0; x < glyphs.width; x++) {
+      const shade = raster[glyph * 96 * 144 + y * 96 + x]!;
+      const offset = (24 + y) * (width * 3 + 1) + 1 + (56 + index * 96 + x) * 3;
+      pixels.fill(shade, offset, offset + 3);
+    }
+  });
   const chunk = (type: string, body: Buffer) => {
     const payload = Buffer.concat([Buffer.from(type), body]);
     let crc = 0xffffffff;

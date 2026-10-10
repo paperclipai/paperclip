@@ -44,7 +44,7 @@ describe("Hermes native image input", () => {
     expect(JSON.parse(env.PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent: "hermes", model: HERMES_IMAGE_INPUT_MODEL }]);
     expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cells[0]!, suite: { ...suite, manualOnly: false } }])).toThrow("explicit");
     expect(() => buildRunnerE2EProcessEnvironment({}, [{ ...cells[0]!, profile: { ...cells[0]!.profile, qualificationCandidate: "pi" } }])).toThrow("explicit");
-    expect(suite.definitionMetadata).toMatchObject({ version: 3, qualification: "pending", providerTurns: 1,
+    expect(suite.definitionMetadata).toMatchObject({ version: 4, qualification: "pending", providerTurns: 1,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 200 });
   });
   it("keeps the expected code out of prompt, filename and PNG metadata", () => {
@@ -63,11 +63,11 @@ describe("Hermes native image input", () => {
       at += size + 12;
     }
     expect(chunks.map(c => c.name)).toEqual(["IHDR", "IDAT", "IEND"]);
-    expect(chunks[0]!.body.readUInt32BE(0)).toBe(640);
-    expect(chunks[0]!.body.readUInt32BE(4)).toBe(180);
+    expect(chunks[0]!.body.readUInt32BE(0)).toBe(880);
+    expect(chunks[0]!.body.readUInt32BE(4)).toBe(192);
     const pixels = inflateSync(chunks[1]!.body);
-    expect(pixels.length).toBe((640 * 3 + 1) * 180);
-    expect(pixels.subarray(1, 640 * 3 + 1).every(byte => byte === 255)).toBe(true);
+    expect(pixels.length).toBe((880 * 3 + 1) * 192);
+    expect(pixels.subarray(1, 880 * 3 + 1).every(byte => byte === 255)).toBe(true);
     expect(pixels.filter(byte => byte === 0).length).toBeGreaterThan(10_000);
     expect(hermesImageChallenge("image-fixture").bytes).toEqual(image.bytes);
     expect(hermesImageChallenge("different-fixture").bytes).not.toEqual(image.bytes);
