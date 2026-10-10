@@ -2440,6 +2440,36 @@ export function agentRoutes(
     }
   }
 
+  function assertNoAmbiguousInstructionsBundleCreate(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    instructionsBundle: { files: Record<string, string>; entryFile?: string } | undefined,
+    onboardingFirstAgent: boolean | undefined,
+  ) {
+    if (!instructionsBundle) return;
+
+    if (onboardingFirstAgent === true) {
+      throw badRequest(
+        "instructionsBundle cannot be combined with onboardingFirstAgent because onboarding owns the initial instruction bundle",
+      );
+    }
+
+    if (!adapterSupportsInstructionsBundle(adapterType)) {
+      throw badRequest(
+        `adapterType ${adapterType} does not support instructionsBundle; remove instructionsBundle or use an adapter that supports managed instructions`,
+      );
+    }
+
+    const configuredKey = KNOWN_INSTRUCTIONS_BUNDLE_KEYS.find((key) =>
+      Boolean(asNonEmptyString(adapterConfig[key])),
+    );
+    if (configuredKey) {
+      throw badRequest(
+        `instructionsBundle cannot be combined with adapterConfig.${configuredKey}; provide the instructions in one place`,
+      );
+    }
+  }
+
   async function assertCanApplyProtectedAgentChange(
     req: Request,
     targetAgent: { id: string; companyId: string },
@@ -4241,6 +4271,12 @@ export function agentRoutes(
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
+    assertNoAmbiguousInstructionsBundleCreate(
+      hireInput.adapterType,
+      rawHireAdapterConfig,
+      instructionsBundle,
+      req.actor.type === "board" && hireOnboardingFirstAgent === true,
+    );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
@@ -4554,6 +4590,12 @@ export function agentRoutes(
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
+    );
+    assertNoAmbiguousInstructionsBundleCreate(
+      createInput.adapterType,
+      rawCreateAdapterConfig,
+      instructionsBundle,
+      req.actor.type === "board" && createOnboardingFirstAgent === true,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
