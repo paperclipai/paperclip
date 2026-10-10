@@ -142,7 +142,19 @@ describe("runner API catalog", () => {
       searchRunnerApi({ query: "GET /api/companies/{companyId}/issues" })
         .results[0].dedicatedTools,
     ).toContain("search_tasks");
-    expect(searchRunnerApi({ query: "nothing-zzzzzzzzzz" }).total).toBe(0);
+    // A query is a valid no-match control only when EVERY token in it matches
+    // nothing. `words()` splits on non-alphanumerics and the score is a sum
+    // over terms, so one matching token is enough to return a result. This
+    // control used to be `nothing-zzzzzzzzzz`, which tokenizes to `nothing` +
+    // `zzzzzzzzzz` — and `nothing` is ordinary English that appears in an
+    // operation description as soon as operations carry descriptions. It
+    // reported 0 only because almost none did. Assert each token alone too, so
+    // the control cannot rot back into a false zero.
+    const unmatchable = ["zzzzzzzzzz", "qqqqqqqqqq"];
+    for (const token of unmatchable) {
+      expect(searchRunnerApi({ query: token }).total, token).toBe(0);
+    }
+    expect(searchRunnerApi({ query: unmatchable.join("-") }).total).toBe(0);
   });
   it("paginates without duplicates and rejects stale or mismatched cursors", () => {
     const first = searchRunnerApi({ query: "project", limit: 1 });

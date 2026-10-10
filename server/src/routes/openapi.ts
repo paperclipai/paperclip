@@ -390,6 +390,22 @@ function isOptionalSchema(schema: z.ZodTypeAny): boolean {
   return false;
 }
 
+// Zod 4 keeps `.describe()` text in `z.globalRegistry` and surfaces it through
+// the `.description` getter, not on `_def`. Nothing read it before, so every
+// `.describe()` in the request and response schemas was dropped on the way into
+// the document.
+//
+// `.describe()` attaches to whichever schema it was called on, so both
+// orderings have to be read: `z.string().optional().describe(x)` records `x` on
+// the optional wrapper, while `z.string().describe(x).optional()` records it on
+// the inner string. Reading only one of them loses half the call sites.
+function descriptionOf(schema: z.ZodTypeAny): string | undefined {
+  const own = (schema as { description?: unknown }).description;
+  if (typeof own === "string" && own.length > 0) return own;
+  const inner = (unwrapSchema(schema) as { description?: unknown }).description;
+  return typeof inner === "string" && inner.length > 0 ? inner : undefined;
+}
+
 // Zod 4 stores each check as an object with a `_zod.def` that carries a `check`
 // name and the check members. Read that def to describe the constraint.
 function checkDef(check: unknown): Record<string, unknown> | undefined {
@@ -448,6 +464,13 @@ function applyNumberChecks(
 }
 
 function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
+  const jsonSchema = convertZodSchema(schema);
+  const description = descriptionOf(schema);
+  if (description) jsonSchema.description = description;
+  return jsonSchema;
+}
+
+function convertZodSchema(schema: z.ZodTypeAny): JsonSchema {
   const unwrapped = unwrapSchema(schema);
   const def = zodDef(unwrapped);
   const typeName = def.type;
@@ -602,12 +625,20 @@ function parametersFromSchema(
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "object") return [];
   const shape = zodDef(objectSchema).shape as Record<string, z.ZodTypeAny>;
-  return Object.entries(shape).map(([name, value]) => ({
-    name,
-    in: location,
-    required: location === "path" ? true : !isOptionalSchema(value),
-    schema: zodToOpenApiSchema(value),
-  }));
+  return Object.entries(shape).map(([name, value]) => {
+    // A described parameter carries its prose on the Parameter Object rather
+    // than on the nested Schema Object: that is where an OpenAPI reader and a
+    // generated client surface it. Move it instead of publishing both.
+    const { description, ...schema } = zodToOpenApiSchema(value);
+    const parameter: Record<string, unknown> = {
+      name,
+      in: location,
+      required: location === "path" ? true : !isOptionalSchema(value),
+      schema,
+    };
+    if (typeof description === "string") parameter.description = description;
+    return parameter;
+  });
 }
 
 class OpenAPIRegistry {
@@ -4234,13 +4265,118 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+// The comment-completeness anchor for an issue thread.
+//
+// `GET /api/issues/{id}/comments` returns a bare array: no envelope, no total,
+// no `nextCursor`. This is the only place the API publishes a comment total, so
+// reconciling a read against `totalComments` is the only way to prove a thread
+// was read whole. Declaring it here is the point of the schema: readers have
+// repeatedly concluded no declared total exists anywhere, because it is
+// published on this route rather than on the comments route itself.
+const issueCommentCursorSchema = z.object({
+  totalComments: z
+    .number()
+    .int()
+    .describe(
+      "Every comment row on this issue, counted with no visibility filter and " +
+        "no page limit. Deleting a comment normally writes a tombstone and " +
+        "keeps the row, so this count does not drop and the page still returns " +
+        "that row with an empty body. For a reader allowed to see the issue at " +
+        "all, the count therefore never overstates the rows they can read.\n\n" +
+        "Use this count to CORROBORATE a read. It cannot prove one complete, " +
+        "and completeness comes from the request instead: omit `limit` and the " +
+        "response holds the whole thread, or page with `limit` and keep going " +
+        "until a page comes back empty. A page shorter than the `limit` you " +
+        "sent is not an end signal, because a `limit` above the server's cap " +
+        "is clamped.\n\n" +
+        "The anchor and the thread are two separate requests, so a disagreement " +
+        "does not identify its own cause. More rows than `totalComments` means " +
+        "a comment arrived between them, and is benign. Fewer rows means the " +
+        "read was truncated, or a legacy queued comment was hard-deleted " +
+        "between them — the one path that does drop a row. Re-reading the count " +
+        "does not separate those cases: a 501-row thread read at `limit=500` " +
+        "can show a fresh total of 500 that matches the rows read while one " +
+        "comment stays unseen. Treat a disagreement as a reason to page again " +
+        "from a known anchor, never as a verdict.",
+    ),
+  latestCommentId: z
+    .string()
+    .nullable()
+    .describe(
+      "Newest comment on the issue, or null when it has none. To read what " +
+        "arrives after it, pass it as `after` TOGETHER WITH `order=asc`: the " +
+        "default `desc` order walks the cursor backwards into older comments, " +
+        "so this ID with the default order returns history and never a new " +
+        "arrival.",
+    ),
+  latestCommentAt: z
+    .string()
+    .datetime()
+    .nullable()
+    .describe(
+      "Creation time of the newest comment, or null when the issue has none.",
+    ),
+});
+
+// A comment row as returned by `GET /api/issues/{id}/comments`.
+//
+// Only the fields a paging reader needs are declared. `id` is the value fed
+// back as `after`, and `createdAt` is the leading key of the cursor order. A
+// row carries more columns than these (presentation, metadata, author and
+// derived-attribution fields, deletion fields); they are returned and simply
+// not described here, so an absence below is not evidence a field is missing.
+const issueCommentRowSchema = z.object({
+  id: z
+    .string()
+    .uuid()
+    .describe(
+      "Comment ID. Pass it as `after` to read the rows that follow this one.",
+    ),
+  issueId: z.string().uuid(),
+  body: z
+    .string()
+    .describe(
+      "Comment body. A deleted comment is still returned as a row, with an " +
+        "empty body.",
+    ),
+  createdAt: z
+    .string()
+    .datetime()
+    .describe("Creation time. The cursor orders by `(createdAt, id)`."),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/heartbeat-context",
   tags: ["issues"],
   summary: "Get issue heartbeat context",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "The projection a run reads when it wakes on an issue.\n\n" +
+    "Only `commentCursor` is described below, because it is the API's single " +
+    "comment-completeness anchor and is not discoverable from the comments " +
+    "route it belongs to. The rest of the response — `issue`, `ancestors`, " +
+    "`project`, `goal`, `wakeComment`, `attachments`, `continuationSummary`, " +
+    "`planReviewContext`, `documentReviewContext`, " +
+    "`currentExecutionWorkspace` — is returned but deliberately left " +
+    "undescribed here, so a field's absence from this schema is not evidence " +
+    "that the response omits it.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      wakeCommentId: z
+        .string()
+        .optional()
+        .describe(
+          "The comment that triggered this wake. When it names a comment of " +
+            "this issue the response carries that comment as `wakeComment`; " +
+            "otherwise `wakeComment` is null.",
+        ),
+    }),
+  },
+  responses: {
+    200: r.ok(z.object({ commentCursor: issueCommentCursorSchema })),
+    401: r.unauthorized,
+  },
 });
 
 registry.registerPath({
@@ -4454,8 +4590,144 @@ registry.registerPath({
   path: "/api/issues/{id}/comments",
   tags: ["issues"],
   summary: "List issue comments",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "Returns a JSON array of comment rows. The response has no envelope, no " +
+    "total and no `nextCursor`, so it cannot by itself tell a caller whether " +
+    "more rows exist.\n\n" +
+    "Paging is a keyset cursor over `(createdAt, id)`: pass a comment ID as " +
+    "`after` to get the rows following it in the requested order. Omitting " +
+    "`limit` reads the whole thread.\n\n" +
+    "An empty array is NOT evidence that the thread is exhausted. The same " +
+    "`[]` comes back when `after` is not a UUID, and when it is a UUID that " +
+    "is not a comment of this issue — a mistyped or foreign anchor is " +
+    "indistinguishable from end-of-thread.\n\n" +
+    "So read a thread whole by omitting `limit`, which returns every row in " +
+    "one response. If you must page, take each anchor from a previous page and " +
+    "keep going until a request returns an empty array.\n\n" +
+    "Do NOT stop on a short page. A `limit` above the server's cap is clamped, " +
+    "so a page can be shorter than the value you sent while rows still " +
+    "remain, and the response records nothing about the clamp.\n\n" +
+    "An empty page is the best end signal available, and it is still not " +
+    "proof. Taking the anchor from a previous page removes the mistyped and " +
+    "foreign cases, because that anchor was a real comment of this issue. It " +
+    "does NOT remove one more cause: the row behind the anchor can be ERASED " +
+    "between your two requests, and then the anchor lookup finds nothing and " +
+    "returns the same `[]` while later comments remain unread.\n\n" +
+    "Deleting a comment the ordinary way does NOT erase it: the row stays with " +
+    "a deleted timestamp, and the anchor lookup does not filter on that " +
+    "timestamp, so a normally deleted anchor still pages correctly. Two kinds " +
+    "of row are erased outright. A comment still QUEUED for dispatch is " +
+    "hard-deleted when its author discards it — no run has to be active, and " +
+    "discarding the last entry also cancels the queued wake. And deleting an " +
+    "agent hard-deletes every comment that agent authored, while leaving the " +
+    "issue and its other comments in place.\n\n" +
+    "Do not try to pick a safe anchor. No field on a comment tells you its row " +
+    "will still be there on your next request, and the author of your anchor " +
+    "is not under your control.\n\n" +
+    "Treat an empty page as a floor, not as a total. If the thread must be " +
+    "read completely, omit `limit` and read it in one response, which has no " +
+    "anchor to lose.\n\n" +
+    "Then corroborate the result against `commentCursor.totalComments` on " +
+    "`GET /api/issues/{id}/heartbeat-context`; that field documents what the " +
+    "comparison can and cannot establish, and why a count alone never proves a " +
+    "read complete.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      // No value RANGE is declared on this parameter, and the omission is not
+      // about where a constant lives. This handler never rejects a `limit`: it
+      // reads the query value, and anything that is not a finite number above
+      // zero becomes `null`, which means NO limit. So `0`, a negative value
+      // and `abc` are all accepted and all return the whole thread. A
+      // `minimum` would declare those requests invalid while the server
+      // honours them, and a `maximum` would declare an over-cap request
+      // invalid when it in fact succeeds with a clamped page. A range in a
+      // parameter schema is what a contract validator and a generated client
+      // enforce, so either one publishes a rejection that does not exist.
+      //
+      // The sibling artifacts route does publish `minimum`/`maximum`, and the
+      // difference is instructive rather than inconsistent: its query schema
+      // IS the parser the route runs, so a value outside the range is a 400
+      // there. Here the bound is a clamp applied after parsing, and it is
+      // applied twice — once in the route module and again in the service,
+      // from two private literals that agree only by authorship. There is no
+      // single authority for the spec to derive from even if it wanted one.
+      //
+      // `type: integer` is kept, and it is an overclaim worth naming: a
+      // fractional value is floored rather than refused. Type states the shape
+      // a caller should serialize, which every parameter here declares; range
+      // states what the server will refuse, and this one refuses nothing.
+      //
+      // ⚠️ The mirror of the `order` note below, and the line between them is
+      // EXPRESSIBILITY, not importance. There, the server's leniency is an
+      // incidental fallback, so the contract keeps the enum and declines to
+      // promise it. Here the leniency changes the RESULT — an unlimited read
+      // instead of a page — so the range is dropped and the behaviour is
+      // published, but only for the values a conforming client can actually
+      // send. Zero and negatives are integers, so they are published. A
+      // non-numeric `limit` behaves the same way and is deliberately NOT
+      // published: `type: integer` means a generated client or a contract
+      // validator rejects it before the server ever sees it, so documenting it
+      // would describe a request this contract's own readers cannot make.
+      // Omitting the parameter is the expressible way to ask for no limit, and
+      // it is documented.
+      limit: z.coerce
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "Maximum rows to return; omit it to read the whole thread " +
+            "uncapped. A larger value is silently clamped down to the " +
+            "server's maximum comment page size, and the clamped page is " +
+            "returned with no header or field recording that it happened — so " +
+            "a page shorter than the requested `limit` is never proof the " +
+            "thread ended.\n\n" +
+            "No value range is published here, because this parameter is " +
+            "never validated. A zero or a negative value is accepted and " +
+            "means NO limit, returning the whole thread — more rows than " +
+            "asked for, not fewer. A fractional value is floored. Send a " +
+            "positive whole number, or omit the parameter to read " +
+            "everything.",
+        ),
+      // `after` describes BEFORE `.optional()` while its siblings describe
+      // after it, on purpose: `.describe()` attaches to whichever schema it is
+      // called on, so the two orderings are resolved by different branches of
+      // `descriptionOf`. Keeping one live example of each means a regression in
+      // either branch fails a test instead of silently dropping prose. Do not
+      // normalise these to one style without reading that test.
+      after: z
+        .string()
+        .describe(
+          "Keyset cursor: the ID of the last comment already read. Returns " +
+            "the rows that follow it in the direction `order` selects — newer " +
+            "under `asc`, older under `desc` — so the pair, not `after` " +
+            "alone, decides whether you page into history or into new " +
+            "arrivals. Takes precedence over `afterCommentId`. An unknown or " +
+            "non-UUID value yields `[]` rather than an error.",
+        )
+        .optional(),
+      afterCommentId: z
+        .string()
+        .optional()
+        .describe(
+          "Alias for `after`, kept for existing callers. Ignored when " +
+            "`after` is also supplied.",
+        ),
+      order: z
+        .enum(["asc", "desc"])
+        .optional()
+        .describe(
+          "Sort direction over `(createdAt, id)`; defaults to `desc`, newest " +
+            "first. The direction also decides which way `after` walks: pair " +
+            "`order=asc` with `after` to read FORWARD into comments newer than " +
+            "the anchor, because `desc` walks backwards into older ones.",
+        ),
+    }),
+  },
+  responses: {
+    200: r.ok(z.array(issueCommentRowSchema)),
+    401: r.unauthorized,
+  },
 });
 
 registry.registerPath({
