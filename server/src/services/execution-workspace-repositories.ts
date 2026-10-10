@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
@@ -142,6 +142,21 @@ export function executionWorkspaceRepositoryService(db: Db) {
         throw conflict("Repository staging directory escapes the task workspace");
       }
     }
+    // Self-ignore before any clone writes, including when the task directory
+    // is a subfolder of another checkout. Never follow a supplied ignore file.
+    const ignorePath = path.join(stagingParent, ".gitignore");
+    const ignoreEntry = await fs.lstat(ignorePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (ignoreEntry && (!ignoreEntry.isFile() || ignoreEntry.isSymbolicLink())) {
+      throw conflict("Repository staging ignore file is not a regular file");
+    }
+    const ignoreTemporary = path.join(stagingParent, `.ignore-${randomUUID()}.tmp`);
+    try {
+      await fs.writeFile(ignoreTemporary, "*\n", { flag: "wx", mode: 0o600 });
+      await fs.rename(ignoreTemporary, ignorePath);
+    } finally { await fs.rm(ignoreTemporary, { force: true }); }
     await ensureManagedRepositoriesIgnored(root);
     const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
     for (const row of rows) {

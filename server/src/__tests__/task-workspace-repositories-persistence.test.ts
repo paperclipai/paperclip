@@ -44,6 +44,8 @@ const support = await getEmbeddedPostgresTestSupport();
       const realGit = (await exec("which", ["git"])).stdout.trim();
       const source = path.join(root, "source"), taskRoot = path.join(root, "task"), bin = path.join(root, "bin");
       await Promise.all([mkdir(source), mkdir(taskRoot), mkdir(bin)]);
+      await exec(realGit, ["init", "--initial-branch=main", taskRoot]);
+      await writeFile(path.join(taskRoot, "report.txt"), "Task-owned report\n");
       const git = async (...args: string[]) => (await exec(realGit, ["-C", source, ...args])).stdout.trim();
       await git("init", "--initial-branch=main");
       await writeFile(path.join(source, "source.txt"), "original source\n");
@@ -102,7 +104,10 @@ const support = await getEmbeddedPostgresTestSupport();
         const snapshots = await readManagedWorkspaceRepositories(taskRoot);
         try { expect(snapshots.map(repo => repo.path)).toEqual([readyIntent.repository.relativePath]); }
         finally { await Promise.all(snapshots.map(repo => disposeGitWorkspaceSnapshot(repo.snapshot))); }
-        expect((await readdir(path.join(taskRoot, ".paperclip-runtime", "repository-staging"))).length).toBe(1);
+        expect((await readdir(path.join(taskRoot, ".paperclip-runtime", "repository-staging"))).filter(name => name.includes(".clone-")).length).toBe(1);
+        expect((await exec(realGit, ["-C", taskRoot, "status", "--porcelain", "--untracked-files=all"])).stdout.trim()).toBe("?? report.txt");
+        await exec(realGit, ["-C", taskRoot, "add", "."]);
+        expect((await exec(realGit, ["-C", taskRoot, "diff", "--cached", "--name-only"])).stdout.trim()).toBe("report.txt");
         const baseline = await captureDirectorySnapshot(taskRoot, { exclude: [".paperclip-runtime"] });
         try { expect([...baseline.entries.keys()].some(entry => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
         finally { await disposeDirectorySnapshot(baseline); }
@@ -125,12 +130,17 @@ const support = await getEmbeddedPostgresTestSupport();
       await rm(root, { recursive: true, force: true });
     }
   });
-  it.skipIf(process.platform === "win32")("rejects a symlinked runtime staging parent before cloning", async () => {
+  it.skipIf(process.platform === "win32").each(["parent", "ignore_file"])("rejects a symlinked runtime staging %s before cloning", async (unsafeEntry) => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-unsafe-repository-staging-"));
     try {
       const taskRoot = path.join(root, "task"), outside = path.join(root, "outside");
       await mkdir(taskRoot); await mkdir(outside);
-      await symlink(outside, path.join(taskRoot, ".paperclip-runtime"));
+      if (unsafeEntry === "parent") await symlink(outside, path.join(taskRoot, ".paperclip-runtime"));
+      else {
+        const staging = path.join(taskRoot, ".paperclip-runtime", "repository-staging");
+        await mkdir(staging, { recursive: true });
+        await symlink(outside, path.join(staging, ".gitignore"));
+      }
       const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Unsafe staging", cwd: taskRoot,
         mode: "shared_workspace", strategyType: "task_directory" }).returning();
       const [task] = await db.insert(issues).values({ companyId, title: "Unsafe staging", executionWorkspaceId: workspace.id }).returning();
@@ -138,7 +148,7 @@ const support = await getEmbeddedPostgresTestSupport();
         request: { repository: { kind: "catalog", id: "123" }, requestKey: "unsafe-staging" } });
       await expect(executionWorkspaceRepositoryService(db).prepareForAdmission({ companyId, issueId: task.id,
         workspaceId: workspace.id, cwd: taskRoot, agentId, runId: randomUUID(), responsibleUserId: "local-board" }))
-        .rejects.toThrow("staging directory escapes");
+        .rejects.toThrow(unsafeEntry === "parent" ? "staging directory escapes" : "ignore file is not a regular file");
       expect(await readdir(outside)).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
