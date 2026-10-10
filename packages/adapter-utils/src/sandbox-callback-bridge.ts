@@ -709,13 +709,22 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const waitMs = typeof options.waitMs === "number" && Number.isFinite(options.waitMs) && options.waitMs > 0
         ? Math.trunc(options.waitMs)
         : 0;
-      // Wait inside the sandbox, so an idle poll is one remote exec. The
-      // deadline uses whole seconds from `date`, so a `sleep` that rejects a
-      // fraction falls back to one second without stretching the wait.
+      // Wait inside the sandbox, so an idle poll is one remote exec. The wait
+      // counts sleeps instead of reading a clock, so it never runs past
+      // `waitMs`. A `sleep` that rejects a fraction falls back to whole
+      // seconds, and a wait shorter than one second then lists once and
+      // returns at once rather than sleeping a whole second.
+      const pollMs = normalizeTimeoutMs(options.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
       const script = waitMs === 0
         ? listScript
         : [
-            `paperclip_end=$(( $(date +%s) + ${Math.ceil(waitMs / 1000)} ))`,
+            "if sleep 0.001 2>/dev/null; then",
+            `  paperclip_step=${(pollMs / 1000).toFixed(3)}`,
+            `  paperclip_left=${Math.floor(waitMs / pollMs)}`,
+            "else",
+            "  paperclip_step=1",
+            `  paperclip_left=${Math.floor(waitMs / 1000)}`,
+            "fi",
             "while :; do",
             `  paperclip_listed=$(${listScript.join("\n")}`,
             "  )",
@@ -723,8 +732,9 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
             "    printf '%s\\n' \"$paperclip_listed\"",
             "    break",
             "  fi",
-            "  [ \"$(date +%s)\" -lt \"$paperclip_end\" ] || break",
-            `  sleep ${(normalizeTimeoutMs(options.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS) / 1000).toFixed(3)} 2>/dev/null || sleep 1`,
+            "  [ \"$paperclip_left\" -gt 0 ] || break",
+            "  paperclip_left=$(( paperclip_left - 1 ))",
+            "  sleep \"$paperclip_step\"",
             "done",
           ];
       const result = await runShell(

@@ -1054,6 +1054,59 @@ describe("sandbox callback bridge", () => {
     expect(runner.execute).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the in-sandbox wait within a short wait limit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-short-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    await mkdir(requestsDir, { recursive: true });
+    const inner = createExecRunner();
+    const runner = { execute: vi.fn((input: Parameters<typeof inner.execute>[0]) => inner.execute(input)) };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    // A 200 ms limit must not stretch to the next whole second.
+    const startedAt = Date.now();
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 200, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(800);
+  });
+
+  it("does not sleep past a short wait limit when the target rejects a fractional sleep", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-list-wait-whole-"));
+    cleanupDirs.push(rootDir);
+    const requestsDir = path.join(rootDir, "requests");
+    const binDir = path.join(rootDir, "bin");
+    const sleepLog = path.join(rootDir, "sleeps.log");
+    await mkdir(requestsDir, { recursive: true });
+    await mkdir(binDir, { recursive: true });
+    // A `sleep` like the ones on minimal images: whole seconds only.
+    await writeFile(
+      path.join(binDir, "sleep"),
+      [
+        "#!/bin/sh",
+        'case "$1" in *[!0-9]*) exit 1 ;; esac',
+        `echo "$1" >> '${sleepLog}'`,
+        'exec /bin/sleep "$1"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const inner = createExecRunner();
+    const runner = {
+      execute: vi.fn((input: Parameters<typeof inner.execute>[0]) =>
+        inner.execute({ ...input, env: { ...input.env, PATH: `${binDir}:${process.env.PATH}` } })),
+    };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: rootDir, timeoutMs: 30_000 });
+
+    // Under one second there is no whole-second sleep that fits, so the call lists once and returns.
+    const startedAt = Date.now();
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 900, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(700);
+    await expect(readFile(sleepLog, "utf8")).rejects.toThrow();
+
+    // Two seconds fit two whole-second sleeps and no more.
+    await expect(client.listJsonFiles(requestsDir, { waitMs: 2_100, pollIntervalMs: 50 })).resolves.toEqual([]);
+    expect((await readFile(sleepLog, "utf8")).trim().split("\n")).toEqual(["1", "1"]);
+  });
+
   it("asks an idle queue client to wait inside the sandbox instead of polling every interval", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-idle-wait-"));
     cleanupDirs.push(rootDir);
