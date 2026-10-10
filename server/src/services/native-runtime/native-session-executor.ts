@@ -10964,7 +10964,10 @@ async function waitForRemoteRunnerProcessIdentity(input: {
           input.identityPath,
         ],
         bypassSession: true,
-        timeoutMs: 2_000,
+        // An owned remote command includes SSH and supervisor admission before
+        // reading this tiny file. Its normal roundtrip can exceed two seconds.
+        // Give the RPC room while preserving the total identity-wait deadline.
+        timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())),
       })
       .catch(() => null);
     const identity =
