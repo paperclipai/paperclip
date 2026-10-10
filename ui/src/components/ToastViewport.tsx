@@ -1,7 +1,15 @@
+import { AgentAvatar } from "./AgentAvatar";
+import { deriveInitials } from "./Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
-import { useToast, type ToastItem, type ToastTone } from "../context/ToastContext";
+import {
+  useToastActions,
+  useToastState,
+  type ToastItem,
+  type ToastTone,
+} from "../context/ToastContext";
 import { cn } from "../lib/utils";
 
 const toneClasses: Record<ToastTone, string> = {
@@ -35,7 +43,7 @@ function AnimatedToast({
   return (
     <li
       className={cn(
-        "pointer-events-auto rounded-sm border shadow-lg backdrop-blur-xl transition-[transform,opacity] duration-200 ease-out",
+        "pointer-events-auto rounded-sm border shadow-lg backdrop-blur-xl transition-(--tp-transform-opacity) duration-200 ease-out",
         visible
           ? "translate-y-0 opacity-100"
           : "translate-y-3 opacity-0",
@@ -43,7 +51,16 @@ function AnimatedToast({
       )}
     >
       <div className="flex items-start gap-3 px-3 py-2.5">
-        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
+        {toast.actor?.type === "agent" ? (
+          <AgentAvatar agent={{ id: toast.actor.id, name: toast.actor.name, appearance: toast.actor.appearance }} size={24} />
+        ) : toast.actor?.type === "user" ? (
+          <Avatar size="sm" aria-hidden="true">
+            {toast.actor.image && <AvatarImage src={toast.actor.image} alt="" />}
+            <AvatarFallback>{deriveInitials(toast.actor.name)}</AvatarFallback>
+          </Avatar>
+        ) : (
+          <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
+        )}
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold leading-5">{toast.title}</p>
           {toast.body && (
@@ -51,15 +68,27 @@ function AnimatedToast({
               {toast.body}
             </p>
           )}
-          {toast.action && (
-            <Link
-              to={toast.action.href}
-              onClick={() => onDismiss(toast.id)}
-              className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
-            >
-              {toast.action.label}
-            </Link>
-          )}
+          {toast.action &&
+            (toast.action.onClick ? (
+              <button
+                type="button"
+                onClick={() => {
+                  toast.action?.onClick?.();
+                  onDismiss(toast.id);
+                }}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </button>
+            ) : toast.action.href ? (
+              <Link
+                to={toast.action.href}
+                onClick={() => onDismiss(toast.id)}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </Link>
+            ) : null)}
         </div>
         <button
           type="button"
@@ -75,7 +104,8 @@ function AnimatedToast({
 }
 
 export function ToastViewport() {
-  const { toasts, dismissToast } = useToast();
+  const toasts = useToastState();
+  const { dismissToast } = useToastActions();
 
   if (toasts.length === 0) return null;
 
@@ -83,7 +113,7 @@ export function ToastViewport() {
     <aside
       aria-live="polite"
       aria-atomic="false"
-      className="pointer-events-none fixed bottom-3 left-3 z-[120] w-full max-w-sm px-1"
+      className="pointer-events-none fixed bottom-3 left-3 z-(--z-120) w-full max-w-sm px-1"
     >
       <ol className="flex w-full flex-col-reverse gap-2">
         {toasts.map((toast) => (

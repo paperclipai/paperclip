@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "baselineId": "storybook-visual-initial-public-baseline",
+  "sourceCommit": null,
+  "snapshotCount": 0,
+  "archive": {
+    "url": "",
+    "sha256": "",
+    "byteSize": 0,
+    "objectKey": "baselines/storybook-visual/<sha256>/snapshots.tgz"
+  },
+  "environment": {
+    "browser": "chromium",
+    "viewport": "1200x800",
+    "deviceScaleFactor": 1,
+    "platform": "ubuntu-24.04"
+  }
+}

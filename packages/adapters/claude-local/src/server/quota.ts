@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -92,6 +93,22 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   } catch {
     return null;
   }
+  const credential = parseClaudeCredential(raw);
+  if (!credential) return null;
+  // On macOS the CLI refreshes the Keychain item, not this file, so a file
+  // whose token has expired is a stale leftover. Skip it so the caller can
+  // fall through to a live credential instead of failing with a dead token.
+  if (credential.expiresAt != null && credential.expiresAt <= Date.now()) return null;
+  return credential.token;
+}
+
+interface ClaudeCredential {
+  token: string;
+  /** Epoch milliseconds, when the credential file records one. */
+  expiresAt: number | null;
+}
+
+function parseClaudeCredential(raw: string): ClaudeCredential | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -103,7 +120,13 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   const oauth = obj["claudeAiOauth"];
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
-  return typeof token === "string" && token.length > 0 ? token : null;
+  if (typeof token !== "string" || token.length === 0) return null;
+  const expiresAt = (oauth as Record<string, unknown>)["expiresAt"];
+  return { token, expiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
+}
+
+function parseClaudeCredentialToken(raw: string): string | null {
+  return parseClaudeCredential(raw)?.token ?? null;
 }
 
 interface ClaudeAuthStatus {
@@ -137,11 +160,50 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
-export async function readClaudeToken(): Promise<string | null> {
+// Claude Code on macOS stores the OAuth credential for a custom
+// CLAUDE_CONFIG_DIR in a per-directory Keychain item named
+// "Claude Code-credentials-<first 8 hex chars of sha256(dir)>" instead of a
+// credentials file in the directory. The suffix binds the item to exactly one
+// auth home, so reading it can only ever surface the login performed inside
+// that home — none of the cross-account risk of the unsuffixed operator item.
+function isolatedKeychainService(configDir: string): string {
+  return `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
+}
+
+async function readClaudeTokenFromKeychain(service: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return parseClaudeCredentialToken(stdout);
+  } catch { return null; }
+}
+
+/**
+ * Read the credential that a `claude` login performed inside an isolated auth
+ * home left in the macOS Keychain. Only that home's own suffixed item is
+ * consulted — never the unsuffixed item that holds the server operator's
+ * machine-level login. Returns null off macOS.
+ */
+export async function readIsolatedClaudeKeychainToken(loginHome: string): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  return readClaudeTokenFromKeychain(isolatedKeychainService(loginHome));
+}
+
+export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
+  }
+  if (process.platform !== "darwin") return null;
+  // A custom auth home owns exactly one Keychain item: the suffixed one the
+  // CLI created for that directory. It must never fall through to the
+  // unsuffixed item, which belongs to a different account.
+  if (process.env.CLAUDE_CONFIG_DIR?.trim()) {
+    return readClaudeTokenFromKeychain(isolatedKeychainService(configDir));
+  }
+  // Only an explicit local-account import may consult the user's Keychain.
+  if (options.allowKeychain) {
+    return readClaudeTokenFromKeychain("Claude Code-credentials");
   }
   return null;
 }
@@ -187,13 +249,15 @@ function formatExtraUsageLabel(extraUsage: AnthropicExtraUsage): string | null {
   ) {
     return null;
   }
-  return `${formatCurrencyAmount(usedCredits, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit, extraUsage.currency)}`;
+  // API returns values in cents — convert to dollars for display
+  return `${formatCurrencyAmount(usedCredits / 100, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit / 100, extraUsage.currency)}`;
 }
 
-/** Convert a 0-1 utilization fraction to a 0-100 integer percent. Returns null for null/undefined input. */
+/** Convert a utilization value to a 0-100 integer percent. Returns null for null/undefined input.
+ *  Handles both 0-1 fractions (legacy) and 0-100 percentages (current API). */
 export function toPercent(utilization: number | null | undefined): number | null {
   if (utilization == null) return null;
-  return Math.min(100, Math.round(utilization * 100));
+  return Math.min(100, Math.round(utilization < 1 ? utilization * 100 : utilization));
 }
 
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
@@ -201,14 +265,15 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
+export async function fetchClaudeQuota(token: string, signal?: AbortSignal): Promise<QuotaWindow[]> {
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
+    signal,
     headers: {
       Authorization: `Bearer ${token}`,
       "anthropic-beta": "oauth-2025-04-20",
@@ -477,6 +542,14 @@ function formatProviderError(source: string, error: unknown): string {
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+  if (
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyProcessEnv("ANTHROPIC_BEDROCK_BASE_URL")
+  ) {
+    return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
+  }
+
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
   const token = await readClaudeToken();

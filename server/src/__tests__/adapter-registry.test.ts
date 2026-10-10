@@ -1,0 +1,524 @@
+import { probeAcpxClaudeInstallation, probeAcpxPiInstallation } from "../vendor/paperclip-runner/live/index.js";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import type { ServerAdapterModule } from "../adapters/index.js";
+
+import {
+  detectAdapterModel,
+  findActiveServerAdapter,
+  findServerAdapter,
+  listAdapterModels,
+  registerServerAdapter,
+  requireServerAdapter,
+  unregisterServerAdapter,
+} from "../adapters/index.js";
+import {
+  resolveExternalAdapterRegistration,
+  setOverridePaused,
+} from "../adapters/registry.js";
+
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
+  probeAcpxClaudeInstallation: vi.fn(async () => undefined),
+  probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxPiInstallation: vi.fn(async () => undefined),
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
+}));
+
+it("advertises tool-refresh recovery for the selected legacy harness", () => {
+  for (const type of ["claude_local", "codex_local", "grok_local", "gemini_local", "kimi_local", "cursor", "opencode_local", "pi_local"]) {
+    expect(requireServerAdapter(type).supportsToolRefreshOnResume).toBe(true);
+    expect(requireServerAdapter(type).sessionManagement?.supportsSessionResume).toBe(true);
+  }
+  expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+});
+
+const externalAdapter: ServerAdapterModule = {
+  type: "external_test",
+  execute: async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+  }),
+  testEnvironment: async () => ({
+    adapterType: "external_test",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+  models: [{ id: "external-model", label: "External Model" }],
+  supportsLocalAgentJwt: false,
+};
+
+describe("server adapter registry", () => {
+  beforeEach(() => {
+    unregisterServerAdapter("external_test");
+    unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
+    unregisterServerAdapter("claude_local");
+    setOverridePaused("claude_local", false);
+  });
+
+  afterEach(() => {
+    unregisterServerAdapter("external_test");
+    unregisterServerAdapter("hermes_local");
+    unregisterServerAdapter("hermes_gateway");
+    unregisterServerAdapter("claude_local");
+    setOverridePaused("claude_local", false);
+  });
+
+  it("registers external adapters and exposes them through lookup helpers", async () => {
+    expect(findServerAdapter("external_test")).toBeNull();
+
+    registerServerAdapter(externalAdapter);
+
+    expect(requireServerAdapter("external_test")).toBe(externalAdapter);
+    expect(await listAdapterModels("external_test")).toEqual([
+      { id: "external-model", label: "External Model" },
+    ]);
+  });
+
+  it("removes external adapters when unregistered", () => {
+    registerServerAdapter(externalAdapter);
+
+    unregisterServerAdapter("external_test");
+
+    expect(findServerAdapter("external_test")).toBeNull();
+    expect(() => requireServerAdapter("external_test")).toThrow(
+      "Unknown adapter type: external_test",
+    );
+  });
+
+  it("allows external plugin to override a built-in adapter type", () => {
+    // claude_local is always built-in
+    const builtIn = findServerAdapter("claude_local");
+    expect(builtIn).not.toBeNull();
+
+    const plugin: ServerAdapterModule = {
+      type: "claude_local",
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      models: [{ id: "plugin-model", label: "Plugin Override" }],
+      supportsLocalAgentJwt: false,
+    };
+
+    registerServerAdapter(plugin);
+
+    // Plugin wins
+    const resolved = requireServerAdapter("claude_local");
+    expect(resolved).toBe(plugin);
+    expect(resolved.models).toEqual([
+      { id: "plugin-model", label: "Plugin Override" },
+    ]);
+  });
+
+  it("ships Hermes adapters as built-ins and still accepts external overrides", () => {
+    const builtInLocal = findServerAdapter("hermes_local");
+    const builtInGateway = findServerAdapter("hermes_gateway");
+
+    expect(builtInLocal).not.toBeNull();
+    expect(builtInLocal?.supportsLocalAgentJwt).toBe(true);
+    expect(builtInLocal?.supportsInstructionsBundle).toBe(true);
+    expect(builtInLocal?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInLocal?.detectModel).toBeTypeOf("function");
+    expect(builtInLocal?.getConfigSchema).toBeTypeOf("function");
+
+    expect(builtInGateway).not.toBeNull();
+    expect(builtInGateway?.supportsLocalAgentJwt).toBe(false);
+    expect(builtInGateway?.supportsInstructionsBundle).toBe(false);
+    expect(builtInGateway?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(builtInGateway?.getConfigSchema).toBeTypeOf("function");
+
+    const hermesLocalExternalAdapter: ServerAdapterModule = {
+      type: "hermes_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "hermes_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: true,
+      supportsInstructionsBundle: true,
+      instructionsPathKey: "instructionsFilePath",
+      requiresMaterializedRuntimeSkills: false,
+      listSkills: async () => ({
+        adapterType: "hermes_local",
+        supported: true,
+        mode: "ephemeral",
+        desiredSkills: [],
+        entries: [],
+        warnings: [],
+      }),
+      getConfigSchema: () => ({ fields: [{ key: "provider", label: "Provider", type: "text" }] }),
+      detectModel: async () => ({
+        model: "hermes-model",
+        provider: "openrouter",
+        source: "test",
+      }),
+    };
+
+    const hermesGatewayExternalAdapter: ServerAdapterModule = {
+      type: "hermes_gateway",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "hermes_gateway",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: false,
+      supportsInstructionsBundle: false,
+      requiresMaterializedRuntimeSkills: false,
+      getConfigSchema: () => ({
+        fields: [{ key: "apiBaseUrl", label: "API URL", type: "text" }],
+      }),
+    };
+
+    registerServerAdapter(hermesLocalExternalAdapter);
+
+    expect(requireServerAdapter("hermes_local")).toBe(hermesLocalExternalAdapter);
+    expect(findActiveServerAdapter("hermes_local")?.supportsLocalAgentJwt).toBe(true);
+
+    unregisterServerAdapter("hermes_local");
+
+    expect(requireServerAdapter("hermes_local")).toBe(builtInLocal);
+
+    registerServerAdapter(hermesGatewayExternalAdapter);
+
+    expect(requireServerAdapter("hermes_gateway")).toBe(hermesGatewayExternalAdapter);
+    expect(findActiveServerAdapter("hermes_gateway")?.supportsLocalAgentJwt).toBe(false);
+
+    unregisterServerAdapter("hermes_gateway");
+
+    expect(requireServerAdapter("hermes_gateway")).toBe(builtInGateway);
+  });
+
+  it("exposes capability flags from registered adapters", () => {
+    const adapterWithCaps: ServerAdapterModule = {
+      type: "external_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_test",
+        status: "pass" as const,
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: true,
+      supportsInstructionsBundle: true,
+      instructionsPathKey: "customPathKey",
+      requiresMaterializedRuntimeSkills: true,
+    };
+
+    registerServerAdapter(adapterWithCaps);
+
+    const resolved = findActiveServerAdapter("external_test");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.supportsInstructionsBundle).toBe(true);
+    expect(resolved!.instructionsPathKey).toBe("customPathKey");
+    expect(resolved!.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(resolved!.supportsLocalAgentJwt).toBe(true);
+  });
+
+  it("returns undefined for capability flags on adapters that do not set them", () => {
+    registerServerAdapter(externalAdapter);
+
+    const resolved = findActiveServerAdapter("external_test");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.supportsInstructionsBundle).toBeUndefined();
+    expect(resolved!.instructionsPathKey).toBeUndefined();
+    expect(resolved!.requiresMaterializedRuntimeSkills).toBeUndefined();
+  });
+
+  it("built-in claude_local adapter declares capability flags", () => {
+    const adapter = findActiveServerAdapter("claude_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.supportsInstructionsBundle).toBe(true);
+    expect(adapter!.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter!.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(adapter!.supportsLocalAgentJwt).toBe(true);
+  });
+
+  it("rejects an incomplete managed runner provider before probing Codex", async () => {
+    const adapter = requireServerAdapter("paperclip_runner");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    const result = await adapter.testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "claude_managed" },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "fail",
+      checks: [{
+        code: "paperclip_runner_claude_managed_profile_required",
+        level: "error",
+      }],
+    });
+  });
+
+  it.each([
+    ["claude_managed", {
+      managedProfileId: "managed-primary",
+      managedAgentsRetentionAcknowledged: true,
+    }, "claude_managed_profile_selected"],
+    ["aws_agentcore", {
+      agentCoreProfileId: "agentcore-primary",
+      agentCoreRetentionAcknowledged: true,
+    }, "aws_agentcore_profile_selected"],
+  ] as const)("accepts a complete %s profile selection", async (provider, config, code) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider, ...config },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: expect.arrayContaining([expect.objectContaining({ code, level: "info" })]),
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"],
+  ] as const)("does not claim runtime readiness from the remote ACPX %s platform alone", async (acpxAgent, model) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent, model },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        providerKey: "test-provider",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" }],
+    });
+  });
+
+  it.each([true, false])("checks actual local ACPX installation readiness (%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxClaudeInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Runtime package integrity verification failed"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "claude", model: "custom-claude-model" },
+    });
+    expect(probe).toHaveBeenLastCalledWith("custom-claude-model");
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
+    });
+  });
+
+  it.each([true, false])("probes the exact Pi installation without qualification opt-in (ready=%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxPiInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Pi closure unavailable"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: {
+        provider: "acpx",
+        acpxAgent: "pi",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [{ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" }],
+    });
+    expect(probe).toHaveBeenLastCalledWith("openrouter/deepseek/deepseek-v4-flash-0731");
+  });
+  it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
+    const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
+    const previous = process.env[key];
+    process.env[key] = JSON.stringify([{ agent: "copilot", model: "exact-model" }]);
+    try {
+      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+        companyId: "company-1", adapterType: "paperclip_runner",
+        config: { provider: "acpx", acpxAgent: "copilot", model: "exact-model" },
+      });
+      expect(result).toMatchObject({ status: "warn", checks: [{ code: "acpx_candidate_qualification_only" }] });
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+  it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
+    const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
+    const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
+    const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
+    const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedRunnerCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex@0.160.0")}; fi`;
+    const expectedRunnerOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai@1.18.34")}; fi`;
+
+    expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "claude",
+      detectCommand: "claude",
+      installCommand: expectedClaudeInstall,
+    });
+    expect(findActiveServerAdapter("codex_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedCodexInstall,
+    });
+    expect(findActiveServerAdapter("gemini_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "gemini",
+      detectCommand: "gemini",
+      installCommand: expectedGeminiInstall,
+    });
+    expect(findActiveServerAdapter("opencode_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "codex" })).toEqual({
+      command: "codex",
+      detectCommand: "codex",
+      installCommand: expectedRunnerCodexInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "opencode" })).toEqual({
+      command: "opencode",
+      detectCommand: "opencode",
+      installCommand: expectedRunnerOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("paperclip_runner")?.getRuntimeCommandSpec?.({ provider: "acpx" })).toEqual({
+      command: "paperclip-runnerd",
+      detectCommand: null,
+      installCommand: null,
+    });
+  });
+
+  it("switches active adapter behavior back to the builtin when an override is paused", async () => {
+    const builtIn = findServerAdapter("claude_local");
+    expect(builtIn).not.toBeNull();
+
+    const detectModel = vi.fn(async () => ({
+      model: "plugin-model",
+      provider: "plugin-provider",
+      source: "plugin-source",
+    }));
+    const plugin: ServerAdapterModule = {
+      type: "claude_local",
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      models: [{ id: "plugin-model", label: "Plugin Override" }],
+      detectModel,
+      supportsLocalAgentJwt: false,
+    };
+
+    registerServerAdapter(plugin);
+
+    expect(findActiveServerAdapter("claude_local")).toBe(plugin);
+    expect(await listAdapterModels("claude_local")).toEqual([
+      { id: "plugin-model", label: "Plugin Override" },
+    ]);
+    expect(await detectAdapterModel("claude_local")).toMatchObject({
+      model: "plugin-model",
+      provider: "plugin-provider",
+    });
+
+    expect(setOverridePaused("claude_local", true)).toBe(true);
+
+    expect(findActiveServerAdapter("claude_local")).not.toBe(plugin);
+    expect(await listAdapterModels("claude_local")).toEqual(builtIn?.models ?? []);
+    expect(await detectAdapterModel("claude_local")).toBeNull();
+    expect(detectModel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resolveExternalAdapterRegistration", () => {
+  it("preserves module-provided sessionManagement", () => {
+    const sessionManagement = {
+      supportsSessionResume: true,
+      nativeContextManagement: "unknown" as const,
+      defaultSessionCompaction: {
+        enabled: true,
+        maxSessionRuns: 200,
+        maxRawInputTokens: 2_000_000,
+        maxSessionAgeHours: 72,
+      },
+    };
+    const adapter: ServerAdapterModule = {
+      type: "external_session_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_session_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      sessionManagement,
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBe(sessionManagement);
+  });
+
+  it("falls back to the hardcoded registry when the module omits sessionManagement", () => {
+    // An external that overrides a built-in type should inherit the built-in's
+    // sessionManagement when it does not provide its own.
+    const adapter: ServerAdapterModule = {
+      type: "claude_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBeDefined();
+    expect(resolved.sessionManagement?.supportsSessionResume).toBe(true);
+    expect(resolved.sessionManagement?.nativeContextManagement).toBe("confirmed");
+  });
+
+  it("leaves sessionManagement undefined when neither module nor registry provides one", () => {
+    const adapter: ServerAdapterModule = {
+      type: "external_unknown_test",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "external_unknown_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    };
+
+    const resolved = resolveExternalAdapterRegistration(adapter);
+
+    expect(resolved.sessionManagement).toBeUndefined();
+  });
+});

@@ -1,0 +1,93 @@
+{
+  "schema": "paperclip.copilot-product-live-proof/v1",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "modelProvider": "github",
+  "qualificationStatus": "pending",
+  "sourceRevision": "bcc9c638a25b91b84065f12633f083bd4f7a689f",
+  "runnerdSourceRevision": "f77ae83aeb6d802c73f1c955760017ae272eba29",
+  "runnerdSha256": "sha256:986060810ba7377c6ddd64a5d89e322d0a434e1a9c80400e6d4acf5934bfc421",
+  "executionMode": "source-mode Product E2E with build-owned verified native assets",
+  "caseId": "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+  "environment": "local",
+  "startedAt": "2026-09-28T19:41:44.170Z",
+  "finishedAt": "2026-09-28T19:42:22.606Z",
+  "durationMs": 38436,
+  "attempt": 1,
+  "automaticRetries": 0,
+  "promptRequestsSent": 1,
+  "upstreamModelRequestCount": null,
+  "activeTurnDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 600,
+  "reservationUsd": 2,
+  "behaviorStatus": "passed",
+  "matchers": [
+    {
+      "kind": "message_exact",
+      "passed": true
+    },
+    {
+      "kind": "message_occurrences",
+      "passed": true
+    },
+    {
+      "kind": "issue_status",
+      "passed": true
+    },
+    {
+      "kind": "run_status",
+      "passed": true
+    },
+    {
+      "kind": "runtime_mode",
+      "passed": true
+    },
+    {
+      "kind": "environment",
+      "passed": true
+    }
+  ],
+  "cleanup": "passed",
+  "visualReview": "Exact single completion marker visible; task Done; Copilot agent attribution and tool activity visible.",
+  "originalResultSha256": "sha256:92c8aff3960e443be0c009c891d49d285476c3d6b67999fe97bb323076c4dc8b",
+  "finalScreenshotSha256": "sha256:d5715c79b9c00ee1a87872999ab24f38e7d642c10e52f31ba183d3af2cdc74b9",
+  "sourceProvenanceNote": "Original Product result source.sha is null; exact committed source is retained in the independent private launcher manifest.",
+  "tokens": {
+    "inputTokens": 31332,
+    "cachedInputTokens": 15451,
+    "outputTokens": 337
+  },
+  "accounting": {
+    "providerReportedCostUsd": null,
+    "costCoverage": "unknown",
+    "originalResultUnchanged": true,
+    "originalErroneousFields": {
+      "usage.biller": "openai",
+      "usage.provider": "openai",
+      "usage.costUsd": 0,
+      "usage.costStatus": "reported",
+      "billing.complete": true
+    },
+    "defect": "The shared server path classified the model family as its biller and converted absent cost to a reported zero. Behavior passes do not qualify accounting. Shared fix and verification are required."
+  },
+  "externalBilling": {
+    "source": "parent verified GitHub billing dashboard after Product hello",
+    "displayedIncludedAiCreditsUsed": 1,
+    "displayedIncludedAiCreditsTotal": 1500,
+    "baselineDisplayedIncludedAiCreditsUsed": 0,
+    "combinedDisplayedCreditDelta": 1,
+    "exactPerRunCreditDelta": null,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "additionalCashChargesUsd": 0,
+    "note": "Combined attribution covers the successful canonical protocol and Product hello turns; per-run and finer-grained credit usage remain unknown."
+  },
+  "pendingQualification": [
+    "Product local remaining semantic/edit/interactive cases",
+    "Product Daytona cases",
+    "restrictive permission denial before side effects",
+    "native background command settlement",
+    "warm continuation and restart recovery",
+    "post-fix accounting provenance and exact per-run credit reconciliation"
+  ]
+}
