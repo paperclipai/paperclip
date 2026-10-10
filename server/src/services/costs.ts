@@ -15,6 +15,10 @@ export type { CostDateRange } from "./cost-date-range.js";
 
 const METERED_BILLING_TYPE = "metered_api";
 const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
+const CREDIT_BILLING_TYPE = "credits";
+// catch-all for billing types with no dedicated counter today; keeps run-count
+// coverage at 100% of BILLING_TYPES without adding a counter per type.
+const OTHER_BILLING_TYPES = ["fixed", "unknown"] as const;
 
 // Pre-receipt Codex events stored cache reads inside input; Pi/OpenCode used
 // provider-qualified model IDs and already excluded cache reads. Normalize each
@@ -460,6 +464,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
+          creditRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} = ${CREDIT_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
+          otherRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(OTHER_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionCachedInputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.cachedInputTokens} else 0 end), 0)::double precision`,
           subscriptionInputTokens:
@@ -499,6 +507,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
+          creditRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} = ${CREDIT_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
+          otherRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(OTHER_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionCachedInputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.cachedInputTokens} else 0 end), 0)::double precision`,
           subscriptionInputTokens:
@@ -530,6 +542,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`count(distinct case when ${costEvents.billingType} = ${METERED_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionRunCount:
             sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
+          creditRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} = ${CREDIT_BILLING_TYPE} then ${costEvents.heartbeatRunId} end)::int`,
+          otherRunCount:
+            sql<number>`count(distinct case when ${costEvents.billingType} in (${sql.join(OTHER_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.heartbeatRunId} end)::int`,
           subscriptionCachedInputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.cachedInputTokens} else 0 end), 0)::double precision`,
           subscriptionInputTokens:

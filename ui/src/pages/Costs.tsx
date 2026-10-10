@@ -788,7 +788,7 @@ export function Costs({
                                   <div className="text-xs text-muted-foreground">
                                     in {formatTokens(row.inputTokens + row.cachedInputTokens)} ({formatTokens(row.cachedInputTokens)} cached) · out {formatTokens(row.outputTokens)}
                                   </div>
-                                  {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
+                                  {(row.apiRunCount > 0 || row.subscriptionRunCount > 0 || row.creditRunCount > 0 || row.otherRunCount > 0) ? (
                                     <div className="text-xs text-muted-foreground">
                                       {"runs: "}
                                       {row.apiRunCount > 0 ? `${row.apiRunCount} api` : "0 api"}
@@ -796,6 +796,8 @@ export function Costs({
                                       {row.subscriptionRunCount > 0
                                         ? `${row.subscriptionRunCount} sub`
                                         : "0 sub"}
+                                      {row.creditRunCount > 0 ? ` · ${row.creditRunCount} credits` : ""}
+                                      {row.otherRunCount > 0 ? ` · ${row.otherRunCount} other` : ""}
                                     </div>
                                   ) : null}
                                 </div>
