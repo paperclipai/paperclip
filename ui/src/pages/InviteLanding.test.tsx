@@ -28,7 +28,7 @@ vi.mock("../api/auth", () => ({
   authApi: {
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
-    signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signUpEmail: (input: unknown, options?: unknown) => signUpEmailMock(input, options),
   },
 }));
 
@@ -243,15 +243,83 @@ describe("InviteLandingPage", () => {
     await flushReact();
     await flushReact();
 
-    expect(signUpEmailMock).toHaveBeenCalledWith({
-      name: "Jane Example",
-      email: "jane@example.com",
-      password: "supersecret",
-    });
+    expect(signUpEmailMock).toHaveBeenCalledWith(
+      {
+        name: "Jane Example",
+        email: "jane@example.com",
+        password: "supersecret",
+      },
+      { inviteToken: "pcp_invite_test" },
+    );
     expect(container.textContent).toContain("An account already exists for jane@example.com. Sign in below to continue with this invite.");
     expect(container.querySelector('input[name="name"]')).toBeNull();
     expect(container.textContent).toContain("Sign in to continue");
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBe("pcp_invite_test");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("explains an invite-only rejection without blaming the person's credentials", async () => {
+    healthGetMock.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      authSignUpMode: "invite",
+    });
+    signUpEmailMock.mockRejectedValue(
+      Object.assign(new Error("Sign-up on this instance is by invitation only."), {
+        code: "SIGN_UP_REQUIRES_INVITE",
+        status: 403,
+      }),
+    );
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const fill = (selector: string, value: string) => {
+      const input = container.querySelector(selector) as HTMLInputElement;
+      inputValueSetter!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    await act(async () => {
+      fill('input[name="name"]', "Jane Example");
+      fill('input[name="email"]', "jane@example.com");
+      fill('input[name="password"]', "supersecret");
+    });
+
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement;
+    await act(async () => {
+      authForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(signUpEmailMock).toHaveBeenCalledWith(
+      { name: "Jane Example", email: "jane@example.com", password: "supersecret" },
+      { inviteToken: "pcp_invite_test" },
+    );
+    expect(container.textContent).toContain(
+      "This invite can no longer be used to create an account. Ask the person who invited you for a new invite link.",
+    );
 
     await act(async () => {
       root.unmount();
@@ -531,11 +599,14 @@ describe("InviteLandingPage", () => {
     await flushReact();
     await flushReact();
 
-    expect(signUpEmailMock).toHaveBeenCalledWith({
-      name: "Jane Example",
-      email: "jane@example.com",
-      password: "supersecret",
-    });
+    expect(signUpEmailMock).toHaveBeenCalledWith(
+      {
+        name: "Jane Example",
+        email: "jane@example.com",
+        password: "supersecret",
+      },
+      { inviteToken: "pcp_invite_test" },
+    );
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
     expect(queryClient.getQueryState(queryKeys.access.currentBoardAccess)?.isInvalidated).toBe(true);

@@ -13,6 +13,19 @@ export type BindMode = (typeof BIND_MODES)[number];
 export const AUTH_BASE_URL_MODES = ["auto", "explicit"] as const;
 export type AuthBaseUrlMode = (typeof AUTH_BASE_URL_MODES)[number];
 
+/**
+ * Who may create an account on an `authenticated` instance.
+ * - `open`: anyone can sign up.
+ * - `invite`: sign-up requires a valid company or bootstrap invite token.
+ * - `disabled`: nobody can sign up.
+ */
+export const AUTH_SIGN_UP_MODES = ["open", "invite", "disabled"] as const;
+export type AuthSignUpMode = (typeof AUTH_SIGN_UP_MODES)[number];
+/** Request header that carries the invite token on an invite-mode sign-up. */
+export const AUTH_SIGN_UP_INVITE_TOKEN_HEADER = "x-paperclip-invite-token";
+/** Error code of a sign-up that invite mode rejects. */
+export const AUTH_SIGN_UP_REQUIRES_INVITE_CODE = "SIGN_UP_REQUIRES_INVITE";
+
 export const AGENT_STATUSES = [
   "active",
   "paused",

@@ -16,6 +16,27 @@ export async function promptServer(opts?: {
   currentServer?: Partial<ServerConfig>;
   currentAuth?: Partial<AuthConfig>;
 }): Promise<{ server: ServerConfig; auth: AuthConfig }> {
+  const result = await promptServerSettings(opts);
+  return { ...result, auth: preserveSignUpSettings(result.auth, opts?.currentAuth) };
+}
+
+/**
+ * The server prompts do not ask about registration, so keep what the operator
+ * already set. Without this, editing server settings rewrote `auth` without
+ * `signUp` and with `disableSignUp: false`, and a restart reopened sign-up.
+ */
+export function preserveSignUpSettings(auth: AuthConfig, current?: Partial<AuthConfig>): AuthConfig {
+  return {
+    ...auth,
+    disableSignUp: current?.disableSignUp ?? auth.disableSignUp,
+    ...(current?.signUp ? { signUp: current.signUp } : {}),
+  };
+}
+
+async function promptServerSettings(opts?: {
+  currentServer?: Partial<ServerConfig>;
+  currentAuth?: Partial<AuthConfig>;
+}): Promise<{ server: ServerConfig; auth: AuthConfig }> {
   const currentServer = opts?.currentServer;
   const currentAuth = opts?.currentAuth;
   const currentBind = inferConfiguredBind(currentServer);

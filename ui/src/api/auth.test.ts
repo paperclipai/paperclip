@@ -70,3 +70,40 @@ describe("authApi.signOut", () => {
     });
   });
 });
+
+describe("authApi.signUpEmail", () => {
+  const input = { name: "Jane", email: "jane@example.com", password: "supersecret" };
+
+  function stubOkFetch() {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ token: "t", user: { id: "u1" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("sends the invite token in a header, never in the Better Auth body", async () => {
+    const fetchMock = stubOkFetch();
+
+    await authApi.signUpEmail(input, { inviteToken: " pcp_invite_abc " });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("/api/auth/sign-up/email");
+    expect(init.headers).toMatchObject({ "x-paperclip-invite-token": "pcp_invite_abc" });
+    expect(JSON.parse(init.body)).toEqual(input);
+  });
+
+  it("omits the header without a token", async () => {
+    const fetchMock = stubOkFetch();
+
+    await authApi.signUpEmail(input);
+    await authApi.signUpEmail(input, { inviteToken: "  " });
+
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init.headers).not.toHaveProperty("x-paperclip-invite-token");
+    }
+  });
+});

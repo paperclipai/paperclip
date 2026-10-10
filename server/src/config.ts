@@ -8,6 +8,7 @@ import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
+import { resolveAuthSignUpMode } from "./auth/sign-up-mode.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -16,6 +17,7 @@ import {
   STORAGE_PROVIDERS,
   type BindMode,
   type AuthBaseUrlMode,
+  type AuthSignUpMode,
   type DeploymentExposure,
   type DeploymentMode,
   type SecretProvider,
@@ -69,7 +71,7 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   chatWebhookPublicBaseUrl: string | undefined;
-  authDisableSignUp: boolean;
+  authSignUpMode: AuthSignUpMode;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   databaseMigrationUrl: string | undefined;
@@ -220,11 +222,12 @@ export function loadConfig(): Config {
     (configuredAuthPublicBaseUrlRaw === undefined && managedRuntimePublicUrl
       ? "explicit"
       : fileConfig?.auth?.baseUrlMode ?? (authPublicBaseUrl ? "explicit" : "auto"));
-  const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
-  const authDisableSignUp: boolean =
-    disableSignUpFromEnv !== undefined
-      ? disableSignUpFromEnv === "true"
-      : (fileConfig?.auth?.disableSignUp ?? false);
+  const authSignUpMode = resolveAuthSignUpMode({
+    envSignUp: process.env.PAPERCLIP_AUTH_SIGN_UP,
+    envDisableSignUp: process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP,
+    fileSignUp: fileConfig?.auth?.signUp,
+    fileDisableSignUp: fileConfig?.auth?.disableSignUp,
+  });
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -325,7 +328,7 @@ export function loadConfig(): Config {
     chatWebhookPublicBaseUrl: parseChatWebhookPublicBaseUrl(
       process.env.PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL,
     ),
-    authDisableSignUp,
+    authSignUpMode,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,

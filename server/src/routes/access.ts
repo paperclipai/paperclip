@@ -100,6 +100,7 @@ import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
+import { inviteExpired, inviteState } from "../lib/invite-state.js";
 import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
 import {
   claimBoardOwnership,
@@ -2108,17 +2109,6 @@ function requestIp(req: Request) {
     if (first) return first;
   }
   return req.ip || "unknown";
-}
-
-function inviteExpired(invite: typeof invites.$inferSelect) {
-  return invite.expiresAt.getTime() <= Date.now();
-}
-
-function inviteState(invite: typeof invites.$inferSelect) {
-  if (invite.revokedAt) return "revoked" as const;
-  if (invite.acceptedAt) return "accepted" as const;
-  if (inviteExpired(invite)) return "expired" as const;
-  return "active" as const;
 }
 
 function extractInviteHumanRole(invite: typeof invites.$inferSelect) {

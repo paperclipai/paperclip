@@ -193,7 +193,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     allowedHostnames: [],
     authBaseUrlMode: "auto",
     authPublicBaseUrl: undefined,
-    authDisableSignUp: false,
+    authSignUpMode: "open",
     databaseMode: "postgres",
     databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
     embeddedPostgresDataDir: "/tmp/paperclip-test-db",
