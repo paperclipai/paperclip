@@ -31,6 +31,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_assignee_run_lock",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "cross_issue_influence_run_context_rejected",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -260,6 +261,29 @@ export function describeIssueWriteDenial(
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
 
+      };
+
+    case "cross_issue_influence_run_context_rejected":
+      // Split from `_required` on purpose: the run id WAS sent, and it is still
+      // refused because it does not resolve to a live run owned by this agent.
+      // Telling the agent to resend a header it already sent is the copy bug
+      // this code exists to remove.
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Heartbeat run context",
+        title: "That run id is not a live run of yours",
+        description:
+          `This request did carry a run id, but it did not resolve to a running heartbeat ` +
+          `belonging to ${actor} in this company, so the write could not be attributed or ` +
+          `counted. Re-sending the same header will not help.`,
+        whoCanAct:
+          `${actor} from inside its own current run.`,
+        sanctionedPath:
+          `Start or continue a current run of your own, have it hold the issue you intend to ` +
+          `write to, and send that run's id. A run id that is not a live run of yours cannot be ` +
+          `repaired by retrying it, so do not resend this one.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
