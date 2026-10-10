@@ -207,6 +207,9 @@ function normalizeIssueViewState(value: unknown): IssueViewState {
     ...defaultViewState,
     ...parsed,
     ...normalizeIssueFilterState(parsed),
+    // A saved workspace selection has no filter control. Drop it on load.
+    // `initialWorkspaces` from the page address is applied after this.
+    workspaces: [],
     sortField: ["status", "priority", "title", "created", "updated", "workflow"].includes(parsed.sortField ?? "")
       ? parsed.sortField as IssueSortField
       : defaultViewState.sortField,
