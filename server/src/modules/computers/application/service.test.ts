@@ -65,7 +65,9 @@ function fixture() {
       remoteCwd: "/home/user/paperclip/company/projects/project/checkout",
     })),
   };
-  const service = createComputerService(repository, backend, () => clock);
+  const service = createComputerService(repository, backend, () => clock, {
+    admissionWaitMs: 0,
+  });
   const scope = { companyId: "company", environmentId: "environment" };
   const attach = () =>
     service.attach({
@@ -269,6 +271,83 @@ describe("computer ownership", () => {
     expect(f.backend.retire).not.toHaveBeenCalled();
     f.advance(60_001);
     await f.service.reconcile();
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+  });
+  it("coalesces concurrent reconciliation before provider stop dispatch", async () => {
+    const f = fixture();
+    await f.attach();
+    let complete!: (value: { id: string; status: string }) => void;
+    vi.mocked(f.backend.stop).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const first = f.service.reconcile();
+    await vi.waitFor(() => expect(f.backend.stop).toHaveBeenCalledOnce());
+    const second = f.service.reconcile();
+    await Promise.resolve();
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+    complete({ id: "stop_1", status: "pending" });
+    await Promise.all([first, second]);
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("waits for a normal provider snapshot stop before admitting the next turn", async () => {
+    const f = fixture();
+    await f.attach();
+    await f.service.reconcile();
+    const waiting = createComputerService(
+      f.repository,
+      f.backend,
+      () => new Date("2026-10-10T12:00:00Z"),
+      {
+        admissionWaitMs: 2000,
+        wait: async () => {
+          f.completeStop();
+        },
+      },
+    );
+    await expect(
+      waiting.admit({
+        ...f.scope,
+        agentId: "agent",
+        runId: "run",
+        sessionKey: "session",
+        idleTimeoutMs: 60_000,
+      }),
+    ).resolves.toHaveProperty("owner");
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("keeps a short bounded file batch hold between editor operations", async () => {
+    const f = fixture();
+    await f.attach();
+    const files = await f.service.files({ ...f.scope, agentId: "agent" });
+    await files.seed({});
+    await f.service.reconcile();
+    expect(f.backend.stop).not.toHaveBeenCalled();
+    f.advance(5001);
+    await f.service.reconcile();
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("gives harness probes a finite owner without fabricating a heartbeat run", async () => {
+    const f = fixture();
+    await f.attach();
+    const probe = await f.service.admitProbe({
+      ...f.scope,
+      agentId: "agent",
+      probeId: "probe",
+      idleTimeoutMs: 60_000,
+    });
+    await expect(
+      f.service.retainWarm({
+        ...f.scope,
+        owner: probe.owner,
+        idleTimeoutMs: 60_000,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    f.advance(60_001);
+    await f.service.reconcile();
+    expect(f.repository.runState).not.toHaveBeenCalled();
     expect(f.backend.retire).toHaveBeenCalledOnce();
   });
 });

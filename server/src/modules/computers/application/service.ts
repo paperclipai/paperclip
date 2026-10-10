@@ -20,6 +20,10 @@ export function createComputerService(
   repository: ComputerRepository,
   backend: ComputerBackend,
   now: () => Date = () => new Date(),
+  options: {
+    admissionWaitMs?: number;
+    wait?: (ms: number) => Promise<void>;
+  } = {},
 ) {
   const ref = (record: ComputerRecord, owner: Owner): OwnerRef => ({
     computerId: record.id,
@@ -28,6 +32,35 @@ export function createComputerService(
   });
   const base = (record: ComputerRecord) =>
     `/home/user/paperclip/${segment(record.companyId)}`;
+  async function admitRecord<T>(
+    scope: Scope,
+    change: (record: ComputerRecord) => T,
+  ): Promise<T> {
+    const attempts = Math.ceil((options.admissionWaitMs ?? 120_000) / 1000);
+    const wait =
+      options.wait ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await repository.update(scope, (record) => {
+          assertAdmission(record.ledger);
+          return change(record);
+        });
+      } catch (error) {
+        if (
+          !(error instanceof ComputerError) ||
+          error.code !== "conflict" ||
+          attempt >= attempts
+        )
+          throw error;
+        const current = await repository.get(scope);
+        if (current.ledger.status !== "attached" || !current.ledger.action)
+          throw error;
+        await reconcileRecord(current);
+        if ((await repository.get(scope)).ledger.action) await wait(1000);
+      }
+    }
+  }
   async function scoped(input: Scope & { owner: OwnerRef }) {
     const record = await repository.get(input);
     return { record, owner: exactOwner(record, input.owner) };
@@ -273,17 +306,23 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
   async function admit(
     input: Scope & {
       agentId: string;
-      runId: string;
+      runId?: string;
+      probeId?: string;
       sessionKey: string;
       idleTimeoutMs: number;
     },
   ) {
     segment(input.agentId);
+    if ((!input.runId && !input.probeId) || (input.runId && input.probeId))
+      throw new ComputerError(
+        "invalid",
+        "Computer admission requires one run or probe identity",
+      );
+    if (input.probeId) segment(input.probeId);
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.sessionKey))
       throw new ComputerError("invalid", "Invalid computer session key");
     timeout(input.idleTimeoutMs);
-    const result = await repository.update(input, (record) => {
-      assertAdmission(record.ledger);
+    const result = await admitRecord(input, (record) => {
       let owner = record.ledger.owners.find(
         (o) =>
           o.kind === "runner" &&
@@ -315,6 +354,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
           phase: "starting",
           agentId: input.agentId,
           runId: input.runId,
+          probeId: input.probeId,
           admittedAt: now().toISOString(),
           sessionKey: input.sessionKey,
           port: nextPort(record.ledger.owners),
@@ -345,7 +385,11 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       if (owner.phase !== "starting")
         throw new ComputerError("conflict", "Computer admission was retired");
       owner.phase = "active";
-      owner.deadline = null;
+      owner.deadline = owner.probeId
+        ? new Date(
+            now().getTime() + Math.min(input.idleTimeoutMs, 120_000),
+          ).toISOString()
+        : null;
       return { record: structuredClone(record), owner: structuredClone(owner) };
     });
     return binding(active.record, active.owner);
@@ -367,7 +411,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     timeout(input.idleTimeoutMs);
     await repository.update(input, (record) => {
       const owner = exactOwner(record, input.owner);
-      if (owner.kind !== "runner" || owner.phase !== "active")
+      if (owner.kind !== "runner" || owner.probeId || owner.phase !== "active")
         throw new ComputerError(
           "conflict",
           "Computer owner cannot become warm",
@@ -410,8 +454,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     const deadline = new Date(
       now().getTime() + input.idleTimeoutMs,
     ).toISOString();
-    const data = await repository.update(input, (record) => {
-      assertAdmission(record.ledger);
+    const data = await admitRecord(input, (record) => {
       const owner: Owner = {
         id: randomUUID(),
         generation: 1,
@@ -501,8 +544,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     root: string,
     fn: (record: ComputerRecord) => Promise<T>,
   ): Promise<T> {
-    const data = await repository.update(input, (record) => {
-      assertAdmission(record.ledger);
+    const data = await admitRecord(input, (record) => {
       const owner: Owner = {
         id: randomUUID(),
         generation: 1,
@@ -521,7 +563,15 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       await backend.claim(data.record);
       return await fn(data.record);
     } finally {
-      await retire({ ...input, owner: ref(data.record, data.owner) });
+      await repository.update(input, (record) => {
+        const owner = record.ledger.owners.find(
+          (value) => value.id === data.owner.id,
+        );
+        if (owner?.phase === "active") {
+          owner.phase = "warm";
+          owner.deadline = new Date(now().getTime() + 5000).toISOString();
+        }
+      });
     }
   }
   function fileAccess(input: Scope, root: string) {
@@ -619,8 +669,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
   }
   async function files(input: Scope & { agentId: string }) {
     segment(input.agentId);
-    const placement = await repository.update(input, (record) => {
-      assertAdmission(record.ledger);
+    const placement = await admitRecord(input, (record) => {
       return (record.ledger.placements[input.agentId] ??= {
         id: randomUUID(),
         root: `${base(record)}/agents/${input.agentId}`,
@@ -696,7 +745,21 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
       await retire({ ...input, owner: ref(record, owner) });
     await reconcileRecord(await repository.get(input));
   }
-  async function reconcileRecord(record: ComputerRecord) {
+  const reconciliation = new Map<string, Promise<void>>();
+  async function reconcileRecord(record: ComputerRecord): Promise<void> {
+    const existing = reconciliation.get(record.id);
+    if (existing) return existing;
+    const pending = (async () =>
+      reconcileOwnedRecord(await repository.get(record)))();
+    reconciliation.set(record.id, pending);
+    try {
+      await pending;
+    } finally {
+      if (reconciliation.get(record.id) === pending)
+        reconciliation.delete(record.id);
+    }
+  }
+  async function reconcileOwnedRecord(record: ComputerRecord) {
     if (record.ledger.status === "attaching") return;
     // A crash can happen after admission but before an environment lease exists.
     // Run identity, rather than lease presence, decides whether that active owner
@@ -723,6 +786,11 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     for (const owner of liveOwners(record.ledger))
       if (owner.phase === "retiring" || expired(owner, now()))
         await retire({ ...record, owner: ref(record, owner) });
+    await repository.update(record, (current) => {
+      current.ledger.owners = current.ledger.owners.filter(
+        (owner) => owner.kind !== "file-operation" || owner.phase !== "retired",
+      );
+    });
     record = await repository.get(record);
     if (record.ledger.action) {
       const action = record.ledger.action;
@@ -799,6 +867,15 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     },
     attach,
     admit,
+    admitProbe(
+      input: Scope & {
+        agentId: string;
+        probeId: string;
+        idleTimeoutMs: number;
+      },
+    ) {
+      return admit({ ...input, sessionKey: `probe-${segment(input.probeId)}` });
+    },
     recover,
     retainWarm,
     retire,

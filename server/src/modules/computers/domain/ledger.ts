@@ -16,6 +16,7 @@ export interface Owner {
   phase: "starting" | "active" | "warm" | "retiring" | "retired";
   agentId?: string;
   runId?: string;
+  probeId?: string;
   admittedAt?: string;
   sessionKey?: string;
   userId?: string;
