@@ -395,6 +395,13 @@ Missing message references or revoked access still prevent execution.
 
 ### Durable external waits and heartbeat finalization
 
+A successful Claude terminal result followed by Paperclip's controlled SIGTERM
+cleanup is not a provider failure. Finalization preserves the physical exit143
+and cleanup receipt while allowing the normal successful-run disposition path.
+Real errors, timeouts, forced kills and cancellation retain their failure/stop
+semantics. Terminal success is not task completion: a remaining external wait
+still requires the durable path below, or bounded disposition recovery.
+
 An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:
 
 - a one-shot issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
