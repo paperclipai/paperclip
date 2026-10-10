@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  issueLock: { checkoutRunId?: string | null; executionRunId?: string | null } | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -20,6 +21,13 @@ function counterDb(
           if (Object.keys(selection).includes("count")) {
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+            };
+          }
+          // The durable owned-issue fallback only runs when the snapshot has no
+          // source. Model the issue's checkout/execution lock row.
+          if (Object.keys(selection).includes("checkoutRunId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) => resolve(issueLock ? [issueLock] : []),
             };
           }
           return {
@@ -162,6 +170,38 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
+  it("allows a run to write to the issue it holds the lock on when the snapshot has no source", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, {
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+      executionRunId: null,
+    });
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("meters writes to an issue the run has locked when a source issue exists", async () => {
+    const fake = counterDb(0, {
+      contextSnapshot: { issueId: "99999999-9999-4999-8999-999999999999" },
+    }, {
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+      executionRunId: null,
+    });
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+  });
+
   it.each([
     ["missing", null],
     ["wrong-agent", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
@@ -198,7 +238,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed when the persisted run has no source issue and holds no lock", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
