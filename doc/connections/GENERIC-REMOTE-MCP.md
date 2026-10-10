@@ -182,7 +182,17 @@ definition.
   canonical MCP endpoint (origin + path, no query or fragment), so the
   authorization server can audience-restrict the token to that server.
 - RFC 9728 protected-resource discovery, path-aware first
-  (`/.well-known/oauth-protected-resource<path>`) then origin.
+  (`/.well-known/oauth-protected-resource<path>`) then origin. A URL-only
+  connection also gets this discovery when its 401 has no `WWW-Authenticate`
+  challenge, because some gateways remove or rename that header (AWS API
+  Gateway sends `x-amzn-remapped-www-authenticate`). The renamed header is read
+  only as a hint for the metadata address: endpoints or scopes it names
+  directly are ignored, and the well-known addresses are tried when the hint
+  finds nothing or is refused. The 401 becomes a sign-in prompt
+  only when discovery finds usable metadata. Otherwise it stays a
+  `Remote app returned HTTP 401` error. A connection set up with a key or
+  another authentication type is not probed: its bare 401 means the credential
+  was rejected.
 - RFC 8414 authorization-server discovery for issuers with a path, in the
   spec's insertion form (`/.well-known/oauth-authorization-server<path>`) and
   the widely deployed OIDC suffix form (`<path>/.well-known/...`). A metadata
