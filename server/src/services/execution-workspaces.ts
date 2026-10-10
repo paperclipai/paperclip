@@ -1297,7 +1297,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         await executionWorkspaceReadSqlCondition(reader, input.actor),
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
-      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id);
+      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true });
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
@@ -1308,7 +1308,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           await projectReadSqlCondition(reader, input.actor),
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
-      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId);
+      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, { write: selection.mode === "shared" });
       return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
         executionWorkspaceSettings: { mode: selection.mode === "shared" ? "shared_workspace" : "isolated_workspace" } };
     }

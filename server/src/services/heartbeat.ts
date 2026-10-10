@@ -3205,10 +3205,10 @@ export function heartbeatService(
       if (!persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
         const workspaceRequiringAccess = reusableExistingExecutionWorkspace ?? boundSourceWorkspace;
         if (workspaceRequiringAccess) {
-          await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id);
+          await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true });
         } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || projectContext?.hasWorkspace)) {
           // Check source authority before resolution can clone or expose files.
-          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId);
+          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: requestedExecutionWorkspaceMode === "shared_workspace" });
         }
       }
       const requestedReusableExecutionWorkspaceConfig =

@@ -35,6 +35,8 @@ Explicit invalid/unauthorized choices fail with actionable errors, never fall ba
 
 Typed selection vocabulary: task_directory; existing execution workspace; configured project source with shared or managed-isolated policy. Operator cwd compatibility is internal and cannot be submitted by an ordinary agent. New repository paths use existing `.paperclip-repositories/<stable-key>` namespace; existing root checkouts retain their paths.
 
+Source inspection and isolated copies require source-project read access. Writable shared roots additionally require the existing source-project task-assignment authority. Check that authority at selection, task creation, repository mutation, and each new admission; revocation blocks future use without changing already-admitted recovery inputs.
+
 Channel defaults use optional properties (inherit), explicit null (clear), concrete value (override). Resource override beats endpoint. Defaults are captured once at task creation and reauthorized on use. Changing/deleting/revoking configuration cannot relocate existing tasks. Project choice and workspace choice are independent; choosing a source does not silently assign organizational project. Endpoints without configuration work normally.
 
 Active root selection stores pending intent and returns next-normal-admission, without interrupting or scheduling a new model turn. If atomic safe nested acquisition/capture is supported, repository preparation may add a new contained subtree to the active root; otherwise it records preparation for next admission with explicit capability result. Never claim a host-only checkout is available in the running remote environment.

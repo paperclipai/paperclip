@@ -12,9 +12,10 @@ import express from "express";
 import request from "supertest";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces, heartbeatRuns, issues, principalPermissionGrants, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { canActorReadExecutionWorkspace } from "../services/authorization.js";
+import { authorizationService, canActorReadExecutionWorkspace } from "../services/authorization.js";
+import { assertTaskWorkspaceAccess } from "../services/task-workspace-source-access.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -263,6 +264,56 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(svc.requestTaskRepository({ ...f, actor, request: deniedRepository })).rejects.toThrow("modification is not allowed");
     expect(await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toEqual(before);
     expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, f.workspaceId))).toHaveLength(1);
+  });
+
+  it("requires source project assignment authority for shared files while preserving isolated reads", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+    const settings = instanceSettingsService(db), previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Read-only source user", adapterType: "process", status: "idle" }).returning();
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: agent.id, status: "active", membershipRole: "member" });
+      const actor = { type: "agent" as const, agentId: agent.id, companyId: f.companyId, source: "agent_key" as const };
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected source",
+        executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        name: "Shared source", cwd: `/tmp/protected-${f.issueId}` }).returning();
+      const [shared] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        projectWorkspaceId: source.id, name: "Shared files", cwd: source.cwd, mode: "shared_workspace", strategyType: "project_primary" }).returning();
+      const [isolated] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+        projectWorkspaceId: source.id, name: "Isolated files", cwd: `/tmp/isolated-${f.issueId}`, mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
+      expect(await authorizationService(db).decide({ actor, action: "project:read",
+        resource: { type: "project", companyId: f.companyId, projectId: project.id } })).toMatchObject({ allowed: true });
+      const sharedSelection = { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "shared" as const };
+      const isolatedSelection = { ...sharedSelection, mode: "managed_isolated" as const };
+      await expect(svc.validateSelection({ ...f, actor, selection: sharedSelection })).rejects.toThrow(/protected/);
+      await expect(svc.validateSelection({ ...f, actor, selection: isolatedSelection })).resolves.toMatchObject({ executionWorkspaceSettings: { mode: "isolated_workspace" } });
+      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: shared.id } })).rejects.toThrow(/protected/);
+      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: isolated.id } })).resolves.toMatchObject({ executionWorkspaceId: isolated.id });
+      for (const sourceKind of ["explicit", "channel"] as const) {
+        await expect(tasks.create(f.companyId, { title: `Denied ${sourceKind}`, createdByAgentId: agent.id,
+          workspaceSelection: sharedSelection, workspaceSelectionSource: sourceKind, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
+        expect(await tasks.create(f.companyId, { title: `Isolated ${sourceKind}`, createdByAgentId: agent.id,
+          workspaceSelection: isolatedSelection, workspaceSelectionSource: sourceKind, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });
+      }
+      await expect(tasks.create(f.companyId, { title: "Denied legacy source", createdByAgentId: agent.id,
+        projectWorkspaceId: source.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
+      await expect(tasks.create(f.companyId, { title: "Denied legacy binding", createdByAgentId: agent.id,
+        executionWorkspaceId: shared.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
+
+      const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
+        principalId: agent.id, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: agent.id } }).returning();
+      const selectionRequest = { ...f, actor, selection: sharedSelection, expectedBindingRevision: 0, requestKey: "authorized-shared" };
+      await expect(svc.selectTaskWorkspace(selectionRequest)).resolves.toMatchObject({ kind: "scheduled" });
+      expect(await tasks.create(f.companyId, { title: "Authorized shared source", createdByAgentId: agent.id,
+        workspaceSelection: sharedSelection, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+      await expect(svc.applyPendingTaskWorkspaceSelection({ ...f, actor, runId: randomUUID() })).rejects.toThrow(/protected/);
+      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, shared.id)).resolves.toBeUndefined();
+      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, shared.id, { write: true })).rejects.toThrow(/protected/);
+      await expect(assertTaskWorkspaceAccess(db, actor, f.companyId, isolated.id, { write: true })).resolves.toBeUndefined();
+      expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).workspace).toBeNull();
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 
   it.each(["binding", "configured_source"] as const)("supersedes an older queued selection when an ordinary update changes %s", async kind => {

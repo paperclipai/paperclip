@@ -76,7 +76,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       // Serialize receipts across tasks without blocking unchanged-ID foreign-key reads.
       const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, issue.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId))).for("no key update");
       if (!workspace || workspace.status !== "active") throw conflict("Execution workspace is unavailable");
-      await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, workspace.id);
+      await assertTaskWorkspaceAccess(tx, input.actor, input.companyId, workspace.id, { write: true });
       const existing = await tx.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id), or(eq(executionWorkspaceRepositories.repositoryIdentity, source.repositoryIdentity), sql`${executionWorkspaceRepositories.requestKeys} ? ${parsed.requestKey}`)));
       for (const row of existing) assertRepositoryRetryMatches(row, source.repositoryIdentity, requestedRef);
       if (existing[0]) {
@@ -113,7 +113,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       if (await fs.realpath(workspace.cwd).catch(() => null) !== input.root) continue;
       assertRepositoryRetryMatches(repository, input.row.repositoryIdentity, input.row.requestedRef);
       if (!(await canActorReadExecutionWorkspace(db, input.actor, workspace.id))) throw forbidden("The shared repository retains files from a workspace outside this actor's access");
-      await assertTaskWorkspaceAccess(db, input.actor, input.row.companyId, workspace.id);
+      await assertTaskWorkspaceAccess(db, input.actor, input.row.companyId, workspace.id, { write: true });
       if (pin && pin !== candidatePin) throw conflict("Shared repository publication receipts disagree; repair is required before reuse");
       pin = candidatePin;
     }
@@ -129,7 +129,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       // local-board is a server identity, not a membership record. Preserve the
       // agent's own authority rather than promoting it to a board actor.
       onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId };
-    await assertTaskWorkspaceAccess(db, actor, input.companyId, input.workspaceId);
+    await assertTaskWorkspaceAccess(db, actor, input.companyId, input.workspaceId, { write: true });
     const root = await fs.realpath(input.cwd);
     const repositoryRoot = path.join(root, ".paperclip-repositories");
     await fs.mkdir(repositoryRoot, { recursive: true });

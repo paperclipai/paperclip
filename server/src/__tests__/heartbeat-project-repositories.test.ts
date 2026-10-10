@@ -7,12 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, environments, executionWorkspaces, heartbeatRuns, issues, principalPermissionGrants, projects, projectWorkspaces } from "@paperclipai/db";
 import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
@@ -220,6 +221,54 @@ suite("task project repository provisioning", () => {
         adapterType: "paperclip_runner", environmentDriver: "local" });
       expect(scope?.projectId).toBeNull();
     }
+  }, 40_000);
+
+  it("blocks shared source adapter admission after its project assignment grant is revoked while read access remains", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "protected-shared-source");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, "work.txt"), "Protected project files");
+    await db.insert(companies).values({ id: companyId, name: "Shared source authority", issuePrefix: `W${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Readable protected source", executionWorkspacePolicy: {
+      authorizationPolicy: { assignmentPolicy: { mode: "protected" } },
+    } });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Shared source", sourceType: "local_path", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Writer", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agentId, status: "active", membershipRole: "member" });
+    const [grant] = await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: agentId,
+      permissionKey: "tasks:assign_scope", scope: { projectId, assigneeAgentId: agentId } }).returning();
+    await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: "responsible-user",
+      permissionKey: "tasks:assign_scope", scope: { projectId, assigneeAgentId: agentId } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Work in another project's shared files", status: "todo", assigneeAgentId: agentId,
+      projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "shared_workspace" },
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } } });
+    const admit = async () => {
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      return (await heartbeat.getRun(run!.id))!;
+    };
+    const first = await admit();
+    expect(first).toMatchObject({ status: "succeeded", error: null });
+    expect(execute.mock.calls.filter(([input]) => input.runId === first.id)).toHaveLength(1);
+    const [bound] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(bound.projectId).toBeNull();
+    expect(bound.executionWorkspaceId).not.toBeNull();
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+    const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
+    expect(await accessService(db).decide({ actor, action: "project:read", resource: { type: "project", companyId, projectId } })).toMatchObject({ allowed: true });
+    expect(await accessService(db).decide({ actor, action: "tasks:assign", resource: { type: "issue", companyId, projectId, assigneeAgentId: agentId },
+      scope: { projectId, assigneeAgentId: agentId } })).toMatchObject({ allowed: false, reason: "deny_policy_restricted" });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+    const denied = await admit();
+    expect(denied.status).toBe("failed");
+    expect(denied.error).toContain("Target project is protected and requires an explicit assignment grant");
+    expect(execute.mock.calls.filter(([input]) => input.runId === denied.id)).toHaveLength(0);
+    const [retained] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(retained.executionWorkspaceId).toBe(bound.executionWorkspaceId);
+    expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Protected project files");
   }, 40_000);
 
   it.each([true, false])("handles a deleted configured source with a retained workspace: %s", async (bound) => {
