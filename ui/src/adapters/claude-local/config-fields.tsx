@@ -81,6 +81,7 @@ export function ClaudeLocalAdvancedFields({
   eff,
   mark,
   managedSandboxOnly,
+  allowExecutionEngineSelection,
 }: AdapterConfigFieldsProps) {
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
@@ -91,12 +92,10 @@ export function ClaudeLocalAdvancedFields({
   return configFieldsForSection(section, (
     <>
       {/*
-        The execution engine picks which binary runs on the execution host, and
-        the ACP sub-fields below name host paths. The platform-managed
-        environment owns both, so the managed-sandbox-only policy hides them,
-        the same way `runnerManaged` hides them for the Paperclip Runner.
+        Attached computers can select an engine while the managed policy keeps
+        every host-path field hidden.
       */}
-      {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
+      {(!managedSandboxOnly || allowExecutionEngineSelection) && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
         <select
           className={inputClass}
           value={engine}

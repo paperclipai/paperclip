@@ -311,6 +311,55 @@ describe("New agent setup", () => {
     expect(api.hire).not.toHaveBeenCalled();
   });
   it.each([
+    ["codex_local", "OpenAI", undefined], ["claude_local", "Claude", undefined],
+    ["codex_local", "OpenAI", "acp"], ["claude_local", "Claude", "acp"],
+  ])("shows Boat's CLI default before connecting and preserves an explicit engine for %s (%s, %s)", async (adapter, provider, choice) => {
+    envApi.list.mockResolvedValue([
+      { id: "boat-1", name: "Boat", driver: "computer", status: "active", config: { provider: "boat" } },
+    ]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "boat-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: true });
+    await render(adapter);
+    const engine = container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')!;
+    expect(engine).not.toBeNull();
+    expect(engine.value).toBe("cli");
+    expect(engine.selectedOptions[0].textContent).toBe(adapter === "codex_local" ? "Codex CLI" : "Claude CLI");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    if (choice) await act(async () => {
+      engine.value = choice;
+      engine.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await click(provider + "API key");
+    await fill("API key", "boat-test-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      environmentId: "boat-1", adapterConfig: { engine: choice ?? "cli" },
+    });
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Execution engine"]')?.value).toBe(choice ?? "cli");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      defaultEnvironmentId: "boat-1", adapterConfig: { engine: choice ?? "cli" },
+      runtimeConfig: { heartbeat: { enabled: false } },
+    });
+  });
+
+  it.each(["codex_local", "claude_local"])("does not expose or inject a Boat engine on a managed sandbox for %s", async adapter => {
+    envApi.list.mockResolvedValue([
+      { id: "managed-1", name: "Managed", driver: "sandbox", status: "active", config: { provider: "daytona" } },
+    ]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: true });
+    await render(adapter);
+    expect(container.querySelector('[aria-label="Execution engine"]')).toBeNull();
+    await click((adapter === "codex_local" ? "OpenAI" : "Claude") + "API key");
+    await fill("API key", "sandbox-test-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.engine).toBeUndefined();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.engine).toBeUndefined();
+  });
+
+  it.each([
     ["grok_local", "subscription"], ["grok_local", "api_key"],
     ["paperclip_runner", "subscription"], ["paperclip_runner", "api_key"],
   ])("configures %s Grok on Cloud with an xAI %s connection", async (adapterType, method) => {

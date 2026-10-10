@@ -969,6 +969,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths || isDotRunner,
     managedSandboxOnly: hideHostPaths || isDotRunner,
+    allowExecutionEngineSelection: experimentalSettings !== undefined
+      && effectiveLoginEnvironment?.status === "active"
+      && effectiveLoginEnvironment.driver === "computer"
+      && effectiveLoginEnvironment.config.provider === "boat",
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
   };
 

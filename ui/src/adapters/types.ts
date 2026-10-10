@@ -44,13 +44,16 @@ export interface AdapterConfigFieldsProps {
   hideInstructionsFile?: boolean;
   /**
    * When true, the adapter must hide every host filesystem path field and every
-   * execution-engine choice. Non-path behavior toggles stay visible.
+   * execution-engine choice unless separately enabled for an attached computer.
+   * Non-path behavior toggles stay visible.
    *
    * The form sets this from the instance managed-sandbox-only policy
    * (`enableManagedSandboxOnly`), and also while that policy is still loading,
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
+  /** Permit the engine selector on an attached Boat without exposing host paths. */
+  allowExecutionEngineSelection?: boolean;
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
 }
