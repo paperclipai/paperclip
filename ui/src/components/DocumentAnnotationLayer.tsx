@@ -19,11 +19,12 @@ import {
   recordMarkdownMutations,
   recordSelectionChange,
 } from "@/lib/document-annotation-debug";
-import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
+import { projectMarkdownToText, type DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
 
 export interface AnnotationOverlayThread {
   id: string;
   selectedText: string;
+  selector: DocumentAnnotationAnchorSelector;
   status: DocumentAnnotationThreadStatus;
   anchorState: DocumentAnnotationAnchorState;
   unreadCount?: number;
@@ -71,6 +72,7 @@ export interface AnnotationLayerProps {
    * (e.g. once focus moves into the composer textarea).
    */
   pendingHighlightText?: string | null;
+  pendingHighlightSelector?: DocumentAnnotationAnchorSelector | null;
 }
 
 /** Synthetic thread id used to render the in-progress (pending) comment highlight. */
@@ -251,6 +253,7 @@ export function DocumentAnnotationLayer({
   hideResolved = true,
   captureSelectionRequestId,
   pendingHighlightText = null,
+  pendingHighlightSelector = null,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
@@ -271,6 +274,10 @@ export function DocumentAnnotationLayer({
     return threads.filter((thread) => thread.status !== "resolved" || thread.anchorState === "orphaned" || thread.id === focusedThreadId);
   }, [threads, hideResolved, focusedThreadId]);
 
+  // Saved selector positions are offsets into the markdown projection. Project once
+  // per markdown change (not once per thread per recompute, which runs on scroll).
+  const projectionText = useMemo(() => projectMarkdownToText(markdown).text, [markdown]);
+
   const computeHighlightRects = useCallback(() => {
     const container = containerRef.current;
     const overlay = overlayRef.current;
@@ -288,11 +295,14 @@ export function DocumentAnnotationLayer({
       anchorState: DocumentAnnotationAnchorState;
       focused: boolean;
       selectedText: string;
+      selector?: DocumentAnnotationAnchorSelector | null;
       nativeKind: NativeHighlightKind;
     }) => {
       const ranges = rangesForNormalizedSpan({
         container,
         selectedText: run.selectedText,
+        projectionText,
+        normalizedStart: run.selector?.position.normalizedStart,
       });
       const startIndex = next.length;
       for (const range of ranges) {
@@ -333,6 +343,7 @@ export function DocumentAnnotationLayer({
         anchorState: thread.anchorState,
         focused: isFocused,
         selectedText: thread.selectedText,
+        selector: thread.selector,
         nativeKind: nativeHighlightKind({ focused: isFocused, stale: isStale, resolved: isResolved }),
       });
     }
@@ -345,6 +356,7 @@ export function DocumentAnnotationLayer({
         anchorState: "active",
         focused: true,
         selectedText: pendingHighlightText,
+        selector: pendingHighlightSelector,
         nativeKind: "focused",
       });
     }
@@ -359,7 +371,7 @@ export function DocumentAnnotationLayer({
       width: activeRect.width,
       height: activeRect.height,
     } : null);
-  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightText, visibleThreads]);
+  }, [containerRef, focusedThreadId, nativeHighlightInstanceId, onAnchorRectChange, pendingHighlightSelector, pendingHighlightText, projectionText, visibleThreads]);
 
   useLayoutEffect(() => {
     computeHighlightRects();
