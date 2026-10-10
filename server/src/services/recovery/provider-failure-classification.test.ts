@@ -184,6 +184,16 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toBeNull();
   });
+  it("does not turn legacy Codex model capacity into exhaustion recovery", () => {
+    const capacity = { errorCode: "adapter_failed", error: "Selected model is at capacity. Please try a different model.", resultJson: null };
+    expect(classifyAdapterFailureForRecovery(capacity)).toBeNull();
+    expect(classifyContinuationFailure({ ...capacity, errorCode: "codex_transient_upstream" } as never))
+      .toMatchObject({ kind: "transient_infra" });
+    expect(classifyAdapterFailureForRecovery({ ...capacity, error: "Usage limit reached. Selected model is at capacity." })?.kind)
+      .toBe("provider_quota");
+    expect(classifyAdapterFailureForRecovery({ ...capacity, error: "Authentication required. Invalid credentials." }))
+      .toBeNull();
+  });
   it("holds invalid provider definitions for repair even with stale transient metadata", () => {
     const run = { errorCode: "provider_tool_definition_invalid", error: "Tool name is too long.",
       resultJson: { errorFamily: "transient_upstream" } };

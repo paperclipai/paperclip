@@ -7,10 +7,11 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_MODEL_CAPACITY_RE = /(?:model (?:is )?at capacity|at capacity for this model)/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+  /(?:you(?:'|’)ve hit your usage limit|usage limit|capacity limit)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
 const CODEX_REFRESH_TOKEN_EXPIRED_RE =
@@ -327,6 +328,7 @@ export function isCodexTransientUpstreamError(input: {
   const haystack = buildCodexErrorHaystack(input);
 
   if (isCodexProviderQuotaError(input)) return false;
+  if (CODEX_MODEL_CAPACITY_RE.test(haystack)) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape.
