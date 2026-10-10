@@ -23,6 +23,7 @@ import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-
 import {
   asNumber,
   asString,
+  commandPathCandidates,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "../index.js";
@@ -186,11 +187,16 @@ function firstShellToken(command: string): string | null {
   return trimmed.split(/\s+/, 1)[0] ?? null;
 }
 
-async function findCommandOnPath(binName: string, pathValue = process.env.PATH ?? ""): Promise<string | null> {
+async function findCommandOnPath(
+  binName: string,
+  pathValue = process.env.PATH ?? "",
+  pathExt = process.env.PATHEXT,
+): Promise<string | null> {
   for (const segment of pathValue.split(path.delimiter)) {
     if (!segment) continue;
-    const candidate = path.join(segment, binName);
-    if (await pathExists(candidate)) return candidate;
+    for (const candidate of commandPathCandidates(segment, binName, { env: { PATHEXT: pathExt }, includeBareName: true })) {
+      if (await pathExists(candidate)) return candidate;
+    }
   }
   return null;
 }
@@ -200,6 +206,13 @@ function resolveConfigPath(config: Record<string, unknown>): string {
   return typeof envConfig.PATH === "string" && envConfig.PATH.trim().length > 0
     ? envConfig.PATH
     : process.env.PATH ?? "";
+}
+
+function resolveConfigPathExt(config: Record<string, unknown> | undefined): string | undefined {
+  const envConfig = parseObject(config?.env);
+  return typeof envConfig.PATHEXT === "string" && envConfig.PATHEXT.trim().length > 0
+    ? envConfig.PATHEXT
+    : process.env.PATHEXT;
 }
 
 async function commandIsResolvable(
@@ -227,7 +240,7 @@ async function commandIsResolvable(
     }
   }
   if (path.isAbsolute(token) || hasPathSeparator(token)) return pathExists(token);
-  return (await findCommandOnPath(token, pathValue)) !== null;
+  return (await findCommandOnPath(token, pathValue, resolveConfigPathExt(input?.config))) !== null;
 }
 
 function resolveKimiAcpCommand(config: Record<string, unknown>): string {

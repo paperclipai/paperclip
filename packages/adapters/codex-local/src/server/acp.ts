@@ -36,6 +36,7 @@ import {
   asNumber,
   asString,
   asStringArray,
+  commandPathCandidates,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
@@ -404,8 +405,9 @@ async function findCommandOnPath(binName: string): Promise<string | null> {
   const pathValue = process.env.PATH ?? "";
   for (const segment of pathValue.split(path.delimiter)) {
     if (!segment) continue;
-    const candidate = path.join(segment, binName);
-    if (await pathExists(candidate)) return candidate;
+    for (const candidate of commandPathCandidates(segment, binName, { includeBareName: true })) {
+      if (await pathExists(candidate)) return candidate;
+    }
   }
   return null;
 }
