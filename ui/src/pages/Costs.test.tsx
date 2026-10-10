@@ -8,6 +8,9 @@ import { Costs } from "./Costs";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { MemoryRouter } from "react-router-dom";
 
+const scopedAgentMock = vi.hoisted(() => vi.fn());
+vi.mock("../api/agents", () => ({ agentsApi: { get: scopedAgentMock } }));
+
 const resolveIncidentMock = vi.hoisted(() => vi.fn());
 const upsertPolicyMock = vi.hoisted(() => vi.fn());
 const budgetOverviewMock = vi.hoisted(() => vi.fn());
@@ -65,6 +68,7 @@ describe("Shared Costs surfaces", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    scopedAgentMock.mockReset();
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
     subscriptionsMocks.report.mockResolvedValue({ canRefresh: false, asOf: "2026-10-08T00:00:00Z", accounts: [], monthlyTotals: [], activeCount: 0, unknownPriceCount: 0, unidentifiedAccountCount: 0, api: usage, subscription: usage, unknown: usage, unattributedSubscription: usage });
     decisionHistoryMock.mockResolvedValue([]);
@@ -84,6 +88,32 @@ describe("Shared Costs surfaces", () => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it.each(["overview", "budgets"] as const)("explains unavailable Muse accounting on its scoped %s page", async (tab) => {
+    scopedAgentMock.mockResolvedValue({ id: "muse-agent", name: "Researcher", adapterType: "paperclip_runner", adapterConfig: { provider: "muse" } });
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab={tab} lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Researcher's Muse activity has no reported usage or cost")); });
+    expect(scopedAgentMock).toHaveBeenCalledWith("muse-agent", "company-1");
+    expect(container.textContent).toContain("Totals below show recorded organization charges only");
+    expect(container.textContent).toContain("Paperclip cannot enforce a Muse spend ceiling");
+    queryClient.clear();
+  });
+
+  it("explains when scoped provider details cannot be loaded", async () => {
+    scopedAgentMock.mockRejectedValue(new Error("unavailable"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Could not load agent details. Totals below show recorded organization costs.")); });
+    expect(container.textContent).not.toContain("Muse activity has no reported");
+    queryClient.clear();
   });
 
   it.each([0, 125])("shows $%s of known user spend while retaining an unpriced warning", async (costCents) => {
