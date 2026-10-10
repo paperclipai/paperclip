@@ -214,4 +214,13 @@ describe("computer ownership", () => {
     ).rejects.toMatchObject({ code: "not_found" });
     expect(f.backend.inspect).not.toHaveBeenCalled();
   });
+  it("keeps process capabilities across attempt generations only for the exact same process", async () => {
+    const f=fixture();await f.attach();const first=await f.admit();await first.launch({command:"runnerd"});
+    await f.service.retainWarm({...f.scope,owner:first.owner,idleTimeoutMs:60_000});await f.admit();
+    await expect(first.ingress()).rejects.toMatchObject({code:"conflict"});
+    await expect(first.process.ingress()).resolves.toHaveProperty("url");
+    await f.repository.update(f.scope,record=>{record.ledger.owners[0]!.process!.nonce="replacement-process";});
+    await expect(first.process.ingress()).rejects.toMatchObject({code:"conflict"});
+  });
+
 });

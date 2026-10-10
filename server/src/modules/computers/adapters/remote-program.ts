@@ -82,20 +82,50 @@ if act=='workspace':
   target=checkout
   if branch:run(['git','checkout',branch],checkout)
  print(json.dumps({'remoteCwd':target}));sys.exit(0)
-if not os.path.isdir(root):fail('not_found')
-path=safe(p.get('path',''))
-lock=os.open(os.path.join(root,'.paperclip-editor.lock'),os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+# Hold directory descriptors throughout each operation. Ancestor symlink swaps cannot
+# redirect a checked pathname outside the selected placement.
+def directory(parts,create=False,start=None):
+ fd=os.dup(start) if start is not None else os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+ try:
+  for part in parts:
+   if not part or part=='.':continue
+   if part=='..':fail('invalid')
+   try:nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   except FileNotFoundError:
+    if not create:raise
+    try:os.mkdir(part,0o700,dir_fd=fd)
+    except FileExistsError:pass
+    nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   os.close(fd);fd=nxt
+  return fd
+ except BaseException:os.close(fd);raise
+try:rootfd=directory(root.split('/'))
+except FileNotFoundError:fail('not_found')
+except OSError:fail('invalid')
+def parent(relative,create=False):
+ safe(relative)
+ parts=[part for part in relative.split('/') if part not in ('','.')]
+ if not parts:fail('invalid')
+ return directory(parts[:-1],create,rootfd),parts[-1]
+path=p.get('path','');safe(path)
+lock=os.open('.paperclip-editor.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=rootfd)
 fcntl.flock(lock,fcntl.LOCK_EX)
 try:
  if act=='list':
-  out=[]
-  for entry in os.scandir(path):
-   if entry.name=='.paperclip-editor.lock' or entry.is_symlink():continue
-   if not entry.is_dir(follow_symlinks=False) and not entry.is_file(follow_symlinks=False):continue
-   out.append({'name':entry.name,'kind':'directory' if entry.is_dir(follow_symlinks=False) else 'file','size':entry.stat(follow_symlinks=False).st_size,'mtimeMs':entry.stat(follow_symlinks=False).st_mtime*1000})
-  print(json.dumps(out))
+  fd=directory(path.split('/'),start=rootfd)
+  try:
+   out=[]
+   for entry in os.scandir(fd):
+    if entry.name=='.paperclip-editor.lock' or entry.is_symlink():continue
+    info=entry.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):continue
+    out.append({'name':entry.name,'kind':'directory' if stat.S_ISDIR(info.st_mode) else 'file','size':info.st_size,'mtimeMs':info.st_mtime*1000})
+   print(json.dumps(out))
+  finally:os.close(fd)
  elif act=='read':
-  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+  parentfd,name=parent(path)
+  try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+  finally:os.close(parentfd)
   with os.fdopen(fd,'rb') as f:
    st=os.fstat(f.fileno())
    if not stat.S_ISREG(st.st_mode) or st.st_size>p.get('maxBytes',16*1024*1024):fail('invalid')
@@ -103,40 +133,49 @@ try:
   if len(data)>p.get('maxBytes',16*1024*1024):fail('invalid')
   print(json.dumps({'base64':base64.b64encode(data).decode(),'sha256':digest(data)}))
  elif act in ('write','remove','move'):
-  if path==root:fail('invalid')
-  exists=os.path.exists(path)
-  old=None
-  if exists:
-   fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
-   with os.fdopen(fd,'rb') as f:
-    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):fail('invalid')
-    h=hashlib.sha256()
-    while True:
-     block=f.read(65536)
-     if not block:break
-     h.update(block)
-    old=h.hexdigest()
-  if old!=p.get('expectedSha256'):fail('conflict')
-  if act=='write':
-   data=base64.b64decode(p['base64'],validate=True)
-   if len(data)>p.get('maxBytes',16*1024*1024):fail('invalid')
-   os.makedirs(os.path.dirname(path),exist_ok=True)
-   fd,temp=tempfile.mkstemp(prefix='.paperclip-write-',dir=os.path.dirname(path))
-   try:
-    with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
-    os.replace(temp,path)
-   finally:
-    if os.path.exists(temp):os.unlink(temp)
-   print(json.dumps({'sha256':digest(data)}))
-  elif act=='remove':
-   if not exists:fail('not_found')
-   os.unlink(path);print('{}')
-  else:
-   target=safe(p['to'])
-   if os.path.exists(target):fail('conflict')
-   os.makedirs(os.path.dirname(target),exist_ok=True)
-   os.link(path,target,follow_symlinks=False);os.unlink(path);print(json.dumps({'sha256':old}))
+  parentfd,name=parent(path,create=act=='write')
+  try:
+   old=None
+   try:fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parentfd)
+   except FileNotFoundError:fd=None
+   if fd is not None:
+    with os.fdopen(fd,'rb') as f:
+     if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):fail('invalid')
+     h=hashlib.sha256()
+     while True:
+      block=f.read(65536)
+      if not block:break
+      h.update(block)
+     old=h.hexdigest()
+   if old!=p.get('expectedSha256'):fail('conflict')
+   if act=='write':
+    data=base64.b64decode(p['base64'],validate=True)
+    if len(data)>16*1024*1024:fail('invalid')
+    import secrets
+    temp='.paperclip-write-'+secrets.token_hex(16)
+    fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+    try:
+     with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+     os.replace(temp,name,src_dir_fd=parentfd,dst_dir_fd=parentfd)
+    finally:
+     try:os.unlink(temp,dir_fd=parentfd)
+     except FileNotFoundError:pass
+    print(json.dumps({'sha256':digest(data)}))
+   elif act=='remove':
+    if old is None:fail('not_found')
+    os.unlink(name,dir_fd=parentfd);print('{}')
+   else:
+    if old is None:fail('not_found')
+    targetfd,target=parent(p['to'],create=True)
+    try:
+     try:os.link(name,target,src_dir_fd=parentfd,dst_dir_fd=targetfd,follow_symlinks=False)
+     except FileExistsError:fail('conflict')
+     os.unlink(name,dir_fd=parentfd)
+    finally:os.close(targetfd)
+    print(json.dumps({'sha256':old}))
+  finally:os.close(parentfd)
  else:fail('invalid')
 except FileNotFoundError:fail('not_found')
-finally:os.close(lock)
+except OSError:fail('invalid')
+finally:os.close(lock);os.close(rootfd)
 `;

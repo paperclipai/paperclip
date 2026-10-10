@@ -217,15 +217,19 @@ with open(os.path.join(root,'lock'),'a') as lock:
   if state not in ('inactive','failed',''):raise RuntimeError('process retirement unconfirmed')
   print('{}')
  elif p['action']=='inspect':
-  claim=owner.get('process');state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
-  print(json.dumps({'running':bool(claim and claim['bootId']==boot and state=='active' and not os.path.exists(tombstone)),'claim':claim}))
+  claim=owner.get('process');marker=os.path.join(root,'claim.json');actual=json.load(open(marker)) if os.path.exists(marker) else None
+  valid=claim and actual and claim['nonce']==actual['nonce'] and claim['launchGeneration']==actual['launchGeneration'] and actual['bootId']==boot
+  state=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()
+  print(json.dumps({'running':bool(valid and state=='active' and not os.path.exists(tombstone)),'claim':actual if valid else claim}))
  else:
   if os.path.exists(tombstone):print(json.dumps({'error':'conflict'}));sys.exit(0)
   claim=owner['process'];claim['bootId']=boot
   marker=os.path.join(root,'claim.json')
   if os.path.exists(marker):
    old=json.load(open(marker))
-   if old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
+   if old['launchGeneration']>claim['launchGeneration'] or (old['launchGeneration']==claim['launchGeneration'] and old['nonce']!=claim['nonce']):print(json.dumps({'error':'conflict'}));sys.exit(0)
+   active=subprocess.run(['systemctl','--user','is-active',unit],capture_output=True,text=True).stdout.strip()=='active'
+   if active and old['nonce']!=claim['nonce']:print(json.dumps({'error':'conflict'}));sys.exit(0)
   with open(marker,'w') as f:json.dump(claim,f)
   payload=p['input'];args=['systemd-run','--user','--unit='+unit,'--slice='+slice,'--collect','--property=KillMode=control-group','--working-directory='+payload.get('cwd','/home/user')]
   for key,value in payload.get('env',{}).items():args.append('--setenv='+key+'='+value)
@@ -256,6 +260,13 @@ with open(os.path.join(root,'lock'),'a') as lock:
         "Boat did not provide private hosting",
       );
     return url;
+  }
+  function stopReceipt(value: any, expectedId?: string): {id:string;status:string} {
+    if (!value || typeof value.id !== "string" || !/^stop_[a-zA-Z0-9]+$/.test(value.id) ||
+        (expectedId && value.id !== expectedId) || !["pending", "failing", "completed", "superseded"].includes(value.status)) {
+      throw new ComputerError("provider_error", "Boat returned an invalid stop receipt");
+    }
+    return {id:value.id,status:value.status};
   }
   return {
     inspect,
@@ -321,13 +332,11 @@ print('{}')
     async stop(record) {
       const value = await api(record, "POST", "/stop", {});
       const stop = value.stop ?? value.sandbox?.stop;
-      if (!stop?.id)
-        throw new ComputerError("provider_error", "Boat stop receipt missing");
-      return stop;
+      return stopReceipt(stop);
     },
     async stopStatus(record, id) {
       const value = await api(record, "GET", `/stops/${segment(id)}`);
-      return value.stop ?? value;
+      return stopReceipt(value.stop ?? value, id);
     },
     async renew(record) {
       await api(record, "PATCH", "", { ttlSeconds: 300 });

@@ -114,9 +114,21 @@ export function createComputerService(
     if (!placement)
       throw new ComputerError("conflict", "Computer placement is missing");
     const raw = await backend.runner(record);
-    const runner: CommandManagedRuntimeRunner = {
+    let pinnedProcess = owner.process ? structuredClone(owner.process) : null;
+    async function processScope() {
+      if (!pinnedProcess) return scoped({ ...record, owner: ownerRef });
+      const latest = await repository.get(record);
+      const candidate = latest.ledger.owners.find(value => value.id === owner.id);
+      if (!candidate?.process || !["active", "starting", "warm"].includes(candidate.phase) ||
+        candidate.process.nonce !== pinnedProcess.nonce || candidate.process.unitName !== pinnedProcess.unitName ||
+        candidate.process.bootId !== pinnedProcess.bootId || candidate.process.launchGeneration !== pinnedProcess.launchGeneration) {
+        throw new ComputerError("conflict", "Computer process capability has expired");
+      }
+      return {record:latest,owner:candidate};
+    }
+    const runnerFor = (processScoped: boolean): CommandManagedRuntimeRunner => ({
       execute: async (input) => {
-        const current = await scoped({ ...record, owner: ownerRef });
+        const current = await (processScoped ? processScope() : scoped({ ...record, owner: ownerRef }));
         if (!["active", "starting", "warm"].includes(current.owner.phase))
           throw new ComputerError("conflict", "Computer owner is retired");
         // Start a command unit under the same owner slice while holding the remote tombstone lock.
@@ -131,7 +143,10 @@ p=json.load(sys.stdin);root='/home/user/.paperclip-owners/'+p['owner'];os.makedi
 with open(root+'/lock','a') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
  if os.path.exists(root+'/retired'):raise RuntimeError('computer owner retired')
- if not os.path.exists(root+'/generation') or int(open(root+'/generation').read())!=p['generation']:raise RuntimeError('computer owner superseded')
+ if p.get('processClaim'):
+  claim=json.load(open(root+'/claim.json'))
+  if any(claim[k]!=p['processClaim'][k] for k in ['nonce','unitName','bootId','launchGeneration']) or claim['bootId']!=open('/proc/sys/kernel/random/boot_id').read().strip():raise RuntimeError('computer process superseded')
+ elif not os.path.exists(root+'/generation') or int(open(root+'/generation').read())!=p['generation']:raise RuntimeError('computer owner superseded')
  i=p['input'];args=['systemd-run','--user','--pipe','--wait','--collect','--unit='+p['unit'],'--slice=paperclip-'+p['owner']+'.slice','--property=KillMode=control-group','--working-directory='+i.get('cwd',p['cwd'])]
  for k,v in i.get('env',{}).items():args.append('--setenv='+k+'='+v)
  child=subprocess.Popen(args+['--',i['command']]+i.get('args',[]),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -147,7 +162,8 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
           ],
           stdin: JSON.stringify({
             owner: owner.id,
-            generation: owner.generation,
+            generation: current.owner.generation,
+            processClaim: processScoped ? pinnedProcess : null,
             unit: `paperclip-command-${randomUUID()}.service`,
             cwd: placement.cwd,
             input: {
@@ -163,10 +179,17 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
           onSpawn: input.onSpawn,
         });
       },
-    };
+    });
     return {
       owner: ownerRef,
-      runner,
+      runner: runnerFor(false),
+      process: {
+        runner: runnerFor(true),
+        async ingress(input?: {port?:number;path?:string}) {
+          const current = await processScope();
+          return backend.ingress(current.record,input?.port??current.owner.port,input?.path??"/");
+        },
+      },
       listenerPort: owner.port,
       remoteCwd: placement.cwd,
       agentHome: placement.root,
@@ -177,16 +200,19 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
         cwd?: string;
         env?: Record<string, string>;
       }) {
+        const before = await scoped({...record,owner:ownerRef});
+        const existing = before.owner.process ? await backend.inspectProcess(before.record,before.owner) : null;
         const claimed = await repository.update(record, (current) => {
           const o = exactOwner(current, ownerRef);
           if (o.phase !== "active" && o.phase !== "starting")
             throw new ComputerError("conflict", "Computer owner cannot launch");
-          if (!o.process)
+          if (existing?.running && existing.claim) o.process = existing.claim;
+          else if (!o.process || !existing?.running)
             o.process = {
               bootId: "",
               unitName: `paperclip-${o.id}.service`,
               nonce: randomUUID(),
-              launchGeneration: o.generation,
+              launchGeneration: (o.process?.launchGeneration ?? 0) + 1,
             };
           return structuredClone(current);
         });
@@ -198,6 +224,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
         await repository.update(record, (current) => {
           exactOwner(current, ownerRef).process = claim;
         });
+        pinnedProcess = structuredClone(claim);
         return claim;
       },
       async inspectProcess() {
@@ -225,6 +252,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     },
   ) {
     segment(input.agentId);
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.sessionKey)) throw new ComputerError("invalid", "Invalid computer session key");
     timeout(input.idleTimeoutMs);
     const result = await repository.update(input, (record) => {
       assertAdmission(record.ledger);
@@ -616,7 +644,7 @@ sys.stdout.write(output);sys.stderr.write(error);sys.exit(child.returncode)
     });
     await repository.update(input, (current) => {
       exactOwner(current, input.owner);
-      const placementKey = `workspace:${input.projectId}:${input.mode}:${input.taskId ?? "shared"}:${result.remoteCwd}`;
+      const placementKey = `workspace:${owner.agentId}:${input.projectId}:${input.mode}:${input.taskId ?? "shared"}:${result.remoteCwd}`;
       current.ledger.placements[placementKey] ??= {
         id: randomUUID(),
         root: placement.root,
