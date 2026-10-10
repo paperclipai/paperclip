@@ -1033,7 +1033,8 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
-  it("restricts permissions on an existing managed MCP config", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("restricts permissions on an existing managed MCP config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
     try {
       const configPath = path.join(root, "config.toml");
@@ -1129,7 +1130,8 @@ describe("stageCodexHomeForSync", () => {
   });
 
   // C1 — staged credential file must be mode 0600 (not the world-readable default).
-  it("writes the staged auth.json with mode 0600", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("writes the staged auth.json with mode 0600", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-mode-"));
     let staged: string | null = null;
     try {
@@ -1145,7 +1147,8 @@ describe("stageCodexHomeForSync", () => {
 
   // config.toml carries the managed MCP `Authorization: Bearer …` header and is
   // secret-bearing; the staged copy must be 0600, not the world-readable default.
-  it("writes the staged config.toml (managed MCP bearer header) with mode 0600", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("writes the staged config.toml (managed MCP bearer header) with mode 0600", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-toml-mode-"));
     let staged: string | null = null;
     try {
@@ -1169,7 +1172,8 @@ describe("stageCodexHomeForSync", () => {
 
   // Least privilege: no staged regular file needs group/other read, so every
   // one (config.json, instructions.md — not just credentials) is staged 0600.
-  it("writes every staged regular file with mode 0600", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("writes every staged regular file with mode 0600", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-all-mode-"));
     let staged: string | null = null;
     try {
@@ -1186,7 +1190,8 @@ describe("stageCodexHomeForSync", () => {
   });
 
   // C2 — staged dir must be 0700 (mkdtemp guarantees this on POSIX).
-  it("creates the staged dir with mode 0700", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("creates the staged dir with mode 0700", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-dir-"));
     let staged: string | null = null;
     try {
@@ -1291,7 +1296,8 @@ describe("stageCodexHomeForSync", () => {
   });
 
   // Skill staging retains executable permission with owner-only access.
-  it("retains skill executable bits without group or world permissions", async () => {
+  // POSIX file modes are not representable on Windows (stat reports 0666), so the mode assertions only run elsewhere.
+  it.skipIf(process.platform === "win32")("retains skill executable bits without group or world permissions", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-skill-mode-"));
     let staged: string | null = null;
     try {
