@@ -2116,6 +2116,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 
+  it("does not block an active review for a terminal predecessor's reconciliation action", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle", runStatus: "interrupted", runtimeMode: "legacy",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "pending", currentStageId: stageId, currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: null, completedStageIds: [], lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      status: "active", ownerType: "board", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: runId,
+      evidence: { runId }, nextAction: "Inspect the recorded execution.",
+    });
+
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    await settleUnrecoverableExecutions(db);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(issue.status).toBe("in_review");
+    expect(issue.executionState).toMatchObject({ currentStageType: "review", status: "pending" });
+    expect(action).toMatchObject({ status: "resolved", outcome: "cancelled" });
+  });
+
+  it("still blocks an active review when its current reviewer's run failed", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle", runStatus: "failed", runtimeMode: "legacy",
+      runErrorCode: "adapter_failed",
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "pending", currentStageId: randomUUID(), currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: null, completedStageIds: [], lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      status: "active", ownerType: "board", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: runId,
+      evidence: { runId }, nextAction: "Inspect the recorded execution.",
+    });
+
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    await settleUnrecoverableExecutions(db);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(issue.status).toBe("blocked");
+    expect(action).toMatchObject({ status: "resolved", outcome: "blocked" });
+  });
+
   it("waits for a terminal predecessor's environment lease to be released", async () => {
     const { companyId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "interrupted" });
     await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
