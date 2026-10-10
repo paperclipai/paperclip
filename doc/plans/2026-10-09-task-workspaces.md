@@ -111,7 +111,7 @@ A destination may override either field independently. Omitted fields inherit th
 
 ## Verification and rollout limits
 
-Tests must distinguish local fixture proof from live provider qualification. The implementation adds database and protocol tests, compatibility tests for old descriptors, plain-directory and nested-repository persistence fixtures, and sparse/checkpoint/cache tests. A passing fixture does not prove Daytona or SSH production throughput. PAP-171's original run is never interrupted or modified as part of this work.
+Tests must distinguish local fixture proof from live provider qualification. The implementation adds database and protocol tests, compatibility tests for old descriptors, plain-directory and nested-repository persistence fixtures, and sparse/checkpoint/cache tests. A passing fixture does not prove Daytona or SSH production throughput. The original diagnostic run is never interrupted or modified as part of this work.
 
 Deploy schema before admitting the new state. Native descriptor v3 requires compatible recovery controllers; mixed-version controllers must not claim new admissions. Rollback retains the schema and immutable seeds and routes existing v3 obligations to compatible controllers. Do not delete legacy home content, existing workspace directories, or accepted-result recovery evidence.
 

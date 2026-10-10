@@ -436,11 +436,25 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       }),
     });
 
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    // Both successful runs publish their final summary on behalf of the real
+    // responsible user. Recovery notices are additional system comments.
+    const summaries = comments.filter((comment) => comment.authorType === "agent");
+    expect(summaries).toHaveLength(2);
+    expect(summaries).toEqual(expect.arrayContaining(
+      [followUpRun!.id, recoveryWakes[0].runId].map((runId) => expect.objectContaining({
+        authorAgentId: agentId,
+        onBehalfOfUserId: "responsible-user",
+        createdByRunId: runId,
+        body: "Acknowledged liveness escalation.",
+      })),
+    ));
+    const notices = comments.filter((comment) => comment.authorType !== "agent");
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
     if (disposition === "monitor") {
       expect(issue).toMatchObject({ status: "in_review", assigneeAgentId: agentId, monitorNextCheckAt: expect.any(Date) });
       expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
-      expect(await db.select().from(issueComments)).toHaveLength(0);
+      expect(notices).toHaveLength(0);
       const attention = await issueService(db).listReviewAttention(companyId, [issue]);
       expect(attention.get(issueId)).toMatchObject({ state: "covered", paths: expect.arrayContaining([expect.objectContaining({ kind: "monitor" })]) });
       return;
@@ -452,7 +466,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       ownerType: "board", ownerAgentId: null, ownerUserId: null,
       returnOwnerAgentId: agentId, cause: "issue_review_path_lost", attemptCount: 1, maxAttempts: 1,
     });
-    const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ authorType: "system", presentation: expect.objectContaining({ title: "No follow-up scheduled" }) });
 
@@ -460,7 +473,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     // Replayed finalization must not duplicate the notice, action, or wake.
     expect(await escalateExhaustedIssueReviewPathRecovery(db, { run: recoveryRun, issueId })).toBeNull();
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
-    expect(await db.select().from(issueComments)).toHaveLength(1);
+    const replayComments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(replayComments.map((comment) => comment.id).sort()).toEqual(comments.map((comment) => comment.id).sort());
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "issue_review_path_lost"))).toHaveLength(1);
 
     const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
