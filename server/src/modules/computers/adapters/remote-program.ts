@@ -109,68 +109,125 @@ def directory(parts,create=False,start=None):
  except BaseException:os.close(fd);raise
 # Initial uploads stay in a private sibling until a no-replace rename publishes them.
 # Each request carries at most one bounded chunk, never the whole home.
-if act in ('seed-begin','seed-chunk','seed-commit','seed-abort'):
- import uuid,ctypes,errno
- token=p.get('seedId','')
+seed_actions=('seed-begin','seed-chunk','seed-commit','seed-abort')
+# The durable receipt names one exact upload. Root listings (including home
+# admission) reclaim expired uploads even after a controller crash or publish.
+if act in seed_actions or (act=='list' and not p.get('path') and os.path.lexists(os.path.join(os.path.dirname(root),'.paperclip-seed-'+os.path.basename(root)+'.json'))):
+ import uuid,ctypes,errno,time,math
+ parentfd=None;leasefd=None;stagefd=None
  try:
-  if str(uuid.UUID(token))!=token:fail('invalid')
- except (ValueError,TypeError,AttributeError):fail('invalid')
- parentfd=directory(os.path.dirname(root).split('/'),create=True)
- name=os.path.basename(root);staging='.paperclip-seed-'+name+'-'+token
- stagefd=None;lockfd=None
- try:
-  if act=='seed-abort':
-   try:shutil.rmtree(staging,dir_fd=parentfd)
-   except FileNotFoundError:pass
-   print('{}');sys.exit(0)
-  if act=='seed-begin':
-   try:
-    existing=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
-    if not stat.S_ISDIR(existing.st_mode):fail('invalid')
-    print(json.dumps({'started':False}));sys.exit(0)
-   except FileNotFoundError:pass
-   os.mkdir(staging,0o700,dir_fd=parentfd)
-  stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
-  lockfd=os.open('lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=stagefd)
-  fcntl.flock(lockfd,fcntl.LOCK_EX)
-  if act=='seed-begin':
-   os.mkdir('tree',0o700,dir_fd=stagefd)
-   print(json.dumps({'started':True}))
-  elif act=='seed-chunk':
-   relative=p.get('path','');safe(relative)
-   parts=[part for part in relative.split('/') if part not in ('','.')]
-   if not parts:fail('invalid')
-   data=base64.b64decode(p['base64'],validate=True);offset=p.get('offset')
-   if len(data)>1024*1024 or type(offset)!=int or offset<0 or offset+len(data)>256*1024*1024:fail('invalid')
-   destfd=directory(['tree']+parts[:-1],create=True,start=stagefd)
-   try:fd=os.open(parts[-1],os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=destfd)
-   finally:os.close(destfd)
-   with os.fdopen(fd,'r+b') as f:
+  parentfd=directory(os.path.dirname(root).split('/'),create=act in seed_actions)
+  name=os.path.basename(root);receipt_name='.paperclip-seed-'+name+'.json'
+  leasefd=os.open('.paperclip-seed-'+name+'.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+  info=os.fstat(leasefd)
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+  fcntl.flock(leasefd,fcntl.LOCK_EX)
+  def read_metadata(directory_fd,name):
+   fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory_fd)
+   with os.fdopen(fd,'rb') as f:
     info=os.fstat(f.fileno())
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
-    if info.st_size!=offset:fail('conflict')
-    f.seek(offset);f.write(data)
-   print('{}')
-  else:
-   libc=ctypes.CDLL(None,use_errno=True)
-   if hasattr(libc,'renameat2'):status=libc.renameat2(stagefd,b'tree',parentfd,os.fsencode(name),1)
-   elif hasattr(libc,'renameatx_np'):status=libc.renameatx_np(stagefd,b'tree',parentfd,os.fsencode(name),4)
-   else:fail('invalid')
-   if status!=0:
-    code=ctypes.get_errno()
-    if code not in (errno.EEXIST,errno.ENOTEMPTY):raise OSError(code,os.strerror(code))
-    if not stat.S_ISDIR(os.stat(name,dir_fd=parentfd,follow_symlinks=False).st_mode):fail('invalid')
-   print(json.dumps({'seeded':status==0}))
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>4096:fail('invalid')
+    return json.loads(f.read(4097))
+  def save_receipt(value):
+   if value is None:
+    try:os.unlink(receipt_name,dir_fd=parentfd)
+    except FileNotFoundError:pass
+   else:
+    temporary=receipt_name+'.tmp'
+    fd=os.open(temporary,os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=parentfd)
+    with os.fdopen(fd,'wb') as f:
+     info=os.fstat(f.fileno())
+     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+     f.truncate(0);f.write(json.dumps(value).encode());f.flush();os.fsync(f.fileno())
+    os.rename(temporary,receipt_name,src_dir_fd=parentfd,dst_dir_fd=parentfd)
+   os.fsync(parentfd)
+  def identity(token):return {'purpose':'paperclip-initial-home-v1','root':root,'seedId':token}
+  def remove_receipted_upload(receipt):
+   staging='.paperclip-seed-'+name+'-'+receipt['seedId']
+   try:fd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+   except FileNotFoundError:return
+   try:
+    try:marker=read_metadata(fd,'owner.json')
+    except FileNotFoundError:
+     # Receipt is durable before mkdir. An interrupted begin can only leave
+     # an empty directory here; never recursively remove unmarked content.
+     os.rmdir(staging,dir_fd=parentfd);return
+    if marker!=identity(receipt['seedId']):fail('invalid')
+   finally:os.close(fd)
+   shutil.rmtree(staging,dir_fd=parentfd)
+  try:receipt=read_metadata(parentfd,receipt_name)
+  except FileNotFoundError:receipt=None
+  if receipt is not None:
+   if not isinstance(receipt,dict) or receipt.get('purpose')!='paperclip-initial-home-v1' or receipt.get('root')!=root:fail('invalid')
+   if str(uuid.UUID(receipt.get('seedId','')))!=receipt['seedId']:fail('invalid')
+   updated=receipt.get('updatedAt')
+   if not isinstance(updated,(int,float)) or not math.isfinite(updated):fail('invalid')
+   # Exceeds the 120s queued+executing backend deadline, with restart margin.
+   if time.time()-updated>300:
+    remove_receipted_upload(receipt);save_receipt(None);receipt=None
+  if act in seed_actions:
+   token=p.get('seedId','')
+   if str(uuid.UUID(token))!=token:fail('invalid')
+   staging='.paperclip-seed-'+name+'-'+token
+   if act=='seed-begin':
+    try:
+     existing=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+     if not stat.S_ISDIR(existing.st_mode):fail('invalid')
+     print(json.dumps({'started':False}));sys.exit(0)
+    except FileNotFoundError:pass
+    if receipt is not None:fail('conflict')
+    # Reserve only an absent random path before persisting its exact identity.
+    try:os.stat(staging,dir_fd=parentfd,follow_symlinks=False);fail('conflict')
+    except FileNotFoundError:pass
+    receipt={**identity(token),'updatedAt':time.time()};save_receipt(receipt)
+    os.mkdir(staging,0o700,dir_fd=parentfd)
+    stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+    markerfd=os.open('owner.json',os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=stagefd)
+    with os.fdopen(markerfd,'wb') as f:f.write(json.dumps(identity(token)).encode());f.flush();os.fsync(f.fileno())
+    os.mkdir('tree',0o700,dir_fd=stagefd)
+    print(json.dumps({'started':True}))
+   elif act=='seed-abort':
+    if receipt is not None and receipt['seedId']==token:
+     remove_receipted_upload(receipt);save_receipt(None)
+    print('{}')
+   else:
+    if receipt is None or receipt['seedId']!=token:fail('conflict')
+    stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+    if read_metadata(stagefd,'owner.json')!=identity(token):fail('invalid')
+    if act=='seed-chunk':
+     relative=p.get('path','');safe(relative)
+     parts=[part for part in relative.split('/') if part not in ('','.')]
+     if not parts:fail('invalid')
+     data=base64.b64decode(p['base64'],validate=True);offset=p.get('offset')
+     if len(data)>1024*1024 or type(offset)!=int or offset<0 or offset+len(data)>256*1024*1024:fail('invalid')
+     destfd=directory(['tree']+parts[:-1],create=True,start=stagefd)
+     try:fd=os.open(parts[-1],os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=destfd)
+     finally:os.close(destfd)
+     with os.fdopen(fd,'r+b') as f:
+      info=os.fstat(f.fileno())
+      if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+      if info.st_size!=offset:fail('conflict')
+      f.seek(offset);f.write(data)
+     receipt['updatedAt']=time.time();save_receipt(receipt)
+     print('{}')
+    else:
+     libc=ctypes.CDLL(None,use_errno=True)
+     if hasattr(libc,'renameat2'):status=libc.renameat2(stagefd,b'tree',parentfd,os.fsencode(name),1)
+     elif hasattr(libc,'renameatx_np'):status=libc.renameatx_np(stagefd,b'tree',parentfd,os.fsencode(name),4)
+     else:fail('invalid')
+     if status!=0:
+      code=ctypes.get_errno()
+      if code not in (errno.EEXIST,errno.ENOTEMPTY):raise OSError(code,os.strerror(code))
+      if not stat.S_ISDIR(os.stat(name,dir_fd=parentfd,follow_symlinks=False).st_mode):fail('invalid')
+     remove_receipted_upload(receipt);save_receipt(None)
+     print(json.dumps({'seeded':status==0}))
  except FileNotFoundError:fail('not_found')
- except (OSError,ValueError):fail('invalid')
+ except (OSError,ValueError,TypeError,AttributeError):fail('invalid')
  finally:
-  if lockfd is not None:os.close(lockfd)
   if stagefd is not None:os.close(stagefd)
-  if act=='seed-commit':
-   try:shutil.rmtree(staging,dir_fd=parentfd)
-   except FileNotFoundError:pass
-  os.close(parentfd)
- sys.exit(0)
+  if leasefd is not None:os.close(leasefd)
+  if parentfd is not None:os.close(parentfd)
+ if act in seed_actions:sys.exit(0)
 try:rootfd=directory(root.split('/'))
 except FileNotFoundError:fail('not_found')
 except OSError:fail('invalid')
