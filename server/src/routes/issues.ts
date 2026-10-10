@@ -12446,7 +12446,6 @@ export function issueRoutes(
       }
       await retainBacklogHumanAssignment(db, issue, actor);
       await issueReferencesSvc.syncIssue(issue.id);
-      await externalObjectsSvc.syncIssueSafely(issue.id);
       const referenceSummary =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -12627,6 +12626,10 @@ export function issueRoutes(
       relatedWork: visibleReferenceSummary,
       referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
+      // External-object detection is best-effort derived indexing. Do not keep
+      // task creation on its latency path; the created issue and its required
+      // activity record are durable before the response is sent.
+      void externalObjectsSvc.syncIssueSafely(issue.id);
     },
   );
 
@@ -12772,8 +12775,6 @@ export function issueRoutes(
         watchdogActorRunId: actor.runId,
         assertCanReuseIssue: (existing) => assertCanReuseCreatedIssue(req, existing),
       });
-      await externalObjectsSvc.syncIssueSafely(issue.id);
-
       await logActivity(db, {
         companyId: parent.companyId,
         actorType: actor.actorType,
@@ -12869,6 +12870,9 @@ export function issueRoutes(
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
       res.status(201).json(issue);
+      // Keep best-effort external-object indexing off the user-visible create
+      // path. Failures remain contained and logged by syncIssueSafely.
+      void externalObjectsSvc.syncIssueSafely(issue.id);
     },
   );
 

@@ -9,6 +9,7 @@ vi.mock("../services/human-directed-work.js", () => ({ retainBacklogHumanAssignm
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockSyncIssueSafely = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   createChild: vi.fn(),
@@ -114,6 +115,12 @@ vi.mock("../services/index.js", () => ({
   }),
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
+  }),
+}));
+
+vi.mock("../services/external-objects.js", () => ({
+  externalObjectService: () => ({
+    syncIssueSafely: mockSyncIssueSafely,
   }),
 }));
 
@@ -353,5 +360,23 @@ describe("assigned backlog creation contract", () => {
       }),
     );
     expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wait for best-effort external-object indexing before returning a created issue", async () => {
+    let finishSync: (() => void) | undefined;
+    mockSyncIssueSafely.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        finishSync = resolve;
+      }),
+    );
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Fast create response", status: "backlog" });
+
+    expect(res.status).toBe(201);
+    expect(mockSyncIssueSafely).toHaveBeenCalledWith(res.body.id);
+    expect(finishSync).toBeTypeOf("function");
+    finishSync?.();
   });
 });
