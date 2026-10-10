@@ -326,7 +326,7 @@ describe("executeNativeSession recovery", () => {
       const completeRun = vi.fn(async () => {});
       try {
         const execution = executeNativeSession({
-          input, turnTimeoutMs, bootstrapTimeoutMs: 5,
+          input, turnTimeoutMs,
           backend: {
             async descriptor() { return { kind: "mock", name: "long-lived", version: "1", capabilities }; },
             async openSession() { return session; },
@@ -2256,16 +2256,13 @@ describe("executeNativeSession recovery", () => {
           runnerInstanceId: "runner-recovery",
           controlPlaneInstanceId: "control-recovery",
           timeoutMs: 5,
-          bootstrapTimeoutMs: 10,
         });
       const execution = execute();
       const rejection = expect(execution).rejects.toThrow(
-        "native session bootstrap timed out after 10ms",
+        "native session bootstrap timed out after 5ms",
       );
 
       await bootstrapStarted;
-      expect(bootstrapSignal?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(5);
       expect(bootstrapSignal?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(5);
       await rejection;
@@ -2662,7 +2659,6 @@ describe("executeNativeSession recovery", () => {
           runnerInstanceId: "runner-recovery",
           controlPlaneInstanceId: "control-recovery",
           timeoutMs: 10,
-          bootstrapTimeoutMs: 100,
           keepSessionOpen: true,
           onSession: (current) => retainedSessions.push(current),
         });
@@ -5517,7 +5513,6 @@ describe("executeNativeSession recovery", () => {
         controlPlaneInstanceId: "control-recovery",
         persistedSession: structuredClone(checkpoint),
         timeoutMs: 5,
-        bootstrapTimeoutMs: 100,
         onSession,
       });
       const rejection = expect(execution).rejects.toThrow(
@@ -5653,16 +5648,13 @@ describe("executeNativeSession recovery", () => {
         controlPlaneInstanceId: "control-recovery",
         persistedSession: structuredClone(checkpoint),
         timeoutMs: 5,
-        bootstrapTimeoutMs: 10,
         onSession,
       });
       const rejection = expect(execution).rejects.toThrow(
-        "native session replacement bootstrap timed out after 10ms",
+        "native session replacement bootstrap timed out after 5ms",
       );
 
       await replacementStarted;
-      expect(replacementSignal?.aborted).toBe(false);
-      await vi.advanceTimersByTimeAsync(5);
       expect(replacementSignal?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(5);
       await rejection;

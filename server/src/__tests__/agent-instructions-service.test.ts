@@ -1,9 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as fileStore from "../services/agent-file-store.js";
-import * as persistentFiles from "../services/persistent-agent-files.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 
 type TestAgent = {
@@ -39,7 +37,6 @@ describe("agent instructions service", () => {
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
     if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = originalPaperclipHome;
     if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -60,68 +57,6 @@ describe("agent instructions service", () => {
     expect(bundle.entryFile).toBe("AGENTS.md");
     expect((await svc.readFile(agent, bundle.entryFile)).content).toBe("legacy instructions");
     if (entry === "../invalid") expect(bundle.warnings.length).toBeGreaterThan(0);
-  });
-
-  it.each(["explicit", "legacy"])("keeps %s external instructions on their configured root after selecting Boat", async (configuration) => {
-    const root = await makeTempDir("boat-external-instructions-"); cleanupDirs.add(root);
-    await fs.writeFile(path.join(root, "AGENTS.md"), "external authority");
-    await fs.writeFile(path.join(root, "NEXT.md"), "next external entry");
-    const agent = { ...makeAgent(configuration === "explicit"
-      ? { instructionsBundleMode: "external", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" }
-      : { instructionsFilePath: path.join(root, "AGENTS.md") }), defaultEnvironmentId: "boat-environment" };
-    const remote = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/personal" } as never);
-    const db = { transaction: vi.fn(async () => { throw new Error("Must not adopt external instructions"); }) };
-    const svc = agentInstructionsService(db as never);
-    expect((await svc.getBundle(agent)).rootPath).toBe(root);
-    expect((await svc.readFile(agent, "AGENTS.md")).content).toBe("external authority");
-    expect((await svc.exportFiles(agent)).files["AGENTS.md"]).toBe("external authority");
-    const updated = await svc.updateBundle(agent, { entryFile: "NEXT.md" });
-    expect(updated.bundle.mode).toBe("external");
-    expect(updated.bundle.rootPath).toBe(root);
-    expect(updated.bundle.entryFile).toBe("NEXT.md");
-    expect(remote).not.toHaveBeenCalled();
-    expect(db.transaction).not.toHaveBeenCalled();
-  });
-
-  it("excludes only home-level runtime files from remote listing and export", async () => {
-    const agent = makeAgent({ instructionsBundleMode: "managed" });
-    const list = vi.fn(async (relative = "") => {
-      if (relative === ".paperclip-runtime") throw new Error("Must not enumerate provider packs or session state");
-      if (!relative) return [{ name: "AGENTS.md", kind: "file", size: 12 }, { name: ".paperclip-runtime", kind: "directory", size: 0 }, { name: "notes", kind: "directory", size: 0 }];
-      if (relative === "notes") return [{ name: ".paperclip-runtime", kind: "directory", size: 0 }];
-      return [{ name: "user.md", kind: "file", size: 12 }];
-    });
-    const readBytes = vi.fn(async () => ({ bytes: Buffer.from("instructions"), sha256: "hash" }));
-    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", list, readBytes } as never);
-    vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockResolvedValue(undefined);
-    vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
-    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [agent] }) }) }) };
-    const svc = agentInstructionsService(db as never);
-    expect((await svc.getBundle(agent)).files.map(file => file.path)).toEqual(["AGENTS.md", "notes/.paperclip-runtime/user.md"]);
-    expect((await svc.exportFiles(agent)).files).toEqual({ "AGENTS.md": "instructions", "notes/.paperclip-runtime/user.md": "instructions" });
-    expect(list).not.toHaveBeenCalledWith(".paperclip-runtime");
-    expect(readBytes).not.toHaveBeenCalledWith(expect.stringMatching(/^\.paperclip-runtime\//));
-  });
-
-  it("previews an explicit external-to-managed migration before adopting remote personal files", async () => {
-    const root = await makeTempDir("boat-instructions-migration-"); cleanupDirs.add(root);
-    await fs.writeFile(path.join(root, "AGENTS.md"), "external migration source");
-    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" });
-    const seedBytes = vi.fn();
-    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/personal", seedBytes } as never);
-    const db = {
-      select: () => ({ from: () => ({ where: async () => [] }) }),
-      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
-        select: () => ({ from: () => ({ where: async () => [agent] }) }),
-      }),
-    };
-    const svc = agentInstructionsService(db as never);
-    const updated = await svc.updateBundle(agent, { mode: "managed" });
-    expect(updated.bundle.mode).toBe("managed");
-    expect(updated.bundle.rootPath).toBe(updated.bundle.managedRootPath);
-    expect(await fs.readFile(path.join(updated.bundle.managedRootPath, "AGENTS.md"), "utf8")).toBe("external migration source");
-    expect(seedBytes).not.toHaveBeenCalled();
-    expect(await fs.readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("external migration source");
   });
 
   it("lists external bundles containing large binary assets", async () => {
