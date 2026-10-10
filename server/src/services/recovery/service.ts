@@ -3972,9 +3972,12 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    // The unresolved list is for the activity record only. Do not pass it as
+    // blockedByIssueIds: that field rewrites the whole relation set, silently
+    // dropping completed blockers (for example an acceptance gate) and any link
+    // another actor added after the list was read.
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;

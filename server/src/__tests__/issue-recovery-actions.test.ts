@@ -591,6 +591,32 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("keeps every existing blocker link, including resolved ones, when stranded recovery blocks the issue", async () => {
+    const { companyId, managerId, coderId, sourceIssue, prefix } = await seedCompany();
+    const gateId = randomUUID();
+    const openId = randomUUID();
+    await db.insert(issues).values([
+      { id: gateId, companyId, title: "Completed acceptance gate", status: "done", priority: "medium",
+        assigneeAgentId: managerId, issueNumber: 2, identifier: `${prefix}-2` },
+      { id: openId, companyId, title: "Open blocker", status: "todo", priority: "medium",
+        assigneeAgentId: managerId, issueNumber: 3, identifier: `${prefix}-3` },
+    ]);
+    await db.insert(issueRelations).values([gateId, openId].map((blockerId) => ({
+      companyId, issueId: blockerId, relatedIssueId: sourceIssue.id, type: "blocks" as const,
+    })));
+    const latestRun = { id: randomUUID(), agentId: coderId, status: "failed", error: "adapter exited",
+      errorCode: "adapter_failed", contextSnapshot: { issueId: sourceIssue.id } } as const;
+    await recoveryService(db, { enqueueWakeup: vi.fn(async () => null) }).escalateStrandedAssignedIssue({
+      issue: sourceIssue, previousStatus: "in_progress", latestRun,
+    });
+
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(blocked?.status).toBe("blocked");
+    const links = await db.select({ blockerId: issueRelations.issueId }).from(issueRelations)
+      .where(and(eq(issueRelations.relatedIssueId, sourceIssue.id), eq(issueRelations.type, "blocks")));
+    expect(links.map((link) => link.blockerId).sort()).toEqual([gateId, openId].sort());
+  });
+
   // Model the production payload: `requestedRef` keeps the operator spelling,
   // and the fingerprint carries the canonical remote ref. Two equivalent
   // spellings of one remote branch share `identityRef`, so they share one
