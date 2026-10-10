@@ -1889,6 +1889,121 @@ function readSkillStoreMetadata(frontmatter: Record<string, unknown>, metadata: 
   };
 }
 
+// `local_path` skills keep their canonical text in SKILL.md on disk, so the
+// library row is a mirror of that file. `reconcileLocalPathSkillSources` keeps
+// the mirror fresh, and records this signature so it can tell an unchanged file
+// apart without reading it again on every list().
+const LOCAL_SOURCE_SYNC_METADATA_KEY = "localSourceSync";
+
+// `ctimeMs` and `ino` are part of the signature because `mtime` alone can be
+// carried over (`utimes`, `rsync -a`, `cp -p`): a same-size rewrite that keeps
+// the old `mtime` still moves `ctime`, and an atomic replace changes the inode.
+type LocalSkillFileSignature = { mtimeMs: number; ctimeMs: number; ino: number; sizeBytes: number };
+
+type LocalSourceSyncMarker = LocalSkillFileSignature & { sha256: string | null };
+
+// Frontmatter sits at the head of SKILL.md, so a file over the per-file limit
+// still has its library fields mirrored from this many leading bytes.
+const OVERSIZED_SKILL_FILE_HEAD_BYTES = 64 * 1024;
+
+async function readFileHead(filePath: string, maxBytes: number) {
+  const handle = await fs.open(filePath, "r").catch(() => null);
+  if (!handle) return null;
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function readLocalSourceSyncMarker(
+  metadata: Record<string, unknown> | null,
+): LocalSourceSyncMarker | null {
+  if (!isPlainRecord(metadata)) return null;
+  const marker = metadata[LOCAL_SOURCE_SYNC_METADATA_KEY];
+  if (!isPlainRecord(marker)) return null;
+  const {
+    skillFileMtimeMs: mtimeMs,
+    skillFileCtimeMs: ctimeMs,
+    skillFileIno: ino,
+    skillFileSizeBytes: sizeBytes,
+  } = marker;
+  if (
+    typeof mtimeMs !== "number"
+    || typeof ctimeMs !== "number"
+    || typeof ino !== "number"
+    || typeof sizeBytes !== "number"
+  ) return null;
+  return { mtimeMs, ctimeMs, ino, sizeBytes, sha256: asString(marker.skillFileSha256) };
+}
+
+function withLocalSourceSyncMarker(
+  metadata: Record<string, unknown> | null,
+  marker: LocalSkillFileSignature & { sha256: string | null; oversized?: boolean },
+) {
+  return {
+    ...(isPlainRecord(metadata) ? metadata : {}),
+    [LOCAL_SOURCE_SYNC_METADATA_KEY]: {
+      skillFileMtimeMs: marker.mtimeMs,
+      skillFileCtimeMs: marker.ctimeMs,
+      skillFileIno: marker.ino,
+      skillFileSizeBytes: marker.sizeBytes,
+      skillFileSha256: marker.sha256,
+      // The body is not mirrored past `MAX_CATALOG_FILE_BYTES`; the flag says
+      // so on the row instead of leaving the stored copy to look current.
+      ...(marker.oversized ? { skillFileOversized: true, skillFileMaxBytes: MAX_CATALOG_FILE_BYTES } : {}),
+      syncedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function withoutLocalSourceSyncMarker(metadata: Record<string, unknown> | null) {
+  if (!isPlainRecord(metadata) || !(LOCAL_SOURCE_SYNC_METADATA_KEY in metadata)) return metadata;
+  const next = { ...metadata };
+  delete next[LOCAL_SOURCE_SYNC_METADATA_KEY];
+  return next;
+}
+
+// The marker is reconcile bookkeeping rather than import state, so an import
+// that rewrites `metadata` carries it over instead of dropping it. Losing it
+// would only cost one extra read, but it would also make an otherwise unchanged
+// re-import look like an edit.
+function carriedLocalSourceSyncMarker(metadata: Record<string, unknown> | null) {
+  if (!isPlainRecord(metadata)) return {};
+  const marker = metadata[LOCAL_SOURCE_SYNC_METADATA_KEY];
+  return isPlainRecord(marker) ? { [LOCAL_SOURCE_SYNC_METADATA_KEY]: marker } : {};
+}
+
+function localSkillFileSignaturesEqual(
+  left: LocalSkillFileSignature | null,
+  right: LocalSkillFileSignature | null,
+) {
+  return Boolean(
+    left
+    && right
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs
+    && left.ino === right.ino
+    && left.sizeBytes === right.sizeBytes,
+  );
+}
+
+// Store fields `readSkillStoreMetadata` derives from the SKILL.md frontmatter.
+// Editing one of them on a `local_path` skill is not durable: the file wins.
+const DISK_OWNED_SKILL_STORE_FIELDS = [
+  "description",
+  "iconUrl",
+  "color",
+  "tagline",
+  "authorName",
+  "homepageUrl",
+  "categories",
+] as const;
+
 function serializeFileInventory(
   fileInventory: CompanySkillFileInventoryEntry[],
 ): Array<Record<string, unknown>> {
@@ -3128,17 +3243,127 @@ export function companySkillService(db: Db) {
     );
   }
 
+  /**
+   * Mirrors a `local_path` skill's SKILL.md into the library row: `markdown`,
+   * plus the `name`/`description`/store fields its frontmatter declares. Fields
+   * the frontmatter leaves out keep their stored value, the same way an import
+   * falls back to the existing row.
+   *
+   * Every read reaches this through `ensureSkillInventoryCurrent`, so the file
+   * is only re-read when its `stat` signature differs from the one recorded at
+   * the last sync: an unchanged file costs one `stat` and no write. For a file
+   * over `MAX_CATALOG_FILE_BYTES` only a bounded head is read: the frontmatter
+   * fields still follow the file, the stored `markdown` is kept, and the marker
+   * flags the row as oversized. A workspace writer therefore cannot turn
+   * ordinary reads into unbounded reads and hashing. `markdown`
+   * is deliberately not part of the reconcile query -- pulling every skill's
+   * instructions into a hot-path select is exactly what the signature avoids --
+   * so a stored content hash, not the stored text, is what tells a real edit
+   * apart from a touch.
+   */
+  async function readLocalPathSkillSourceSync(
+    skill: {
+      id: string;
+      name: string;
+      description: string | null;
+      iconUrl: string | null;
+      color: string | null;
+      tagline: string | null;
+      authorName: string | null;
+      homepageUrl: string | null;
+      categories: string[];
+      sourceLocator: string | null;
+    },
+    metadata: Record<string, unknown> | null,
+  ) {
+    const skillDir = normalizeSourceLocatorDirectory(asString(skill.sourceLocator));
+    if (!skillDir) return null;
+    const skillFilePath = path.join(skillDir, "SKILL.md");
+    const skillFileStat = await statPath(skillFilePath);
+    if (!skillFileStat?.isFile()) return null;
+    const signature = {
+      mtimeMs: skillFileStat.mtimeMs,
+      ctimeMs: skillFileStat.ctimeMs,
+      ino: skillFileStat.ino,
+      sizeBytes: skillFileStat.size,
+    };
+    const previous = readLocalSourceSyncMarker(metadata);
+    if (localSkillFileSignaturesEqual(signature, previous)) return null;
+
+    const oversized = skillFileStat.size > MAX_CATALOG_FILE_BYTES;
+    const markdown = oversized
+      ? await readFileHead(skillFilePath, OVERSIZED_SKILL_FILE_HEAD_BYTES)
+      : await fs.readFile(skillFilePath, "utf8").catch(() => null);
+    if (markdown === null) return null;
+    const parsed = parseFrontmatterMarkdown(markdown);
+    const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
+    const frontmatterColumns = {
+      name: asString(parsed.frontmatter.name) ?? skill.name,
+      description: asString(parsed.frontmatter.description) ?? skill.description,
+      iconUrl: storeMetadata.iconUrl ?? skill.iconUrl,
+      color: storeMetadata.color ?? skill.color,
+      tagline: storeMetadata.tagline ?? skill.tagline,
+      authorName: storeMetadata.authorName ?? skill.authorName,
+      homepageUrl: storeMetadata.homepageUrl ?? skill.homepageUrl,
+      categories: storeMetadata.categories.length > 0 ? storeMetadata.categories : skill.categories,
+    };
+    const columns = oversized ? frontmatterColumns : { ...frontmatterColumns, markdown };
+    const metadataColumnsChanged = columns.name !== skill.name
+      || columns.description !== skill.description
+      || columns.iconUrl !== skill.iconUrl
+      || columns.color !== skill.color
+      || columns.tagline !== skill.tagline
+      || columns.authorName !== skill.authorName
+      || columns.homepageUrl !== skill.homepageUrl
+      || !stableJsonEqual(columns.categories, skill.categories);
+    if (oversized) {
+      return {
+        columns,
+        changed: metadataColumnsChanged,
+        metadata: withLocalSourceSyncMarker(metadata, { ...signature, sha256: null, oversized: true }),
+      };
+    }
+    const sha256 = sha256Buffer(markdown);
+    // Without a recorded hash (first sync of a row), compare against the stored
+    // copy once, so repairing a stale `markdown` counts as an edit and a file
+    // that already matches does not.
+    const previousSha256 = previous?.sha256 ?? await readStoredSkillMarkdownSha256(skill.id);
+    return {
+      columns,
+      changed: previousSha256 !== sha256 || metadataColumnsChanged,
+      metadata: withLocalSourceSyncMarker(metadata, { ...signature, sha256 }),
+    };
+  }
+
+  async function readStoredSkillMarkdownSha256(skillId: string) {
+    const row = await db
+      .select({ markdown: companySkills.markdown })
+      .from(companySkills)
+      .where(eq(companySkills.id, skillId))
+      .then((rows) => rows[0] ?? null);
+    return row ? sha256Buffer(row.markdown) : null;
+  }
+
   async function reconcileLocalPathSkillSources(companyId: string) {
     const rows = await db
       .select({
         id: companySkills.id,
         key: companySkills.key,
         slug: companySkills.slug,
+        name: companySkills.name,
+        description: companySkills.description,
+        iconUrl: companySkills.iconUrl,
+        color: companySkills.color,
+        tagline: companySkills.tagline,
+        authorName: companySkills.authorName,
+        homepageUrl: companySkills.homepageUrl,
+        categories: companySkills.categories,
         sourceType: companySkills.sourceType,
         sourceLocator: companySkills.sourceLocator,
         trustLevel: companySkills.trustLevel,
         fileInventory: companySkills.fileInventory,
         metadata: companySkills.metadata,
+        updatedAt: companySkills.updatedAt,
       })
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId));
@@ -3156,7 +3381,7 @@ export function companySkillService(db: Db) {
       if (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled") continue;
 
       if (!missingIds.has(skill.id)) {
-        const metadata = getMissingSourceMarker(skill.metadata)
+        let metadata = getMissingSourceMarker(skill.metadata)
           ? withoutMissingSourceMarker(skill.metadata)
           : skill.metadata;
         const sourceLocator = asString(skill.sourceLocator);
@@ -3166,16 +3391,31 @@ export function companySkillService(db: Db) {
         const nextTrustLevel = nextInventory ? deriveTrustLevel(nextInventory) : skill.trustLevel;
         const inventoryChanged = nextInventory ? !inventoryEntriesEqual(skill.fileInventory, nextInventory) : false;
         const metadataChanged = !stableJsonEqual(metadata ?? {}, skill.metadata ?? {});
-        if (inventoryChanged || metadataChanged || nextTrustLevel !== skill.trustLevel) {
+        const sourceSync = await readLocalPathSkillSourceSync(skill, metadata);
+        if (sourceSync) metadata = sourceSync.metadata;
+        const touched = inventoryChanged
+          || metadataChanged
+          || nextTrustLevel !== skill.trustLevel
+          || Boolean(sourceSync?.changed);
+        if (touched || sourceSync) {
           await db
             .update(companySkills)
             .set({
               ...(nextInventory ? { fileInventory: serializeFileInventory(nextInventory) } : {}),
+              ...(sourceSync ? sourceSync.columns : {}),
               trustLevel: nextTrustLevel,
               metadata,
-              updatedAt: new Date(),
+              ...(touched ? { updatedAt: new Date() } : {}),
             })
-            .where(eq(companySkills.id, skill.id));
+            // Every column here was derived from the row as read above. If the
+            // row changed in between (e.g. `updateSkill` dropped the sync marker),
+            // writing would restore stale values, so skip it and let the next
+            // read reconcile against the current row. `updated_at` is compared at
+            // millisecond precision because that is what the read returns.
+            .where(and(
+              eq(companySkills.id, skill.id),
+              sql`date_trunc('milliseconds', ${companySkills.updatedAt}) = ${skill.updatedAt.toISOString()}::timestamptz`,
+            ));
         }
         continue;
       }
@@ -4447,6 +4687,17 @@ export function companySkillService(db: Db) {
     if (sharingScope) {
       values.sharingScope = sharingScope;
       values.publicShareToken = null;
+    }
+    // A `local_path` skill declares these fields in its SKILL.md frontmatter, so
+    // a column-only edit is not durable. Dropping the sync marker makes the next
+    // reconcile re-read the file and restore whatever it declares.
+    if (
+      skill.sourceType === "local_path"
+      && DISK_OWNED_SKILL_STORE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(input, field))
+    ) {
+      const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+      const next = withoutLocalSourceSyncMarker(metadata);
+      if (next !== metadata) values.metadata = next;
     }
 
     const row = await db
@@ -6259,6 +6510,7 @@ export function companySkillService(db: Db) {
       const metadata = {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
+        ...carriedLocalSourceSyncMarker(existing ? existingMeta : null),
       };
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
