@@ -44,6 +44,88 @@ const json = (value: unknown, status = 200, headers?: Record<string, string>) =>
     headers: { "content-type": "application/json", ...headers },
   });
 describe("Boat transport validation", () => {
+  it("uses only the file budget remaining after transport preparation", async () => {
+    let clock = 1_000_000;
+    const time = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const scoped = { ...record, id: randomUUID(), providerId: `bx_${randomUUID()}` };
+    const execute = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false, signal: null, pid: null, startedAt: "" }));
+    sshFactory.mockReturnValue({ execute });
+    const backend = boatBackend(async () => "fixture", vi.fn(async () => {
+      clock += 90_000;
+      return json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" });
+    }));
+    try {
+      await backend.remote(scoped, { action: "read", path: "AGENTS.md" }, { deadlineMs: 1_120_000 });
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+        command: "timeout", args: expect.arrayContaining(["--signal=KILL", "30s", "python3"]), timeoutMs: 30_000,
+      }));
+      clock = 1_120_000;
+      await expect(backend.remote(scoped, { action: "write" }, { deadlineMs: clock })).rejects.toThrow("timed out");
+      expect(execute).toHaveBeenCalledOnce();
+    } finally { time.mockRestore(); sshFactory.mockReset(); }
+  });
+  it("kills the remote Python group at the file deadline, independent of SSH closure", async () => {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "boat-file-deadline-")));
+    const lateWrite = join(temp, "late-write");
+    let pid: number | undefined;
+    const scoped = { ...record, id: randomUUID(), providerId: `bx_${randomUUID()}` };
+    const execute = vi.fn(async (input: { command: string; args: string[]; stdin?: string }) => {
+      expect(input.command).toBe("timeout");
+      const args = [...input.args];
+      args[args.length - 1] = `import os,time;print(os.getpid(),flush=True);time.sleep(2);open(${JSON.stringify(lateWrite)},'w').write('late')`;
+      const result = spawnSync(input.command, args, { encoding: "utf8", input: input.stdin });
+      pid = Number(result.stdout.trim());
+      expect(pid).toBeGreaterThan(0);
+      return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr, timedOut: false, signal: result.signal, pid: null, startedAt: "" };
+    });
+    sshFactory.mockReturnValue({ execute });
+    const backend = boatBackend(async () => "fixture", vi.fn(async () => json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" })));
+    try {
+      await expect(backend.remote(scoped, { action: "read" }, { deadlineMs: Date.now() + 300 })).rejects.toThrow("Computer operation failed");
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow(), { timeout: 2000 });
+      expect(existsSync(lateWrite)).toBe(false);
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      sshFactory.mockReset();
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+  it("expires only the file waiter while shared SSH initialization remains usable", async () => {
+    vi.useFakeTimers();
+    const scoped = { ...record, id: randomUUID(), providerId: `bx_${randomUUID()}` };
+    let initialized!: () => void;
+    const execute = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false, signal: null, pid: null, startedAt: "" }));
+    sshFactory.mockReturnValue({ execute });
+    const fetcher = vi.fn(() => new Promise<Response>(resolve => {
+      initialized = () => resolve(json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" }));
+    }));
+    const backend = boatBackend(async () => "fixture", fetcher);
+    try {
+      const short = backend.remote(scoped, { action: "read" }, { deadlineMs: Date.now() + 20 });
+      const failure = expect(short).rejects.toThrow("timed out");
+      const other = backend.remote(scoped, { action: "owned-port" });
+      await vi.advanceTimersByTimeAsync(21);
+      await failure;
+      expect(execute).not.toHaveBeenCalled();
+      initialized();
+      await other;
+      await backend.remote(scoped, { action: "read" }, { deadlineMs: Date.now() + 1000 });
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); sshFactory.mockReset(); }
+  });
+  it("does not resume after the file readiness budget has expired", async () => {
+    let clock = 1_000_000;
+    const time = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const fetcher = vi.fn(async () => {
+      clock += 120_000;
+      return json({ sandbox: { id: "bx_test", state: "archived", snapshots: true, stop: null } });
+    });
+    try {
+      await expect(boatBackend(async () => "fixture", fetcher).ready(record, { deadlineMs: 1_120_000 })).rejects.toThrow("timed out");
+      expect(fetcher).toHaveBeenCalledOnce();
+    } finally { time.mockRestore(); }
+  });
   it("reads outgoing and listening TCP ports across IPv4 and IPv6", () => {
     const root = mkdtempSync(join(tmpdir(), "boat-port-inventory-"));
     try {

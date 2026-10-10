@@ -26,6 +26,8 @@ class ComputerSessionBusyError extends ComputerError {
 
 // This is shutdown time only; admission and ordinary work stop at the warm deadline.
 const RETIREMENT_GRACE_MS = 30_000;
+const FILE_OPERATION_BUDGET_MS = 120_000;
+const FILE_OPERATION_SETTLEMENT_MS = 5000;
 type Scope = { companyId: string; environmentId: string };
 export function createComputerService(
   repository: ComputerRepository,
@@ -697,26 +699,39 @@ finally:
   async function withFiles<T>(
     input: Scope,
     root: string,
-    fn: (record: ComputerRecord) => Promise<T>,
+    fn: (record: ComputerRecord, deadlineMs: number) => Promise<T>,
   ): Promise<T> {
     const data = await admitRecord(input, (record) => {
+      const deadlineMs = now().getTime() + FILE_OPERATION_BUDGET_MS;
       const owner: Owner = {
         id: randomUUID(),
         generation: 1,
         kind: "file-operation",
         phase: "active",
         port: 0,
-        deadline: new Date(now().getTime() + 120_000).toISOString(),
+        // Transport cancellation has a bounded settlement window; it is not
+        // additional time in which commands may start or continue.
+        deadline: new Date(deadlineMs + FILE_OPERATION_SETTLEMENT_MS).toISOString(),
         absoluteDeadline: null,
         process: null,
       };
       record.ledger.owners.push(owner);
-      return { record: structuredClone(record), owner };
+      return { record: structuredClone(record), owner, deadlineMs };
     });
+    const assertLive = async () => {
+      if (now().getTime() >= data.deadlineMs)
+        throw new ComputerError("provider_error", "Computer file operation timed out");
+      const current = await repository.get(input);
+      if (exactOwner(current, ref(data.record, data.owner)).phase !== "active")
+        throw new ComputerError("conflict", "Computer file operation is no longer active");
+    };
     try {
-      await backend.ready(data.record);
-      await backend.claim(data.record);
-      return await fn(data.record);
+      await assertLive();
+      await backend.ready(data.record, { deadlineMs: data.deadlineMs });
+      await assertLive();
+      await backend.claim(data.record, { deadlineMs: data.deadlineMs });
+      await assertLive();
+      return await fn(data.record, data.deadlineMs);
     } finally {
       await repository.update(input, (record) => {
         const owner = record.ledger.owners.find(
@@ -724,15 +739,18 @@ finally:
         );
         if (owner?.phase === "active") {
           owner.phase = "warm";
-          owner.deadline = new Date(now().getTime() + 5000).toISOString();
+          owner.deadline = new Date(Math.min(
+            now().getTime() + FILE_OPERATION_SETTLEMENT_MS,
+            data.deadlineMs + FILE_OPERATION_SETTLEMENT_MS,
+          )).toISOString();
         }
       });
     }
   }
   function fileAccess(input: Scope, root: string) {
     const remote = (payload: Record<string, unknown>) =>
-      withFiles(input, root, (record) =>
-        backend.remote(record, { ...payload, root }),
+      withFiles(input, root, (record, deadlineMs) =>
+        backend.remote(record, { ...payload, root }, { deadlineMs }),
       );
     const readBytes = async (
       path: string,
