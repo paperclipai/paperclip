@@ -295,6 +295,31 @@ describe("CodexRpcClient spawn failures", () => {
     ]);
   });
 
+  it("labels WHAM windows by limit_window_seconds, not by position", async () => {
+    fs.writeFileSync(
+      path.join(isolatedCodexHome!, "auth.json"),
+      JSON.stringify({ tokens: { access_token: "access-token-fixture-secret" } }),
+      "utf8",
+    );
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(new Error("spawn codex ENOENT")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(
+        JSON.stringify({
+          rate_limit: {
+            primary_window: { used_percent: 10, limit_window_seconds: 604_800, reset_at: 1_711_111_111 },
+            secondary_window: { used_percent: 20, limit_window_seconds: 18_000, reset_at: 1_711_111_222 },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )),
+    );
+
+    const result = await getQuotaWindows();
+
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly limit", "5h limit"]);
+  });
+
   it("classifies WHAM refresh-token response bodies without returning the body text", async () => {
     fs.writeFileSync(
       path.join(isolatedCodexHome!, "auth.json"),
