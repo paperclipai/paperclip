@@ -330,6 +330,36 @@ describe("ssh env-lab fixture", () => {
     expect(pids.filter(processIsRunning)).toEqual([]);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("stops what a remote command left running after the command itself exited", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH remote stop after exit test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    // The command starts a worker that keeps the output open and exits. The
+    // recorded process is gone when the run is stopped, so only the worker is
+    // left to stop.
+    const result = await runChildProcess(
+      `ssh-remote-stop-orphan-${process.pid}`,
+      "sh",
+      ["-c", 'sleep 300 & echo "$!"; exit 0'],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 2,
+        graceSec: 1,
+        onLog: async () => {},
+        remoteExecution: { ...config, remoteCwd: started.workspaceDir },
+      },
+    );
+    expect(result.timedOut).toBe(true);
+    const workerPid = Number.parseInt(result.stdout.trim(), 10);
+    expect(Number.isInteger(workerPid) && workerPid > 0).toBe(true);
+    expect(processIsRunning(workerPid)).toBe(false);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("does not start a remote command whose run was stopped before it recorded itself", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");

@@ -1356,6 +1356,11 @@ const REMOTE_PROCESS_IDENT_FN = [
   "}",
 ].join("\n");
 
+// Environment variable that carries a spawn's token into the remote command
+// and everything it starts. It lets the stop find the command's remaining
+// processes after the recorded one has exited.
+const REMOTE_RUN_TOKEN_ENV = "PAPERCLIP_SSH_RUN";
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
@@ -1411,6 +1416,7 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     recordRunStep,
     stopCheckStep,
+    `export ${REMOTE_RUN_TOKEN_ENV}=${runToken}`,
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
@@ -1432,16 +1438,28 @@ export async function buildSshSpawnTarget(input: {
   };
 }
 
-// Ends the remote command recorded under `runToken`: SIGTERM to its process
-// group, then SIGKILL once the grace period has passed, and returns when the
-// command is gone or the signals have been sent.
+// Ends the remote command recorded under `runToken`: SIGTERM first, then
+// SIGKILL once the grace period has passed, and returns when the command is
+// gone or the signals have been sent.
 //
 // The stop marker is written first, so a launch that has not recorded itself
-// yet finds it and does not start the command. The recorded process is only
-// signalled while it still has the start time that was recorded with its pid,
-// so a pid that the host has reused for other work is left alone. The group is
-// signalled only while it has been seen alive since that check, and the later
-// SIGKILL is sent only if that is still true immediately before it.
+// yet finds it and does not start the command.
+//
+// The grace period is shared by both, so the whole stop takes about that long.
+//
+// Two things are signalled, and neither is signalled without a check that it
+// belongs to this run:
+// - The recorded process group, while the recorded process still has the start
+//   time that was recorded with its pid, so a pid that the host has reused for
+//   other work is left alone. The group is signalled only while it has been
+//   seen alive since that check, and the later SIGKILL is sent only if that is
+//   still true immediately before it.
+// - Any process whose environment carries this spawn's token, which is a
+//   random value that no other work has. This finds the command's remaining
+//   processes after the recorded one has exited and left them running. Each
+//   round looks the processes up again, and SIGKILL goes only to processes
+//   found in the same round. It needs /proc; a host without it signals only
+//   the recorded group.
 async function stopSshRun(spec: SshConnectionConfig, runToken: string, graceSec: number): Promise<void> {
   const grace = Math.max(1, Math.min(60, Math.floor(Number(graceSec) || 1)));
   const script = [
@@ -1450,22 +1468,37 @@ async function stopSshRun(spec: SshConnectionConfig, runToken: string, graceSec:
     `f="$d/${runToken}"`,
     'mkdir -p "$d" 2>/dev/null',
     ': > "$f.stop" 2>/dev/null',
-    '[ -f "$f" ] || exit 0',
-    'read p g s < "$f"; rm -f "$f"',
-    'case "$p" in ""|*[!0-9]*) exit 0;; esac',
-    '[ -n "$s" ] && [ "$(paperclip_ident "$p")" = "$s" ] || exit 0',
-    'case "$g" in ""|*[!0-9]*|0|1) g="";; esac',
-    '[ -n "$g" ] && [ "$g" != "$(ps -o pgid= -p "$p" | tr -d \' \')" ] && g=""',
-    '[ -n "$g" ] && [ "$g" = "$(ps -o pgid= -p $$ | tr -d \' \')" ] && exit 0',
-    'alive() { if [ -n "$g" ]; then kill -0 "-$g" 2>/dev/null; else [ "$(paperclip_ident "$p")" = "$s" ]; fi; }',
-    'sig() { if [ -n "$g" ]; then kill "-$1" "-$g" 2>/dev/null; else kill "-$1" "$p" 2>/dev/null; fi; }',
-    'sig TERM',
+    'p=""; g=""; s=""',
+    'if [ -f "$f" ]; then read p g s < "$f"; rm -f "$f"; fi',
+    // Processes that carry the token in their initial environment.
+    `members() { grep -l -a "${REMOTE_RUN_TOKEN_ENV}=${runToken}" /proc/[0-9]*/environ 2>/dev/null | sed 's#^/proc/\\([0-9]*\\)/environ$#\\1#'; }`,
+    // The recorded process group, only while the recorded process is still the
+    // one that was recorded.
     'i=0',
-    'while alive; do',
-    `  if [ "$i" -ge ${grace} ]; then sig KILL; break; fi`,
+    'case "$p" in ""|*[!0-9]*) p="";; esac',
+    'if [ -n "$p" ] && [ -n "$s" ] && [ "$(paperclip_ident "$p")" = "$s" ]; then',
+    '  case "$g" in ""|*[!0-9]*|0|1) g="";; esac',
+    '  [ -n "$g" ] && [ "$g" != "$(ps -o pgid= -p "$p" | tr -d \' \')" ] && g=""',
+    '  if [ -n "$g" ] && [ "$g" = "$(ps -o pgid= -p $$ | tr -d \' \')" ]; then exit 0; fi',
+    '  alive() { if [ -n "$g" ]; then kill -0 "-$g" 2>/dev/null; else [ "$(paperclip_ident "$p")" = "$s" ]; fi; }',
+    '  sig() { if [ -n "$g" ]; then kill "-$1" "-$g" 2>/dev/null; else kill "-$1" "$p" 2>/dev/null; fi; }',
+    '  sig TERM',
+    '  while alive; do',
+    `    if [ "$i" -ge ${grace} ]; then sig KILL; break; fi`,
+    '    sleep 1; i=$((i+1))',
+    '  done',
+    'fi',
+    // Whatever still carries the token.
+    'm=$(members)',
+    '[ -n "$m" ] || exit 0',
+    'kill -TERM $m 2>/dev/null',
+    'while :; do',
+    '  m=$(members)',
+    '  [ -n "$m" ] || break',
+    `  if [ "$i" -ge ${grace} ]; then kill -KILL $m 2>/dev/null; break; fi`,
     '  sleep 1; i=$((i+1))',
     'done',
-    'j=0; while alive && [ "$j" -lt 3 ]; do sleep 1; j=$((j+1)); done',
+    'j=0; while [ -n "$(members)" ] && [ "$j" -lt 3 ]; do sleep 1; j=$((j+1)); done',
     'exit 0',
   ].join("\n");
   await runSshCommand(spec, script, { timeoutMs: (grace + 30) * 1000 });
