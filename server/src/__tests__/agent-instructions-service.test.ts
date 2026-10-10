@@ -92,7 +92,7 @@ describe("agent instructions service", () => {
       return [{ name: "user.md", kind: "file", size: 12 }];
     });
     const readBytes = vi.fn(async () => ({ bytes: Buffer.from("instructions"), sha256: "hash" }));
-    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", list, readBytes } as never);
+    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", listPage: async (relative: string) => ({ entries: await list(relative), truncated: false }), stat: async () => ({ kind: "file", size: 12 }), readBytes } as never);
     vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockResolvedValue(undefined);
     vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
     const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [agent] }) }) }) };
@@ -101,6 +101,47 @@ describe("agent instructions service", () => {
     expect((await svc.exportFiles(agent)).files).toEqual({ "AGENTS.md": "instructions", "notes/.paperclip-runtime/user.md": "instructions" });
     expect(list).not.toHaveBeenCalledWith(".paperclip-runtime");
     expect(readBytes).not.toHaveBeenCalledWith(expect.stringMatching(/^\.paperclip-runtime\//));
+  });
+
+  it("keeps the configured entry readable beyond a large folder page and warns about partial exports", async () => {
+    const agent = makeAgent({ instructionsBundleMode: "managed", instructionsEntryFile: "instructions/AGENTS.md" });
+    const entries = Array.from({ length: 1005 }, (_, index) => ({ name: `file-${index}.bin`, kind: "file", size: 2 * 1024 * 1024 }));
+    const listPage = vi.fn(async (_relative: string, options: { limit: number }) => ({ entries: entries.slice(0, options.limit), truncated: true }));
+    const stat = vi.fn(async () => ({ kind: "file", size: 12 }));
+    const readBytes = vi.fn(async () => ({ bytes: Buffer.from("instructions"), sha256: "hash" }));
+    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", listPage, stat, readBytes } as never);
+    vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockResolvedValue(undefined);
+    vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
+    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [agent] }) }) }) };
+    const svc = agentInstructionsService(db as never);
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.files).toHaveLength(1000);
+    expect(bundle.files.find(file => file.isEntryFile)).toMatchObject({ path: "instructions/AGENTS.md", isEntryFile: true, editable: true, contentHash: "hash" });
+    expect(bundle.warnings).toContainEqual(expect.stringContaining("listing and export are partial"));
+    expect((await svc.readFile(agent, "instructions/AGENTS.md")).content).toBe("instructions");
+    const exported = await svc.exportFiles(agent);
+    expect(exported.files).toEqual({ "instructions/AGENTS.md": "instructions" });
+    expect(exported.warnings).toContainEqual(expect.stringContaining("listing and export are partial"));
+    expect(listPage).toHaveBeenCalledTimes(2);
+    expect(listPage).toHaveBeenCalledWith("", { limit: 999 });
+    expect(stat).toHaveBeenCalledWith("instructions/AGENTS.md");
+    expect(readBytes).toHaveBeenCalledTimes(3);
+    expect(readBytes).toHaveBeenCalledWith("instructions/AGENTS.md");
+  });
+
+  it("bounds the entire recursive remote listing rather than each directory separately", async () => {
+    const agent = makeAgent({ instructionsBundleMode: "managed" });
+    const listPage = vi.fn(async (relative: string, options: { limit: number }) => relative === ""
+      ? { entries: [{ name: "notes", kind: "directory", size: 0 }, { name: "later", kind: "directory", size: 0 }], truncated: false }
+      : { entries: Array.from({ length: options.limit }, (_, i) => ({ name: `note-${i}.bin`, kind: "file", size: 2 * 1024 * 1024 })), truncated: false });
+    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", listPage, stat: async () => { throw { code: "not_found" }; } } as never);
+    vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockResolvedValue(undefined);
+    vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
+    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [agent] }) }) }) };
+    const bundle = await agentInstructionsService(db as never).getBundle(agent);
+    expect(listPage.mock.calls).toEqual([["", { limit: 999 }], ["notes", { limit: 997 }]]);
+    expect(bundle.files).toHaveLength(997);
+    expect(bundle.warnings).toContainEqual(expect.stringContaining("1,000-entry limit"));
   });
 
   it("previews an explicit external-to-managed migration before adopting remote personal files", async () => {
