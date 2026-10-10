@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fileStore from "../services/agent-file-store.js";
 import * as persistentFiles from "../services/persistent-agent-files.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 
@@ -80,6 +81,26 @@ describe("agent instructions service", () => {
     expect(updated.bundle.entryFile).toBe("NEXT.md");
     expect(remote).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("excludes only home-level runtime files from remote listing and export", async () => {
+    const agent = makeAgent({ instructionsBundleMode: "managed" });
+    const list = vi.fn(async (relative = "") => {
+      if (relative === ".paperclip-runtime") throw new Error("Must not enumerate provider packs or session state");
+      if (!relative) return [{ name: "AGENTS.md", kind: "file", size: 12 }, { name: ".paperclip-runtime", kind: "directory", size: 0 }, { name: "notes", kind: "directory", size: 0 }];
+      if (relative === "notes") return [{ name: ".paperclip-runtime", kind: "directory", size: 0 }];
+      return [{ name: "user.md", kind: "file", size: 12 }];
+    });
+    const readBytes = vi.fn(async () => ({ bytes: Buffer.from("instructions"), sha256: "hash" }));
+    vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue({ root: "/remote/home", list, readBytes } as never);
+    vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockResolvedValue(undefined);
+    vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
+    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [agent] }) }) }) };
+    const svc = agentInstructionsService(db as never);
+    expect((await svc.getBundle(agent)).files.map(file => file.path)).toEqual(["AGENTS.md", "notes/.paperclip-runtime/user.md"]);
+    expect((await svc.exportFiles(agent)).files).toEqual({ "AGENTS.md": "instructions", "notes/.paperclip-runtime/user.md": "instructions" });
+    expect(list).not.toHaveBeenCalledWith(".paperclip-runtime");
+    expect(readBytes).not.toHaveBeenCalledWith(expect.stringMatching(/^\.paperclip-runtime\//));
   });
 
   it("previews an explicit external-to-managed migration before adopting remote personal files", async () => {

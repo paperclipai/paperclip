@@ -107,6 +107,70 @@ def directory(parts,create=False,start=None):
    os.close(fd);fd=nxt
   return fd
  except BaseException:os.close(fd);raise
+# Initial uploads stay in a private sibling until a no-replace rename publishes them.
+# Each request carries at most one bounded chunk, never the whole home.
+if act in ('seed-begin','seed-chunk','seed-commit','seed-abort'):
+ import uuid,ctypes,errno
+ token=p.get('seedId','')
+ try:
+  if str(uuid.UUID(token))!=token:fail('invalid')
+ except (ValueError,TypeError,AttributeError):fail('invalid')
+ parentfd=directory(os.path.dirname(root).split('/'),create=True)
+ name=os.path.basename(root);staging='.paperclip-seed-'+name+'-'+token
+ stagefd=None;lockfd=None
+ try:
+  if act=='seed-abort':
+   try:shutil.rmtree(staging,dir_fd=parentfd)
+   except FileNotFoundError:pass
+   print('{}');sys.exit(0)
+  if act=='seed-begin':
+   try:
+    existing=os.stat(name,dir_fd=parentfd,follow_symlinks=False)
+    if not stat.S_ISDIR(existing.st_mode):fail('invalid')
+    print(json.dumps({'started':False}));sys.exit(0)
+   except FileNotFoundError:pass
+   os.mkdir(staging,0o700,dir_fd=parentfd)
+  stagefd=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parentfd)
+  lockfd=os.open('lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600,dir_fd=stagefd)
+  fcntl.flock(lockfd,fcntl.LOCK_EX)
+  if act=='seed-begin':
+   os.mkdir('tree',0o700,dir_fd=stagefd)
+   print(json.dumps({'started':True}))
+  elif act=='seed-chunk':
+   relative=p.get('path','');safe(relative)
+   parts=[part for part in relative.split('/') if part not in ('','.')]
+   if not parts:fail('invalid')
+   data=base64.b64decode(p['base64'],validate=True);offset=p.get('offset')
+   if len(data)>1024*1024 or type(offset)!=int or offset<0 or offset+len(data)>256*1024*1024:fail('invalid')
+   destfd=directory(['tree']+parts[:-1],create=True,start=stagefd)
+   try:fd=os.open(parts[-1],os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=destfd)
+   finally:os.close(destfd)
+   with os.fdopen(fd,'r+b') as f:
+    info=os.fstat(f.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:fail('invalid')
+    if info.st_size!=offset:fail('conflict')
+    f.seek(offset);f.write(data)
+   print('{}')
+  else:
+   libc=ctypes.CDLL(None,use_errno=True)
+   if hasattr(libc,'renameat2'):status=libc.renameat2(stagefd,b'tree',parentfd,os.fsencode(name),1)
+   elif hasattr(libc,'renameatx_np'):status=libc.renameatx_np(stagefd,b'tree',parentfd,os.fsencode(name),4)
+   else:fail('invalid')
+   if status!=0:
+    code=ctypes.get_errno()
+    if code not in (errno.EEXIST,errno.ENOTEMPTY):raise OSError(code,os.strerror(code))
+    if not stat.S_ISDIR(os.stat(name,dir_fd=parentfd,follow_symlinks=False).st_mode):fail('invalid')
+   print(json.dumps({'seeded':status==0}))
+ except FileNotFoundError:fail('not_found')
+ except (OSError,ValueError):fail('invalid')
+ finally:
+  if lockfd is not None:os.close(lockfd)
+  if stagefd is not None:os.close(stagefd)
+  if act=='seed-commit':
+   try:shutil.rmtree(staging,dir_fd=parentfd)
+   except FileNotFoundError:pass
+  os.close(parentfd)
+ sys.exit(0)
 try:rootfd=directory(root.split('/'))
 except FileNotFoundError:fail('not_found')
 except OSError:fail('invalid')

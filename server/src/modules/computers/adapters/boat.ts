@@ -26,7 +26,7 @@ import os,sys,json,stat,fcntl,subprocess,time
 uid=os.getuid();runtime='/run/user/'+str(uid)
 st=os.lstat(runtime)
 if not stat.S_ISDIR(st.st_mode) or st.st_uid!=uid:raise RuntimeError('invalid desktop runtime directory')
-env={**os.environ,'DISPLAY':':0','XAUTHORITY':'/home/user/.Xauthority','DBUS_SESSION_BUS_ADDRESS':'unix:path='+runtime+'/bus','XDG_RUNTIME_DIR':runtime,'IBUS_ENABLE_SYNC_MODE':'0'}
+env={**os.environ,'HOME':'/home/user','XDG_CONFIG_HOME':'/home/user/.config','XDG_CACHE_HOME':'/home/user/.cache','DISPLAY':':0','XAUTHORITY':'/home/user/.Xauthority','DBUS_SESSION_BUS_ADDRESS':'unix:path='+runtime+'/bus','XDG_RUNTIME_DIR':runtime,'IBUS_ENABLE_SYNC_MODE':'0'}
 env.pop('IBUS_ADDRESS',None)
 def healthy():
  try:
