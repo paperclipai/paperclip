@@ -2,6 +2,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
+const storybookPort = Number(process.env.STORYBOOK_VISUAL_PORT ?? 6106);
 const testDir = dirname(fileURLToPath(import.meta.url));
 const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
   ? isAbsolute(process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
@@ -47,11 +48,11 @@ export default defineConfig({
     // JS-driven tickers/timers key off prefers-reduced-motion for
     // deterministic captures (CSS animations are already disabled).
     reducedMotion: "reduce",
-    baseURL: "http://localhost:6106",
+    baseURL: `http://localhost:${storybookPort}`,
   },
   webServer: {
-    command: "node ../../scripts/serve-storybook-static.mjs --port 6106",
-    url: "http://localhost:6106/index.json",
+    command: `node ../../scripts/serve-storybook-static.mjs --port ${storybookPort}`,
+    url: `http://localhost:${storybookPort}/index.json`,
     reuseExistingServer: true,
     timeout: 30_000,
   },

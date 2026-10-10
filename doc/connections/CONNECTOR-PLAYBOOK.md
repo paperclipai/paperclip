@@ -5,6 +5,13 @@ and shipping Paperclip app connections.
 
 Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
 
+Experimental voice connections use the same company-scoped channel endpoints,
+vault, task bindings, delivery ledger and publications, with `transport: voice`
+and an explicit runtime rather than Chat SDK. Do not expose voice transport as
+an MCP tool connection. Speko's browser implementation and its remaining phone
+qualification gate are documented in the [native voice report](../plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../plans/2026-09-11-speko-voice-e2e-runbook.md). The optional
+Company Phone Agent is a catalog template; selecting it must remain optional.
 For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
