@@ -689,7 +689,7 @@ export function chatWebhookRoutes(
       });
     }
     const provider = req.params.provider as ChatProvider;
-    if (!CHAT_PROVIDERS.includes(provider) || provider === "agentmail")
+    if (!CHAT_PROVIDERS.includes(provider) || provider === "agentmail" || provider === "speko")
       throw badRequest("Unsupported chat provider");
     const response = await service.handleWebhook(
       req.params.publicId as string,

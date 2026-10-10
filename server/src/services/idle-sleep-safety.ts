@@ -45,8 +45,16 @@ const WORK_CHECKS = [
   `SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`,
   `SELECT 1 FROM board_api_keys WHERE revoked_at IS NULL
     AND (expires_at IS NULL OR expires_at > now())`,
-  `SELECT 1 FROM agent_wakeup_requests WHERE
-    status NOT IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')`,
+  // Coalescing consumes a request into another run. Retain it as work until
+  // both the request and that exact company/agent's run have finished.
+  `SELECT 1 FROM agent_wakeup_requests w WHERE
+    w.status NOT IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out', 'coalesced')
+    OR (w.status = 'coalesced' AND (w.finished_at IS NULL OR NOT EXISTS (
+      SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
+        AND r.company_id = w.company_id AND r.agent_id = w.agent_id
+        AND r.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
+        AND r.finished_at IS NOT NULL AND r.scheduled_retry_at IS NULL
+        AND r.cost_accounting_pending = false)))`,
   `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`,
   // A completed issue can still need its first watchdog review, including a
   // retry after immediate evaluation failed before creating a review/run.
@@ -62,6 +70,29 @@ const WORK_CHECKS = [
   `SELECT 1 FROM issue_recovery_actions WHERE status NOT IN ('resolved', 'cancelled')`,
   `SELECT 1 FROM status_cards WHERE archived_at IS NULL`,
   `SELECT 1 FROM external_objects WHERE NOT is_terminal OR next_refresh_at IS NOT NULL`,
+  // Login history keeps its provider reference after teardown. A terminal
+  // label alone is insufficient: require a finished, unclaimed session and
+  // positive cleanup evidence for its resource in the same company/environment.
+  // Cast only UUID-shaped session references, leaving both lease indexes usable.
+  `SELECT 1 FROM adapter_auth_sessions s WHERE
+    s.status NOT IN ('authenticated', 'completed', 'failed', 'timed_out', 'cancelled')
+    OR s.finished_at IS NULL OR s.promotion_expires_at IS NOT NULL
+    OR (s.provider_lease_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM environment_leases l WHERE l.company_id = s.company_id
+        AND l.environment_id = s.environment_id
+        AND (l.provider_lease_id = s.provider_lease_id OR l.id = CASE
+          WHEN s.provider_lease_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN s.provider_lease_id::uuid END)
+        AND l.status IN ('released', 'expired') AND l.cleanup_status = 'success'
+        AND l.released_at IS NOT NULL))
+    OR (s.provider_lease_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM environment_leases l WHERE l.company_id = s.company_id
+        AND l.environment_id = s.environment_id
+        AND (l.provider_lease_id = s.provider_lease_id OR l.id = CASE
+          WHEN s.provider_lease_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN s.provider_lease_id::uuid END)
+        AND (l.status IN ('released', 'expired') AND l.cleanup_status = 'success'
+          AND l.released_at IS NOT NULL) IS NOT TRUE))`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[
@@ -73,7 +104,7 @@ const WORK_CHECKS = [
     "native_run_finalizations", "company_transfer_runs", "decisions", "decision_effect_executions",
     "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
     "browser_use_browsers", "environment_custom_image_setup_sessions", "feedback_exports",
-    "adapter_auth_sessions", "company_secret_proposals", "execution_workspaces",
+    "company_secret_proposals", "execution_workspaces",
     "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
     "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
     "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",

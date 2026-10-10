@@ -5,6 +5,7 @@ export const CHAT_PROVIDERS = [
   "discord",
   "microsoft-teams",
   "telegram",
+  "speko",
   "agentmail",
   "imessage-photon",
 ] as const;

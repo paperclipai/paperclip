@@ -10,6 +10,9 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
   const { verify } = agentHarnessVerificationService(db, manager);
   const heartbeat = heartbeatService(db, { pluginWorkerManager: manager });
   return {
+    async onReady(agent) {
+      await heartbeat.resumeQueuedRunsForAgent(agent.companyId, agent.id);
+    },
     async requiredPluginIds(agent) {
       if (agent.lifecycleRequiredPluginIds !== null) return agent.lifecycleRequiredPluginIds;
       const installed = await db.select().from(plugins).where(inArray(plugins.status, ["ready", "error", "installed", "upgrade_pending"]));

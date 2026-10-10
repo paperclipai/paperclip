@@ -6,11 +6,16 @@ import { withRecoveryContext } from "./status-only-context.js";
 
 export const ISSUE_REVIEW_PATH_LOST_WAKE_REASON = "issue_review_path_lost";
 export const REVIEW_PATH_RECOVERY_INSTRUCTION =
-  "This issue is still in review but its last maintained review path was consumed. Restore a reviewer, interaction, approval, monitor, or other durable waiting path, or choose an explicit disposition. This is the only automatic review-path recovery wake for this fingerprint.";
+  "This issue is still in review but its last maintained review path was consumed. Restore a reviewer, interaction, approval, monitor, or other durable waiting path, or choose an explicit disposition. If an async check is still pending, persist a one-shot issue monitor before ending this run and report its scheduled check time. A promise to check later or a background watcher is not a maintained review path. This is the only automatic review-path recovery wake for this fingerprint; ending without a maintained path will require a board decision.";
 const REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX = "agent_wakeup_requests_review_path_recovery_idempotency_uq";
 
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function isIssueReviewPathRecoveryRun(contextSnapshot: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(contextSnapshot?.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
+    || contextSnapshot?.reviewPathRecoveryAttempt === 1;
 }
 
 export function reviewPathConsumedRefFromRun(input: {
@@ -68,6 +73,7 @@ export type IssueReviewPathRecoveryDecision =
       payload: Record<string, unknown>;
       contextSnapshot: Record<string, unknown>;
     }
+  | { kind: "exhausted" }
   | { kind: "skip"; reason: string };
 
 export function decideIssueReviewPathRecovery(input: {
@@ -84,11 +90,8 @@ export function decideIssueReviewPathRecovery(input: {
   }
 
   const context = input.contextSnapshot ?? {};
-  if (
-    readNonEmptyString(context.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
-    || context.reviewPathRecoveryAttempt === 1
-  ) {
-    return { kind: "skip", reason: "bounded review-path recovery already ran" };
+  if (isIssueReviewPathRecoveryRun(context)) {
+    return { kind: "exhausted" };
   }
 
   const consumedPathRef = reviewPathConsumedRefFromRun({

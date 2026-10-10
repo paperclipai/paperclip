@@ -1514,7 +1514,7 @@ export class CapabilityLiveSession {
   async sendMessage(
     message: string,
     /** Launch-only diagnostics may opt out; qualification campaigns must not. */
-    options: { allowMissingUsage?: boolean } = {},
+    options: { allowMissingUsage?: boolean; reasoningMode?: "default" | "disabled" } = {},
   ): Promise<CapabilityLiveTurnResult> {
     const value = message.trim();
     if (value.length === 0) throw new Error("Capability live messages cannot be empty");
@@ -1617,6 +1617,7 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         input: [userInput(value)],
+        ...(options.reasoningMode === undefined ? {} : { reasoningMode: options.reasoningMode }),
       });
     } catch (error) {
       if (this.#pendingTurnAdmission !== admission) {

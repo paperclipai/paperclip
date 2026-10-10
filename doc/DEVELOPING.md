@@ -715,6 +715,11 @@ a real mention. **Done** finishes setup once webhook verification and required
 account linking are complete, whether or not a test message was sent. The
 separate strict connection-test API retains its conversation and delivery checks.
 
+New Slack conversations receive default communication guidance that requires a
+clickable link to each task the agent creates. Agents use the public task URL
+from Paperclip tools or task context and report when a link is unavailable.
+Existing conversations keep their original communication guidance snapshot.
+
 ### Chat activity pagination and callback diagnostics
 
 The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`
@@ -1345,6 +1350,16 @@ Completion reads the shared Stop barriers, uses live output getters, and reports
 trace finalization immediately so a later error cannot lose cleanup state.
 Existing public failure helpers remain re-exported by `heartbeat.ts`.
 Keep completion policy changes separate from this extraction and dispatch.
+
+Runtime selection is in `server/src/services/heartbeat/runtime-selection.ts`.
+`selectHeartbeatRuntime` constructs or restores native execution inputs, selects
+completion contracts and sessions, and persists native or legacy runtime choices.
+Native selection retains the row lock that serializes it with cancellation and
+controller lease renewal. The executor receives an explicit selection result;
+lifecycle and ownership callbacks update its teardown state immediately, including
+when preparation later throws. Public sandbox lifecycle and model fallback helpers
+remain re-exported by `heartbeat.ts`. Provider dispatch and final cleanup stay in
+the executor.
 
 ## Wake Context Delivery
 

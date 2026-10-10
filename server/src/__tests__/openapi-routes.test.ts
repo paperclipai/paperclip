@@ -79,6 +79,7 @@ const apiPrefixes: Record<string, string> = {
   "status-cards.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
+  "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
 };
@@ -126,6 +127,8 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // board API document, while this exact exclusion keeps route coverage honest.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
+  "POST /api/voice-webhooks/{publicId}/events",
+  "POST /api/voice-webhooks/{publicId}/tools",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
@@ -168,6 +171,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   ) {
     return routePath;
   }
+  if (file === "voice-sessions.ts" && routePath.startsWith("/api/voice-webhooks/")) return routePath;
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
     return routePath;
   }
@@ -621,7 +625,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
+            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "speko", "imessage-photon"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -844,6 +848,20 @@ describe("openapi routes", () => {
     expect(
       spec.paths["/api/chat-webhooks/{publicId}/{provider}"],
     ).toBeUndefined();
+  });
+
+  it("documents session-bound voice authority without durable credentials", () => {
+    const {spec} = loadSpecRoutes();
+    const start = spec.paths["/api/companies/{companyId}/voice-sessions"].post;
+    expect(start.security).toEqual([{BoardSessionAuth: []}]);
+    expect(start["x-paperclip-authorization"]).toEqual({actor: "board", sessionBound: true});
+    expect(start.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining(["endpointId", "idempotencyKey"]));
+    expect(start.responses["201"]).toBeDefined();
+    expect(JSON.stringify(start.responses)).not.toContain("signingSecret");
+    expect(spec.paths["/api/voice-webhooks/{publicId}/tools"]).toBeUndefined();
+    expect(spec.paths["/api/voice-webhooks/{publicId}/events"]).toBeUndefined();
+    const decision=spec.paths["/api/companies/{companyId}/voice-phone/{endpointId}/incoming/{callId}"].post;
+    expect(decision.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining(["approve", "approvalCode"]));
   });
 
   it("covers the mounted server routes exactly", () => {

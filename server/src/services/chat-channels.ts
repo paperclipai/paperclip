@@ -1,3 +1,10 @@
+import { syncSpekoVoiceTools } from "./voice/speko-agent-tools.js";
+import { configureSpekoSessionTools } from "./voice/speko-tool-setup.js";
+import { voiceSessionService } from "./voice/voice-session-service.js";
+import { createSpekoProvider } from "./voice/speko-provider.js";
+import { currentVoiceCredentialFingerprint, voiceSessionStore } from "./voice/voice-session-store.js";
+import { createChatRuntime, type ChatRuntime } from "./chat-runtime.js";
+import type { ChatEndpointRuntime } from "./voice/voice-runtime.js";
 import { parseMarkdown } from "chat";
 import { githubPublicAttachmentsFromMessage } from "./chat-github-attachments.js";
 import {
@@ -45,8 +52,8 @@ import { registerGitHubBotCloudIngress } from "./chat-github-cloud-ingress.js";
 import { githubChatRegistrationService } from "./chat-github-registration.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { githubAppJwt } from "./chat-github-client.js";
-import { resumeSlackConversation } from "./slack-conversation-state.js";
-import { settleSlackConversation } from "./slack-conversation-lifecycle.js";
+import { resumeExternalConversation } from "./slack-conversation-state.js";
+import { settleExternalConversation } from "./slack-conversation-lifecycle.js";
 import { runtimeCanonicalOrigin } from "./cloud-runtime-identity.js";
 import { takePhotonCompanion } from "./photon/attachments.js";
 import { writePhotonCheckpoint } from "./photon/receiver.js";
@@ -245,10 +252,8 @@ import { logger } from "../middleware/logger.js";
 import { redactSensitiveText } from "../redaction.js";
 import type { StorageService } from "../storage/types.js";
 import {
-  createChatSdkRuntime,
   DiscordAdapterCompatibilityError,
   type ChatSdkCallbackEvent,
-  type ChatSdkEndpointRuntime,
   type ChatSdkMessageCallbackEvent,
   type ChatSdkMessageUpdatedCallbackEvent,
   type ChatSdkProvider,
@@ -449,6 +454,7 @@ function publicationSummary(
 }
 
 const PROVIDER_LABELS: Record<ChatProvider, string> = {
+  speko: "Speko",
   "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
   slack: "Slack",
@@ -686,6 +692,7 @@ async function inspectSlackCallback(
 }
 
 const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
+  speko: { threads: false, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: false, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   "imessage-photon": { threads: false, directMessages: true, nativeStreaming: false, messageEdits: true, messageDeletes: false, reactions: false, files: true, cards: false, actions: true, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   agentmail: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: true, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: true },
   slack: {
@@ -780,6 +787,7 @@ const REQUIRED_CREDENTIALS: Record<
   Exclude<ChatProvider, "github">,
   readonly string[]
 > = {
+  speko: ["apiKey", "signingSecret", "agentId"],
   "imessage-photon": ["projectSecret"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
@@ -824,6 +832,7 @@ const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set<string>([
 ]);
 
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
+  speko: ["apiKey", "signingSecret", "agentId"],
   "imessage-photon": ["projectSecret"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
@@ -911,7 +920,7 @@ type RuntimeContext = {
   discordGatewayOwned?: boolean;
   /** Cache identity only; durable command admission rechecks ownership. */
   discordCommandId?: string;
-  endpointRuntime?: ChatSdkEndpointRuntime;
+  endpointRuntime?: ChatEndpointRuntime;
   generation: number;
   localEpoch: number;
   version: string;
@@ -1408,6 +1417,8 @@ export interface ChatChannelServiceOptions {
    * when they need direct callback assertions.
    */
   deferWebhookProcessing?: boolean;
+  /** Derived from instance deployment mode, never a provider request. */
+  allowLocalVoiceBoard?: boolean;
   /** Test override for GitHub's end-to-end webhook response budget. */
   githubWebhookResponseBudgetMs?: number;
   /** Testable boundary after reading a GitHub webhook and before authentication. */
@@ -1446,7 +1457,7 @@ export interface ChatChannelServiceOptions {
   githubWizardOrigin?: string | null;
   /** Optional verified ingress origin; never used for board or identity links. */
   webhookPublicBaseUrl?: string | null;
-  runtime?: ChatSdkRuntime;
+  runtime?: ChatSdkRuntime | ChatRuntime;
   /** Testable scheduler hook; its callback settles after the tracked work finishes. */
   scheduleDeferredWork?: (task: () => void | Promise<void>) => void;
   /** Test boundary after selecting due Slack status work and before claiming. */
@@ -2169,7 +2180,7 @@ function telegramLifecycleActor(message: {
 
 function microsoftTeamsLifecycleEventFromPayload(
   payload: unknown,
-  endpointRuntime: ChatSdkEndpointRuntime,
+  endpointRuntime: ChatEndpointRuntime,
 ): MicrosoftTeamsLifecycleEvent | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload))
     return null;
@@ -2627,10 +2638,12 @@ function providerSetupState(
   publicBaseUrl: string | null,
   assignedAgentName?: string | null,
 ) {
-  const path = `/api/chat-webhooks/${endpoint.publicId}/${endpoint.provider}`;
+  const path = endpoint.provider === "speko" ? `/api/voice-webhooks/${endpoint.publicId}/tools` : `/api/chat-webhooks/${endpoint.publicId}/${endpoint.provider}`;
   const webhookUrl = publicBaseUrl ? `${publicBaseUrl}${path}` : null;
   const step = endpoint.status === "active" ? "complete" : endpoint.setup.step;
   switch (endpoint.provider) {
+    case "speko":
+      return { step, providerUrl: "https://platform.speko.ai/", webhookUrl } as const;
     case "imessage-photon": return { step, providerUrl: "https://photon.codes/", testStartedAt: endpoint.setup.testStartedAt } as const;
     case "agentmail": return endpoint.setup;
     case "slack": {
@@ -2963,7 +2976,7 @@ export async function hydrateOutboundAttachment(input: {
 }
 
 export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
-  const runtime = options.runtime ?? createChatSdkRuntime();
+  const runtime = options.runtime ?? createChatRuntime();
   const githubManualMessages = new WeakMap<object, { policy: GitHubReviewPolicy; revision: number; event: "mention" | "comment" }>();
   const githubAutomaticMessages = new WeakMap<object, { context: GitHubReviewEventContext; revision: number; policy: GitHubReviewPolicy }>();
   const githubIssueMessages = new WeakMap<object, { context: GitHubIssueEventContext; revision: number; policy: GitHubReviewPolicy }>();
@@ -2981,7 +2994,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     string,
     {
       discordGatewayOwned: boolean;
-      promise: Promise<ChatSdkEndpointRuntime>;
+      promise: Promise<ChatEndpointRuntime>;
       version: string;
     }
   >();
@@ -2997,6 +3010,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   // can remove credentials or other evidence that makes it unsafe to publish.
   const getTaskBaseUrl = () => runtimeCanonicalOrigin() ?? options.publicBaseUrl;
   const getWebhookPublicBaseUrl = () => configuredWebhookPublicBaseUrl ?? getPublicBaseUrl();
+  const voiceStore = voiceSessionStore(db, { allowLocalBoard: options.allowLocalVoiceBoard === true });
+  const voice = voiceSessionService(db, {
+    allowLocalBoard: options.allowLocalVoiceBoard === true,
+    credentials: async (endpoint, expectedFingerprint) => {
+      const record = await endpointRecord(endpoint.id);
+      if (!record || record.endpoint.companyId !== endpoint.companyId) throw notFound("Voice connection not found");
+      if (expectedFingerprint && await currentVoiceCredentialFingerprint(db, endpoint.companyId, record.credentialSecretRefs) !== expectedFingerprint) throw conflict("Voice credentials changed during setup");
+      return resolveCredentialRefs(endpoint, record.credentialSecretRefs);
+    },
+    provider: (apiKey) => createSpekoProvider(apiKey, fetchImpl),
+    onQuestionAnswered: (interactionId) => scheduleMessageProcessing(async () => {
+      await questionResponses.deliver(interactionId);
+      await processPendingPublications();
+    }),
+  });
   const issuesSvc = issueService(db);
   const secrets = secretService(db);
   const questionResponses = questionResponseDeliveryService(db, {
@@ -5858,7 +5886,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 (ref) => ref.configPath === "credentials.webhookSecret",
               ),
             }
-          : {}),
+          : endpoint.provider === "speko" ? {
+              webhookSecretConfigured: row.credentialSecretRefs.some(
+                (ref) => ref.configPath === "credentials.signingSecret",
+              ),
+            } : {}),
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
@@ -6004,7 +6036,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         connectionKind: "managed",
         connectionPurpose: "channel",
         ownership: "customer",
-        transport: "chat_sdk",
+        transport: input.provider === "speko" ? "voice" : "chat_sdk",
         authKind: "api_key",
         credentialPolicy: "shared",
         status: "draft",
@@ -6026,8 +6058,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // enables that surface, even when this process is running against a
         // database created before the column default was hardened.
         requireAtMention: input.provider === "slack",
-        allowGroupChats: input.provider !== "microsoft-teams",
-        allowUnlinkedPeople: !["slack", "imessage-photon"].includes(input.provider),
+        allowGroupChats: !["microsoft-teams", "speko"].includes(input.provider),
+        allowUnlinkedPeople: !["slack", "imessage-photon", "speko"].includes(input.provider),
         capabilities: CAPABILITIES[input.provider],
         setup: {
           step: "provider_setup",
@@ -6362,6 +6394,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         botUsername: result.slug ? `${result.slug}[bot]` : undefined,
         botLabel: result.name ?? result.slug,
       };
+    }
+    if (provider === "speko") {
+      if (!/^whsec_[A-Za-z0-9+/]{43}=$/.test(credentials.signingSecret ?? "")) throw unprocessable("Speko requires a Standard Webhooks signing secret");
+      const identity = await createSpekoProvider(credentials.apiKey, fetchImpl).verifyAgent(credentials.agentId);
+      return { providerAccountId: identity.organizationId, providerAccountLabel: "Speko workspace", botExternalId: identity.id, botLabel: identity.name };
     }
     const teamsCredentials = normalizeMicrosoftTeamsCredentialIds(credentials);
     const body = new URLSearchParams({
@@ -7436,6 +7473,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     userName: string,
     credentials: Record<string, string>,
   ): ResolvedChatSdkProviderConfig {
+    if (endpoint.provider === "speko") throw conflict("Speko uses the voice runtime");
     if (endpoint.provider === "imessage-photon") return {
       provider: "imessage-photon", userName,
       intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),
@@ -7661,7 +7699,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       requireDiscordOwnership?: boolean;
       waitForDiscordOwnership?: boolean;
     } = {},
-  ): Promise<ChatSdkEndpointRuntime> {
+  ): Promise<ChatEndpointRuntime> {
     for (;;) {
       const record = await endpointRecord(endpoint.id);
       if (!record) throw notFound("Chat endpoint not found");
@@ -7731,11 +7769,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
       const initialization: {
         discordGatewayOwned: boolean;
-        promise: Promise<ChatSdkEndpointRuntime>;
+        promise: Promise<ChatEndpointRuntime>;
         version: string;
       } = {
         discordGatewayOwned: false,
-        promise: undefined as unknown as Promise<ChatSdkEndpointRuntime>,
+        promise: undefined as unknown as Promise<ChatEndpointRuntime>,
         version: context.version,
       };
       const promise = (async () => {
@@ -7756,7 +7794,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
         initialization.discordGatewayOwned = discordOwnership !== null;
         context.discordGatewayOwned = discordOwnership !== null;
-        let instance: ChatSdkEndpointRuntime | null = null;
+        let instance: ChatEndpointRuntime | null = null;
         try {
           const stale = runtime.get(endpoint.id);
           if (stale) {
@@ -7780,7 +7818,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             discordCommands && record.endpoint.capabilities.slashCommands
               ? discordCommands.receipt.commandId
               : undefined;
-          instance = await runtime.replaceEndpoint({
+          instance = record.endpoint.provider === "speko"
+            ? await (() => {
+                if (!("replaceVoiceEndpoint" in runtime)) throw conflict("Voice runtime is unavailable");
+                return runtime.replaceVoiceEndpoint({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id, userName: record.assignedAgentName, persistence });
+              })()
+            : await runtime.replaceEndpoint({
             companyId: record.endpoint.companyId,
             endpointId: record.endpoint.id,
             providerConfig: runtimeConfig(
@@ -9478,6 +9521,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       verifiedCurrentIdentity = storedIdentity;
     }
 
+    const previousSpekoSigningSecret = endpoint.provider === "speko"
+      ? (await resolveCredentials(endpoint).catch(() => ({} as Record<string, string>))).signingSecret : undefined;
     let credentials =
       input.credentials && Object.keys(input.credentials).length > 0
         ? await normalizedCredentials(endpoint, input.credentials)
@@ -9604,6 +9649,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Chat endpoint not found");
+        if (endpoint.provider === "speko") {
+          if (!actorUserId) throw forbidden("An authenticated connection owner is required to install phone tools");
+          await syncSpekoVoiceTools(tx, endpoint, actorUserId, true, options.allowLocalVoiceBoard === true);
+        }
         const observedSlackUrl = (current.setup as InternalSetupState).slackCallbackSurfaces?.events?.url;
         const preserveSlackVerification = current.setup.slackSetupMethod === "automatic"
           && (current.setup as InternalSetupState).slackVerificationSigningFingerprint === createHash("sha256").update(credentials.signingSecret ?? "").digest("hex")
@@ -9703,6 +9752,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           webhookSecret: credentials.webhookSecret,
         });
         await auditWebhookSync("chat_endpoint.webhook_synced");
+      }
+      if (next.endpoint.provider === "speko") {
+        const webhookPublicBaseUrl = getWebhookPublicBaseUrl();
+        if (!webhookPublicBaseUrl?.startsWith("https://")) throw unprocessable("Speko needs an explicitly configured public HTTPS callback origin");
+        await configureSpekoSessionTools(db, { companyId: endpoint.companyId, endpointId: endpoint.id, agentId: credentials.agentId, callbackUrl: `${webhookPublicBaseUrl}/api/voice-webhooks/${endpoint.publicId}/tools`, signingSecret: credentials.signingSecret, previousSigningSecret: previousSpekoSigningSecret, client: createSpekoProvider(credentials.apiKey, fetchImpl), assertOwned: () => credentialLease.assertOwned() });
       }
       if (next.endpoint.provider === "discord")
         await reconcileDiscordCommands(endpoint.id, credentialLease, true);
@@ -10170,6 +10224,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         },
       })
       .returning();
+    if (endpoint.provider === "speko") {
+      try {
+        const authorization = await db.transaction((tx) => voiceStore.authorizePrincipal(tx, endpoint.companyId, endpoint.id, externalId));
+        return { principal, userId: authorization.userId, linkedDenied: false };
+      } catch (error) {
+        if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error;
+        return { principal, userId: null, linkedDenied: true };
+      }
+    }
     const link = await db
       .select({
         userId: chatIdentityLinks.paperclipUserId,
@@ -10246,6 +10309,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     userId: string | null;
     sponsorUserId?: string | null;
   }> {
+    if (endpoint.provider === "speko") {
+      const principal = await tx.select({ externalId: chatExternalPrincipals.externalId }).from(chatExternalPrincipals)
+        .where(and(eq(chatExternalPrincipals.id, principalId), eq(chatExternalPrincipals.companyId, endpoint.companyId), eq(chatExternalPrincipals.provider, "speko"))).then((rows) => rows[0]);
+      if (!principal) return { allowed: false, linkedDenied: true, userId: null };
+      try { return await voiceStore.authorizePrincipal(tx as import("./voice/voice-session-store.js").VoiceTransaction, endpoint.companyId, endpoint.id, principal.externalId); }
+      catch (error) {
+        if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error;
+        return { allowed: false, linkedDenied: true, userId: null };
+      }
+    }
     const githubAccess = await githubChatPrincipalAccess(tx, endpoint, principalId);
     if (githubAccess) return githubAccess;
     // Link confirmation already uses this transaction-scoped identity key.
@@ -10482,7 +10555,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function ingestAttachments(input: {
     endpoint: EndpointRow;
-    endpointRuntime: ChatSdkEndpointRuntime;
+    endpointRuntime: ChatEndpointRuntime;
     deliveryId: string;
     issueId: string;
     issueCommentId: string;
@@ -14483,7 +14556,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
     const inlineRecovery = new Map<
       Attachment,
-      ReturnType<ChatSdkEndpointRuntime["attachmentRecoveryDescriptor"]>
+      ReturnType<ChatEndpointRuntime["attachmentRecoveryDescriptor"]>
     >();
     const nativeInboundAttachments = teamsNonPersonal
       ? message.attachments.slice(0, 20).flatMap((attachment) => {
@@ -15498,7 +15571,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               )
               .orderBy(desc(chatConversations.sessionGeneration))
               .then((rows) => rows[0] ?? null);
-      const isLinear = surfaceKind !== "native_thread";
+      const isLinear = endpoint.provider !== "speko" && surfaceKind !== "native_thread";
       let existingConversation: ConversationRow | null = latestConversation;
       let existingIssue: typeof issues.$inferSelect | null =
         existingConversation
@@ -15557,9 +15630,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint.allowUnlinkedPeople
           ? await sponsorAllowsGuest(endpoint)
           : false;
+      // This is a second authoritative check, not a provider-name exemption.
+      // Public voice authority requires an opted-in line, accepted signed call,
+      // and exact call-owned task with its low-trust containment still intact.
+      let publicVoiceTaskAllowed = false;
+      if (endpoint.provider === "speko" && principalResolution.userId === null && !principalResolution.linkedDenied) {
+        try {
+          const authority = await db.transaction(tx => voiceStore.authorizePrincipal(tx, endpoint.companyId, endpoint.id, principalResolution.principal.externalId));
+          publicVoiceTaskAllowed = authority.allowed && authority.userId === null;
+        } catch (error) {
+          if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error;
+        }
+      }
       const principalAllowed =
         !principalResolution.linkedDenied &&
-        (principalResolution.userId !== null || guestSponsorAllowed);
+        (principalResolution.userId !== null || guestSponsorAllowed || publicVoiceTaskAllowed);
       const activationAllowed = addressed || existingConversation !== null;
       const allowed =
         endpointAllowed &&
@@ -16196,8 +16281,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             direction: "inbound",
           })
           .onConflictDoNothing();
-        if (taskEndpoint.provider === "slack") {
-          await resumeSlackConversation(taskTx as unknown as Db, endpoint.companyId, conversation.issueId);
+        if (taskEndpoint.provider === "slack" || taskEndpoint.provider === "speko") {
+          await resumeExternalConversation(taskTx as unknown as Db, endpoint.companyId, conversation.issueId);
         }
         await taskTx
           .update(chatConversations)
@@ -16978,7 +17063,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   function messageFromDelivery(
     delivery: DeliveryRow,
     thread: Thread,
-    endpointRuntime: ChatSdkEndpointRuntime,
+    endpointRuntime: ChatEndpointRuntime,
   ): {
     message: Message;
     receiptReactionSupported: boolean;
@@ -27166,7 +27251,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const githubInspection = provider === "github" ? request.clone() : null;
     recordChatWebhookStage("runtime_requested");
     const runtimePromise = runtimeFor(endpoint);
-    let endpointRuntime: ChatSdkEndpointRuntime;
+    let endpointRuntime: ChatEndpointRuntime;
     if (githubResponseDeadlineAt !== null) {
       let timeout: ReturnType<typeof setTimeout> | null = null;
       try {
@@ -33377,6 +33462,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       receipt: SlackFileUploadAcceptedReceipt,
     ) => Promise<void>;
   }) {
+    if (input.endpoint.provider === "speko") {
+      const receipt = await voiceStore.enqueuePublication(input.endpoint.companyId, input.publication.id);
+      scheduleMessageProcessing(() => voice.pushReplies(25, input.endpoint.companyId, input.endpoint.id).then(() => undefined));
+      return receipt;
+    }
     if (input.endpoint.provider === "github" && ["failed", "completed"].includes(input.payload.progressState ?? "") &&
         !input.payload.interactionId && !isExplicitOperatorPublication(input.publication) &&
         (await db.select({ endpointId: chatGitHubConfigurations.endpointId }).from(chatGitHubConfigurations).where(and(
@@ -38216,7 +38306,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const task = Promise.resolve()
             .then(async () => {
               await processSelectedPublication(selectedPublication);
-              await settleSlackConversation(db, selectedPublication.companyId, selectedPublication.issueId).catch((err) => {
+              await settleExternalConversation(db, selectedPublication.companyId, selectedPublication.issueId).catch((err) => {
                 logger.warn({ err, publicationId: selectedPublication.id }, "Slack conversation settlement deferred to reconciliation");
               });
             })
@@ -38619,6 +38709,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   });
 
   return {
+    voice,
     slackRegistration,
     saveGitHubSetupProgress: async (endpointId: string, stage: NonNullable<ChatEndpointSetupState["github"]>["stage"]) => {
       const record = await endpointRecord(endpointId);
@@ -38685,6 +38776,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await Promise.allSettled([...failedRetryTasks.values()]);
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();
+      voice.unregisterAgentTools();
       unregisterGitHubCloudIngress();
       unregisterCommittedResponseAuthority();
       await Promise.allSettled([...publicationEndpointTasks.values()]);

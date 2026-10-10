@@ -65,7 +65,6 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
           enableRoutineVisibilityFilter
         />,
       );
@@ -73,6 +72,8 @@ describe("IssueFiltersPopover", () => {
 
     const popoverContent = container.querySelector("[data-testid='popover-content']");
     expect(popoverContent).not.toBeNull();
+    expect(popoverContent?.querySelector('[data-filter-options="workspaces"]')).toBeNull();
+    expect(popoverContent?.textContent).not.toContain("Workspace");
     expect(popoverContent?.className).toContain("overflow-y-auto");
     expect(popoverContent?.className).toContain("max-h-(--sz-calc-9)");
     expect(popoverContent?.querySelectorAll(".overflow-y-auto").length).toBe(0);
@@ -97,7 +98,6 @@ describe("IssueFiltersPopover", () => {
           agents={[{ id: "agent-1", name: "Agent One" }]}
           projects={[{ id: "project-1", name: "Project One" }]}
           labels={[{ id: "label-1", name: "Bug", color: "#ff0000" }]}
-          workspaces={[{ id: "workspace-1", name: "Workspace One" }]}
           enableRoutineVisibilityFilter
         />,
       );

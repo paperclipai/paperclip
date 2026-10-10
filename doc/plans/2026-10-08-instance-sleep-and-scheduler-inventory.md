@@ -438,10 +438,14 @@ Longer polling intervals alone do not complete an item.
   catch-up remain the recovery boundaries. Source:
   [email-channels.ts](../../server/src/services/email-channels.ts).
 
-- [ ] **JOB-03 — Browser-use cleanup.** Current: every **3s** with due-session
-  queries even when empty. Change: register actual session reconciliation/expiry
-  deadlines. **Complete when:** no sessions means no queries, while active leases,
-  expiry, and failed cleanup remain recoverable. Sources:
+- [x] **JOB-03 — Browser-use cleanup.** Replaced the empty **3s** scan with
+  transaction-aware session signals and deadlines from existing `nextPollAt` and
+  `leaseUntil` columns. Startup restores unfinished work; no live sessions means
+  no recurring browser SQL or timer. Active and idle sessions retain provider
+  polling, expiry checks, lease renewal, and cleanup retries. Credential-removal
+  sweeps signal lease release so background cleanup resumes promptly. Standby
+  suppresses SQL; idle drain defers dispatch with a memory-only wake. No new
+  tables. Independent DB roots/direct SQL require restart recovery. Sources:
   [app.ts](../../server/src/app.ts),
   [browser-use.ts](../../server/src/services/browser-use.ts).
 

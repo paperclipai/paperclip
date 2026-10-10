@@ -217,7 +217,10 @@ export function loadInboxFilterPreferences(
     return {
       allCategoryFilter: normalizeInboxCategoryFilter(parsed.allCategoryFilter),
       allApprovalFilter: normalizeInboxApprovalFilter(parsed.allApprovalFilter),
-      issueFilters: normalizeIssueFilterState(parsed.issueFilters),
+      issueFilters: {
+        ...normalizeIssueFilterState(parsed.issueFilters),
+        workspaces: [],
+      },
     };
   } catch {
     return {
@@ -240,7 +243,10 @@ export function saveInboxFilterPreferences(
       JSON.stringify({
         allCategoryFilter: normalizeInboxCategoryFilter(preferences.allCategoryFilter),
         allApprovalFilter: normalizeInboxApprovalFilter(preferences.allApprovalFilter),
-        issueFilters: normalizeIssueFilterState(preferences.issueFilters),
+        issueFilters: {
+          ...normalizeIssueFilterState(preferences.issueFilters),
+          workspaces: [],
+        },
       }),
     );
   } catch {

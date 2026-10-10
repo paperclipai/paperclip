@@ -148,12 +148,12 @@ export const toolConnections = pgTable(
   },
   (table) => [
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
-    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')`),
     check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
     check("tool_connections_channel_transport_check", sql`(
-      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'runtime_auth'))
+      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'voice', 'runtime_auth'))
       or
-      (${table.connectionPurpose} = 'channel' and (${table.transport} = 'chat_sdk' or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
+      (${table.connectionPurpose} = 'channel' and (${table.transport} in ('chat_sdk', 'voice') or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
       or
       (${table.connectionPurpose} = 'ai' and ${table.transport} = 'runtime_auth')
     )`),

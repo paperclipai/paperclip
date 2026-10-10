@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -70,6 +70,7 @@ vi.mock("../adapters/index.ts", async () => {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
+import { escalateExhaustedIssueReviewPathRecovery } from "../services/recovery/review-path-recovery-escalation.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   buildIssueBlockersResolvedWakeStateKey,
@@ -342,7 +343,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     return { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId };
   }
 
-  it("runs exactly one bounded review-path recovery before surfacing a stalled decision", async () => {
+  it.each(["pathless", "monitor"] as const)("runs exactly one bounded review-path recovery with %s disposition", async (disposition) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -368,7 +369,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "PAP-14994 fingerprint",
+      title: "External build follow-up",
       status: "in_review",
       priority: "medium",
       assigneeAgentId: agentId,
@@ -376,6 +377,16 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
+
+    if (disposition === "monitor") {
+      const execute = mockAdapterExecute.getMockImplementation()!;
+      mockAdapterExecute.mockImplementationOnce(execute).mockImplementationOnce(async () => {
+        await issueService(db).update(issueId, {
+          monitorNextCheckAt: new Date(Date.now() + 60_000), monitorNotes: "Check external build",
+        });
+        return execute();
+      });
+    }
 
     const heartbeat = heartbeatService(db);
     const followUpRun = await heartbeat.wakeup(agentId, {
@@ -420,17 +431,193 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       }),
     });
 
-    const attention = await issueService(db)
-      .listReviewAttention(companyId, [{ id: issueId, companyId, status: "in_review" }]);
-    expect(attention.get(issueId)).toMatchObject({ state: "stalled", paths: [] });
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    if (disposition === "monitor") {
+      expect(issue).toMatchObject({ status: "in_review", assigneeAgentId: agentId, monitorNextCheckAt: expect.any(Date) });
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+      expect(await db.select().from(issueComments)).toHaveLength(0);
+      const attention = await issueService(db).listReviewAttention(companyId, [issue]);
+      expect(attention.get(issueId)).toMatchObject({ state: "covered", paths: expect.arrayContaining([expect.objectContaining({ kind: "monitor" })]) });
+      return;
+    }
+    expect(issue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      ownerType: "board", ownerAgentId: null, ownerUserId: null,
+      returnOwnerAgentId: agentId, cause: "issue_review_path_lost", attemptCount: 1, maxAttempts: 1,
+    });
+    const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ authorType: "system", presentation: expect.objectContaining({ title: "No follow-up scheduled" }) });
+
+    const recoveryRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, recoveryWakes[0].runId!)).then((rows) => rows[0]);
+    // Replayed finalization must not duplicate the notice, action, or wake.
+    expect(await escalateExhaustedIssueReviewPathRecovery(db, { run: recoveryRun, issueId })).toBeNull();
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+    expect(await db.select().from(issueComments)).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "issue_review_path_lost"))).toHaveLength(1);
 
     const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
-    expect(feed.items.find((item) => item.subject.id === issueId)).toMatchObject({
-      sourceKind: "review",
+    expect(feed.items.find((item) => item.subject.id === actions[0].id)).toMatchObject({
+      sourceKind: "recovery_action",
+      relatedIssue: expect.objectContaining({ id: issueId }),
       decisionVerbs: expect.arrayContaining([
-        expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
+        expect.objectContaining({ id: "resolve", label: "Resolve" }),
       ]),
     });
+  });
+
+  it.each(["monitor", "completed", "reassigned", "newer_run", "other_company"] as const)(
+    "does not escalate a stale review recovery after %s",
+    async (change) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Async review", status: "in_review", assigneeAgentId: agentId });
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId, status: "succeeded", issueId,
+        createdAt: new Date(Date.now() - 60_000),
+        contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
+      }).returning();
+      if (change === "monitor") {
+        await issueService(db).update(issueId, { monitorNextCheckAt: new Date(Date.now() + 60_000), monitorNotes: "Check build" });
+      } else if (change === "completed") {
+        await issueService(db).update(issueId, { status: "done" });
+      } else if (change === "reassigned") {
+        const nextAgentId = randomUUID();
+        await db.insert(agents).values({ id: nextAgentId, companyId, name: "New reviewer", role: "engineer", adapterType: "codex_local" });
+        await issueService(db).update(issueId, { assigneeAgentId: nextAgentId });
+      } else if (change === "newer_run") {
+        await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "succeeded", contextSnapshot: { issueId } });
+      }
+      expect(await escalateExhaustedIssueReviewPathRecovery(db, {
+        run: change === "other_company" ? { ...run, companyId: randomUUID() } : run,
+        issueId,
+      })).toBeNull();
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+      expect(await db.select().from(issueComments)).toHaveLength(0);
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(current.status).toBe(change === "completed" ? "done" : "in_review");
+      if (change === "monitor") expect(current.monitorNextCheckAt).not.toBeNull();
+    },
+  );
+
+  it("serializes concurrent finalization of a failed review repair", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Failed review repair", status: "in_review", assigneeAgentId: agentId });
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId, issueId, status: "failed",
+      contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
+    }).returning();
+    const results = await Promise.all([
+      escalateExhaustedIssueReviewPathRecovery(db, { run, issueId }),
+      escalateExhaustedIssueReviewPathRecovery(db, { run, issueId }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+    expect(await db.select().from(issueComments)).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.review_path_recovery_exhausted"))).toHaveLength(1);
+  });
+
+  it.each(["restart", "transaction_failure", "due_monitor", "claimed_monitor", "expired_monitor", "exhausted_monitor", "disabled_monitor"] as const)("reconciles a committed review repair after %s with a one-connection pool", async (gap) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Repair finalized before restart", status: "in_review", assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId, companyId, agentId, source: "automation", status: "completed",
+      reason: "issue_review_path_lost", payload: { issueId, reviewPathRecoveryAttempt: 1 },
+    });
+    const [repairRun] = await db.insert(heartbeatRuns).values({
+      companyId, agentId, issueId, status: "succeeded", wakeupRequestId: wakeId, finishedAt: new Date(),
+      contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
+    }).returning();
+    const dueAt = new Date(Date.now() - 60_000);
+    if (gap.endsWith("monitor")) {
+      const monitored = await issueService(db).update(issueId, {
+        monitorNextCheckAt: dueAt, monitorNotes: "Check external build",
+        executionPolicy: { monitor: {
+          nextCheckAt: dueAt.toISOString(), notes: "Check external build", scheduledBy: "assignee",
+          kind: "external_service", serviceName: "github_checks",
+          ...(gap === "disabled_monitor" ? {} : { timeoutAt: new Date(Date.now() + 60_000).toISOString(), maxAttempts: 3 }),
+        } },
+      });
+      if (gap === "disabled_monitor") {
+        // A policy change after saving an unbounded check must not hide the
+        // spent repair forever: dispatch cannot accept its on-demand wake.
+        await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+      } else if (gap === "claimed_monitor") {
+        await db.update(issues).set({ monitorWakeRequestedAt: new Date() }).where(eq(issues.id, issueId));
+      } else if (gap === "expired_monitor" || gap === "exhausted_monitor") {
+        const policy = monitored!.executionPolicy as { monitor: Record<string, unknown> };
+        await db.update(issues).set({
+          executionPolicy: { ...policy, monitor: { ...policy.monitor, ...(gap === "expired_monitor" ? { timeoutAt: new Date(Date.now() - 1_000).toISOString() } : { maxAttempts: 1 }) } },
+          ...(gap === "exhausted_monitor" ? { monitorAttemptCount: 1 } : {}),
+        }).where(eq(issues.id, issueId));
+      }
+    }
+    // Only the terminal run and completed wake were persisted before the crash.
+    // A new service must restore the missing action without invoking the agent.
+    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    try {
+      if (gap === "transaction_failure") {
+        await db.execute(sql`alter table issue_comments add constraint review_repair_notice_test check (false) not valid`);
+        try {
+          await expect(escalateExhaustedIssueReviewPathRecovery(singleConnectionDb, { run: repairRun, issueId })).rejects.toThrow();
+        } finally {
+          await db.execute(sql`alter table issue_comments drop constraint review_repair_notice_test`);
+        }
+        expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_review");
+      }
+      const recovery = heartbeatService(singleConnectionDb);
+      const result = await recovery.reconcileStrandedAssignedIssues();
+      if (gap === "due_monitor" || gap === "claimed_monitor") {
+        expect(result.escalated).toBe(0);
+        expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+        expect(await db.select().from(issueComments)).toHaveLength(0);
+        const current = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+        expect(current).toMatchObject({ status: "in_review", monitorNextCheckAt: dueAt });
+        // A claim left by a crashed dispatcher can be reclaimed after its lease.
+        if (gap === "claimed_monitor") {
+          await db.update(issues).set({ monitorWakeRequestedAt: new Date(Date.now() - 6 * 60_000) }).where(eq(issues.id, issueId));
+        }
+        const execute = mockAdapterExecute.getMockImplementation()!;
+        mockAdapterExecute.mockImplementationOnce(async () => {
+          await issueService(db).update(issueId, { status: "done" });
+          return execute();
+        });
+        const dispatcher = heartbeatService(db, { runtimeEnv: {} });
+        await dispatcher.tickTimers();
+        await dispatcher.drainActiveRunExecutions();
+        const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "issue_monitor_due"));
+        expect(wakes).toHaveLength(1);
+        expect(mockAdapterExecute).toHaveBeenCalledOnce();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done", monitorNextCheckAt: null });
+        return;
+      }
+      expect(result).toMatchObject({ escalated: 1, issueIds: [issueId] });
+      expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+      expect(await db.select().from(issueComments)).toHaveLength(1);
+      const second = await recovery.reconcileStrandedAssignedIssues();
+      expect(second.escalated).toBe(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    } finally {
+      await singleConnectionDb.$client.end({ timeout: 1 });
+    }
   });
 
   it("keeps resolved dependency wake reconciliation active", async () => {

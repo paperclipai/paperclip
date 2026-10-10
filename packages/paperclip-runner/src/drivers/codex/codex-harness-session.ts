@@ -82,6 +82,10 @@ export class CodexHarnessSession
     }
   }
 
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
+  }
+
   turnControlCapabilities() {
     if (this.driverKind === "acpx_runtime") {
       return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
@@ -157,11 +161,16 @@ export class CodexHarnessSession
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }
@@ -231,6 +240,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:

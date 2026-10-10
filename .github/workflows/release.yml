@@ -224,6 +224,10 @@ jobs:
           pnpm install --resolution-only --ignore-scripts --ignore-pnpmfile --no-frozen-lockfile
           echo "TOOLS_EPOCH=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Build the immutable cloud image without registry credentials
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -354,6 +358,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -372,6 +377,18 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
+
+      # Master can precede the separate lockfile-refresh PR. Preserve the
+      # resolution used for this build before release tooling restores the
+      # tracked lockfile or rewrites workspace versions.
+      - name: Save canary smoke lockfile
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: canary-smoke-lockfile-${{ github.sha }}
+          path: pnpm-lock.yaml
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
 
       - name: Restore tracked install-time changes
         run: git checkout -- pnpm-lock.yaml
@@ -447,6 +464,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -457,6 +477,13 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      # Default download scope is this workflow run, including job reruns.
+      # A missing artifact fails instead of resolving a different dependency set.
+      - name: Restore canary smoke lockfile
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: canary-smoke-lockfile-${{ github.sha }}
 
       - name: Install test dependencies
         run: pnpm install --frozen-lockfile

@@ -120,6 +120,15 @@ block sleep even when their watched issue is complete and no review has started.
 Missing migrations, malformed configuration and database errors produce unknown
 without exposing SQL or tenant data.
 
+Finished login-session history permits sleep only after its promotion claim is
+cleared and any retained provider reference has a matching released or expired
+lease with successful cleanup and a release timestamp in the same company and
+environment. Missing cleanup evidence, `cleanup_pending`, and live login flows
+remain blockers. A finished coalesced wake is history only when its exact
+company/agent's linked run has finished without retry or accounting debt.
+Image-setup history still blocks: promotion can succeed before teardown is
+confirmed, so a terminal label does not prove that its provider resource is gone.
+
 Every enabled plugin blocks sleep. A version label does not prove that arbitrary
 worker code has no background activity. No plugin approval or configuration
 bypass is supported. Scheduled and externally triggered work needs a durable
