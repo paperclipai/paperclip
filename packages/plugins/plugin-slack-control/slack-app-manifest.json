@@ -1,0 +1,9 @@
+{
+  "display_information": { "name": "Paperclip Control", "description": "Control configured Paperclip tasks through private messages." },
+  "features": {
+    "bot_user": { "display_name": "Paperclip Control", "always_online": false },
+    "app_home": { "home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false }
+  },
+  "oauth_config": { "scopes": { "bot": ["chat:write", "im:history", "im:read"] } },
+  "settings": { "socket_mode_enabled": true, "org_deploy_enabled": false, "token_rotation_enabled": false, "event_subscriptions": { "bot_events": ["message.im"] } }
+}
