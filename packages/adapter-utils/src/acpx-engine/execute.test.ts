@@ -2967,6 +2967,29 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.result.sessionParams?.configFingerprint).toBe(rotatedToken.result.sessionParams?.configFingerprint);
     expect(first.result.sessionParams?.configFingerprint).not.toBe(changedSet.result.sessionParams?.configFingerprint);
   });
+
+  it("reports the delivered MCP server count and names in the command notes", async () => {
+    const root = await makeTempRoot();
+    const baseConfig = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    const { meta } = await runExecutor(baseConfig, {
+      runtimeMcp: {
+        getServers: () => [
+          { name: "zapier", url: "https://paperclip.example/api/tool-gateway/gateways/zapier/mcp", connectionId: "connection-2", token: "token-two" },
+          { name: "github", url: "https://paperclip.example/api/tool-gateway/gateways/github/mcp", connectionId: "connection-1", token: "token-one" },
+        ],
+      },
+    });
+
+    expect(meta[0]?.commandNotes).toContain("Using 2 Paperclip-managed MCP server(s): github, zapier.");
+    expect(JSON.stringify(meta[0]?.commandNotes)).not.toContain("token-one");
+  });
+
+  it("reports an empty MCP delivery in the command notes instead of staying silent", async () => {
+    const root = await makeTempRoot();
+    const { meta } = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") });
+
+    expect(meta[0]?.commandNotes).toContain("Using 0 Paperclip-managed MCP servers.");
+  });
 });
 
 describe("findAncestorBin", () => {

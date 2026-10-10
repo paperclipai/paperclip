@@ -29,6 +29,7 @@ import {
   type ChatProvider,
   type RoutineRevisionSnapshotV1,
   type SourceTrustMetadata,
+  type ToolConnection,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -905,6 +906,58 @@ export async function revokeHeartbeatRunGatewayTokens(input: {
     );
 }
 
+/**
+ * Name the filter term that dropped each permitted-and-installed connection.
+ *
+ * A delivery of zero MCP servers has two very different causes. Either the
+ * permitted connection was never installed, or it was installed and then
+ * filtered out here. The second case used to return an empty list with no
+ * artifact anywhere, so an agent that lost every tool looked identical to an
+ * agent that was never granted one. The terms below are tested in the same
+ * order as the `assignedConnections` filter, so the reported reason is the
+ * first term that failed.
+ */
+function describeFilteredOutMcpConnections(input: {
+  permittedConnectionIds: Set<string>;
+  installedConnections: ToolConnection[];
+  resolvedInstalledConnectionIds: Set<string>;
+  githubBotConnectionIds: Set<string>;
+  hasActiveIdentityContext: boolean;
+}): Array<{ id: string; name: string; reasonCode: string }> {
+  return input.installedConnections
+    .filter((connection) => input.permittedConnectionIds.has(connection.id))
+    .map((connection) => {
+      const reasonCode = !input.resolvedInstalledConnectionIds.has(connection.id)
+        ? "github_identity_unresolved"
+        : connection.status !== "active"
+          ? "connection_not_active"
+          : !connection.enabled
+            ? "connection_disabled"
+            : !(
+                (input.hasActiveIdentityContext &&
+                  (connection.config?.sourceTemplateKey === "github" ||
+                    connection.transportConfig?.sourceTemplateKey === "github")) ||
+                connection.credentialPolicy === "per_user" ||
+                !isToolConnectionAttentionHealth(connection.healthStatus)
+              )
+              ? "connection_health_needs_attention"
+              : !(
+                    connection.transport === "mcp_remote" ||
+                    connection.transport === "local_stdio" ||
+                    isBrowserUseConnection(connection) ||
+                    input.githubBotConnectionIds.has(connection.id)
+                  )
+                ? "transport_not_deliverable"
+                : null;
+      return reasonCode ? { id: connection.id, name: connection.name, reasonCode } : null;
+    })
+    .filter(
+      (entry): entry is { id: string; name: string; reasonCode: string } =>
+        entry !== null,
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
@@ -1011,6 +1064,15 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       agentId: input.agent.id,
       runId: input.runId,
       permittedNotInstalledConnections,
+      filteredOutConnections: describeFilteredOutMcpConnections({
+        permittedConnectionIds,
+        installedConnections: effective.installedConnections,
+        resolvedInstalledConnectionIds: new Set(
+          resolvedInstalledConnections.map((connection) => connection.id),
+        ),
+        githubBotConnectionIds,
+        hasActiveIdentityContext: Boolean(runIdentity?.activeIdentityContextId),
+      }),
     });
     return [];
   }
