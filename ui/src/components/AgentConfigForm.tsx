@@ -4,6 +4,7 @@ import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
+import { claudeDefaultModelName } from "../lib/claude-default-model";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
 import type { AdapterConfigSection } from "../adapters/types";
@@ -33,7 +34,6 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -941,6 +941,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
+  // Name the model an unset Claude agent uses. The host ANTHROPIC_MODEL only
+  // applies when the effective run environment is the Paperclip host.
+  const claudeDefaultModel = adapterType === "claude_local"
+    ? claudeDefaultModelName({
+      agentEnv: isCreate
+        ? (val!.envBindings as Record<string, EnvBinding> | undefined)
+        : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>),
+      hostModel: detectedModel,
+      runsOnHost: !effectiveLoginEnvironment || effectiveLoginEnvironment.driver === "local",
+    })
+    : null;
 
   const { data: companyAgents = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none", "list"],
@@ -1768,7 +1779,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
+                defaultLabel={adapterType === "claude_local" ? (claudeDefaultModel ? `Default (${claudeDefaultModel})` : "Default") : undefined}
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
                 required={adapterType === "opencode_local" || adapterType === "pi_local"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
