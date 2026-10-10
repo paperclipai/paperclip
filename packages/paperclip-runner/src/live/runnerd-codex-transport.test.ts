@@ -648,9 +648,11 @@ it.each([false, true])("preserves ACPX asset framing across cold, warm, and post
   const cold = assignedRuntimeContext("/boat/skills", "/boat/context/cold");
   const resumed = assignedRuntimeContext("/boat/skills", "/boat/context/resumed");
   const custom = "Managed instructions with literal /controller/bundle example.";
-  const original = composeNativeSystemInstructions(cold, custom);
-  const coldText = runnerdRecoveryInternals.withComputerProcessInstructions(
-    original, guidance, cold,
+  const original = composeNativeSystemInstructions(source, custom);
+  const coldText = runnerdRecoveryInternals.retargetComposedInstructions(
+    runnerdRecoveryInternals.withComputerProcessInstructions(original, guidance, source),
+    source,
+    cold,
   );
   const suffix = (context: NativeRuntimeContextSnapshot) =>
     composeNativeSystemInstructions(context, "").slice(context.prompt.text.length);
