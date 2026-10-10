@@ -1,3 +1,4 @@
+import { adapterExecutionTargetIsCommandBacked } from "@paperclipai/adapter-utils/execution-target";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -426,7 +427,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
-  const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
+  const executionTargetIsCommandBacked = adapterExecutionTargetIsCommandBacked(executionTarget);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -482,7 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
-  Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
+  Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsCommandBacked }));
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
@@ -612,11 +613,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
+  const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
           "stdout",
-          `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "Claude runtime assets" : "workspace and Claude runtime assets"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
         );
         return await prepareAdapterExecutionTargetRuntime({
           runId,
@@ -624,6 +626,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "claude",
           timeoutSec,
           workspaceLocalDir: cwd,
+          workspaceRemoteDir: targetWorkspaceRealization?.mode === "in_place"
+            ? targetWorkspaceRealization.authoritativeRoot : undefined,
+          syncWorkspace: targetWorkspaceRealization?.mode !== "in_place",
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
@@ -748,7 +753,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   let effectiveEffort = effort;
-  if (executionTargetIsSandbox && effort) {
+  if (executionTargetIsCommandBacked && effort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({
       runId,
       command,

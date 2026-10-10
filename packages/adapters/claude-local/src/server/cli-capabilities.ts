@@ -16,6 +16,7 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
   if (target.kind === "local") {
     return `local:${target.environmentId ?? ""}:${target.leaseId ?? ""}:${command}`;
   }
+  if (target.transport === "computer") return `computer:${target.environmentId}:${target.resourceAuthority.computerId}:${command}`;
   if (target.transport === "sandbox") {
     return [
       "sandbox",

@@ -1,3 +1,4 @@
+import * as persistentFiles from "../services/persistent-agent-files.js";
 import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -72,6 +73,55 @@ describe("persistent agent directories", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agentId] } });
     await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true });
     await fs.writeFile(path.join(root, entryFile), initial);
+  });
+
+  it("keeps Boat personal bytes authoritative through warm checkpoints, collection, and editor conflicts", async () => {
+    const remoteRoot = "/home/user/paperclip/test/agents/target";
+    const remoteFiles = new Map([[entryFile, Buffer.from("remote instructions")], ["memory.txt", Buffer.from("remote memory")]]);
+    const readBytes = vi.fn(async (relative: string) => {
+      const bytes = remoteFiles.get(relative);
+      if (!bytes) throw { code: "not_found" };
+      return { bytes, sha256: fileHash(bytes) };
+    });
+    const writeBytes = vi.fn(async (relative: string, bytes: Buffer, base: string | null) => {
+      const current = remoteFiles.get(relative);
+      if ((current ? fileHash(current) : null) !== base) throw new Error("remote CAS rejected");
+      remoteFiles.set(relative, bytes); return { sha256: fileHash(bytes) };
+    });
+    const seedBytes = vi.fn();
+    const remote = { root: remoteRoot, list: async () => [], readBytes, writeBytes, seedBytes };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand");
+    try {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+      const target = { kind: "remote", transport: "computer", environmentId: randomUUID(), remoteCwd: "/workspace",
+        fileAuthority: { kind: "remote-persistent", placementId: randomUUID(), root: "/workspace", agentHome: remoteRoot } } as never;
+      const copy = (await copies.prepare({ companyId, agentId, runId, cwd: home, target, warm: true }))!;
+      expect(copy.executionRoot).toBe(remoteRoot);
+      expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe("remote instructions");
+      expect(seedBytes).not.toHaveBeenCalled();
+      remoteFiles.set("memory.txt", Buffer.from("edited while warm"));
+      expect(await copies.hasChanges({ companyId, runId, target })).toBe(false);
+      await copies.checkpointWarm({ companyId, runId, target });
+      await copies.collectStopped({ companyId, runId, target });
+      await copies.release(companyId, runId);
+      expect(shell).not.toHaveBeenCalled();
+      expect(remoteFiles.get("memory.txt")?.toString()).toBe("edited while warm");
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      await expect(fs.stat(path.join(root, "memory.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      const store = agentFileStore(db);
+      await expect(store.write({ companyId, agentId, path: "memory.txt", bytes: Buffer.from("stale"), baseHash: fileHash(Buffer.from("remote memory")) }, board())).rejects.toMatchObject({ status: 409 });
+      expect(writeBytes).not.toHaveBeenCalled();
+      await store.write({ companyId, agentId, path: "memory.txt", bytes: Buffer.from("editor"), baseHash: fileHash(Buffer.from("edited while warm")) }, board());
+      expect(remoteFiles.get("memory.txt")?.toString()).toBe("editor");
+      const current = await revisions.readCurrent({ companyId, agentId }, board());
+      expect(current?.content).toBe("remote instructions");
+      await revisions.commit({ companyId, agentId, entryFile, content: "editor changed instructions", baseRevisionId: current!.revision.id, source: "api" }, board());
+      expect(remoteFiles.get(entryFile)?.toString()).toBe("editor changed instructions");
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+
+    } finally { lookup.mockRestore(); shell.mockRestore(); }
   });
 
   describe("warm directory ownership", () => {

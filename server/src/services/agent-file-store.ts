@@ -1,3 +1,4 @@
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { cachedAgentFileManifest, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
@@ -163,13 +164,15 @@ export async function snapshotAgentFiles(root: string, enforceLimits = true): Pr
 
 export function agentFileStore(db: Db) {
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
-    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
+    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, remote: Awaited<ReturnType<typeof persistentAgentFiles>>) => Promise<T>) {
     return db.transaction(async tx => {
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
       if (!agent) throw notFound("Agent not found");
       const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
-      return fn(tx, agent, root, bound);
+      const remote = await persistentAgentFiles(db, companyId, agentId);
+      if (remote) await seedPersistentAgentHome(remote, root);
+      return fn(tx, agent, root, bound, remote);
     });
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {
@@ -183,29 +186,41 @@ export function agentFileStore(db: Db) {
     download: async (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) => {
       const opened: { file: Awaited<ReturnType<typeof openAgentFile>> } = { file: null };
       try {
-        const file = await locked(companyId, agentId, actor, false, async (_tx, _agent, root) => {
+        const file = await locked(companyId, agentId, actor, false, async (_tx, _agent, root, _bound, remote) => {
+          if (remote) return { remote: await readPersistentAgentFile(remote, relative) };
           opened.file = await openAgentFile(root, instructionPath(relative));
           return opened.file;
         });
         // Transfer outside the database lock. The open descriptor pins the file
         // across concurrent atomic replacements; end bounds concurrent growth.
         if (!file) return null;
+        if ("remote" in file) return file.remote ? { size: file.remote.bytes.length, stream: Readable.from([file.remote.bytes]) } : null;
         if (file.size === 0) { await file.handle.close(); return { size: 0, stream: Readable.from([]) }; }
         return { size: file.size, stream: file.handle.createReadStream({ end: file.size - 1 }) };
       } catch (error) { await opened.file?.handle.close(); throw error; }
     },
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
-      locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
+      locked(companyId, agentId, actor, false, async (_tx, _agent, root, _bound, remote) => remote ? (await readPersistentAgentFile(remote, relative))?.bytes ?? null : readAgentFile(root, instructionPath(relative))),
     write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null }, actor: AuthorizationActor) =>
-      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
+      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, remote) => {
         const relative = agentFilePath(input.path);
         if (input.bytes) assertFileSize(input.bytes.length, relative);
-        const previous = await inspectAgentFile(root, relative);
+        const remotePrevious = remote ? await readPersistentAgentFile(remote, relative) : null;
+        const previous = remote ? (remotePrevious ? { hash: remotePrevious.sha256, size: remotePrevious.bytes.length } : null) : await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
         if (currentHash === incomingHash) return { contentHash: currentHash, changed: false };
         if (currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
         if (input.bytes === null && relative === deriveBundleState(agent).entryFile) throw unprocessable("The configured instruction entry cannot be deleted");
+        if (remote) {
+          if (input.bytes !== null && relative === deriveBundleState(agent).entryFile) instructionBytes(input.bytes);
+          // The remote operation checks the hash again immediately before atomic
+          // replacement. Arbitrary shell writers do not participate in this lock.
+          if (input.bytes === null) await remote.remove(relative, currentHash!);
+          else await remote.writeBytes(relative, input.bytes, input.baseHash);
+          await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+          return { contentHash: incomingHash, changed: true };
+        }
         if (input.bytes !== null) {
           if (relative === deriveBundleState(agent).entryFile) instructionBytes(input.bytes);
           // A quota check needs metadata only. Do not hash unrelated large
@@ -221,7 +236,8 @@ export function agentFileStore(db: Db) {
         return { contentHash: incomingHash, changed: true };
       }),
     apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
-      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
+      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, remote) => {
+        if (remote) throw unprocessable("Persistent remote agent files cannot accept controller copy-back");
         const incoming = input.checkpoint ? checkpointSnapshot(input.checkpoint) : await snapshotAgentFiles(input.sourceDir);
         const entryPath = deriveBundleState(agent).entryFile;
         if (incoming.entries.get(entryPath)?.kind !== "file") throw unprocessable("The configured instruction entry cannot be deleted");

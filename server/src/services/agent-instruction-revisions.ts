@@ -1,3 +1,4 @@
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken } from "./agent-file-store.js";
@@ -107,7 +108,7 @@ export function agentInstructionRevisionService(db: Db) {
     }
     const state = deriveBundleState(agent);
     const entryFile = instructionPath(state.entryFile);
-    return { agent, entryFile, root: resolveManagedInstructionsRoot(agent) };
+    return { agent, entryFile, root: resolveManagedInstructionsRoot(agent), remote: await persistentAgentFiles(db, agent.companyId, agent.id) };
   }
   async function authorizeRead(
     tx: Tx,
@@ -156,7 +157,9 @@ export function agentInstructionRevisionService(db: Db) {
   // live in the agent directory; old UUID clients receive a content ETag.
   async function currentFile(tx: Tx, target: InstructionTarget, state: Awaited<ReturnType<typeof lockTarget>>, actor?: RevisionActor) {
     await adoptAgentFiles(tx, state.agent);
-    const bytes = await readInstructionBytes(state.root, state.entryFile);
+    if (state.remote) await seedPersistentAgentHome(state.remote, state.root);
+    const bytes = state.remote ? (await readPersistentAgentFile(state.remote, state.entryFile))?.bytes ?? null
+      : await readInstructionBytes(state.root, state.entryFile);
     if (bytes === null) return null;
     return currentRow(target, state.entryFile, bytes, actor);
   }
@@ -235,7 +238,7 @@ export function agentInstructionRevisionService(db: Db) {
           "Configured instruction entry changed; read the current entry and retry",
           { code: "INSTRUCTION_ENTRY_CHANGED", entryFile: state.entryFile },
         );
-      await assertInstructionPathSafe(state.root, state.entryFile);
+      if (!state.remote) await assertInstructionPathSafe(state.root, state.entryFile);
       const current = await currentFile(tx, input, state, bound);
       const restored =
         "restoreRevisionId" in input
@@ -285,7 +288,8 @@ export function agentInstructionRevisionService(db: Db) {
           },
         );
       }
-      await materializeInstructionBytes(state.root, state.entryFile, candidate);
+      if (state.remote) await state.remote.writeBytes(state.entryFile, candidate, current?.contentHash ?? null);
+      else await materializeInstructionBytes(state.root, state.entryFile, candidate);
       const row = currentRow(input, input.entryFile, candidate, bound);
       await tx.insert(activityLog).values({ companyId: input.companyId,
         actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",

@@ -1,3 +1,4 @@
+import { adapterExecutionTargetIsCommandBacked } from "@paperclipai/adapter-utils/execution-target";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
@@ -874,8 +875,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-    const executionTargetIsSandbox =
-      runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
+    const executionTargetIsCommandBacked =
+      adapterExecutionTargetIsCommandBacked(runtimeExecutionTarget);
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
       ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
@@ -1191,7 +1192,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         return notes;
       })();
-      if (executionTargetIsSandbox) {
+      if (executionTargetIsCommandBacked) {
         commandNotes.push(
           "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
         );
@@ -1226,7 +1227,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {
           resumeSessionId,
-          skipGitRepoCheck: executionTargetIsSandbox,
+          skipGitRepoCheck: executionTargetIsCommandBacked,
           networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
         },
       );
