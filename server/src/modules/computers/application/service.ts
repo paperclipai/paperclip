@@ -629,7 +629,8 @@ finally:
         "conflict",
         "Computer connection expired; connect again",
       );
-    const viewer = await backend.desktop(record);
+    // Presence refreshes credentials; desktop readiness belongs to explicit Connect.
+    const viewer = await backend.desktop(record, { checkInput: false });
     return {
       ...viewer,
       expiresAt: new Date(

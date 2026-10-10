@@ -535,16 +535,28 @@ describe("Boat desktop input readiness", () => {
     const bin = join(temp, "bin");
     const healthy = join(temp, "healthy");
     const calls = join(temp, "repairs");
+    const units = join(temp, "units");
     mkdirSync(runtime, { mode: 0o700 });
     mkdirSync(bin);
     if (initiallyHealthy) writeFileSync(healthy, "ready");
     writeFileSync(join(bin, "ibus"), "#!/bin/sh\ntest \"$HOME\" = /home/user && test \"$XDG_CONFIG_HOME\" = /home/user/.config && test \"$XDG_CACHE_HOME\" = /home/user/.cache || exit 1\nprintf '%s\\n' 'unix:path=/test/ibus'\n", { mode: 0o700 });
     writeFileSync(join(bin, "gdbus"), `#!/bin/sh\ntest -f '${healthy}'\n`, { mode: 0o700 });
     writeFileSync(join(bin, "ibus-daemon"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ntouch '${healthy}'\n`, { mode: 0o700 });
-    const call = (program = desktopReadinessProgram) => spawnSync("python3", ["-c", program.replaceAll("/run/user/", `${temp}/`)], {
+    writeFileSync(join(bin, "systemd-run"), `#!/usr/bin/env python3
+import os,sys,json
+args=sys.argv[1:]
+with open(${JSON.stringify(units)},'a') as target:target.write(json.dumps(args)+'\\n')
+env=dict(os.environ)
+for arg in args:
+ if arg.startswith('--setenv='):
+  key,value=arg[len('--setenv='):].split('=',1);env[key]=value
+command=args[args.index('--')+1:]
+os.execve(command[0],command,env)
+`, { mode: 0o700 });
+    const call = (program = desktopReadinessProgram) => spawnSync("python3", ["-c", program.replaceAll("/run/user/", `${temp}/`).replaceAll("/usr/bin/ibus-daemon", join(bin, "ibus-daemon"))], {
       encoding: "utf8", env: { ...process.env, HOME: join(temp, "agent-home"), XDG_CONFIG_HOME: join(temp, "agent-config"), XDG_CACHE_HOME: join(temp, "agent-cache"), PATH: `${bin}:${process.env.PATH}` },
     });
-    return { temp, runtime, healthy, calls, call };
+    return { temp, runtime, healthy, calls, units, call };
   }
 
   it("preserves a healthy input service and emits no MCP protocol output", () => {
@@ -560,6 +572,9 @@ describe("Boat desktop input readiness", () => {
     expect(f.call().status).toBe(0);
     const expected = `--replace --daemonize --xim --address unix:path=${f.runtime}/paperclip-ibus/bus\n`;
     expect(readFileSync(f.calls, "utf8")).toBe(expected);
+    const unit = JSON.parse(readFileSync(f.units, "utf8").trim());
+    expect(unit).toEqual(expect.arrayContaining(["--slice=app.slice", "--collect", "--property=ExitType=cgroup", "--setenv=HOME=/home/user"]));
+    expect(unit.find((value: string) => value.startsWith("--unit="))).toMatch(/^--unit=paperclip-desktop-input-[a-f0-9]{32}\.service$/);
     expect(f.call().status).toBe(0);
     expect(readFileSync(f.calls, "utf8")).toBe(expected);
     rmSync(f.healthy);
@@ -567,6 +582,24 @@ describe("Boat desktop input readiness", () => {
     expect(readFileSync(f.calls, "utf8")).toBe(expected.repeat(2));
   });
 
+  it("checks input on explicit Connect but reuses credentials without daemon work during presence", async () => {
+    const id = randomUUID();
+    const scoped = { ...record, id, providerId: `bx_${id}` };
+    const execute = vi.fn(async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false, signal: null, pid: null, startedAt: "" }));
+    sshFactory.mockReturnValue({ execute });
+    const fetcher = vi.fn(async (url: string | URL | Request) => String(url).endsWith("/sshkey")
+      ? json({ hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222" })
+      : json({ desktopUrl: "https://fixture.on.boat.dev/" }));
+    const backend = boatBackend(async () => "fixture-key", fetcher);
+    const viewer = await backend.desktop(scoped);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await backend.desktop(scoped, { checkInput: false })).toEqual(viewer);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await backend.desktop(scoped)).toEqual(viewer);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/desktop"))).toHaveLength(1);
+    sshFactory.mockReset();
+  });
   it("rejects a symlink input directory without replacing the daemon", () => {
     const f = desktopFixture(false);
     symlinkSync(f.temp, join(f.runtime, "paperclip-ibus"));

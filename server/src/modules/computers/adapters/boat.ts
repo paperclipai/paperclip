@@ -80,7 +80,7 @@ const desktopCache = new Map<
   { viewerUrl: string; expiresAt: string }
 >();
 export const desktopReadinessProgram = String.raw`
-import os,sys,json,stat,fcntl,subprocess,time
+import os,sys,json,stat,fcntl,subprocess,time,uuid
 # Boat restores its persistent home, but Unix sockets there can refer to stale
 # kernel listeners. Keep a healthy IBus unchanged; repair only a failed probe.
 uid=os.getuid();runtime='/run/user/'+str(uid)
@@ -103,7 +103,13 @@ fd=os.open(root+'/lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
 with os.fdopen(fd,'a') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
  if not healthy():
-  result=subprocess.run(['ibus-daemon','--replace','--daemonize','--xim','--address','unix:path='+root+'/bus'],env=env,capture_output=True,timeout=20)
+  # IBus serves the whole desktop. A Cua launcher can be inside an agent slice;
+  # start the repaired daemon in app.slice so retiring that agent cannot kill it.
+  desktop_keys=['HOME','XDG_CONFIG_HOME','XDG_CACHE_HOME','DISPLAY','XAUTHORITY','DBUS_SESSION_BUS_ADDRESS','XDG_RUNTIME_DIR','IBUS_ENABLE_SYNC_MODE']
+  command=['systemd-run','--user','--quiet','--collect','--service-type=exec','--expand-environment=no','--slice=app.slice','--unit=paperclip-desktop-input-'+uuid.uuid4().hex+'.service','--property=ExitType=cgroup','--property=KillMode=control-group']
+  command.extend('--setenv='+key+'='+env[key] for key in desktop_keys)
+  command.extend(['--','/usr/bin/ibus-daemon','--replace','--daemonize','--xim','--address','unix:path='+root+'/bus'])
+  result=subprocess.run(command,env=env,capture_output=True,timeout=20)
   if result.returncode:raise RuntimeError('desktop input repair failed')
   for attempt in range(10):
    if healthy():break
@@ -503,8 +509,9 @@ print('{}')
         args: ["-c", `${desktopReadinessProgram}\nos.execv('/opt/ascii/cua-driver/cua-driver',['cua-driver','mcp','--socket','/run/ascii-cua/driver.sock'])`],
       };
     },
-    async desktop(record) {
-      await execute(record, `${desktopReadinessProgram}\nprint('{}')`, {});
+    async desktop(record, options) {
+      if (options?.checkInput !== false)
+        await execute(record, `${desktopReadinessProgram}\nprint('{}')`, {});
       const cached = desktopCache.get(record.id);
       if (cached && Date.parse(cached.expiresAt) > Date.now() + 60_000)
         return cached;
