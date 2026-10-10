@@ -49,9 +49,10 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
+  createReadStream,
   copyFileSync,
   closeSync,
   constants,
@@ -10348,24 +10349,55 @@ export async function stageRemoteRunnerDirectory(input: {
     }
     return;
   }
-  const archive = execFileSync(
-    "tar",
-    [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
-  );
-  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
-  const script =
-    `umask 077; mkdir -p '${escapedTarget}' && ` +
-    `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
-    `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
-  const result = await input.runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: archive.toString("base64"),
-    bypassSession: true,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_directory_staging_failed");
+  const stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-upload-"));
+  const archivePath = join(stagingRoot, "payload.tar.gz");
+  const remoteArchive = `${input.targetPath}.upload-${randomUUID()}.tar.gz`;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const run = async (script: string, stdin?: string) => {
+    const result = await input.runner.execute({
+      command: "sh", args: ["-c", script], stdin,
+      bypassSession: true, timeoutMs: 180_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error("runner_remote_directory_staging_failed");
+    }
+  };
+  const pending: Promise<void>[] = [];
+  let uploadError: unknown;
+  try {
+    // Provider packs can exceed a gigabyte. Keep compression off the event loop
+    // and transfer from disk in bounded chunks instead of buffering the archive.
+    await new Promise<void>((resolve, reject) => {
+      execFile("tar", [...excludeArgs, "-czf", archivePath, "-C", input.sourcePath, "."],
+        { maxBuffer: 1024 * 1024 }, (error) => error ? reject(error) : resolve());
+    });
+    await run(`umask 077; mkdir -p ${quote(posix.dirname(remoteArchive))} && : > ${quote(remoteArchive)}`);
+    const digest = createHash("sha256");
+    let chunkIndex = 0;
+    const stream = createReadStream(archivePath, { highWaterMark: 4 * 1024 * 1024 });
+    for await (const bytes of stream) {
+      const chunk = bytes as Buffer;
+      digest.update(chunk);
+      // Disjoint fixed offsets permit bounded parallel upload and idempotent
+      // writes. The final digest rejects missing, duplicated, or partial bytes.
+      pending.push(run(`base64 -d | dd of=${quote(remoteArchive)} bs=4194304 seek=${chunkIndex++} conv=notrunc 2>/dev/null`,
+        chunk.toString("base64")).catch((error) => { uploadError ??= error; }));
+      if (pending.length === 4) {
+        await Promise.all(pending);
+        pending.length = 0;
+        if (uploadError) throw uploadError;
+      }
+    }
+    await Promise.all(pending);
+    if (uploadError) throw uploadError;
+    const expectedDigest = digest.digest("hex");
+    await run(`test "$(if command -v sha256sum >/dev/null 2>&1; then sha256sum ${quote(remoteArchive)}; else shasum -a 256 ${quote(remoteArchive)}; fi | cut -d ' ' -f 1)" = ${quote(expectedDigest)} && ` +
+      `umask 077 && mkdir -p ${quote(input.targetPath)} && ` +
+      `tar -xzf ${quote(remoteArchive)} -C ${quote(input.targetPath)} && chmod ${input.mode.toString(8)} ${quote(input.targetPath)}`);
+  } finally {
+    await Promise.all(pending);
+    rmSync(stagingRoot, { recursive: true, force: true });
+    await run(`rm -f ${quote(remoteArchive)}`).catch(() => undefined);
   }
 }
 

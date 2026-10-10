@@ -47,7 +47,7 @@ import {
   type NativeExecutionInput,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
@@ -2463,7 +2463,7 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
-  it("stages a provider pack through a command-only computer runner", async () => {
+  it.each([{ sizeMiB: 0, corrupt: false }, { sizeMiB: 65, corrupt: false }, { sizeMiB: 0, corrupt: true }])("stages a $sizeMiB MiB provider pack through a command-only computer runner (corrupt=$corrupt)", async ({ sizeMiB, corrupt }) => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-computer-pack-"));
     const sourcePath = join(root, "source");
     const targetPath = join(root, "remote pack's files");
@@ -2472,27 +2472,50 @@ describe("remote provider checkpoint restores", () => {
       await mkdir(join(sourcePath, "bin"), { recursive: true });
       await writeFile(join(sourcePath, "provider-pack.json"), manifest);
       await writeFile(join(sourcePath, "bin", "provider"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      const execute = vi.fn(async (request: { command: string; args: string[]; stdin: string }) => {
-        execFileSync(request.command, request.args, { input: request.stdin });
+      const chunk = randomBytes(1024 * 1024);
+      const expectedDigest = createHash("sha256");
+      const payload = await open(join(sourcePath, "payload.bin"), "w");
+      try {
+        for (let index = 0; index < sizeMiB; index++) {
+          await payload.write(chunk);
+          expectedDigest.update(chunk);
+        }
+      } finally { await payload.close(); }
+      const execute = vi.fn(async (request: { command: string; args: string[]; stdin?: string }) => {
+        expect(request.stdin?.length ?? 0).toBeLessThanOrEqual(Math.ceil(4 * 1024 * 1024 / 3) * 4);
+        const stdin = corrupt && request.stdin
+          ? Buffer.from(request.stdin, "base64").subarray(0, 32).toString("base64")
+          : request.stdin;
+        execFileSync(request.command, request.args, { input: stdin });
         return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
       });
       const runner = { execute };
-      await stageRemoteRunnerDirectory({
+      const staging = stageRemoteRunnerDirectory({
         target: { kind: "remote", transport: "computer", remoteCwd: root, runner } as never,
         runner: runner as never,
         sourcePath,
         targetPath,
         mode: 0o700,
       });
+      if (corrupt) {
+        await expect(staging).rejects.toThrow();
+        await expect(access(targetPath)).rejects.toThrow();
+        expect((await readdir(root)).some((name) => name.includes(".upload-"))).toBe(false);
+        return;
+      }
+      await staging;
       expect(await readFile(join(targetPath, "provider-pack.json"), "utf8")).toBe(manifest);
       expect((await lstat(join(targetPath, "bin", "provider"))).mode & 0o100).toBe(0o100);
       expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);
-      expect(execute).toHaveBeenCalledOnce();
+      const actualDigest = execFileSync("shasum", ["-a", "256", join(targetPath, "payload.bin")], { encoding: "utf8" }).split(" ")[0];
+      expect(actualDigest).toBe(expectedDigest.digest("hex"));
+      expect(execute.mock.calls.filter(([request]) => request.stdin)).toHaveLength(sizeMiB ? 17 : 1);
       expect(execute.mock.calls[0]![0]).toMatchObject({ bypassSession: true });
+      expect((await readdir(root)).some((name) => name.includes(".upload-"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it("does not upload excluded Codex scratch trees or credentials", async () => {
     const sourcePath = await mkdtemp(
