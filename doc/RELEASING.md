@@ -100,7 +100,7 @@ It:
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
 - installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
-- starts the exact published canary through a separate fresh npm install for the onboarding smoke; only npm `ETARGET` install failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; npm `ETARGET` and verified canary tarball availability failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
 
@@ -111,6 +111,23 @@ restored or release versions are rewritten. This lets a source commit use its
 current patches and manifests while the separate lockfile-refresh PR is still
 pending, without resolving new dependencies in the smoke job. The smoke still installs and tests
 the exact published canary version, not a workspace build.
+
+The tarball retry applies only to an unambiguous npm `E404` for a canonical
+public-registry tarball of a CI-published Paperclip package at that exact canary
+version. The helper queries npm's effective global and applicable scoped registry
+in the failed install's prefix, working directory, and environment. A custom or
+unknown effective registry fails. Configuration output stays private in memory.
+Fresh primary-registry metadata must match the package, version, and tarball URL
+and announce a valid SHA512 integrity value. This establishes the announced
+artifact identity; it does not download the tarball or independently verify its
+contents. The actual npm install still checks tarball integrity.
+
+Configuration and metadata checks share a five-second deadline, including the
+response body, within the same two-minute acquisition budget. Metadata is limited
+to 64 KiB. Redirects, authentication errors, missing metadata, conflicting npm
+errors, and other artifacts fail. A persistent promised-tarball failure also
+fails after three installs. Onboarding errors never restart acquisition or
+repeat onboarding.
 
 The lockfile artifact is retained for 14 days. A publisher-job rerun replaces its
 source-named artifact; a smoke-only rerun uses the existing artifact. A missing

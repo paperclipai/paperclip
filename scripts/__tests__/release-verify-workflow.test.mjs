@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createServer } from "node:http";
 import { canaryStartup } from "./canary-startup-fixture.mjs";
+import { canRetryPublishedTarball404, TARBALL_METADATA_TIMEOUT_MS } from "../../tests/canary-onboarding/start-published-canary.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -704,4 +706,328 @@ test("nested ETARGET output does not retry a final authentication or network fai
     assert.equal(result.code, 1);
     assert.equal(result.calls.length, 1);
   }
+});
+
+const exactCanary = "2026.1009.0-canary.1";
+const canaryTarball = `https://registry.npmjs.org/@paperclipai/server/-/server-${exactCanary}.tgz`;
+const tarballFailure = (url = canaryTarball, prefix = "npm error") => `${prefix} code E404\n${prefix} 404 Not Found - GET ${url} - Not found\n${prefix} 404\n${prefix} 404  The requested resource '@paperclipai/server@${url}' could not be found or you do not have permission to access it.\n`;
+
+function tarballProof({ config = {}, manifest = {}, status = 200, redirected = false, responseUrl, rawBody } = {}) {
+  const calls = [];
+  const dist = { tarball: canaryTarball, integrity: `sha512-${Buffer.alloc(64).toString("base64")}`, ...manifest.dist };
+  const data = { name: "@paperclipai/server", version: exactCanary, ...manifest, dist };
+  return { calls, options: {
+    signal: new AbortController().signal, prefix: "/fixture/install", env: {},
+    runConfig: async (command, args, options) => {
+      calls.push({ kind: "config", command, args, options });
+      return { code: 0, stdout: "registry=https://registry.npmjs.org/\n@paperclipai:registry=undefined\n", ...config };
+    },
+    fetchMetadata: async (url, options) => {
+      calls.push({ kind: "metadata", url, options });
+      return { status, redirected, url: responseUrl ?? url, body: new Response(rawBody ?? JSON.stringify(data)).body };
+    },
+  } };
+}
+
+test("exact published tarball proof uses quiet effective config and fresh public metadata without credentials", async () => {
+  for (const prefix of ["npm error", "npm ERR!"]) {
+    const fixture = tarballProof();
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(canaryTarball, prefix), exactCanary, fixture.options), true);
+    const [config, metadata] = fixture.calls;
+    assert.deepEqual(config.args, ["config", "get", "registry", "@paperclipai:registry", "--prefix", "/fixture/install"]);
+    assert.equal(config.options.env, fixture.options.env);
+    assert.equal(config.options.quiet, true);
+    assert.equal(config.options.captureStdout, true);
+    assert.equal(config.options.captureStderr, true);
+    assert.equal(config.options.outputLimit, 4096);
+    assert.equal(metadata.url, `https://registry.npmjs.org/%40paperclipai%2Fserver/${exactCanary}`);
+    assert.equal(metadata.options.signal, config.options.signal);
+    assert.equal(metadata.options.redirect, "error");
+    assert.equal(metadata.options.credentials, "omit");
+    assert.deepEqual(metadata.options.headers, { accept: "application/json", "cache-control": "no-cache" });
+  }
+});
+
+test("mixed npm errors and noncanonical or unreleased tarballs never read config or metadata", async () => {
+  const errors = [
+    "npm error code ETARGET\n", "npm error code E401\n", "npm error code ECONNRESET\n",
+    `${tarballFailure()}npm error code E401\n`, `${tarballFailure()}npm error code 1\n`,
+    `npm error code ENEEDAUTH\n${tarballFailure()}`, `${tarballFailure()}${tarballFailure()}`,
+    `${tarballFailure()}npm error 404 Not Found - GET https://registry.example.invalid/a.tgz - Not found\n`,
+    `${tarballFailure()}npm error 404 The requested resource 'other@${canaryTarball}' could not be found\n`,
+    tarballFailure().replace(" - GET ", " - PUT "),
+    ...[
+      canaryTarball + "?token=fixture", canaryTarball + "#fragment", canaryTarball.replace("npmjs.org/", "npmjs.org:443/"),
+      canaryTarball.replace("npmjs.org/", "npmjs.org.example.invalid/"), canaryTarball.replace("npmjs.org/", "fixture@npmjs.org/"),
+      canaryTarball.replace("https:", "http:"), canaryTarball.replace("@paperclipai/server", "%40paperclipai%2Fserver"),
+      canaryTarball.replace("@paperclipai/server", "@paperclipai/../server"), canaryTarball.replace(exactCanary, "2026.1009.0-canary.2"),
+      "https://registry.npmjs.org/@paperclipai/not-released/-/not-released-2026.1009.0-canary.1.tgz",
+      "https://registry.npmjs.org/@paperclipai/plugin-createos/-/plugin-createos-2026.1009.0-canary.1.tgz",
+      "https://registry.npmjs.org/%40paperclipai%2Fserver/2026.1009.0-canary.1",
+    ].map((url) => tarballFailure(url)),
+  ];
+  for (const error of errors) {
+    const fixture = tarballProof();
+    assert.equal(await canRetryPublishedTarball404(error, exactCanary, fixture.options), false, error);
+    assert.deepEqual(fixture.calls, [], error);
+  }
+  for (const version of ["2026.1009.0", "2026.1009.0-nightly.1", "2026.1009.0-beta.1", "2026.1009.0-canary.1+build"]) {
+    const fixture = tarballProof();
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(canaryTarball.replace(exactCanary, version)), version, fixture.options), false);
+    assert.deepEqual(fixture.calls, []);
+  }
+});
+
+test("effective registry authority respects scope precedence and rejects unknown or private config", async () => {
+  const configs = [
+    [{ stdout: "registry=https://registry.example.invalid/\n@paperclipai:registry=https://registry.npmjs.org/\n" }, true],
+    [{ stdout: "registry=undefined\n@paperclipai:registry=https://registry.npmjs.org/\n" }, true],
+    [{ stdout: "registry=https://registry.npmjs.org/\n@paperclipai:registry=https://registry.example.invalid/\n" }, false],
+    [{ stdout: "registry=https://registry.example.invalid/\n@paperclipai:registry=undefined\n" }, false],
+    [{ stdout: "registry=undefined\n@paperclipai:registry=undefined\n" }, false],
+    [{ stdout: "registry=https://registry.npmjs.org/\n@paperclipai:registry=\n" }, false],
+    [{ stdout: "registry=https://fixture:secret@registry.npmjs.org/\n@paperclipai:registry=undefined\n" }, false],
+    [{ stdout: "unexpected output\n" }, false], [{ code: 1 }, false], [{ signal: "SIGTERM" }, false], [{ outputTruncated: true }, false],
+  ];
+  for (const [config, expected] of configs) {
+    const fixture = tarballProof({ config });
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(), exactCanary, fixture.options), expected);
+    assert.equal(fixture.calls.filter((call) => call.kind === "metadata").length, expected ? 1 : 0);
+  }
+});
+
+test("metadata must identify the exact published artifact with valid SHA512 syntax, not merely exist", async () => {
+  const fixtures = [
+    { status: 404 }, { status: 401 }, { status: 403 }, { status: 302 }, { redirected: true },
+    { responseUrl: "https://registry.example.invalid/metadata" }, { rawBody: "not json" },
+    { manifest: { name: "@paperclipai/shared" } }, { manifest: { version: "2026.1009.0-canary.2" } },
+    { manifest: { dist: { tarball: canaryTarball + "?query=1" } } },
+    ...[undefined, "", "sha512-A===", `sha256-${Buffer.alloc(32).toString("base64")}`, `sha512-${Buffer.alloc(64).toString("base64")} extra`]
+      .map((integrity) => ({ manifest: { dist: { integrity } } })),
+    { rawBody: JSON.stringify({ padding: "x".repeat(65 * 1024) }) },
+  ];
+  for (const input of fixtures) {
+    const fixture = tarballProof(input);
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(), exactCanary, fixture.options), false, JSON.stringify(input).slice(0, 200));
+  }
+});
+
+test("rejected and oversized native response bodies cancel without waiting for slow or rejected cleanup", async () => {
+  for (const [status, pending] of [[200, true], [200, false], [404, true], [404, false]]) {
+    let cancelled = false;
+    const fixture = tarballProof();
+    fixture.options.fetchMetadata = async (url) => ({ status, redirected: false, url, body: new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(65 * 1024)); },
+      cancel() { cancelled = true; return pending ? new Promise(() => {}) : Promise.reject(new Error("fixture rejected cancellation")); },
+    })).body });
+    const started = Date.now();
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(), exactCanary, fixture.options), false);
+    assert.equal(cancelled, true);
+    assert.ok(Date.now() - started < 1000, "cancellation acknowledgement must not extend a rejection");
+  }
+});
+
+test("aborting a stalled metadata read cancels its reader without waiting for acknowledgement", { timeout: 2000 }, async () => {
+  let cancelled = false;
+  const fixture = tarballProof();
+  fixture.options.fetchMetadata = async (url) => ({ status: 200, redirected: false, url,
+    body: new Response(new ReadableStream({
+      cancel() { cancelled = true; return new Promise(() => {}); },
+    })).body });
+  const budget = new AbortController();
+  const timer = setTimeout(() => budget.abort(new Error("fixture body budget expired")), 100);
+  const started = Date.now();
+  try {
+    await assert.rejects(canRetryPublishedTarball404(tarballFailure(), exactCanary, {
+      ...fixture.options, signal: budget.signal,
+    }), /fixture body budget expired/);
+    assert.equal(cancelled, true);
+    assert.ok(Date.now() - started < 1000);
+  } finally { clearTimeout(timer); }
+});
+
+test("metadata headers cannot outlive the budget and late response bodies are cancelled", { timeout: 2000 }, async () => {
+  let headersArrive;
+  let cancelled = false;
+  const fixture = tarballProof();
+  fixture.options.fetchMetadata = (url) => new Promise((resolve) => {
+    headersArrive = () => resolve({ status: 200, redirected: false, url,
+      body: new Response(new ReadableStream({ cancel() { cancelled = true; } })).body });
+  });
+  const budget = new AbortController();
+  const timer = setTimeout(() => budget.abort(new Error("fixture headers budget expired")), 100);
+  const started = Date.now();
+  try {
+    await assert.rejects(canRetryPublishedTarball404(tarballFailure(), exactCanary, {
+      ...fixture.options, signal: budget.signal,
+    }), /fixture headers budget expired/);
+    assert.ok(Date.now() - started < 1000);
+    headersArrive();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cancelled, true);
+  } finally { clearTimeout(timer); }
+});
+
+test("real npm effective registry reads isolated prefix, user, and environment configuration", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "canary-config-proof-"));
+  mkdirSync(path.join(root, "prefix"));
+  writeFileSync(path.join(root, "global.npmrc"), "");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toLowerCase().startsWith("npm_config_")));
+  env.npm_config_userconfig = path.join(root, "user.npmrc");
+  env.npm_config_globalconfig = path.join(root, "global.npmrc");
+  try {
+    for (const [user, project, override, expected] of [
+      ["registry=https://registry.npmjs.org/\n", "", undefined, true],
+      ["registry=https://registry.example.invalid/\n", "@paperclipai:registry=https://registry.npmjs.org/\n", undefined, true],
+      ["registry=https://registry.npmjs.org/\n", "@paperclipai:registry=https://registry.example.invalid/\n", undefined, false],
+      ["registry=https://registry.npmjs.org/\n", "", "https://registry.example.invalid/", false],
+    ]) {
+      writeFileSync(path.join(root, "user.npmrc"), user);
+      writeFileSync(path.join(root, "prefix", ".npmrc"), project);
+      const fixture = tarballProof();
+      delete fixture.options.runConfig;
+      assert.equal(await canRetryPublishedTarball404(tarballFailure(), exactCanary, {
+        ...fixture.options, prefix: path.join(root, "prefix"), env: { ...env, ...(override ? { npm_config_registry: override } : {}) },
+      }), expected);
+      assert.equal(fixture.calls.length, expected ? 1 : 0);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+async function stalledMetadata(run) {
+  let closed = false;
+  let closing = false;
+  let observeClose;
+  const connectionClosed = new Promise((resolve) => { observeClose = resolve; });
+  const server = createServer((_request, response) => {
+    response.on("close", () => { closed = true; observeClose(); });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.write('{"name":');
+  });
+  // An HTTP client can replace an aborted pooled connection while shutdown
+  // starts. Own late connections too, so server.close cannot wait on them.
+  server.on("connection", (socket) => { if (closing) socket.destroy(); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const fixture = tarballProof();
+  fixture.options.fetchMetadata = async (url, options) => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/metadata`, options);
+    Object.defineProperty(response, "url", { value: url });
+    return response;
+  };
+  let closeDeadline;
+  try {
+    await run(fixture.options);
+    await Promise.race([connectionClosed, new Promise((_, reject) => {
+      closeDeadline = setTimeout(() => reject(new Error("metadata connection outlived cancellation")), 1000);
+    })]);
+    assert.equal(closed, true, "metadata connection must close before fixture-forced cleanup");
+  }
+  finally {
+    clearTimeout(closeDeadline);
+    closing = true;
+    await new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    });
+  }
+}
+
+test("shared acquisition cancellation aborts the metadata body before the lookup deadline", async () => {
+  await stalledMetadata(async (options) => {
+    const budget = new AbortController();
+    const timer = setTimeout(() => budget.abort(new Error("fixture shared budget expired")), 250);
+    try {
+      await assert.rejects(canRetryPublishedTarball404(tarballFailure(), exactCanary, { ...options, signal: budget.signal }), /fixture shared budget expired/);
+    } finally { clearTimeout(timer); }
+  });
+});
+
+test("the short config and metadata deadline also covers a stalled real HTTP body", { timeout: 10_000 }, async () => {
+  assert.equal(TARBALL_METADATA_TIMEOUT_MS, 5000);
+  const started = Date.now();
+  await stalledMetadata(async (options) => {
+    assert.equal(await canRetryPublishedTarball404(tarballFailure(), exactCanary, options), false);
+  });
+  assert.ok(Date.now() - started < 7000, "metadata must not consume the 120s acquisition budget");
+});
+
+test("a verified canary tarball404 retries acquisition and runs onboarding once", async () => {
+  const result = await canaryStartup({ mode: "tarball-recover" });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.calls.filter((call) => call.kind === "npm").length, 2);
+  assert.equal(result.calls.filter((call) => call.kind === "config").length, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "metadata").length, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 1);
+  assert.doesNotMatch(result.output, /fixture config diagnostic/);
+});
+
+test("persistent promised tarball404s stop at three installs without a final lookup or onboarding", async () => {
+  const result = await canaryStartup({ mode: "tarball-permanent" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "npm").length, 3);
+  assert.equal(result.calls.filter((call) => call.kind === "config").length, 2);
+  assert.equal(result.calls.filter((call) => call.kind === "metadata").length, 2);
+  assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 0);
+  assert.match(result.output, /installation failed.*onboarding was not started/);
+});
+
+test("private or oversized config and unpublished metadata404 fail without retry or leaking config", async () => {
+  for (const input of [{ config: "private" }, { config: "large" }, { metadata: "missing" }]) {
+    const result = await canaryStartup({ mode: "tarball-permanent", ...input });
+    assert.equal(result.code, 1);
+    assert.equal(result.calls.filter((call) => call.kind === "npm").length, 1);
+    assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 0);
+    assert.doesNotMatch(result.output, /fixture-user|fixture-password|fixture config diagnostic/);
+  }
+});
+
+test("truncated npm output cannot hide an earlier auth failure and qualify a tarball retry", async () => {
+  const result = await canaryStartup({ mode: "tarball-large" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "config").length, 0);
+  assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 0);
+});
+
+test("tarball recovery does not replay onboarding failures or change ETARGET for other exact versions", async () => {
+  const failed = await canaryStartup({ mode: "tarball-recover", onboard: "fail" });
+  assert.equal(failed.code, 1);
+  assert.equal(failed.calls.filter((call) => call.kind === "npm").length, 2);
+  assert.equal(failed.calls.filter((call) => call.kind === "onboard").length, 1);
+  assert.match(failed.output, /onboarding failed \(exit 17\)/);
+  const other = await canaryStartup({ mode: "recover", version: "2026.1009.0-nightly.1" });
+  assert.equal(other.code, 0, other.output);
+  assert.equal(other.calls.filter((call) => call.kind === "npm").length, 2);
+  assert.equal(other.calls.filter((call) => call.kind === "onboard").length, 1);
+  assert.equal(other.calls.filter((call) => call.kind === "config").length, 0);
+});
+
+test("existing ETARGET character-tail behavior survives long multibyte npm diagnostics", async () => {
+  const result = await canaryStartup({ mode: "multibyte-recover" });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.calls.filter((call) => call.kind === "npm").length, 2);
+  assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "config").length, 0);
+});
+
+test("metadata lookup and backoff both consume the unchanged shared acquisition budget", async () => {
+  for (const input of [{ metadata: "hang" }, { delay: 5000 }]) {
+    const result = await canaryStartup({ mode: "tarball-permanent", budget: 1000, ...input });
+    assert.equal(result.code, 1);
+    assert.equal(result.calls.filter((call) => call.kind === "npm").length, 1);
+    assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 0);
+    assert.match(result.output, /exceeded its startup budget/);
+    assert.ok(result.elapsed < 4000, `shared-budget cancellation took ${result.elapsed}ms`);
+  }
+});
+
+test("cancellation reaps a config process and its descendant that ignore SIGTERM", async () => {
+  const result = await canaryStartup({ mode: "tarball-permanent", config: "hang", cancelAtKind: "config-descendant" });
+  assert.equal(result.code, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "npm").length, 1);
+  assert.equal(result.calls.filter((call) => call.kind === "onboard").length, 0);
+  for (const child of result.calls.filter((call) => ["config", "config-descendant"].includes(call.kind))) {
+    assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+  }
+  assert.match(result.output, /stopped by SIGTERM/);
 });
