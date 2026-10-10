@@ -4,7 +4,7 @@ import {
   shellQuote,
 } from "@paperclipai/adapter-utils/ssh";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import type { ComputerBackend } from "../application/ports.js";
+import type { ComputerBackend, ComputerOperationOptions } from "../application/ports.js";
 import {
   ComputerError,
   segment,
@@ -195,11 +195,17 @@ export function boatBackend(
   resolveKey: (record: ComputerRecord) => Promise<string>,
   fetcher: typeof fetch = fetch,
 ): ComputerBackend {
+  function remaining(options: ComputerOperationOptions | undefined, limit: number) {
+    const ms = options?.deadlineMs === undefined ? limit : Math.min(limit, options.deadlineMs - Date.now());
+    if (ms <= 0) throw new ComputerError("provider_error", "Computer file operation timed out");
+    return ms;
+  }
   async function api(
     record: ComputerRecord,
     method: string,
     suffix = "",
     body?: unknown,
+    options?: ComputerOperationOptions,
   ): Promise<any> {
     const response = await fetcher(
       `${apiOrigin}/sandboxes/${segment(record.providerId)}${suffix}`,
@@ -210,7 +216,7 @@ export function boatBackend(
           "content-type": "application/json",
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(remaining(options, 90_000)),
       },
     );
     if (!response.ok)
@@ -223,8 +229,8 @@ export function boatBackend(
       throw new ComputerError("provider_error", "Invalid Boat response");
     return data;
   }
-  async function inspect(record: ComputerRecord) {
-    const data = await api(record, "GET");
+  async function inspect(record: ComputerRecord, options?: ComputerOperationOptions) {
+    const data = await api(record, "GET", "", undefined, options);
     const sandbox = data.sandbox ?? data;
     if (sandbox.id !== record.providerId || typeof sandbox.state !== "string")
       throw new ComputerError(
@@ -344,21 +350,39 @@ export function boatBackend(
     const execute = admission;
     return { ...raw, execute: (input) => execute(raw, input, options?.control === true) };
   }
+  async function fileTransport(
+    record: ComputerRecord,
+    control: boolean,
+    options?: ComputerOperationOptions,
+  ) {
+    remaining(options, 120_000);
+    const pending = runner(record, { control });
+    if (options?.deadlineMs === undefined) return pending;
+    // Initialization is shared with unrelated owners. Expire this waiter only;
+    // the cached promise retains its normal success/eviction behavior.
+    return new Promise<CommandManagedRuntimeRunner>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new ComputerError(
+        "provider_error", "Computer file operation timed out",
+      )), remaining(options, 120_000));
+      pending.then(resolve, reject).finally(() => clearTimeout(timer));
+    });
+  }
   async function execute(
     record: ComputerRecord,
     code: string,
     payload: unknown,
     control = true,
+    options?: ComputerOperationOptions,
   ) {
     const result = await (
-      await runner(record, { control })
+      await fileTransport(record, control, options)
     ).execute({
       command: "python3",
       args: ["-c", code],
       stdin: JSON.stringify(payload),
-      timeoutMs: 120_000,
+      timeoutMs: remaining(options, 120_000),
     });
-    if (result.exitCode !== 0)
+    if (result.exitCode !== 0 || result.timedOut)
       throw new ComputerError("provider_error", "Computer operation failed");
     let value: any;
     try {
@@ -422,8 +446,8 @@ export function boatBackend(
   return {
     inspect,
     runner,
-    async ready(record) {
-      const state = await inspect(record);
+    async ready(record, options) {
+      const state = await inspect(record, options);
       if (!state.snapshots)
         throw new ComputerError("invalid", "Boat snapshots must be enabled");
       if (state.stop && ["pending", "failing"].includes(state.stop.status))
@@ -432,19 +456,19 @@ export function boatBackend(
           "Boat is still saving a previous stop",
         );
       if (!["ready", "idle", "running"].includes(state.state)) {
-        await api(record, "POST", "/resume", { ttlSeconds: 300 });
+        await api(record, "POST", "/resume", { ttlSeconds: 300 }, options);
         transportCache.delete(
           `${record.id}:${record.ledger.secretRef.secretId}:${record.ledger.secretRef.version ?? "latest"}`,
         );
         for (let i = 0; i < 90; i++) {
-          const status = await inspect(record);
+          const status = await inspect(record, options);
           if (["ready", "idle", "running"].includes(status.state)) return;
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, remaining(options, 1000)));
         }
         throw new ComputerError("provider_error", "Boat did not become ready");
       }
     },
-    async claim(record) {
+    async claim(record, options) {
       await execute(
         record,
         String.raw`
@@ -462,6 +486,8 @@ print('{}')
           companyId: record.companyId,
           computerId: record.id,
         },
+        true,
+        options,
       );
       const retiredOwners = record.ledger.owners
         .filter((owner) => owner.kind === "runner" && owner.phase === "retired")
@@ -472,7 +498,7 @@ print('{}')
         await execute(record, processProgram, {
           action: "cleanup-retired",
           owners: retiredOwners,
-        });
+        }, true, options);
       }
     },
     async runnerPorts(record) {
@@ -566,10 +592,10 @@ print('{}')
       url.pathname = path;
       return { url: url.toString(), secretHeaders: { Cookie: cookie } };
     },
-    async remote(record, input) {
+    async remote(record, input, options) {
       // Git setup and file I/O may wait on locks or transfer substantial data.
       // Keep lifecycle capacity reserved; only the short owned-port probe uses it.
-      return execute(record, remoteProgram, input, input.action === "owned-port");
+      return execute(record, remoteProgram, input, input.action === "owned-port", options);
     },
   };
 }

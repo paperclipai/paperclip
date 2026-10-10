@@ -512,6 +512,66 @@ describe("computer ownership", () => {
     ).resolves.toHaveProperty("owner");
     expect(f.backend.stop).toHaveBeenCalledOnce();
   });
+  it("shares one file budget across readiness, claim, and command without early retirement", async () => {
+    const f = fixture();
+    await f.attach();
+    const files = await f.service.files({ ...f.scope, agentId: "agent" });
+    const expectedDeadline = Date.parse("2026-10-10T12:02:00Z");
+    vi.mocked(f.backend.ready).mockImplementation(async (_record, options) => {
+      expect(options?.deadlineMs).toBe(expectedDeadline);
+      f.advance(90_000);
+    });
+    vi.mocked(f.backend.claim).mockImplementation(async (_record, options) => {
+      expect(options?.deadlineMs).toBe(expectedDeadline);
+      f.advance(20_000);
+    });
+    vi.mocked(f.backend.remote).mockImplementation(async (_record, _input, options) => {
+      expect(options?.deadlineMs).toBe(expectedDeadline);
+      f.advance(9999);
+      await f.service.reconcile();
+      expect(f.backend.stop).not.toHaveBeenCalled();
+      f.advance(1);
+      return {};
+    });
+    await files.stat("AGENTS.md");
+    f.advance(5001);
+    await f.service.reconcile();
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("does not launch file work after slow readiness consumes its budget", async () => {
+    const f = fixture();
+    await f.attach();
+    const files = await f.service.files({ ...f.scope, agentId: "agent" });
+    vi.mocked(f.backend.claim).mockClear();
+    vi.mocked(f.backend.ready).mockImplementation(async () => { f.advance(120_000); });
+    await expect(files.stat("AGENTS.md")).rejects.toThrow("timed out");
+    expect(f.backend.claim).not.toHaveBeenCalled();
+    expect(f.backend.remote).not.toHaveBeenCalled();
+    f.advance(5001);
+    await f.service.reconcile();
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+  });
+  it("bounds an abandoned file hold and fences a late readiness continuation", async () => {
+    const f = fixture();
+    await f.attach();
+    const files = await f.service.files({ ...f.scope, agentId: "agent" });
+    let finish!: () => void;
+    let entered!: () => void;
+    const readyEntered = new Promise<void>(resolve => { entered = resolve; });
+    vi.mocked(f.backend.claim).mockClear();
+    vi.mocked(f.backend.ready).mockImplementation(() => new Promise<void>(resolve => { finish = resolve; entered(); }));
+    const operation = files.stat("AGENTS.md");
+    const rejected = expect(operation).rejects.toThrow("timed out");
+    await readyEntered;
+    f.advance(125_001);
+    await f.service.reconcile();
+    expect(f.backend.stop).toHaveBeenCalledOnce();
+    finish();
+    await rejected;
+    expect(f.backend.claim).not.toHaveBeenCalled();
+    expect(f.backend.remote).not.toHaveBeenCalled();
+    expect((await f.repository.get(f.scope)).ledger.owners.every(owner => owner.phase === "retired")).toBe(true);
+  });
   it("keeps a short bounded file batch hold between editor operations", async () => {
     const f = fixture();
     await f.attach();

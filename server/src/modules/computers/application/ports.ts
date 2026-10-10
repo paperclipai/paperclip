@@ -23,14 +23,16 @@ export interface ComputerRepository {
     agentId: string,
   ): Promise<"active" | "terminal" | "missing">;
 }
+export type ComputerOperationOptions = { deadlineMs?: number };
+
 export interface ComputerBackend {
   inspect(record: ComputerRecord): Promise<{
     state: string;
     snapshots: boolean;
     stop: null | { id: string; status: string };
   }>;
-  ready(record: ComputerRecord): Promise<void>;
-  claim(record: ComputerRecord): Promise<void>;
+  ready(record: ComputerRecord, options?: ComputerOperationOptions): Promise<void>;
+  claim(record: ComputerRecord, options?: ComputerOperationOptions): Promise<void>;
   advance(record: ComputerRecord, owner: Owner): Promise<void>;
   runnerPorts(record: ComputerRecord): Promise<RunnerPortAvailability>;
   runner(record: ComputerRecord, options?: { control?: boolean }): Promise<CommandManagedRuntimeRunner>;
@@ -66,6 +68,6 @@ export interface ComputerBackend {
     path: string,
   ): Promise<{ url: string; secretHeaders: Record<string, string> }>;
   preview(record: ComputerRecord, port: number): Promise<{ url: string }>;
-  remote(record: ComputerRecord, input: Record<string, unknown>): Promise<any>;
+  remote(record: ComputerRecord, input: Record<string, unknown>, options?: ComputerOperationOptions): Promise<any>;
 }
 export type { Ledger };
