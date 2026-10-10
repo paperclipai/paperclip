@@ -149,6 +149,7 @@ type InteractionActor = {
   agentId?: string | null;
   runId?: string | null;
   userId?: string | null;
+  verifiedEmail?: string | null;
   systemId?: string | null;
   resolverPolicyRestriction?:
     | IssueThreadInteractionCanonicalResolverPolicy
@@ -458,7 +459,13 @@ function resolverActor(actor: InteractionActor) {
       runId: actor.runId,
     };
   }
-  if (actor.userId) return { type: "user" as const, userId: actor.userId };
+  if (actor.userId) {
+    return {
+      type: "user" as const,
+      userId: actor.userId,
+      verifiedEmail: actor.verifiedEmail,
+    };
+  }
   // Missing principals must fail closed. Internal maintenance paths that are
   // intentionally system-owned provide an explicit systemId.
   return { type: "agent" as const, agentId: null, runId: null };

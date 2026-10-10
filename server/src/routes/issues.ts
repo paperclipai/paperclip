@@ -42,6 +42,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   approvals,
   authUsers,
   chatConversations,
@@ -6027,6 +6028,20 @@ export function issueRoutes(
           })
         : null;
     const actor = getActorInfo(req);
+    const verifiedEmail =
+      actor.actorType === "user" &&
+      interaction.addresseeUserId?.includes("@")
+        ? await db
+            .select({
+              email: authUsers.email,
+              emailVerified: authUsers.emailVerified,
+            })
+            .from(authUsers)
+            .where(eq(authUsers.id, actor.actorId))
+            .then((rows) =>
+              rows[0]?.emailVerified ? rows[0].email : null,
+            )
+        : null;
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
         actor:
@@ -6036,7 +6051,7 @@ export function issueRoutes(
                 agentId: actor.agentId,
                 runId: runId || actor.runId,
               }
-            : { type: "user", userId: actor.actorId },
+            : { type: "user", userId: actor.actorId, verifiedEmail },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
         governedAction:
@@ -6072,7 +6087,7 @@ export function issueRoutes(
       ))
     )
       return false;
-    return { decision, resolverPolicyRestriction } as const;
+    return { decision, resolverPolicyRestriction, verifiedEmail } as const;
   }
 
   async function getIssueThreadInteractionResolutionAuthorization(
@@ -16880,6 +16895,9 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          ...(resolutionAuthorization.verifiedEmail
+            ? { verifiedEmail: resolutionAuthorization.verifiedEmail }
+            : {}),
           resolverPolicyRestriction:
             resolutionAuthorization.resolverPolicyRestriction,
           suggestedTaskEffectsAuthorized,
@@ -17195,6 +17213,9 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          ...(resolutionAuthorization.verifiedEmail
+            ? { verifiedEmail: resolutionAuthorization.verifiedEmail }
+            : {}),
           resolverPolicyRestriction:
             resolutionAuthorization.resolverPolicyRestriction,
         },
@@ -17283,6 +17304,9 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          ...(resolutionAuthorization.verifiedEmail
+            ? { verifiedEmail: resolutionAuthorization.verifiedEmail }
+            : {}),
           resolverPolicyRestriction:
             resolutionAuthorization.resolverPolicyRestriction,
         },
@@ -17365,6 +17389,9 @@ export function issueRoutes(
             agentId: actor.agentId,
             runId: actor.runId,
             userId: actor.actorType === "user" ? actor.actorId : null,
+            ...(resolutionAuthorization.verifiedEmail
+              ? { verifiedEmail: resolutionAuthorization.verifiedEmail }
+              : {}),
             resolverPolicyRestriction:
               resolutionAuthorization.resolverPolicyRestriction,
           },
