@@ -1351,6 +1351,16 @@ trace finalization immediately so a later error cannot lose cleanup state.
 Existing public failure helpers remain re-exported by `heartbeat.ts`.
 Keep completion policy changes separate from this extraction and dispatch.
 
+Runtime selection is in `server/src/services/heartbeat/runtime-selection.ts`.
+`selectHeartbeatRuntime` constructs or restores native execution inputs, selects
+completion contracts and sessions, and persists native or legacy runtime choices.
+Native selection retains the row lock that serializes it with cancellation and
+controller lease renewal. The executor receives an explicit selection result;
+lifecycle and ownership callbacks update its teardown state immediately, including
+when preparation later throws. Public sandbox lifecycle and model fallback helpers
+remain re-exported by `heartbeat.ts`. Provider dispatch and final cleanup stay in
+the executor.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured

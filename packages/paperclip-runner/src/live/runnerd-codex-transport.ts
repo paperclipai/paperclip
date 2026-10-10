@@ -3538,6 +3538,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #providerIdentity: Record<string, unknown> | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
+  supportsTurnReasoning(): boolean {
+    if (this.options.provider !== "opencode") return false;
+    // Use the durable selected model on both fresh and recovered sessions.
+    // Older states may retain the provider only in the preparation command.
+    const state = this.#core?.store.state;
+    const template = this.#runAttachTemplate ?? state?.runAttachTemplate
+      ?? state?.commands.findLast(command =>
+        (command.type === "run.prepare" || command.type === "run.attach")
+        && record(command.payload).provider !== undefined,
+      )?.payload;
+    const model = record(record(template).provider).model;
+    return typeof model === "string" && model.startsWith("openrouter/");
+  }
+
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
     if (this.options.provider !== "acpx") return null;
     if (this.#closed || this.#failure) return { steering: false, queuedFollowUp: false };
@@ -5883,6 +5897,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .filter((item) => item.type !== "skill")
       .map((item) => (typeof item.text === "string" ? item.text : ""))
       .join("\n");
+    const reasoningMode = params.reasoningMode;
+    if (reasoningMode !== undefined && (
+      !this.supportsTurnReasoning()
+      || (reasoningMode !== "default" && reasoningMode !== "disabled")
+    )) throw new Error("turn.reasoningMode requires an OpenCode/OpenRouter model and must be default or disabled");
     const skills = resolveRunnerdCodexSkillInputs(
       input.filter((item) => item.type === "skill"),
       this.options.runtimeContext ?? null,
@@ -5916,6 +5935,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.start",
         {
           text: message,
+          ...(reasoningMode === undefined ? {} : { reasoningMode }),
           ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },

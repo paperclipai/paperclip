@@ -9,6 +9,7 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
@@ -1292,12 +1293,7 @@ export async function createApp(
         );
       });
   };
-  const browserUseTimer = setInterval(() => {
-    if (isWarmStandby() || isIdleTaskDrainActive()) return;
-    void browserUse.sweep().catch(() => logger.warn("Browser Use reconciliation failed; retrying."));
-  }, 3000);
-  browserUseTimer.unref?.();
-  if (!isWarmStandby() && !isIdleTaskDrainActive()) void browserUse.sweep().catch(() => logger.warn("Browser Use startup reconciliation failed; retrying."));
+  registerBrowserUseCleanup(deliveryWork, browserUse, () => !isIdleTaskDrainActive());
   let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
     setInterval(
       sweepImportTransferSpools,
@@ -1410,7 +1406,6 @@ export async function createApp(
         chatPublicationTimer = null;
       }
       await chatReconciliation.drain();
-      clearInterval(browserUseTimer);
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;

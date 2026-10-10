@@ -41,6 +41,8 @@ export interface NativeSessionCapabilities {
   runtimeRequestHandoff?: boolean;
   goals?: boolean;
   threadLineage?: boolean;
+  /** Can select reasoning for one turn without changing subsequent turns. */
+  perTurnReasoning?: boolean;
   collaborationModes?: Array<"default" | "plan">;
   unsupported?: string[];
 }

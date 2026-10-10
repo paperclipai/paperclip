@@ -190,11 +190,10 @@ describe("direct OpenCode HTTP instruction boundary", () => {
         const request = requests.at(-1)!;
         expect(request.providerID).toBe("openrouter"); expect(request.modelID).toBe("deepseek/deepseek-v4-flash-0731");
         const text = request.parts[0].text as string;
+        expect(request.system).toBe(nativeSystemInstructions(value));
         if (schema === "v4" && phase === "start") {
-          expect(request.system).toBe(nativeSystemInstructions(input));
           expect(JSON.parse(text).task.constraints).toEqual(nativeTaskConstraints(input));
         } else {
-          expect(request.system).toBeUndefined();
           expect(JSON.parse(text)).toEqual(envelope);
         }
         directOpenCodeReceipts.push({ provider: "opencode", schema, phase, request: measure(request),

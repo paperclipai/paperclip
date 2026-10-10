@@ -386,6 +386,13 @@ pub struct CodexSkillInput {
     pub path: String,
 }
 
+/// Optional inputs for one turn; omitted fields preserve provider defaults.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodexTurnOptions<'a> {
+    pub skills: &'a [CodexSkillInput],
+    pub reasoning_mode: Option<&'a str>,
+}
+
 impl CodexSkillInput {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         if self.input_type != "skill"
@@ -1670,15 +1677,26 @@ impl CodexProvider {
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_skills(message, cwd, &[])
+        self.start_turn_with_options(message, cwd, CodexTurnOptions::default())
     }
 
-    pub fn start_turn_with_skills(
+    pub fn start_turn_with_options(
         &mut self,
         message: &str,
         cwd: &str,
-        skills: &[CodexSkillInput],
+        options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
+        let CodexTurnOptions {
+            skills,
+            reasoning_mode,
+        } = options;
+        if reasoning_mode.is_some_and(|mode| {
+            self.config.provider != "opencode" || !matches!(mode, "default" | "disabled")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "turn.reasoningMode requires OpenCode and must be default or disabled",
+            ));
+        }
         if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
             return Err(LocalRunnerError::invalid(
                 "explicit skills require Codex and at most 64 selections",
@@ -1727,6 +1745,9 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        if let Some(mode) = reasoning_mode {
+            turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
+        }
         if self.permission_profile == "paperclip-runner-external-sandbox" {
             turn_params_object.insert(
                 "sandboxPolicy".to_owned(),

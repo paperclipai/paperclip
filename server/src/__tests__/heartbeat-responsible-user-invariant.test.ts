@@ -25,6 +25,7 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -165,6 +166,27 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
 
     return { companyId, ownerUserId, agentId };
   }
+
+  it("dispatches saved work on readiness with company scoping and normal admission checks", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    await db.update(agents).set({ status: "paused", lifecycleState: "verifying" }).where(eq(agents.id, agentId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
+      invocationSource: "on_demand", contextSnapshot: { responsibleUserId: ownerUserId } }).returning();
+    const driver = createLifecycleDriver(db, {} as never);
+    const currentAgent = async () => (await db.select().from(agents).where(eq(agents.id, agentId)))[0];
+    await driver.onReady!(await currentAgent());
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
+    await heartbeat.resumeQueuedRunsForAgent(randomUUID(), agentId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await driver.onReady!(await currentAgent());
+    expect(await waitForRun(db, run.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+  });
 
   it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();

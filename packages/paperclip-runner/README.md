@@ -238,6 +238,37 @@ provider-native operations. Full auto is resolved consistently for agent
 creation, adapter conversion, direct driver launches, and fresh/resumed turns.
 Explicitly stored restrictive modes still apply.
 
+Native OpenCode forwards incremental text and reasoning parts as they arrive;
+the final full snapshot selects the final response without repeating streamed
+text. Delta parts must match an observed message and part identity. Identical
+chunks without event IDs remain distinct tokens. Each isolated launch disables
+automatic updates, remote model-catalog refreshes, and default plugins; the
+runner supplies the pinned executable, selected model, and assigned MCP tools.
+Provider inference and reasoning still contribute to time to first text. These
+startup settings do not disable model reasoning.
+
+On macOS, the verified OpenCode executable keeps its private launch pathname
+until the provider process exits. Removing that pathname immediately after
+spawn can kill or stall the signed binary before its health check succeeds.
+Ownership, permissions, and file-identity checks remain enforced; cleanup also
+runs on failed launches, and retries create a fresh launch snapshot.
+
+Call `session.startTurn({ message, reasoningMode: "disabled" })` to disable
+reasoning for one OpenCode/OpenRouter turn. `CapabilityLiveSession.sendMessage`
+accepts the same option in its second argument. The choice travels in the durable
+`turn.start` command and selects an OpenCode model variant for that prompt only.
+Omitting it (or passing `"default"`) on the next turn restores provider defaults,
+including on a warm or recovered session. It is not an environment variable or
+agent-wide setting. No automatic decision policy selects it. The model must
+support disabling reasoning; other runner providers reject an explicit selection
+before starting work. Native sessions expose support through the
+`perTurnReasoning` capability.
+
+OpenCode's proxy sends agent instructions once per turn through the system prompt. The
+task envelope retains task-specific constraints and the completion contract,
+without repeating the system instructions. This applies to all users of the
+proxy; already-recorded conversation history is not rewritten.
+
 The runner's authenticated bridge and controller still enforce company access,
 action claims, task modes, and governed approvals. Provider permission defaults
 do not change workspace isolation or grant credentials or connection access.

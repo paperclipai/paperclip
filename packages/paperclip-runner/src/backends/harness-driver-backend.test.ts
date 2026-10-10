@@ -97,6 +97,34 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it.each(["default", "disabled"] as const)("rejects unsupported reasoning %s before starting provider work", async reasoningMode => {
+    const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
+    const session = Object.assign(new FakeHarnessSession(), { startTurn });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect((await opened.capabilities()).perTurnReasoning).toBe(false);
+    const message = { role: "user" as const, text: "Hi" };
+    await expect(opened.startTurn({ message, reasoningMode })).rejects.toThrow("Per-turn reasoning is not supported");
+    expect(startTurn).not.toHaveBeenCalled();
+    await expect(opened.startTurn({ message })).resolves.toEqual({ turnId: "turn-1" });
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
+  });
+
+  it("forwards reasoning when the provider explicitly supports it", async () => {
+    const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
+    const session = Object.assign(new FakeHarnessSession(), { startTurn, supportsTurnReasoning: () => true });
+    const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect((await opened.capabilities()).perTurnReasoning).toBe(true);
+    const input = { message: { role: "user" as const, text: "Hi" }, reasoningMode: "disabled" as const };
+    await opened.startTurn(input);
+    expect(startTurn).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
   it("refreshes negotiated controls after a warm handshake and separates follow-ups", async () => {
     let controls = { steering: false, queuedFollowUp: false };
     const steer = vi.fn(async () => {});
