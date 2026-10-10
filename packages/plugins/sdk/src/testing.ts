@@ -1598,6 +1598,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         out = out.filter((issue) => issue.companyId === companyId);
         if (input?.projectId) out = out.filter((issue) => issue.projectId === input.projectId);
         if (input?.assigneeAgentId) out = out.filter((issue) => issue.assigneeAgentId === input.assigneeAgentId);
+        if (input?.assigneeUserId) out = out.filter((issue) => issue.assigneeUserId === input.assigneeUserId);
         if (input?.originKind) {
           if (input.originKind.startsWith("plugin:")) normalizePluginOriginKind(input.originKind);
           out = out.filter((issue) => issue.originKind === input.originKind);
