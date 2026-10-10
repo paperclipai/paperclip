@@ -741,7 +741,21 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     .limit(1);
   let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
   if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+    // This block is an incident projection, not a dependency wait: the
+    // `issueRecoveryActions` row reconciled below carries the owner who clears
+    // it. Declared explicitly so the central orphan-blocked guard admits it —
+    // without this the write 422s and takes run cancellation down with it.
+    const projected = await issueService(tx).update(
+      issue.id,
+      {
+        status: "blocked",
+        blockedWakePath: {
+          kind: "notified_owner",
+          reason: "native_continuation_requires_reconciliation",
+        },
+      },
+      tx,
+    );
     if (projected) {
       nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
       await tx.insert(activityLog).values({

@@ -1937,6 +1937,24 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
   if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
 }
 
+/**
+ * A declaration that the caller installed a status-independent way for this
+ * issue to be picked up again, so `blocked` with no unresolved blocker edge is
+ * still reachable work.
+ *
+ * `blocked` is skipped by heartbeat work selection, and `issue_blockers_resolved`
+ * only fires off a blocker edge. A `blocked` row with neither an edge nor one of
+ * these paths can never be woken by anything, so `update` rejects it.
+ */
+export type IssueBlockedWakePath = {
+  kind:
+    | "agent_wakeup_request"
+    | "scheduled_retry_run"
+    | "issue_monitor"
+    | "notified_owner";
+  reason: string;
+};
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration"> & {
   title?: string;
@@ -10830,6 +10848,7 @@ export function issueService(db: Db) {
       data: Partial<typeof issues.$inferInsert> & {
         labelIds?: string[];
         blockedByIssueIds?: string[];
+        blockedWakePath?: IssueBlockedWakePath;
         actorAgentId?: string | null;
         actorRunId?: string | null;
         actorRunStopId?: string | null;
@@ -10878,6 +10897,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        blockedWakePath,
         actorAgentId,
         actorRunId,
         actorRunStopId,
@@ -11004,6 +11024,52 @@ export function issueService(db: Db) {
         !nextAssigneeUserId
       ) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      // Central orphan-blocked invariant. `blocked` is skipped by heartbeat
+      // work selection, and the only automatic way out is
+      // `issue_blockers_resolved`, which fires off a blocker edge. So a
+      // `blocked` row with no unresolved edge is unreachable by construction
+      // unless the caller installed some other wake path and says so. Checked
+      // here rather than per-call-site so every present and future writer is
+      // covered. `resolveContinuationWaitingOnReview` already honoured this
+      // locally; this generalises that precedent.
+      if (patch.status === "blocked") {
+        const unresolvedBlockerIssueIds =
+          blockedByIssueIds !== undefined
+            ? await listUnresolvedBlockerIssueIds(
+                dbOrTx,
+                existing.companyId,
+                blockedByIssueIds,
+              )
+            : ((
+                await listIssueDependencyReadinessMap(
+                  dbOrTx,
+                  existing.companyId,
+                  [id],
+                )
+              ).get(id)?.unresolvedBlockerIssueIds ?? []);
+        // An `unblockDescriptor` names the owner and the action that clears the
+        // block, so it is a notified-owner path on its own. It is cleared
+        // whenever the issue leaves `blocked`, so a non-null existing value
+        // always belongs to the current blocked episode.
+        const nextUnblockDescriptor =
+          issueData.unblockDescriptor !== undefined
+            ? issueData.unblockDescriptor
+            : existing.unblockDescriptor;
+        if (
+          unresolvedBlockerIssueIds.length === 0 &&
+          !nextUnblockDescriptor &&
+          !blockedWakePath
+        ) {
+          throw unprocessable(
+            "Blocked requires an unresolved blocker, an unblock descriptor, or a declared wake path",
+            {
+              code: "blocked_without_wake_path",
+              issueId: id,
+              previousStatus: existing.status,
+            },
+          );
+        }
       }
       if (patch.status === "in_progress") {
         const dependencyReadiness =
