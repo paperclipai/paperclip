@@ -1146,6 +1146,13 @@ describe("agent skill routes", () => {
       { "AGENTS.md": entry },
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+    const materializedFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as
+      | Record<string, string>
+      | undefined;
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./HEARTBEAT.md`");
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./SOUL.md`");
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./TOOLS.md`");
+    expect(materializedFiles?.["AGENTS.md"]).not.toContain("$AGENT_HOME/HEARTBEAT.md");
   });
 
   it.each(["claude_local", "paperclip_runner"].flatMap((adapterType) =>
