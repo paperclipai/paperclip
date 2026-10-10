@@ -77,11 +77,12 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
       if (!result.retired) throw new Error("computer_owner_retirement_superseded");
       return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
     },
-    async realizeWorkspace({ lease, workspace }) {
+    async realizeWorkspace({ lease, workspace, gitAuth }) {
       const request = workspace.metadata?.workspaceRealizationRequest as { source?: { projectId?: string; repoUrl?: string; repoRef?: string; branchName?: string; strategy?: string }; issueId?: string } | undefined;
       const result = await computers.realizeWorkspace({ ...scope(lease), owner: computerOwnerFromLease(lease),
         projectId: request?.source?.projectId ?? undefined, taskId: request?.issueId ?? undefined,
         repositoryUrl: request?.source?.repoUrl ?? undefined,
+        gitAuth,
         branch: request?.source?.branchName ?? request?.source?.repoRef ?? undefined,
         baseRef: request?.source?.repoRef ?? undefined,
         mode: request?.source?.strategy === "git_worktree" ? "worktree" : "shared" });

@@ -526,6 +526,8 @@ export interface EnvironmentDriverLeaseInput {
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
+  /** Ephemeral authentication for the initial checkout, excluded from durable metadata. */
+  gitAuth?: { configArgs: string[]; env: Record<string, string> };
   workspace: {
     localPath?: string;
     remotePath?: string;

@@ -51,6 +51,7 @@ import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
+import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { parseObject } from "../adapters/utils.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -393,6 +394,8 @@ export function environmentRunOrchestrator(
      * target. Absent keeps the safe no-op default in the bridge.
      */
     duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
+    /** Run-scoped auth for initial persistent checkouts; never persisted as workspace metadata. */
+    resolveGitAuth?: GitRemoteAuthProvider;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -430,6 +433,9 @@ export function environmentRunOrchestrator(
         const workspaceRealizationResult = await environmentRuntime.realizeWorkspace({
           environment,
           lease,
+          gitAuth: environment.driver === "computer" && workspaceRealizationRequest.source.repoUrl
+            ? await input.resolveGitAuth?.(workspaceRealizationRequest.source.repoUrl) ?? undefined
+            : undefined,
           workspace: {
             localPath: executionWorkspace.cwd,
             remotePath: remoteCwd,

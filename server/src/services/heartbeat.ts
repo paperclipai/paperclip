@@ -4529,6 +4529,7 @@ export function heartbeatService(
           effectiveExecutionWorkspaceMode,
           persistedExecutionWorkspace,
           duplexObservabilityRecorder,
+          resolveGitAuth: workspaceGitAuthProvider,
         });
         nativeRunnerPreparationSpans.push({
           name: "environment.workspace.realize",

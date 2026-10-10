@@ -1,5 +1,6 @@
 import {
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -12,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { boatBackend } from "./boat.js";
+import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
 const record: ComputerRecord = {
   id: "computer",
@@ -112,11 +114,11 @@ function fixture() {
   const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-files-")));
   roots.push(temp);
   const root = join(temp, "home");
-  const call = (input: Record<string, unknown>) => {
+  const call = (input: Record<string, unknown>, env = process.env) => {
     const result = spawnSync(
       "python3",
       ["-c", remoteProgram.replaceAll("/home/user/paperclip/", `${temp}/`)],
-      { input: JSON.stringify({ ...input, root }), encoding: "utf8" },
+      { input: JSON.stringify({ ...input, root }), encoding: "utf8", env },
     );
     if (result.status !== 0) throw new Error(result.stderr);
     return JSON.parse(result.stdout);
@@ -217,6 +219,40 @@ describe("confined computer files", () => {
     expect(f.call({ action: "stat", path: omitted })).toMatchObject({ name: omitted, kind: "file", size: 7 });
     expect(f.call({ action: "list", limit: 2 }).entries).toHaveLength(2);
     expect(f.call({ action: "list", limit: 1001 })).toEqual({ error: "invalid" });
+  });
+  it("clones a private checkout with operation-scoped auth and leaves no credential material behind", () => {
+    const f = fixture();
+    const source = join(f.temp, "source");
+    mkdirSync(source);
+    const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+    for (const args of [["init"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base"]]) {
+      expect(spawnSync(realGit, args, { cwd: source, encoding: "utf8" }).status).toBe(0);
+    }
+    const bin = join(f.temp, "bin");
+    mkdirSync(bin);
+    // Stand in for an authenticated GitHub transport, using real Git and the
+    // production URL-scoped credential helper, without any external network.
+    writeFileSync(join(bin, "git"), `#!${process.execPath}
+const {spawnSync}=require("node:child_process");
+const args=process.argv.slice(2), clone=args.indexOf("clone");
+if(clone<0) process.exit(9);
+if(args.some(arg=>arg.includes("scoped-fixture-token"))) process.exit(10);
+const credential=spawnSync(process.env.FIXTURE_REAL_GIT,[...args.slice(0,clone),"credential","fill"],{input:"protocol=https\\nhost=github.com\\n\\n",encoding:"utf8"});
+if(credential.status!==0||!credential.stdout.includes("password=scoped-fixture-token")) process.exit(11);
+args[clone+2]=process.env.FIXTURE_SOURCE;
+const result=spawnSync(process.env.FIXTURE_REAL_GIT,args,{encoding:"utf8"});
+process.stdout.write(result.stdout||"");process.stderr.write(result.stderr||"");process.exit(result.status??1);
+`, { mode: 0o700 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FIXTURE_REAL_GIT: realGit, FIXTURE_SOURCE: source };
+    const request = { action: "workspace", mode: "shared", repositoryUrl: "https://github.com/company/private.git" };
+    expect(f.call(request, env)).toEqual({ error: "command_failed" });
+    const gitAuth = buildGitAuthInvocation({ token: "scoped-fixture-token", source: "managed_connection", secretName: null });
+    const result = f.call({ ...request, gitAuth }, env);
+    expect(result.remoteCwd).toBe(join(f.root, "checkout"));
+    const config = readFileSync(join(result.remoteCwd, ".git", "config"), "utf8");
+    expect(config).not.toContain("scoped-fixture-token");
+    expect(config).not.toContain("credential");
+    expect(spawnSync(realGit, ["rev-parse", "HEAD"], { cwd: result.remoteCwd }).status).toBe(0);
   });
   it.each([false, true])("uses the requested worktree branch separately from its start ref (explicit base: %s)", explicitBase => {
     const f = fixture();

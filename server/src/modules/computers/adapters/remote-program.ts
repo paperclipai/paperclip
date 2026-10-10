@@ -5,8 +5,8 @@ p=json.load(sys.stdin)
 def fail(code):
  print(json.dumps({'error':code}));sys.exit(0)
 def digest(data):return hashlib.sha256(data).hexdigest()
-def run(args,cwd=None):
- r=subprocess.run(args,cwd=cwd,capture_output=True,text=True)
+def run(args,cwd=None,env=None):
+ r=subprocess.run(args,cwd=cwd,env=env,capture_output=True,text=True)
  if r.returncode:fail('command_failed')
  return r.stdout.strip()
 root=p['root']
@@ -65,7 +65,13 @@ if act=='workspace':
  checkout=os.path.join(root,'checkout')
  if repo:
   if not (repo.startswith('https://') or repo.startswith('ssh://') or repo.startswith('git@')) or '\n' in repo:fail('invalid')
-  if not os.path.exists(checkout):run(['git','clone','--',repo,checkout])
+  if not os.path.exists(checkout):
+   # Resolve credentials on the controller for this operation. Only the clone
+   # child receives the helper environment; no credential file or Git config persists.
+   auth=p.get('gitAuth') or {};git_env=dict(os.environ)
+   git_env.update({'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1'})
+   git_env.update(auth.get('env',{}))
+   run(['git']+auth.get('configArgs',[])+['clone','--',repo,checkout],env=git_env)
   elif run(['git','remote','get-url','origin'],checkout)!=repo:fail('conflict')
  else:
   os.makedirs(checkout,exist_ok=True)
