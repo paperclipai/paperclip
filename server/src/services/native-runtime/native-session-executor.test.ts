@@ -7559,8 +7559,8 @@ describe("native warm session supervision", () => {
     await closeWarmNativeSessionsForRun({ runId: owners[1]!.runId, reason: "fixture cleanup" });
   });
 
-  it("replaces a computer warm runner after model configuration admits a fresh owner", async () => {
-    const name = "computer-model-change";
+  it.each(["model", "credential", "tools"])("replaces a computer warm runner after %s configuration admits a fresh owner", async (change) => {
+    const name = `computer-config-change-${change}`;
     const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
       session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
     const firstClose = vi.fn(async () => undefined), secondClose = vi.fn(async () => undefined);
@@ -7578,9 +7578,12 @@ describe("native warm session supervision", () => {
       expect(secondRetire).not.toHaveBeenCalled();
       await options.onSession?.({ close: secondClose }); return result;
     });
-    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
-    const next = { ...current, binding: { ...current.binding, runId: `${name}-two` }, provider: { ...current.provider, model: "changed-model" } } as NativeExecutionInputV1;
+    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never,
+      managedAiCredentialIdentity: "credential-before" });
+    const next = { ...current, binding: { ...current.binding, runId: `${name}-two` }, provider: change === "model" ? { ...current.provider, model: "changed-model" } : current.provider } as NativeExecutionInputV1;
     await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+      managedAiCredentialIdentity: change === "credential" ? "credential-after" : "credential-before",
+      refreshTools: change === "tools",
       runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, ownerId: "fresh-owner" }, retire: secondRetire } as never });
     expect(firstRetire).toHaveBeenCalledOnce();
     expect(firstClose).toHaveBeenCalledOnce();
