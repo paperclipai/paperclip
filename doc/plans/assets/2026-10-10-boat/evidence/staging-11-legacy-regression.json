@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "servingSource": "2df40da4587725571f94b20806b0da154418d774",
+  "runtimeCanonicalSource": "3673939bed4cb85f20d142f950547e3a60502bca",
+  "submittedThrough": "ordinary browser task follow-up",
+  "observedAt": "2026-10-10T21:30:07.746728+00:00",
+  "status": "passed",
+  "scope": "Two ordinary legacy CLI follow-ups on serving2df40da; not a full final-source acceptance pass.",
+  "naturalCleanup": {
+    "observedAt": "2026-10-10T21:30:07.746728+00:00",
+    "state": "archived",
+    "snapshotsPreserved": true,
+    "stopId": "stop_23f9f3d30edcffdb",
+    "stopStatus": "completed",
+    "stopCompletedAt": "2026-10-10T21:23:43.156Z",
+    "manualStopRequired": false
+  },
+  "results": {
+    "legacyClaude": {
+      "status": "succeeded",
+      "expectedProofSha256": "ec9169f87b99329a3a24fe194d2cff1a43fb29ef8374d1317ccc28bb83be0ddc",
+      "runId": "8efa7432-a76e-4f1c-88f8-01319de12d9b",
+      "startedAt": "2026-10-10T21:21:53Z",
+      "finishedAt": "2026-10-10T21:23:29Z",
+      "timestampPrecision": "Run audit timestamps shown to nearest second",
+      "persistentAgentInstructionsRead": true,
+      "proofHashUnchanged": true,
+      "observedProofSha256": "ec9169f87b99329a3a24fe194d2cff1a43fb29ef8374d1317ccc28bb83be0ddc",
+      "helperDisposition": "done",
+      "recoveryRunRequired": false,
+      "operationalSkill": {
+        "name": "paperclip",
+        "receipt": "Launching skill: paperclip"
+      },
+      "helperCompletedAt": "2026-10-10T21:23:15.588Z",
+      "displayInconsistency": "Task activity labeled the final helper stopped; run audit contained its successful complete helper response and the run succeeded.",
+      "helperRuntimeFailure": false
+    },
+    "legacyCodex": {
+      "status": "succeeded",
+      "expectedProofSha256": "ff52207bcf705181af4a476c243d121f2e95d011f172899c19b08758695c4627",
+      "runId": "29b92e02-7a58-4849-bdd3-f01a7b932ddb",
+      "startedAt": "2026-10-10T21:21:37Z",
+      "finishedAt": "2026-10-10T21:23:29Z",
+      "timestampPrecision": "Run audit timestamps shown to nearest second",
+      "persistentAgentInstructionsRead": true,
+      "proofHashUnchanged": true,
+      "observedProofSha256": "ff52207bcf705181af4a476c243d121f2e95d011f172899c19b08758695c4627",
+      "helperDisposition": "done",
+      "recoveryRunRequired": false,
+      "helperExitCode": 0,
+      "helperArgumentCorrection": "First invocation used wrong arguments; model corrected to --issue-id and --status done, then helper exited0."
+    }
+  },
+  "limitations": [
+    "Staging73b2 legacy follow-up failures remain historical failures, not retroactively passed.",
+    "Serving2df40da excludes the later isolated viewer-disconnect fix in canonical2ef1772/core754a4e.",
+    "Staging HMR remains unverified after browser navigation was blocked; independent mouse input remains unverified."
+  ],
+  "existingAgentCliUiGuard": {
+    "scope": "Read-only inspection of existing staging Boat agents; no settings saved and no probes invoked.",
+    "servingSource": "2df40da4587725571f94b20806b0da154418d774",
+    "legacyCodex": {
+      "boatSelected": true,
+      "onlyEngineOption": "Codex CLI",
+      "selected": "Codex CLI"
+    },
+    "legacyClaude": {
+      "boatSelected": true,
+      "onlyEngineOption": "Claude CLI",
+      "selected": "Claude CLI"
+    }
+  }
+}

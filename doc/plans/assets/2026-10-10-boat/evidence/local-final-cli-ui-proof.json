@@ -1,0 +1,12 @@
+{
+  "observedAt": "2026-10-10T19:48:00.356186+00:00",
+  "uiSource": "ce1a49bb917a29299ab000f25d45b46c63be1638",
+  "backendSource": "ac09d6ecce2809ed1ad6541d2908e713c543b39f",
+  "engineOptions": [
+    "Codex CLI"
+  ],
+  "selectedEngine": "Codex CLI",
+  "mutationPerformed": false,
+  "screenshot": "local-final-cli-only.jpg",
+  "limit": "Read-only UI inspection of an existing legacy agent in a Boat environment. Only Codex CLI was offered. This is not a new runtime execution or staging pass."
+}

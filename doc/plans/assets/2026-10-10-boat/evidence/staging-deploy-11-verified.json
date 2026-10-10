@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-10-10T21:20:39.509Z",
+  "requestedSha": "2df40da4587725571f94b20806b0da154418d774",
+  "servingSha": "2df40da4587725571f94b20806b0da154418d774",
+  "status": "succeeded",
+  "verification": "verified",
+  "environment": "staging",
+  "deployment": 11,
+  "verifiedAtReported": "2026-10-10T21:20:11Z",
+  "scope": "Serving-source verification; subsequent corrected legacy task passes are recorded separately in staging-11-legacy-regression.json. Canonical2ef1772/core754a4e include a later isolated viewer fix not present here."
+}

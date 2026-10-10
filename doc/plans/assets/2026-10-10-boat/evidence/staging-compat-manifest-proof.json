@@ -1,0 +1,17 @@
+{
+  "checkedAt": "2026-10-10T19:33:20.731Z",
+  "comparison": "forward",
+  "oldCount": 330,
+  "targetCount": 331,
+  "exactOldPrefix": true,
+  "appended": [
+    {
+      "name": "0332_confused_doctor_strange.sql",
+      "sha256": "e8ed246f9302b0ade81c143ce373d108a4e131b844644eaba3f957d99a36e94f",
+      "journalSha256": "d5a05dbcea328a252cf66898feb062561d4b2b6556319cb94ca624aa1743e23a"
+    }
+  ],
+  "oldDigest": "c00e92d3dd973b8c56e8c6a5c5cc442242b8dcf5ebd45ff8e6fddbd32d706f65",
+  "targetDigest": "18aeeb43811212a01fccfa738dc165641674b38dbc9cdbcad5d5cf209e7fce13",
+  "limit": "Strict forward comparison preserves applied migration prefix; future staging deployments must retain that compatible lineage. Canonical PR history is unchanged."
+}

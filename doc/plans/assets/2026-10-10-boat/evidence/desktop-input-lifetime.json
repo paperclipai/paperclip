@@ -1,0 +1,33 @@
+{
+  "controllerSource": "c9c0a47bc9b307588aed27bf95ff042f1fd9b21c",
+  "checkedAt": "2026-10-10T17:47:15.590774+00:00",
+  "managedProcesses": [
+    {
+      "pid": 33562,
+      "name": "ibus-daemon"
+    },
+    {
+      "pid": 33574,
+      "name": "ibus-memconf"
+    },
+    {
+      "pid": 33575,
+      "name": "ibus-ui-gtk3"
+    },
+    {
+      "pid": 33580,
+      "name": "ibus-x11"
+    },
+    {
+      "pid": 33604,
+      "name": "ibus-engine-sim"
+    }
+  ],
+  "managedServiceScope": "user@1000.service/app.slice/paperclip-desktop-input-<id>.service",
+  "allManagedProcessesOutsideRunnerSlice": true,
+  "providerDesktopProcessesAlsoObserved": 7,
+  "claim": "Repaired desktop input service is separate from the per-runner process slice.",
+  "limitations": [
+    "A point-in-time cgroup observation; not a separate end-to-end expiry test."
+  ]
+}

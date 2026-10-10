@@ -1,0 +1,143 @@
+{
+  "controllerSource": "85746677ff25431430698cb310ace0cb5d4b8ccc",
+  "uiSource": "76a499cc54",
+  "result": "passed",
+  "browser": {
+    "beforeHeading": "Boat final baseline",
+    "afterHeading": "Boat final hot reload passed",
+    "unsavedDraftUnchanged": true,
+    "pageSessionBefore": "1791653071067",
+    "pageSessionAfter": "1791653071067",
+    "noNavigationOrRefresh": true
+  },
+  "before": {
+    "runId": "a0c4b001-7ef1-4514-a825-5af6e1b6bc87",
+    "checkedAt": "2026-10-10T17:20:28.301686+00:00",
+    "ownerGeneration": "2",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "102185",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 102185,
+        "name": "paperclip-runne",
+        "startTicks": "99556"
+      },
+      {
+        "pid": 102588,
+        "name": "MainThread",
+        "startTicks": "99828"
+      },
+      {
+        "pid": 102597,
+        "name": "codex",
+        "startTicks": "99830"
+      },
+      {
+        "pid": 120796,
+        "name": "npm run dev --h",
+        "startTicks": "114027"
+      },
+      {
+        "pid": 120854,
+        "name": "sh",
+        "startTicks": "114033"
+      },
+      {
+        "pid": 120855,
+        "name": "MainThread",
+        "startTicks": "114033"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "a0c4b001-7ef1-4514-a825-5af6e1b6bc87",
+        "normalizedSessionId": "2d3e7aaf-ae2f-410a-a753-a05ff006e96f",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.codex-provider-state.v1",
+        "lifecycle": "session_open",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "after": {
+    "runId": "bab92953-5089-48d4-9873-d7af0080b7a7",
+    "checkedAt": "2026-10-10T17:26:19.704645+00:00",
+    "ownerGeneration": "4",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "102185",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 102185,
+        "name": "paperclip-runne",
+        "startTicks": "99556"
+      },
+      {
+        "pid": 102588,
+        "name": "MainThread",
+        "startTicks": "99828"
+      },
+      {
+        "pid": 102597,
+        "name": "codex",
+        "startTicks": "99830"
+      },
+      {
+        "pid": 120796,
+        "name": "npm run dev --h",
+        "startTicks": "114027"
+      },
+      {
+        "pid": 120854,
+        "name": "sh",
+        "startTicks": "114033"
+      },
+      {
+        "pid": 120855,
+        "name": "MainThread",
+        "startTicks": "114033"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "bab92953-5089-48d4-9873-d7af0080b7a7",
+        "normalizedSessionId": "2d3e7aaf-ae2f-410a-a753-a05ff006e96f",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.codex-provider-state.v1",
+        "lifecycle": "session_open",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "viteListenerPid": 120855,
+  "unchangedProcessIdentities": true,
+  "limitations": [
+    "The earlier nohup-only launch lost its listener and is excluded. This successful launch used a detached session within the runner-owned slice.",
+    "Browser no-navigation observation is from the recorded manual acceptance journey, not inferred from process IDs."
+  ]
+}

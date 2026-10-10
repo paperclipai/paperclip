@@ -1,0 +1,11 @@
+{
+  "backend": "19d827a10af3f82c0be4a6faa9b4e30446022b27",
+  "viewer": "Moonlight over WebSocket",
+  "method": "Normal keyboard events through the embedded iframe: Control+Alt+t, individual keys for echo boatkeyboardok, Enter",
+  "visibleResult": "Remote terminal displays echo boatkeyboardok and boatkeyboardok output",
+  "screenshot": "local-31-human-keyboard.jpg",
+  "disconnectedAfterProof": true,
+  "mouseControl": "Not independently verified",
+  "recordedAt": "2026-10-10T20:24:56.014948+00:00",
+  "limit": "Keyboard control through the embedded viewer passed; independent human mouse control is not claimed."
+}

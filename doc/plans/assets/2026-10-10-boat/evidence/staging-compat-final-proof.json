@@ -1,0 +1,16 @@
+{
+  "checkedAt": "2026-10-10T19:33:20.825628+00:00",
+  "head": "73b2f86de841a90afc2232211510f689f5b9ca8c",
+  "runtimeCandidate": "ac09d6ecce2809ed1ad6541d2908e713c543b39f",
+  "runtimeTreeEquivalent": true,
+  "differencesOnlyMigrationLineage": true,
+  "changedPaths": [
+    "packages/db/src/migrations/0331_next_emma_frost.sql",
+    "packages/db/src/migrations/0332_confused_doctor_strange.sql",
+    "packages/db/src/migrations/meta/0331_snapshot.json",
+    "packages/db/src/migrations/meta/0332_snapshot.json",
+    "packages/db/src/migrations/meta/_journal.json"
+  ],
+  "workingTreeClean": true,
+  "limit": "Pre-deployment tree proof; this receipt does not assert deployment or runtime task completion."
+}

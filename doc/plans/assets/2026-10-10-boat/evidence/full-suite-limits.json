@@ -1,0 +1,84 @@
+{
+  "sourceSha": "2cbe65e9713152d1b9afd65c1e051474403ed182",
+  "runtime": {
+    "node": "v26.4.0",
+    "pnpm": "9.15.4",
+    "platform": "darwin-arm64"
+  },
+  "originalExitCode": 1,
+  "startedAt": "2026-10-10T15:21:45.538085+00:00",
+  "completedAt": "2026-10-10T17:32:53.141624+00:00",
+  "sourceDirtyAfter": false,
+  "projectCount": 21,
+  "coverage": {
+    "serializedExpected": 158,
+    "serializedCounted": 158,
+    "missingSuites": [],
+    "coverageStatus": "complete",
+    "timeoutRetryStatus": "complete"
+  },
+  "firstPassCounts": {
+    "files": {
+      "passed": 2100,
+      "failed": 17,
+      "skipped": 47
+    },
+    "tests": {
+      "passed": 34914,
+      "failed": 24,
+      "skipped": 338,
+      "todo": 0
+    }
+  },
+  "retryConclusions": {
+    "passedOnTargetedRetry": [
+      "All7 adapter-utils timing/real-CLI cases",
+      "DB instruction migration",
+      "Server board-claim",
+      "Server native-run-finalizer",
+      "Server native-runner-phase6",
+      "All4 serialized route timeout cases (audit, CLI auth, stale execution lock, workspace runtime authorization)"
+    ],
+    "environmentBlockedAfterRetry": [
+      "Three CLI worktree native-Postgres bootstrap cases",
+      "Server agent-persona-persistence suite bootstrap"
+    ],
+    "notRetestedOnFrozenSource": [
+      "Eight native-session-executor fixture/assertion failures; later branch fixes are outside this artifact"
+    ],
+    "historyNote": "The earlier audit-timeout retry failed at Postgres bootstrap; its later targeted retry passed. Early CLI/DB retries skipped under unavailable native-PG support and are not counted as passes.",
+    "gitStreamingRetry": "failed again with original timeout; see separate retry record"
+  },
+  "gitStreamingRetry": {
+    "sourceSha": "2cbe65e9713152d1b9afd65c1e051474403ed182",
+    "command": [
+      "pnpm",
+      "exec",
+      "vitest",
+      "run",
+      "--exclude",
+      "**/dist/**",
+      "--project",
+      "@paperclipai/server",
+      "server/src/services/workspace-git-snapshot-streaming.test.ts"
+    ],
+    "configurationOverrides": {},
+    "startedAt": "2026-10-10T17:34:40.398890+00:00",
+    "completedAt": "2026-10-10T17:39:46.961468+00:00",
+    "exitCode": 1,
+    "summaries": [
+      "FAIL  |@paperclipai/server| src/services/workspace-git-snapshot-streaming.test.ts > streams and stages all four real Git filename lanes above 32 MiB through the shared scheduler",
+      "Test Files  1 failed (1)",
+      "Tests  1 failed (1)",
+      "Duration  305.68s (tests 99%)"
+    ],
+    "sourceDirtyAfter": false,
+    "timeoutMs": 300000
+  },
+  "environmentLimit": "Native PostgreSQL bootstrap failures occurred with all 32 host System V shared-memory slots occupied. No unrelated IPC, databases, or kernel settings were changed.",
+  "limitations": [
+    "All stock projects and serialized suites were attempted, but the baseline failed.",
+    "Later targeted fixes do not rewrite original results or establish final-head full-suite success.",
+    "338 skipped tests remain skips, not passes."
+  ]
+}

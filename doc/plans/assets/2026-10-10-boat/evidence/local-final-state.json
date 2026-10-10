@@ -1,0 +1,30 @@
+{
+  "checkedAt": "2026-10-10T18:14:22.961Z",
+  "liveOwnerCount": 0,
+  "pendingAction": null,
+  "providerState": "archived",
+  "stopReceipt": {
+    "id": "stop_5a38c74c3bdee4b4",
+    "status": "completed",
+    "requestedAt": null,
+    "lastAttemptAt": "2026-10-10T18:13:40.969Z",
+    "error": null,
+    "endedAt": "2026-10-10T18:13:40.969Z"
+  },
+  "leaseReleasedAt": "2026-10-10T18:12:59.528Z",
+  "terminationEvidence": "Exact-owner stopped receipt persisted on released environment lease; provider subsequently confirmed completed archive.",
+  "directGuestInspection": {
+    "attempted": true,
+    "result": "SSH descriptor unavailable during provider idle/archive transition (HTTP500)",
+    "runnerPid": 36297,
+    "pidAndCheckpointReadAfterRetirement": false
+  },
+  "transientProviderStopError": {
+    "status": 400,
+    "at": "2026-10-10T18:13:01Z",
+    "bodyRetained": false,
+    "resolution": "Controller normal retry completed; no manual lifecycle action."
+  },
+  "source": "8f11a70b3347d289ea25df5ba2d5c151fc1d5256",
+  "scope": "Local qualification Boat"
+}

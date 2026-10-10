@@ -1,0 +1,43 @@
+{
+  "scope": "Point-in-time resource inventory after local legacy correction; later deployment/qualification may resume a fixture.",
+  "localLedger": {
+    "checkedAt": "2026-10-10T21:14:08.337Z",
+    "computerCount": 2,
+    "liveOwnerCount": 0,
+    "pendingActionCount": 0
+  },
+  "providerFixtures": [
+    {
+      "role": "original-local",
+      "checkedAt": "2026-10-10T20:53:54.271926+00:00",
+      "state": "archived",
+      "snapshotsPreserved": true,
+      "stopStatus": "completed",
+      "stopCompletedAt": "2026-10-10T20:52:17.005Z"
+    },
+    {
+      "role": "onboarding-local",
+      "checkedAt": "2026-10-10T20:38:09.876426+00:00",
+      "state": "archived",
+      "snapshotsPreserved": true,
+      "stopStatus": "completed",
+      "stopCompletedAt": "2026-10-10T19:41:44.984Z"
+    },
+    {
+      "role": "builder",
+      "checkedAt": "2026-10-10T20:38:09.876426+00:00",
+      "state": "archived",
+      "snapshotsPreserved": true,
+      "stopStatus": "completed",
+      "stopCompletedAt": "2026-10-10T16:04:23.914Z"
+    },
+    {
+      "role": "staging",
+      "checkedAt": "2026-10-10T20:53:54.271926+00:00",
+      "state": "archived",
+      "snapshotsPreserved": true,
+      "stopStatus": "completed",
+      "stopCompletedAt": "2026-10-10T20:50:10.107Z"
+    }
+  ]
+}

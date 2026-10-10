@@ -1,6 +1,6 @@
 # Boat environments
 
-Status: architecture selected; implementation integrated; live product verification in progress.
+Status: implemented on experimental, unmerged branches. Local and staging qualification is recorded separately; remaining failures are explicit.
 
 ## Problem and finish line
 
@@ -14,6 +14,26 @@ turns and updates the human's browser through HMR.
 Ship behind `enableBoatEnvironments`, disabled by default, on an unmerged branch
 and PR. Verify locally and at the designated experimental staging instance using the same
 source revision. V1 attaches computers; it does not provision or delete them.
+
+## Product flow
+
+1. Enable the experimental Boat environment feature. Add an environment with
+   provider Boat, an existing Boat ID, and its API key. Paperclip stores the key
+   as an encrypted secret. The Boat must have persistent storage enabled.
+2. Assign agents to that environment. Use Paperclip Runner with Codex or Claude
+   for native execution, or choose the explicit CLI engine for a legacy adapter.
+   Set the native runner's warm timeout to the desired development window.
+3. Start a task normally. Each agent uses its own persistent `AGENT_HOME` on the
+   same Boat. Native Codex can use its computer tools on the shared desktop.
+4. Open the task's Computer tab and click Connect. Use Open preview with the
+   development server's port to open the private app URL in a browser tab. Vite
+   may require that exact preview hostname in `allowedHosts`.
+
+A dev server must detach from the provider tool's shell process group, for
+example with `nohup setsid ... </dev/null >vite.log 2>&1 &`. It remains owned by
+the runner and ends when that runner's warm timeout expires. The source files
+persist; a later turn can restart the server. Connecting the desktop gives a
+separate bounded viewer hold, not indefinite runner warmth.
 
 ## Usage (caller's view)
 
@@ -203,127 +223,24 @@ separate folders are organizational separation, not a security boundary. We
 accept remote editing depending on Boat availability in exchange for honest file
 authority.
 
-Implementation must still prove PRP/reconnect, exact descendant retirement,
-four real runtime paths, and native computer-tool image/approval handling.
-Forced Kubernetes policy remains authoritative; Boat cannot bypass it.
+Cold startup and remote editing depend on Boat availability and can take minutes.
+Managed snapshots and abandoned private uploads retain disk space until operator
+cleanup. Forced Kubernetes policy remains authoritative; Boat cannot bypass it.
 
-## Evidence and verification
+## Qualification and delivery
 
-Provider qualification already demonstrated strict pinned SSH, private HTTP and
-Cookie-authenticated WSS upgrade, Cua MCP initialization, an embedded Moonlight
-desktop, user systemd units, and Vite HMR preserving unsaved browser input.
-These are provider checks, not proof of Paperclip integration.
+The finish line is four real runner paths, persistent separate homes on one
+computer, native Codex computer use, a human-controlled browser desktop, and
+Vite hot reload across warm turns. Idle expiry must stop owned processes while
+preserving files; reconnect must not duplicate execution. Detach and feature-off
+behavior must retain cleanup, and routes must enforce company access.
 
-The completion matrix must pass locally and at the target staging instance:
+[Validation and evidence](2026-10-10-boat-validation.md) distinguish browser
+journeys from process receipts and automated checks. Each result retains its
+source revision. A connection probe, a generated screenshot, or an agent's
+statement alone does not prove the complete journey. Staging hot reload remains
+blocked by the test browser; it is not counted as passed.
 
-1. Native Codex, native Claude, legacy Codex, and legacy Claude run simple tasks.
-2. Two agents share one Boat with distinct homes and ports; cancellation of one
-   leaves the other running.
-3. Warm turns retain the exact runner process and Vite server. A task edit changes
-   the visible preview without reload and preserves unsaved browser input.
-4. Connect works for running and stopped computers; human input and native Codex
-   screenshot/click/type address the same visible desktop.
-5. Last-owner timeout suspends the machine; resume retains files. Viewer presence
-   is bounded. Restart reconnects without duplicate execution.
-6. Detach retains files; feature-off preserves cleanup; company access is enforced.
-
-Retain source SHA, runtime versions, task/run IDs, sanitized URLs, screenshots,
-process/stop receipts, deployment campaign and serving SHA, costs, and final
-resource state. Run focused tests first, then required typecheck, tests, build,
-module boundaries, and UI token gates before PR handoff. Never merge to master.
-
-## Current implementation status
-
-The computer ledger, Boat backend, execution target, persistent file access, and
-Computer panel are integrated. Legacy Codex and Claude use explicit CLI engines
-for in-place homes. Native Codex and Claude retain their native runner configuration.
-
-Local qualification has demonstrated real native Codex, native Claude, legacy
-Codex, and legacy Claude execution; separate durable personal directories; native desktop capture
-and app launch; browser desktop rendering and human mouse input; and bounded
-viewer expiry. Native Codex's Vite source and proof file survived a Boat stop and
-resume. A private Vite preview opened from the Computer panel passed the real
-two-turn hot-reload test: its heading changed while its page-session value and
-unsaved input remained unchanged.
-
-Native Codex warm continuity is verified locally on controller source
-`4596df2b89`: runner PID 31430, provider PID 31503, and Vite listener PID 32291
-persisted across the two successful turns. The owner generation advanced while
-the process launch generation stayed unchanged. Earlier failures exposed
-systemd shell-variable expansion, overly short identity reads, and Boat's
-invalidation of unlinked open stdin files; these have targeted fixes and tests.
-
-Screenshots: [experimental toggle](assets/2026-10-10-boat/experimental-toggle.jpg),
-[before the second turn](assets/2026-10-10-boat/native-vite-before.jpg), and
-[after hot reload](assets/2026-10-10-boat/native-vite-after.jpg).
-
-The configured idle timeout retired that exact runner and its Vite listener
-while another agent's active admission kept the shared machine available.
-A subsequent ordinary turn exposed an overly restrictive prior-owner recovery
-check; exact retirement evidence is being integrated before repeating that path.
-
-Native computer keyboard navigation passed locally on controller source
-`e4294560ed`: run `3043f2c2-8366-4f5b-81dd-9281bfdf8844` sent the keyboard
-sequence and loaded Example Domain, visible in the embedded Computer panel.
-The task saved a screenshot artifact and the original persistent proof file
-remained intact. Evidence: [embedded desktop](assets/2026-10-10-boat/native-desktop-keyboard.jpg).
-Qualification found IBus listening on a persistent-home socket whose filesystem
-node refused connections. The bounded readiness check uses the desktop user's
-home and repairs the official daemon onto a private runtime socket when needed.
-
-Native Claude completed locally on controller source `be0d04df4e`, run
-`695cca11-a784-4d2d-b1d4-2f513bc386e6`. Its persistent personal file contained
-`boat-native-claude-ok` with SHA-256
-`86f79c3f7bb0ba133b56edbda1b5ca461ac3a0d6b8e57094ae91c29346179a56`.
-The full cold run took 12 minutes 11 seconds, including pack compression,
-transfer, extraction, verification, and the provider turn. The 1,158 MiB
-compressed provider pack transferred in 341 seconds without transport errors.
-
-Earlier cold attempts exposed the SSH daemon's unauthenticated connection cap
-and exceeded the old 15-minute bootstrap deadline. A per-Boat admission queue
-now allows at most eight SSH operations, six ordinary operations, and four
-bulk uploads; it reserves capacity for lifecycle/process control. Queue wait
-consumes the original operation deadline. Computer-backed ACPX startup has a
-finite 30-minute bootstrap budget; warm, turn, recovery, finalization, and
-per-command deadlines remain unchanged.
-
-The native Claude warm follow-up `199cb94d-d6c0-4675-9719-d65b2daf761b`
-succeeded in 89 seconds and read the same file hash. Runner PID 51467
-(start ticks 89621), runner identity `34cbf0a2`, and listener 43127 remained
-the same. Owner generation advanced from 1 to 2 while launch generation stayed 1. Claude provider subprocesses restarted for the second turn,
-while the provider conversation and isolated home persisted. Evidence: [Claude warm follow-up](assets/2026-10-10-boat/native-claude-warm.jpg).
-
-Required remaining evidence includes post-idle task continuation,
-exact last-owner process retirement, and the same matrix on the final source revision at the designated staging instance.
-Provider-only smoke checks do not substitute for these product journeys.
-
-On controller `85746677ff`, both legacy providers read their original files
-on a fourth compute node with unchanged hashes. Native Codex's first turn
-`a537ef8a-9215-4db8-ae38-e7ca0c55b39f` also performed real keyboard navigation
-and saved its desktop proof. At its warm deadline, observation captured the
-remote checkpoint changing from ready to suspended at 17:14:03 UTC, followed
-by runner PID 34752 disappearing and its exact retirement receipt. The ordinary
-follow-up passed checkpoint restoration and authenticated a new runner.
-It completed successfully as run `1101ca20-f32e-4d03-8e26-62828ff404c7`.
-Evidence: [connected desktop](assets/2026-10-10-boat/native-desktop-final-local.jpg).
-
-That first turn's Vite launch used `nohup` without detaching from the provider
-shell's process group; its listener disappeared before the warm deadline.
-This attempt does not count as a successful warm preview. The earlier proven
-two-turn development result remains separate from final-source qualification.
-
-The corrected detached-session launch passed on the same controller: Vite PID
-120855 stayed inside the runner's owned systemd slice across subsequent turns.
-After allowing the exact Boat preview hostname, the browser displayed the app.
-A heading-only agent edit hot-reloaded it while preserving the unsaved draft
-and page-session value `1791653071067`; the browser was not navigated or refreshed
-between the [baseline](assets/2026-10-10-boat/native-vite-final-before.jpg) and
-[updated page](assets/2026-10-10-boat/native-vite-final-after.jpg).
-
-Native Claude's fresh cold and warm runs also passed on this controller. The
-runner PID 98229 stayed the same across the warm follow-up. Its natural timeout
-then left both runner and provider checkpoints suspended, with no descendants
-or pending work. A separate task reused the verified provider pack in 6.639
-seconds without compression or upload, but later failed to bind its listener
-because the allocated port overlapped the guest's outbound ephemeral range.
-Cache reuse is proven; that task is not counted as a successful execution.
+Implementation is split into [Core #15813](https://github.com/paperclipai/paperclip/pull/15813)
+and dependent [UI and acceptance #15804](https://github.com/paperclipai/paperclip/pull/15804).
+Both remain unmerged.

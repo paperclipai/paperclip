@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-10-10T19:37:25.314227+00:00",
+  "pr": 15813,
+  "head": "5e5fe7a708d2c87b5953ce29329248b932fc7b98",
+  "counts": {
+    "SKIPPED": 2,
+    "SUCCESS": 52
+  },
+  "reviewScore": "5/5",
+  "reviewUpdatedAt": "2026-10-10T19:33:45Z",
+  "unresolvedThreads": 0,
+  "fileResourceSuite": {
+    "passed": 44,
+    "skipped": 0,
+    "jobId": 114293665240
+  },
+  "skippedChecks": [
+    "Storybook visual regression",
+    "Deploy selected branch Storybook"
+  ],
+  "limit": "Exact core head only. Does not establish acceptance-branch checks or staging product success."
+}

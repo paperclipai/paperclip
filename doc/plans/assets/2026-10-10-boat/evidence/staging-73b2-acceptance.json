@@ -1,0 +1,126 @@
+{
+  "recordedAt": "2026-10-10T20:31:42.798774+00:00",
+  "servingSource": "73b2f86de841a90afc2232211510f689f5b9ca8c",
+  "deployment": {
+    "number": 10,
+    "verifiedReadyAt": "2026-10-10T19:57:55.477Z",
+    "evidence": "Official deploy monitor completed required workflow/result validation; optional job-step display alone tolerated API quota failures."
+  },
+  "onboarding": {
+    "result": "passed",
+    "freshAgents": 4,
+    "paths": [
+      "native Codex",
+      "native Claude",
+      "legacy CLI Codex",
+      "legacy CLI Claude"
+    ],
+    "auth": "Explicit saved API accounts; global account defaults unchanged",
+    "evidence": "Coordinating agent browser observations and source-specific onboarding screenshots"
+  },
+  "simpleJobs": {
+    "fourFirstProofJobs": "passed",
+    "distinctPersistentHomes": "reported and observed through task outputs",
+    "nativeCodex": {
+      "status": "succeeded",
+      "runId": "d5329ab4-f399-4646-851f-dac13003b3ce",
+      "proofUtc": "2026-10-10T20:04:32Z",
+      "proofSha256": "f9253e57dadaefe9276e99a9cd0cb9fad68d2704dd820b61e026edf6e6527c46"
+    },
+    "legacyFollowups": {
+      "fileReadAndMatchingHash": "passed",
+      "completeProductFlow": "not yet passed",
+      "limitation": "Legacy CLI prompts use controller-local instruction paths; Claude user-only settings exclude project skills under add-dir. Remote instruction paths and isolated user-config skill discovery are under correction.",
+      "claudeAutomaticRecovery": "Settled in the UI at20:29; not accepted as a clean prompt/task-disposition flow."
+    }
+  },
+  "nativeClaude": {
+    "cold": {
+      "runIdPrefix": "5ad6043e",
+      "status": "succeeded",
+      "uiDuration": "8m56s"
+    },
+    "warm": {
+      "runIdPrefix": "59b64809",
+      "status": "succeeded",
+      "uiDuration": "1m50s",
+      "reportedReceiptUtc": "2026-10-10T20:17:18Z"
+    },
+    "processComparison": {
+      "coldObservedAt": "2026-10-10T20:14:26.928470+00:00",
+      "warmObservedAt": "2026-10-10T20:16:49.674569+00:00",
+      "sameBoot": true,
+      "sameRunner": true,
+      "runner": {
+        "pid": 116722,
+        "name": "paperclip-runne",
+        "startTicks": 118156
+      }
+    },
+    "idle": {
+      "observedAt": "2026-10-10T20:22:53.636719+00:00",
+      "ownedProcessCount": 0,
+      "ownedSocketCount": 0,
+      "limit": "Direct process disappearance confirmed; no staging database retirement/checkpoint receipt exported."
+    },
+    "ordinaryPostIdle": {
+      "status": "passed",
+      "uiRunStatus": "succeeded",
+      "runId": "2e3e9afc-25e1-4154-933c-b8af546e1cf5",
+      "createdAt": "2026-10-10T20:23:14Z",
+      "proofCommandAt": "2026-10-10T20:29:16Z",
+      "completedUiMinuteUtc": "2026-10-10T20:29Z",
+      "exactTerminalAuditTimestamp": "2026-10-10T20:29:35Z",
+      "duration": "6m21s",
+      "proofSha256": "e646d151756f1efdb9e19d99a2a0971810468087c457fa458f1311c42ef07424",
+      "proofHashUnchanged": true,
+      "hostnameChanged": true,
+      "sameLogicalSession": true,
+      "logicalSessionId": "0f6c2d42-c542-4755-bd98-8b179916de17",
+      "processObservedAt": "2026-10-10T20:29:40.363647+00:00",
+      "ownerId": "57bf329f-a347-4005-9cdf-32ff3ee7db59",
+      "runner": {
+        "pid": 59818,
+        "startTicks": 46749,
+        "runnerId": "8f01922e-ccaa-4739-a54a-9281c0c48e88"
+      },
+      "listenerPort": 16128,
+      "bootId": "69d70480-2a33-46e6-86e7-a550d986851e",
+      "newBoot": true,
+      "earlierSetupOwner": "266448a9-08aa-4b79-9eff-492c27999b86",
+      "limit": "Earlier266448a9 was scoped preparation, possibly file-operation ownership; it is not classified as a failed runner lease. Provider was idle after successful return, not archived; final staging cleanup remains outstanding.",
+      "completedAt": "2026-10-10T20:29:35Z",
+      "durationSeconds": 381,
+      "providerRetainedStop": {
+        "id": "stop_0d795f9039998542",
+        "status": "completed",
+        "endedAt": "2026-10-10T20:23:54.124Z"
+      },
+      "providerStateAfterReturn": "idle"
+    },
+    "limit": "Runner continuity is verified; Claude subprocess PID continuity is not claimed."
+  },
+  "nativeCodex": {
+    "computerUse": "passed via agent tools and visible desktop",
+    "humanKeyboard": "passed via normal embedded viewer keyboard events",
+    "viteListener": "verified within exact owned runner slice",
+    "stagingHmr": "blocked",
+    "stagingHmrBlocker": "IAB ERR_BLOCKED_BY_CLIENT on generated preview link; browser/environment clarification pending. No URL workaround used.",
+    "idle": {
+      "observedAt": "2026-10-10T20:22:02.139368+00:00",
+      "ownedProcessCount": 0,
+      "ownedSocketCount": 0
+    },
+    "initialWarmReuse": "not claimed; first task and subsequent development turn used replacement owners"
+  },
+  "viewerExpiry": {
+    "local30": "passed per coordinating browser observation",
+    "staging": "passed per coordinating browser observation"
+  },
+  "remaining": [
+    "Correct and requalify legacy managed instruction-path and task disposition flow",
+    "Complete staging Vite HMR through an authorized functioning browser",
+    "Requalify relevant behavior on the final deployed source"
+  ],
+  "limit": "Staging 73b2 acceptance is partial. Later source builds are not deployed acceptance evidence."
+}

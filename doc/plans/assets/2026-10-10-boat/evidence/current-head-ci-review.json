@@ -1,0 +1,56 @@
+{
+  "observedAt": "2026-10-10T21:32:06.734195+00:00",
+  "prs": [
+    {
+      "number": 15813,
+      "head": "754a4e792e077999989b088a910ce9d846280fda",
+      "mergeable": "MERGEABLE",
+      "checks": {
+        "SKIPPED": 2,
+        "SUCCESS": 52
+      },
+      "reviewSummaryMatchesHead": true,
+      "reviewScore": 5,
+      "failedChecks": [],
+      "greptile": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-10T21:28:47Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://app.greptile.com/paperclip-org-3/github/paperclipai/paperclip/-/pull/15813",
+          "name": "Greptile Review",
+          "startedAt": "2026-10-10T21:18:13Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        }
+      ],
+      "unresolvedThreads": 0,
+      "threadsFullyPaginated": true
+    },
+    {
+      "number": 15804,
+      "head": "2ef177271ad703cef598b19b0d2219297c57ca6c",
+      "mergeable": "MERGEABLE",
+      "checks": {
+        "SUCCESS": 52
+      },
+      "reviewSummaryMatchesHead": true,
+      "reviewScore": 5,
+      "failedChecks": [],
+      "greptile": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-10T21:26:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://app.greptile.com/paperclip-org-3/github/paperclipai/paperclip/-/pull/15804",
+          "name": "Greptile Review",
+          "startedAt": "2026-10-10T21:19:19Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        }
+      ],
+      "unresolvedThreads": 0,
+      "threadsFullyPaginated": true
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "controllerSource": "c9c0a47bc9b307588aed27bf95ff042f1fd9b21c",
+  "scenario": "ordinary follow-up after second natural idle and last-owner Boat archive",
+  "run": {
+    "id": "bf1fbf05-93c6-49a6-953c-8c283c7563f6",
+    "status": "succeeded",
+    "startedAt": "2026-10-10T17:42:07.831Z",
+    "finishedAt": "2026-10-10T17:45:49.147Z",
+    "normalizedSessionId": "2d3e7aaf-ae2f-410a-a753-a05ff006e96f",
+    "providerKind": "codex"
+  },
+  "newOwnerProcess": {
+    "runId": "bf1fbf05-93c6-49a6-953c-8c283c7563f6",
+    "checkedAt": "2026-10-10T17:45:53.165367+00:00",
+    "ownerGeneration": "1",
+    "launchGeneration": 1,
+    "retired": false,
+    "unit": {
+      "MainPID": "33377",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "processes": [
+      {
+        "pid": 33377,
+        "name": "paperclip-runne",
+        "startTicks": "39645"
+      },
+      {
+        "pid": 33601,
+        "name": "MainThread",
+        "startTicks": "39894"
+      },
+      {
+        "pid": 33618,
+        "name": "codex",
+        "startTicks": "39896"
+      },
+      {
+        "pid": 33687,
+        "name": "cua-driver",
+        "startTicks": "39903"
+      }
+    ],
+    "checkpoints": [
+      {
+        "schema": "paperclip.runner.durable.state.v1",
+        "lifecycle": "ready",
+        "runId": "bf1fbf05-93c6-49a6-953c-8c283c7563f6",
+        "normalizedSessionId": "2d3e7aaf-ae2f-410a-a753-a05ff006e96f",
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      },
+      {
+        "schema": "paperclip.runner.codex-provider-state.v1",
+        "lifecycle": "session_open",
+        "runId": null,
+        "normalizedSessionId": null,
+        "activeTurnId": null,
+        "pendingTerminalDelivery": false
+      }
+    ]
+  },
+  "completedComputerTools": [
+    {
+      "at": "2026-10-10T17:45:16.524Z",
+      "name": "launch_app",
+      "status": "completed"
+    },
+    {
+      "at": "2026-10-10T17:45:18.847Z",
+      "name": "bring_to_front",
+      "status": "completed"
+    },
+    {
+      "at": "2026-10-10T17:45:21.090Z",
+      "name": "hotkey",
+      "status": "completed"
+    },
+    {
+      "at": "2026-10-10T17:45:25.438Z",
+      "name": "type_text",
+      "status": "completed"
+    },
+    {
+      "at": "2026-10-10T17:45:28.650Z",
+      "name": "press_key",
+      "status": "completed"
+    },
+    {
+      "at": "2026-10-10T17:45:35.570Z",
+      "name": "get_window_state",
+      "status": "completed"
+    }
+  ],
+  "precedingIdle": {
+    "controllerSource": "85746677ff25431430698cb310ace0cb5d4b8ccc",
+    "checkedAt": "2026-10-10T17:31:20.214748+00:00",
+    "retired": true,
+    "observedPids": {
+      "102185": null,
+      "102597": null,
+      "120855": null
+    },
+    "runnerLifecycle": "suspended",
+    "unit": {
+      "MainPID": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "providerArchive": {
+      "checkedAt": "2026-10-10T17:32:09.231Z",
+      "state": "archived",
+      "snapshots": true,
+      "stopStatus": "completed"
+    }
+  },
+  "limitations": [
+    "Controller 25 result; not a repeat on controller 26 or staging.",
+    "Computer tool completion is recorded; original browser screenshots provide separate visual proof."
+  ]
+}

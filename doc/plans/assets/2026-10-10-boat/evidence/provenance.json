@@ -1,0 +1,322 @@
+{
+  "generatedAt": "2026-10-10T18:15:26.229665+00:00",
+  "method": "Explicit field allowlist. Original evidence remains unchanged outside this public bundle.",
+  "originalArtifacts": [
+    {
+      "filename": "core-5e5-final-ci-review.json",
+      "sha256": "a11feabd1a4f240bbdacb43669945360fc2ecccb5741aa8c520d678e9c94d676"
+    },
+    {
+      "filename": "file-resource-clean-ci-proof.json",
+      "sha256": "a5a542cc9c81f211a84778ef9135d5dcce7cb212ad8132914d6bd48857f54330"
+    },
+    {
+      "filename": "final-candidate.json",
+      "sha256": "61e2b3aa5f3a93d00dc6c4547d6e63b3372dc103d6a633cef0e793bb0f761671"
+    },
+    {
+      "filename": "final-local-provider-inventory.json",
+      "sha256": "46e12a7ab871ea5c533094fc1ba223f19b5cbdc6d19e371d99f1b57d2ff4cfca"
+    },
+    {
+      "filename": "full-tests-2cbe-checks.json",
+      "sha256": "c5999c9ec6b888e33618f3a9ecb7c24c580a112fd5c81df4a654938001973151"
+    },
+    {
+      "filename": "local-29-acceptance.json",
+      "sha256": "db0dc78d3c9f091ecc08f7eb32971520e02a67d9aefc21eaf618fa9975b498cd"
+    },
+    {
+      "filename": "local-30-persistent-save-proof.json",
+      "sha256": "f156e4c4d8b907c87d67019029f011f04f272d266d54f528d6515156682db7b3"
+    },
+    {
+      "filename": "local-30-viewer-expired.jpg",
+      "sha256": "c0d57cc6b45f09ea771d00b8df8620ed6025b8f90f36a5c2c7e4e9a6206a8bdb"
+    },
+    {
+      "filename": "local-31-human-keyboard-proof.json",
+      "sha256": "4bb20ba175bce987b3099521646fa2617f8ed48b2d32fc63262f75653d7fcafb"
+    },
+    {
+      "filename": "local-31-human-keyboard.jpg",
+      "sha256": "2f043fe11e9a7971fe10fac676cd8b40a405043f1a984f7260f42ddcf5798ebe"
+    },
+    {
+      "filename": "local-final-cli-ui-proof.json",
+      "sha256": "011a50bd6bf6376ca95536df28d82292937bea3a96e4e7da993e167adda75588"
+    },
+    {
+      "filename": "main-25-ibus-cgroups.json",
+      "sha256": "fc1705d8a0b0bf45292a3b7bce73d9f1c7c8bdf45f44f894bf633673c0d01965"
+    },
+    {
+      "filename": "native-23-detached-vite.json",
+      "sha256": "d0cedf0ae5649d2154a6bf5e57960366871f7f8668899edad847c12a7fd4d55a"
+    },
+    {
+      "filename": "native-23-final-codex-idle.json",
+      "sha256": "fce9700053bbff635bdfbde58797eefa563473b0778392bc90f5bab2058277a0"
+    },
+    {
+      "filename": "native-23-final-idle-provider-receipt.json",
+      "sha256": "37d26aa975fe40cec2752b5f4b46ad3caa3829f737962721c29087f061f44706"
+    },
+    {
+      "filename": "native-23-hmr-completed-processes.json",
+      "sha256": "0bd41b55897286e0f3ae9a54b9df606251be48ce4584f61cb0f96950e24170f1"
+    },
+    {
+      "filename": "native-23-hmr.json",
+      "sha256": "9ad03e77f857ee979aa4fcc2138d33477e3e56f926f205683bbaf3f2ceb8561c"
+    },
+    {
+      "filename": "native-25-second-idle-acceptance.json",
+      "sha256": "acacd5869eed764b5b3d4c9111afd90ccd811bd6f84dabff65f31ff4ba01be87"
+    },
+    {
+      "filename": "native-26-claude-cold-processes.json",
+      "sha256": "121e69487233ff02822a6942c73cedba7d76378f51c577a64adb56fb213600b4"
+    },
+    {
+      "filename": "native-26-claude-cold-receipt.json",
+      "sha256": "2e722a00f0c38a9209223fceb85e3cfbfa2066abd8aab9b2262854ac269bea43"
+    },
+    {
+      "filename": "native-26-claude-full-cycle-acceptance.json",
+      "sha256": "ca48075e5597e8e372ab23cd5bc0bbed8ea5b9a513508d64bcda054dd0fc64c3"
+    },
+    {
+      "filename": "native-26-claude-idle-provider-receipt.json",
+      "sha256": "2dbf36714586c058f0b61a327661a87912896b4236b5dd4ed6f28bf30f983197"
+    },
+    {
+      "filename": "native-26-claude-idle-transition.json",
+      "sha256": "e329446a9047ebf027cfc5e03c17d509108ef4a2fe3234c8f1e3550d1d2a9339"
+    },
+    {
+      "filename": "native-26-claude-postidle-framing.json",
+      "sha256": "2cb8cc8444d97d1dfaddd171374f67a5bf83ba02bf917f9d73b7bbc6b0ce8e05"
+    },
+    {
+      "filename": "native-26-claude-postidle-processes.json",
+      "sha256": "e306fca2315d0d4a01fc0755e20ecdbec39c3e6cc73065397ea9d531bbfeb739"
+    },
+    {
+      "filename": "native-26-claude-postidle-receipt.json",
+      "sha256": "24e28652f87f39980b8a4571424fc72bdcec054991e4d93a24f9f9072d921c2f"
+    },
+    {
+      "filename": "native-26-claude-warm-framing.json",
+      "sha256": "e48a44a5505e057c4be9bd4b35e9ac56db980231de23181e9ec7b7de5e188416"
+    },
+    {
+      "filename": "native-26-claude-warm-processes.json",
+      "sha256": "747b8f8e5150996453fb2b3a9446af90744a637b57b302e4315bc8e720aaae7c"
+    },
+    {
+      "filename": "native-26-claude-warm-receipt.json",
+      "sha256": "89f421e79806d88a7ddad71b6de1f69eee14ad0de3f0b09d00e5a2c7bff22b1b"
+    },
+    {
+      "filename": "native-26-final-local-resource-state.json",
+      "sha256": "cba4d2cd372a2cdefe8323844ccfeb3bf4d8f6e9631fd9e8902437c212f53729"
+    },
+    {
+      "filename": "staging-10-all-native-runners.json",
+      "sha256": "6cb711c8695c88d737baea470cd7bf9897871ffc32e26005d77871fb196f6a01"
+    },
+    {
+      "filename": "staging-10-claude-idle-processes.json",
+      "sha256": "28b9e08687dcb3aeba2ee84d7e0db103113feb92a7927ecc57aa44232cb2ff6f"
+    },
+    {
+      "filename": "staging-10-claude-post-idle-discovery.json",
+      "sha256": "2a963555074283a6210d32bde7ab5a2e4c63cfc63d0722594cccffdbf1666cc8"
+    },
+    {
+      "filename": "staging-10-claude-warm-comparison.json",
+      "sha256": "39a4195e6c338cc72611ad75aebac2e3068958c96452d384ac08fee4bb28f2c5"
+    },
+    {
+      "filename": "staging-10-codex-idle-processes.json",
+      "sha256": "5d4b616e3a76d5838f86c59f86bb6a052a06e3d16fead82723246ba890045ed4"
+    },
+    {
+      "filename": "staging-10-post-idle-provider-state.json",
+      "sha256": "63f82c488f55edcce7b22d19490d04193053864fe099c58a24f630d84599018a"
+    },
+    {
+      "filename": "staging-73b2-human-keyboard.jpg",
+      "sha256": "36585e1c33998327aa88e1bdc029c761584756eb54c87d1c961e507fe3497223"
+    },
+    {
+      "filename": "staging-73b2-legacy-claude-job.jpg",
+      "sha256": "c188f73d875518ec157e0de67b3cd221d4ae71c0076aa22bd0948dc8f287fd24"
+    },
+    {
+      "filename": "staging-73b2-legacy-claude-onboarding.jpg",
+      "sha256": "676e7b57ec3f6e05a12223fc8341cb235ee5002ccae6be5df08164661d6a4210"
+    },
+    {
+      "filename": "staging-73b2-legacy-codex-job.jpg",
+      "sha256": "d1a39029660c6325d9ee33ba5c3e2b94470ccd18cbd16178bf89eb4277e19d17"
+    },
+    {
+      "filename": "staging-73b2-legacy-codex-onboarding.jpg",
+      "sha256": "50db9872917eb58afc60111856787a50bbbfa562f32e9e9da7c26b181129849a"
+    },
+    {
+      "filename": "staging-73b2-native-claude-job.jpg",
+      "sha256": "788823aa5fcad847a4cfdb4b5eeb9456980ad99132307032300bd9af7859718c"
+    },
+    {
+      "filename": "staging-73b2-native-claude-onboarding.jpg",
+      "sha256": "ae654c71aa39e80a4a73939e552f5d6a4bcca5868507df3106871b3a0fcd7d0a"
+    },
+    {
+      "filename": "staging-73b2-native-claude-post-idle-dom.txt",
+      "sha256": "64128f2ba475c2bef89b2424ca0312230186661e1fe05d0030fc93d537b33d90"
+    },
+    {
+      "filename": "staging-73b2-native-claude-post-idle-run-dom.txt",
+      "sha256": "40e3bed0b48a4af18e6ad39681f8cb91661a7278e3ac7ef14dc4051939260977"
+    },
+    {
+      "filename": "staging-73b2-native-claude-post-idle.jpg",
+      "sha256": "b9e921535baf5860b4924723c8d4aa3f08bd2d6951777a0a08dbd1231ddd17fa"
+    },
+    {
+      "filename": "staging-73b2-native-claude-resume-session-dom.txt",
+      "sha256": "0b64c050faebe65405b29ef19d973b5089c44784804c75497f56901ad6ca4e1f"
+    },
+    {
+      "filename": "staging-73b2-native-claude-warm-dom.txt",
+      "sha256": "2a1ef696ca4ba54d914bc93b57425466b5b757217cc75976899bb2805c6bcd78"
+    },
+    {
+      "filename": "staging-73b2-native-claude-warm-session-dom.txt",
+      "sha256": "29f124032aa3c0b04eba691e8f0bd485ce073b7bb0e797edc1631cb67b5b0eb2"
+    },
+    {
+      "filename": "staging-73b2-native-codex-first-proof.json",
+      "sha256": "e925526ee6b8a821259e4befd09ad11f152cf1619eb9f3246a394f4da162dcb6"
+    },
+    {
+      "filename": "staging-73b2-native-codex-job.jpg",
+      "sha256": "634b4a82e40a3455a9f25d4cefc809f436c850b03755865254b64a970add035f"
+    },
+    {
+      "filename": "staging-73b2-native-codex-onboarding.jpg",
+      "sha256": "b3c6c5518b0b1ace0d65aae0fbb6b590c072400ee5c256c65f58cbf03ea15949"
+    },
+    {
+      "filename": "staging-compat-final-proof.json",
+      "sha256": "5d0b5311d5320cc88d31eb04b0f8dd4b2cd5609af528ab2daa565e59db24ad26"
+    },
+    {
+      "filename": "staging-compat-manifest-proof.json",
+      "sha256": "656dafab25e051d113169a81a893e18e73ed6da64041e53139033a789eef5c6c"
+    },
+    {
+      "filename": "staging-compat-schema-proof.json",
+      "sha256": "109b6f1f6eaa1ca9b1115eb468db829e9a21ce04c54e9ec672aa0ca9db542c2d"
+    },
+    {
+      "filename": "staging-deploy-9-assessment.json",
+      "sha256": "719693c23e48cfa08762768c135a9bf5c00a050f508007f6f4f22132fef6ba6a"
+    },
+    {
+      "filename": "local-32-legacy-acceptance.json",
+      "sha256": "2505db958231218e9315de13e9afd3c2d4ce5b5ec3e93a8f528229dd14846d24"
+    },
+    {
+      "filename": "local-32-legacy-prompt-directives.json",
+      "sha256": "3689105511f10e50c797908e70a9c3fbba739d3c99567934c8d86c2604c06286"
+    },
+    {
+      "filename": "current-head-ci-review.json",
+      "sha256": "3e0237903089c5f38cbc2e7a1ab989d93dbf781704a8690538bf3166ed094024"
+    },
+    {
+      "filename": "staging-compat-final-legacy-proof.json",
+      "sha256": "a04a540d53190ff0113b2025e51ddb895e0b95aff2758190cd3abb6eca7f4729"
+    },
+    {
+      "filename": "final-legacy-preview-build-status.json",
+      "sha256": "3bd0ade76766928d912d6d5dc34f880cc368002c4a4c53cd26bcbfe4603bfabc"
+    },
+    {
+      "filename": "final-provider-inventory-after-legacy-fix.json",
+      "sha256": "e6c5ee6789b22e92f8401e8cfdc74bb1365b739e46437b1e44b6014431d84d8a"
+    },
+    {
+      "filename": "final-local-ledger-inventory.json",
+      "sha256": "32fda6babe929b0dcef08c27aefb683005d4f5d1120e76fbefb496478bf1a754"
+    },
+    {
+      "filename": "staging-deploy-11-verified.json",
+      "sha256": "b18d0bd471ebbe89cad4304ba2c1e1a96d1972254c947a765a6625b27e7bf50a"
+    },
+    {
+      "filename": "latest-core-test-provenance.json",
+      "sha256": "a09145e3ec186362e2d97341952ec39b14daf6abceb2463063c0f27472ee0eed"
+    },
+    {
+      "filename": "staging-11-natural-cleanup.json",
+      "sha256": "2789ac6654bf65e88b263831306fde799d6946d97f577a89c109fef3f3a37a84"
+    },
+    {
+      "filename": "staging-11-legacy-claude-dom.txt",
+      "sha256": "48d28c04d04d7e178c9a5b5a02198903f5acf45a857a468c426f5d1c1a7afbfa"
+    },
+    {
+      "filename": "staging-11-legacy-claude-run-dom.txt",
+      "sha256": "64968fb594c450451253c9936739aea4fce1dd1e2200d33745ac3cff4c089df2"
+    },
+    {
+      "filename": "staging-11-legacy-claude-complete.jpg",
+      "sha256": "a6eec82db0f27dc17b548891c8c86e8a89f483da34c3db1225ea4216c2ecac5b"
+    },
+    {
+      "filename": "staging-11-legacy-codex-dom.txt",
+      "sha256": "1502a2b3d86c656057a73acd3d4451ae28f9d138f685f15c524c7a1b49c43d2c"
+    },
+    {
+      "filename": "staging-11-legacy-codex-run-dom.txt",
+      "sha256": "158e0164d1b57da66c3d67be7e3bf694fe98f97134d1123254129debdbd8f508"
+    },
+    {
+      "filename": "staging-11-legacy-codex-complete.jpg",
+      "sha256": "31979a51554c781cf6172d0af06958159db472a76e8fdbdcbd5e4bdb1d45cea2"
+    },
+    {
+      "filename": "staging-11-legacy-regression.json",
+      "sha256": "98886c1e5add999ca5484b780f9b7b84faa30c11028a888e071f2c8804a55af8"
+    },
+    {
+      "filename": "staging-11-codex-cli-ui.txt",
+      "sha256": "174938da2fc32b2f883385d810a7be14b014bfb995568299fa53dcfb8a55ee59"
+    },
+    {
+      "filename": "staging-11-claude-cli-ui.txt",
+      "sha256": "9562f5697fdcace530c62b0a89efa0367f1d002e4aee578499f0e74cf1868e1f"
+    }
+  ],
+  "sourceAttribution": "Controller 25 and 26 serving SHAs were independently verified by the coordinating agent; other source labels are taken from original receipts.",
+  "excluded": [
+    "credentials",
+    "viewer URLs",
+    "private hosting origins",
+    "private-cloud links",
+    "raw environment",
+    "profile content",
+    "raw logs",
+    "personal filesystem paths",
+    "private database names and addresses",
+    "company identifiers and internal issue URLs"
+  ],
+  "staging": "Partial product acceptance on exact serving source73b2; final-source and blocked HMR/legacy follow-up qualification remain incomplete.",
+  "updatedAt": "2026-10-10T21:16:01.148201+00:00",
+  "latestCandidateProof": "final-candidate-provenance.json"
+}
