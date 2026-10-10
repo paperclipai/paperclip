@@ -335,6 +335,8 @@ export async function prepareIsolatedCodexHome(input: {
   codexHome: string;
   sourceCodexHome?: string | null;
   nativeMcp?: NativeMcpLaunchBinding | null;
+  /** Trusted execution-environment capability, never inherited from host config. */
+  computerTool?: { command: string; args: readonly string[] } | null;
   apiKey?: string | null;
 }): Promise<void> {
   await materializeNativeRuntimeSkills(
@@ -365,6 +367,13 @@ export async function prepareIsolatedCodexHome(input: {
           "",
         ]
       : []),
+    ...(input.computerTool ? [
+      "[mcp_servers.paperclip_computer]",
+      `command = ${JSON.stringify(input.computerTool.command)}`,
+      `args = ${JSON.stringify(input.computerTool.args)}`,
+      'default_tools_approval_mode = "approve"',
+      "",
+    ] : []),
   ].join("\n"), { mode: 0o600 });
 
   const targetAuth = join(input.codexHome, "auth.json");

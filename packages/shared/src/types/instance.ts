@@ -41,6 +41,7 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  enableBoatEnvironments: boolean;
   /**
    * Exposes the experimental Paperclip Runner adapter for new selections.
    * Existing native runs ignore later flag changes so they remain recoverable.

@@ -1367,11 +1367,27 @@ const browserUseOperations = [
   ["put", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Update browser credential settings", browserUseSettingsSchema],
 ] as const;
 
+const computerOwnerSchema = z.object({
+  computerId: z.string().uuid(), ownerId: z.string().uuid(), generation: z.number().int().positive(),
+}).strict();
+const computerScopeSchema = z.object({ environmentId: z.string().uuid() }).strict();
+const computerPresenceSchema = computerScopeSchema.extend({ owner: computerOwnerSchema });
+const computerViewerSchema = z.object({ viewerUrl: z.string().url(), expiresAt: z.string().datetime(), owner: computerOwnerSchema });
+const computerOperations = [
+  ["get", "/api/issues/{issueId}/computer", "Read the task computer selection", undefined,
+    z.object({ environmentId: z.string().uuid(), name: z.string() }).nullable()],
+  ["post", "/api/issues/{issueId}/computer/connect", "Connect to the shared computer desktop", computerScopeSchema, computerViewerSchema],
+  ["post", "/api/issues/{issueId}/computer/presence", "Refresh an owned computer viewer", computerPresenceSchema, computerViewerSchema],
+  ["post", "/api/issues/{issueId}/computer/disconnect", "Disconnect an owned computer viewer", computerPresenceSchema, undefined],
+  ["post", "/api/issues/{issueId}/computer/preview", "Open a task-owned computer port", computerScopeSchema.extend({ port: z.number().int().min(1024).max(65535) }), z.object({ url: z.string().url() })],
+] as const;
+
 const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/decision-model",
   "PUT /api/companies/{companyId}/decision-model",
   "POST /api/companies/{companyId}/decision-model/test",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...computerOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -2229,6 +2245,26 @@ for (const [method, path, summary, body] of browserUseOperations) {
     method, path, summary, body, tags: ["Browser Use Cloud"],
     ...(path.endsWith("/viewer") ? { query: browserUseViewerSchema.partial() } : {}),
     responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+
+for (const [method, path, summary, body, response] of computerOperations) {
+  const success = {
+    ...(response ? r.ok(response) : r.noContent),
+    headers: {
+      "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+      "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+    },
+  };
+  registry.registerPath({
+    method, path, summary, tags: ["Computers"],
+    description: "Experimental Boat environment operation. Requires board access to the task and its company-bound computer. Viewer URLs are private credentials. Presence refresh cannot extend the original viewer deadline. Disconnect remains available when the experiment is disabled. Preview resolves ownership from the task lease and rejects reserved runner ports.",
+    request: { params: z.object({ issueId: z.string().uuid() }), ...(body ? { body: jsonBody(body) } : {}) },
+    responses: {
+      [response ? 200 : 204]: success,
+      400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound,
+      409: r.conflict, 422: r.unprocessable, 502: { description: "Computer provider request failed" },
+    },
   });
 }
 

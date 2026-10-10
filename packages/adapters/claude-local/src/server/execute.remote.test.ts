@@ -231,6 +231,31 @@ describe("claude remote execution", () => {
     }));
   });
 
+  it("keeps an authoritative remote workspace in place while delivering managed Claude assets", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-in-place-"));
+    cleanupDirs.push(rootDir);
+    await execute({
+      runId: "run-in-place",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude", cwd: "/stale-host-cwd" },
+      context: { paperclipWorkspace: { cwd: "/remote-only-agent-home", source: "agent_home" } },
+      executionTarget: {
+        kind: "remote", transport: "ssh", remoteCwd: "/old-copied-workspace",
+        workspaceRealization: { mode: "in_place", authoritativeRoot: "/persistent-project", pathAliases: [], outboundRestorePaths: [] },
+        spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/persistent-project", remoteCwd: "/persistent-project",
+          privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA", strictHostKeyChecking: true },
+      },
+      onLog: async () => {},
+    });
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({ remoteDir: "/persistent-project/.paperclip-runtime/claude/skills" }));
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { remoteExecution: { remoteCwd: string } }];
+    expect(call[3].remoteExecution.remoteCwd).toBe("/persistent-project");
+  });
+
   it("does not resume saved Claude sessions for remote SSH execution without a matching remote identity", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-"));
     cleanupDirs.push(rootDir);

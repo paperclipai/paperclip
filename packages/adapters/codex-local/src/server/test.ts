@@ -9,6 +9,7 @@ import {
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  adapterExecutionTargetIsCommandBacked,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   maybeRunSandboxInstallCommand,
@@ -277,7 +278,7 @@ export async function testEnvironment(
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const targetIsSandbox = adapterExecutionTargetIsCommandBacked(target);
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)

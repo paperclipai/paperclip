@@ -495,14 +495,15 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         : { mode: "per_turn" as const, idleTimeoutMs: null };
     const environmentLifecyclePolicy =
       executionTarget?.kind === "remote" &&
-      executionTarget.transport === "sandbox"
+      (executionTarget.transport === "sandbox" || executionTarget.transport === "computer")
         ? (executionTarget.runnerLifecyclePolicy ?? null)
         : null;
     // Native Codex owns a durable, session-scoped home. It flushes refreshed
     // auth into each invocation's private home before that home is removed.
     // Other managed harnesses still require per-turn credential cleanup.
     const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-      nativeRuntimeResolution.profile.backend === "codex_app_server";
+      (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+        executionTarget?.kind === "remote" && executionTarget.transport === "computer");
     const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
       (nativeRuntimeResolution.profile.backend === "openai_dot_mcp" || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
@@ -864,8 +865,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       });
       selectedLifecycleSpan.end();
     }
-    providerResourceDispositionForRun =
-      nativeSandboxLifecycle?.sandboxResource === "keep_running"
+    providerResourceDispositionForRun = executionTarget?.kind === "remote" && executionTarget.transport === "computer"
+      ? nativeExecution.session.lifecyclePolicy.mode === "warm" ? "keep_running" : "stop_and_retain"
+      : nativeSandboxLifecycle?.sandboxResource === "keep_running"
         ? "keep_running"
         : nativeSandboxLifecycle?.sandboxResource === "stop_and_reuse"
           ? "stop_and_retain"

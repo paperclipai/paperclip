@@ -3455,7 +3455,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; executionEnvironmentDriver?: string | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3506,6 +3506,19 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
     );
+
+    if (opts?.executionEnvironmentDriver === "computer") {
+      const selected = projectWorkspaceRows[0];
+      // This is a stable intent path. Computer realization supplies its actual
+      // remote path without cloning, statting, or provisioning controller files.
+      return {
+        cwd: `/paperclip/remote/${agent.companyId}/${selected?.projectId ?? agent.id}`,
+        source: selected ? "project_primary" : "agent_home",
+        projectId: workspaceProjectId, workspaceId: selected?.id ?? null,
+        repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
+        workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [],
+      };
+    }
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,

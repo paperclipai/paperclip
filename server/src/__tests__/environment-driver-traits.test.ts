@@ -47,11 +47,11 @@ describe("environment driver traits", () => {
     });
   }
 
-  it("only the sandbox driver has a lease capability model today", () => {
+  it("computer and sandbox drivers have a lease capability model", () => {
     const withModel = Object.values(ENVIRONMENT_DRIVER_TRAITS).filter(
       (traits) => traits.hasLeaseCapabilityModel,
     );
-    expect(withModel.map((traits) => traits.driver)).toEqual(["sandbox"]);
+    expect(withModel.map((traits) => traits.driver).sort()).toEqual(["computer", "sandbox"]);
   });
 
   it("getEnvironmentDriverTraits resolves a registered driver", () => {

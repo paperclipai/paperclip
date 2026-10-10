@@ -302,8 +302,11 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
       const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
-      const managedRemoteCwd =
-        input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
+      const workspaceRealization = input.target?.kind === "remote"
+        ? input.target.workspaceRealization : undefined;
+      const managedRemoteCwd = workspaceRealization?.mode === "in_place"
+        ? workspaceRealization.authoritativeRoot
+        : input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
       tempWorkspaceDir = await fs.mkdtemp(
         path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"),
       );
@@ -313,6 +316,9 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         adapterKey: "claude",
         workspaceLocalDir: tempWorkspaceDir,
         workspaceRemoteDir: managedRemoteCwd,
+        // A readiness probe only stages config assets. In-place workspaces are
+        // persistent authority and must never receive the empty probe workspace.
+        syncWorkspace: workspaceRealization?.mode !== "in_place",
         timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
         assets: [
           {

@@ -15,6 +15,7 @@
  * and transport logic.
  */
 
+import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
   Environment,
@@ -203,6 +204,7 @@ export function environmentRunOrchestrator(
    * Wraps the runtime driver's acquire call with standardized error handling.
    */
   async function acquireLease(input: {
+    executionConfigurationKey?: string;
     companyId: string;
     environment: Environment;
     issueId: string | null;
@@ -267,6 +269,7 @@ export function environmentRunOrchestrator(
     localEnvironmentId: string;
     adapterType: string;
     adapterConfig?: Record<string, unknown>;
+    executionConfigurationKey?: string;
     admittedLifecycleMode?: "warm" | "per_turn";
     issueId: string | null;
     heartbeatRunId: string;
@@ -289,6 +292,9 @@ export function environmentRunOrchestrator(
 
     // Step 2: Acquire lease
     const acquisitionInput = {
+      executionConfigurationKey: environment.driver === "computer" ? createHash("sha256").update(JSON.stringify([
+        input.adapterConfig, input.executionConfigurationKey, environment.config, environment.envVars,
+      ])).digest("hex") : undefined,
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
@@ -305,14 +311,14 @@ export function environmentRunOrchestrator(
       // when the admitted per-turn policy deliberately disables reusable leases.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
-      if (!lease || environment.driver !== "sandbox" ||
+      if (!lease || (environment.driver !== "sandbox" && environment.driver !== "computer") ||
           lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
           lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
           lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
           lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
           lease.releasedAt !== null || lease.cleanupStatus !== null ||
           (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
-          lease.provider !== environment.config.provider || lease.providerLeaseId !== expected.providerLeaseId ||
+          lease.provider !== (environment.driver === "computer" ? "boat" : environment.config.provider) || lease.providerLeaseId !== expected.providerLeaseId ||
           lease.metadata?.remoteCwd !== expected.remoteCwd) {
         throw new Error("native_remote_recovery_lease_mismatch");
       }
@@ -517,8 +523,9 @@ export function environmentRunOrchestrator(
 
     // Step 3: Persist realization metadata on lease and execution workspace
     if (Object.keys(workspaceRealization).length > 0) {
+      const refreshedLease = environment.driver === "computer" ? await environmentsSvc.getLeaseById(lease.id) : null;
       const nextLeaseMetadata = {
-        ...(lease.metadata ?? {}),
+        ...(refreshedLease?.metadata ?? lease.metadata ?? {}),
         workspaceRealization,
       };
       const updatedLease = await environmentsSvc.updateLeaseMetadata(lease.id, nextLeaseMetadata);
@@ -594,6 +601,14 @@ export function environmentRunOrchestrator(
       );
     }
 
+    if (executionTarget?.kind === "remote" && executionTarget.transport === "computer" && persistedExecutionWorkspace) {
+      persistedExecutionWorkspace = await executionWorkspacesSvc.update(persistedExecutionWorkspace.id, {
+        cwd: executionTarget.remoteCwd,
+        providerRef: executionTarget.remoteCwd,
+        metadata: { ...(persistedExecutionWorkspace.metadata ?? {}),
+          fileAuthority: { ...executionTarget.fileAuthority, environmentId: environment.id } },
+      }) ?? persistedExecutionWorkspace;
+    }
     return {
       lease,
       workspaceRealization,

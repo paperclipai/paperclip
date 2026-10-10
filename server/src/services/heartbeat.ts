@@ -1,5 +1,6 @@
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
+import { readNativeComputerWorkspaceReference } from "./native-runtime/native-workspace-sync.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
@@ -331,7 +332,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentInstructionWorkingCopyService, collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
-
+import { preparePersistentAgentExecutionHome } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -3784,7 +3785,7 @@ export function heartbeatService(
             {
               useProjectWorkspace:
                 requestedExecutionWorkspaceMode !== "agent_default",
-              anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
+              anchorWorkspace: selectedEnvironmentForConfig?.driver !== "computer" && requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
                 ? await resolveReusedGitWorkspaceAnchor({
                     agent,
                     workspace: reusableExistingExecutionWorkspace,
@@ -3834,7 +3835,7 @@ export function heartbeatService(
         repoRef: resolvedWorkspace.repoRef,
         additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
       } satisfies ExecutionWorkspaceInput;
-      await assertGitWorktreeBaseWorkspaceReady({
+      if (selectedEnvironmentForConfig?.driver !== "computer") await assertGitWorktreeBaseWorkspaceReady({
         requestedExecutionWorkspaceMode,
         config: hostExecutionWorkspaceConfig,
         issue: issueRef,
@@ -3969,7 +3970,18 @@ export function heartbeatService(
         executionWorkspace,
         reusedExecutionWorkspace,
         policy: resolvedWorkspaceReusePolicy,
-      } = isDotRun ? { executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace, reusedExecutionWorkspace: false, policy: workspaceReuseProvisioningPolicy } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+      } = (isDotRun || selectedEnvironmentForConfig?.driver === "computer") ? {
+        executionWorkspace: {
+          ...executionWorkspaceBase,
+          strategy: selectedEnvironmentForConfig?.driver === "computer" ? latestWorkspaceStrategyType : "project_primary",
+          cwd: resolvedWorkspace.cwd,
+          branchName: selectedEnvironmentForConfig?.driver === "computer" && latestWorkspaceStrategyType === "git_worktree" && issueId
+            ? reusableExistingExecutionWorkspace?.branchName ?? `paperclip/task-${issueId}` : null,
+          worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false,
+        } as RealizedExecutionWorkspace,
+        reusedExecutionWorkspace: false,
+        policy: workspaceReuseProvisioningPolicy,
+      } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
         {
           requestedShouldReuseExisting,
           existingExecutionWorkspaceId:
@@ -4084,7 +4096,7 @@ export function heartbeatService(
         issueRef?.executionWorkspacePreference ?? null;
       let issueExecutionWorkspaceModeForRun =
         issueExecutionWorkspaceSettings?.mode ?? null;
-      const warmReusableExecutionWorkspace =
+      const warmReusableExecutionWorkspace = selectedEnvironmentForConfig?.driver === "computer" ||
         selectedEnvironmentForConfig?.driver === "sandbox" &&
         selectedEnvironmentConfigForFingerprint.reuseLease === true &&
         selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
@@ -4365,7 +4377,7 @@ export function heartbeatService(
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const projectRepositoryPaths: string[] = [];
-      if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+      if (selectedEnvironmentForConfig?.driver !== "computer" && executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
         const repositoryRows = await db.select().from(projectWorkspaces).where(and(
           eq(projectWorkspaces.companyId, agent.companyId),
           eq(projectWorkspaces.projectId, executionWorkspace.projectId),
@@ -4402,7 +4414,7 @@ export function heartbeatService(
         const remoteRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
           ? runOptions.nativeRestartRecovery : null;
         const recoveryWorkspace = remoteRecovery
-          ? readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) : null;
+          ? (readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) ?? readNativeComputerWorkspaceReference(parseObject(run.runnerProfileJson).nativeComputerWorkspace)) : null;
         if (remoteRecovery && (!recoveryWorkspace || remoteRecovery.runId !== run.id ||
             recoveryWorkspace.providerLeaseId !== remoteRecovery.remote.providerLeaseId ||
             recoveryWorkspace.remoteCwd !== remoteRecovery.remote.remoteCwd)) {
@@ -4414,6 +4426,11 @@ export function heartbeatService(
           localEnvironmentId: localEnvironment.id,
           adapterType: agent.adapterType,
           adapterConfig: parseObject(agent.adapterConfig),
+          executionConfigurationKey: createHash("sha256").update(JSON.stringify([
+            config, agent.runtimeConfig, agent.permissions, managedAiRuntime?.sessionIdentity,
+            managedAiRuntime?.identity, githubSelection.configured, useHostGitHub, issueContext?.workMode,
+            context.refreshTools === true ? run.id : null,
+          ])).digest("hex"),
           admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
           issueId: issueId ?? null,
           heartbeatRunId: run.id,
@@ -4548,6 +4565,10 @@ export function heartbeatService(
       // Preserve the host-owned source before adapter context can share lease
       // metadata. A later copy-back failure must not adopt a rebound source.
       const workspaceRestoreSource = structuredClone(realizationResult.lease);
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "computer") {
+        executionWorkspace.cwd = executionTarget.remoteCwd;
+        if (executionWorkspace.strategy === "git_worktree") executionWorkspace.worktreePath = executionTarget.remoteCwd;
+      }
       let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
       let instructionSave: Record<string, unknown> | null = null;
       const instructionPreparationKey = createHash("sha256").update(JSON.stringify({
@@ -4745,6 +4766,11 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      await preparePersistentAgentExecutionHome(db, {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        target: executionTarget,
+      });
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
@@ -4861,7 +4887,8 @@ export function heartbeatService(
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
         realization: workspaceRealization,
-        agentHome: await (async () => {
+        agentHome: executionTarget?.kind === "remote" && executionTarget.transport === "computer"
+          ? executionTarget.fileAuthority.agentHome : await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);
           await fs.mkdir(home, { recursive: true });
           return home;
@@ -5307,7 +5334,7 @@ export function heartbeatService(
               typeof entry[0] === "string" && typeof entry[1] === "string",
           ),
         );
-        const runtimeServices = await ensureRuntimeServicesForRun({
+        const runtimeServices = selectedEnvironmentForConfig?.driver === "computer" ? [] : await ensureRuntimeServicesForRun({
           db,
           runId: run.id,
           agent: {
@@ -5446,9 +5473,9 @@ export function heartbeatService(
             const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
             const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
             const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-            const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+            const warmFiles = nativeRuntimeResolution.kind === "native" && ((executionTarget?.kind === "remote" && executionTarget.transport === "computer") || nativeRuntimeResolution.profile.backend === "codex_app_server" ||
               (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
-              (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+              (executionTarget?.kind === "remote" && (executionTarget.transport === "sandbox" || executionTarget.transport === "computer")
                 ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
                 : parseObject(agent.adapterConfig).lifecycleMode === "warm");
             if (warmFiles && taskSessionForRun?.lastRunId) {

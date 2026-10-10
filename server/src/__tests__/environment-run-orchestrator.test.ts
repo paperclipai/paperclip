@@ -749,6 +749,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
 
 describe("native runner lifecycle changes before lease acquisition", () => {
+  it("fences computer warm admission when the selected model changes", async () => {
+    const environment = { ...makeEnvironment("computer"), config: { provider: "boat" } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
+    const input = { companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType: "paperclip_runner",
+      issueId: "task", heartbeatRunId: "run-1", agentId: "agent-1", persistedExecutionWorkspace: null, executionWorkspaceSettings: null };
+    for (const model of ["model-a", "model-a", "model-b"]) await orchestrator.acquireForRun({ ...input, adapterConfig: { provider: "codex", model } });
+    const keys = acquireRunLease.mock.calls.map(([input]) => input.executionConfigurationKey);
+    expect(keys[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
   it("requests a reusable lease when an existing task switches from per-turn to warm", async () => {
     const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
     mockGetEnvironment.mockResolvedValue(environment);

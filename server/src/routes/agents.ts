@@ -3060,7 +3060,7 @@ export function agentRoutes(
     if (test) {
       const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
       if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId);
-      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
+      const target = await resolveAdapterTestExecutionContext({ companyId, agentId, adapterType, environmentId: testEnvironmentId });
       try {
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true }, async managed => {
@@ -3193,6 +3193,7 @@ export function agentRoutes(
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
+          agentId: savedAgentId ?? undefined,
           adapterType: type,
           environmentId: requestedEnvironmentId,
         });

@@ -1,9 +1,10 @@
-import { inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
+import { persistentAgentFiles, readPersistentAgentFile, seedPersistentAgentHome } from "./persistent-agent-files.js";
+import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_FILE_BYTES } from "./agent-file-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
-import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
+import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -489,6 +490,37 @@ export function syncInstructionsBundleConfigFromFilePath(
 }
 
 export function agentInstructionsService(db?: Db) {
+  async function remoteFiles(agent: AgentLike) {
+    // External instructions keep their configured authority even when the
+    // agent has a separate personal directory on a computer.
+    if (agentInstructionsBundleMode(agent) === "external") return null;
+    const remote = db ? await persistentAgentFiles(db, agent.companyId, agent.id) : null;
+    if (remote && db) {
+      const root = await db.transaction(async tx => {
+        const [current] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
+        if (!current) throw notFound("Agent not found");
+        // updateBundle previews the prospective managed config before the
+        // caller saves it. Do not adopt a still-external persisted bundle.
+        if (agentInstructionsBundleMode(current) === "external") return null;
+        return adoptAgentFiles(tx, current);
+      });
+      if (!root) return null;
+      await seedPersistentAgentHome(remote, root);
+    }
+    return remote;
+  }
+  async function remotePaths(remote: NonNullable<Awaited<ReturnType<typeof remoteFiles>>>, relative = ""): Promise<Array<{ path: string; size: number }>> {
+    const result: Array<{ path: string; size: number }> = [];
+    for (const entry of await remote.list(relative || undefined)) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      instructionPath(name);
+      if (entry.kind === "directory") {
+        if (!IGNORED_INSTRUCTIONS_DIRECTORY_NAMES.has(entry.name)) result.push(...await remotePaths(remote, name));
+      } else if (!IGNORED_INSTRUCTIONS_FILE_NAMES.has(entry.name)) result.push({ path: name, size: entry.size });
+      if (result.length > 100_000) throw unprocessable("Agent folder exceeds its entry limit");
+    }
+    return result;
+  }
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");
     const [head] = await connection.select().from(agentInstructionHeads).where(and(eq(agentInstructionHeads.companyId, agent.companyId),
@@ -497,6 +529,15 @@ export function agentInstructionsService(db?: Db) {
   }
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const summaries: AgentInstructionsFileSummary[] = [];
+      for (const { path: relative, size } of await remotePaths(remote)) {
+        const file = size <= MAX_INSTRUCTION_BYTES ? await readPersistentAgentFile(remote, relative) : null;
+        summaries.push(summarizeFile(relative, state.entryFile, size, file?.bytes ?? null, file?.sha256));
+      }
+      return toBundle(agent, { ...state, rootPath: remote.root, resolvedEntryPath: `${remote.root}/${state.entryFile}` }, summaries);
+    }
     if (!state.rootPath) return toBundle(agent, state, []);
     await assertInstructionPathSafe(state.rootPath, state.entryFile);
     const stat = await statIfExists(state.rootPath);
@@ -531,6 +572,13 @@ export function agentInstructionsService(db?: Db) {
         virtual: true,
         content,
       };
+    }
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const file = await readPersistentAgentFile(remote, relativePath);
+      if (!file) throw notFound("Instructions file not found");
+      const summary = summarizeFile(relativePath, state.entryFile, file.bytes.length, file.bytes, file.sha256);
+      return { ...summary, content: summary.binary ? "" : file.bytes.toString("utf8") };
     }
     if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
     await assertInstructionPathSafe(state.rootPath, relativePath);
@@ -593,6 +641,14 @@ export function agentInstructionsService(db?: Db) {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     const nextMode = input.mode ?? state.mode ?? "managed";
     const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      if (nextMode !== "managed") throw unprocessable("Persistent computer files require managed instructions");
+      if (!await readPersistentAgentFile(remote, nextEntryFile)) throw notFound("The selected instruction entry does not exist on the computer");
+      const adapterConfig = applyBundleConfig(state.config, { mode: "managed", rootPath: resolveManagedInstructionsRoot(agent),
+        entryFile: nextEntryFile, clearLegacyPromptTemplate: input.clearLegacyPromptTemplate });
+      return { adapterConfig, bundle: await getBundle({ ...agent, adapterConfig }) };
+    }
     let nextRootPath: string;
 
     if (nextMode === "managed") {
@@ -665,6 +721,7 @@ export function agentInstructionsService(db?: Db) {
       throw unprocessable("Entry edits require the canonical instruction commit service and baseRevisionId", { code: "INSTRUCTION_REVISION_REQUIRED" });
     }
     if (configured.mode !== "external") agentFilePath(relativePath);
+    if (await remoteFiles(agent)) throw unprocessable("Persistent remote file edits require the content API and expected content hash");
     const prepared = await ensureWritableBundle(agent, options);
     instructionBytes(content);
     await assertInstructionPathSafe(prepared.state.rootPath!, relativePath);
@@ -693,6 +750,7 @@ export function agentInstructionsService(db?: Db) {
     if (normalizedPath === state.entryFile) {
       throw unprocessable("Cannot delete the bundle entry file");
     }
+    if (await remoteFiles(agent)) throw unprocessable("Persistent remote file deletion requires the content API and expected content hash");
     const absolutePath = await assertInstructionPathSafe(state.rootPath, normalizedPath);
     await fs.rm(absolutePath, { force: true });
     const adapterConfig = buildPersistedBundleConfig(derived, state);
@@ -728,6 +786,16 @@ export function agentInstructionsService(db?: Db) {
     warnings: string[];
   }> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const remote = await remoteFiles(agent);
+    if (remote) {
+      const files: Record<string, string> = {};
+      for (const { path: relative, size } of await remotePaths(remote)) {
+        if (size > MAX_INSTRUCTION_BYTES) continue;
+        const file = await readPersistentAgentFile(remote, relative);
+        if (file) files[relative] = file.bytes.toString("utf8");
+      }
+      return { files, entryFile: state.entryFile, warnings: state.warnings };
+    }
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
@@ -760,6 +828,7 @@ export function agentInstructionsService(db?: Db) {
       entryFile?: string;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
+    if (await remoteFiles(agent)) throw unprocessable("Replace individual persistent files using their expected content hash");
     const rootPath = resolveManagedInstructionsRoot(agent);
     const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
 

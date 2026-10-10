@@ -432,6 +432,12 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
             throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux x64 or macOS architecture.`);
           }
+          if (target.transport === "computer" && profile.acpxAgent === "claude") {
+            const hello = await claudeTestEnvironment({ ...context, adapterType: "claude_local",
+              config: { ...context.config, engine: "cli", model: profile.model,
+                dangerouslySkipPermissions: context.config.acpxPermissionMode === "approve-all" } });
+            return { ...hello, adapterType: "paperclip_runner" };
+          }
           return {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
@@ -485,7 +491,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     }
     const result = profile.provider === "opencode"
       ? await openCodeTestEnvironment(context)
-      : await codexTestEnvironment(context);
+      : await codexTestEnvironment(context.executionTarget?.kind === "remote" && context.executionTarget.transport === "computer"
+          ? { ...context, config: { ...context.config, engine: "cli" } }
+          : context);
     return { ...result, adapterType: "paperclip_runner" };
   },
   listSkills: listCodexSkills,

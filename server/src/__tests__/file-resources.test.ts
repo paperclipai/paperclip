@@ -1,3 +1,4 @@
+import * as computerModule from "../modules/computers/index.js";
 import express from "express";
 import type { Request } from "express";
 import { execFile } from "node:child_process";
@@ -206,6 +207,45 @@ describeEmbeddedPostgres("workspace file resources", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("browses a recorded computer placement and confines previews/downloads to safe relative files", async () => {
+    const workspace = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot: workspace.projectRoot, executionRoot: workspace.executionRoot });
+    const environmentId = crypto.randomUUID(), placementId = crypto.randomUUID();
+    await db.update(executionWorkspaces).set({ providerType: "computer", cwd: "/home/user/paperclip/remote/project",
+      metadata: { fileAuthority: { kind: "remote-persistent", environmentId, placementId } } })
+      .where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+    const bytes = Buffer.from("only on Boat");
+    const readBytes = vi.fn(async () => ({ bytes, sha256: "unused-by-preview" }));
+    const listPage = vi.fn(async () => ({ entries: [{ name: "README.md", kind: "file", size: bytes.length, mtimeMs: 1 },
+      { name: ".env", kind: "file", size: 1, mtimeMs: 1 }, { name: ".paperclip-runtime", kind: "directory", size: 0, mtimeMs: 1 }], truncated: true }));
+    const stat = vi.fn(async (name: string) => ({ name, kind: "file", size: bytes.length, mtimeMs: 1 }));
+    const workspaceFiles = vi.fn(async () => ({ root: "/home/user/paperclip/remote/project", listPage, stat, readBytes }));
+    const factory = vi.spyOn(computerModule, "computerService").mockReturnValue({ workspaceFiles } as never);
+    try {
+      const service = workspaceFileResourceService(db);
+      const listed = await service.list(graph.issueId, { workspace: "execution" });
+      expect(listed.items.map(item => item.title)).toEqual(["README.md"]);
+      expect(listed.truncated).toBe(true);
+      expect(listPage).toHaveBeenCalledWith(undefined, { limit: 1000 });
+      expect(workspaceFiles).toHaveBeenCalledWith({ companyId: graph.companyId, environmentId, placementId });
+      const content = await service.readContent(graph.issueId, { path: "README.md", workspace: "execution" });
+      expect(content.content).toEqual({ encoding: "utf8", data: "only on Boat" });
+      expect(readBytes).toHaveBeenCalledWith("README.md", WORKSPACE_FILE_TEXT_MAX_BYTES);
+      await service.readContent(graph.issueId, { path: "beyond-listing-cap.md", workspace: "execution" });
+      expect(stat).toHaveBeenCalledWith("beyond-listing-cap.md");
+      expect(listPage).toHaveBeenCalledOnce();
+      expect(await service.prepareDownload(graph.issueId, { path: "README.md", workspace: "execution" })).toMatchObject({ bytes });
+      readBytes.mockClear();
+      await expect(service.readContent(graph.issueId, { path: ".env", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
+      await expect(service.readContent(graph.issueId, { path: "../other-company/secret", workspace: "execution" })).rejects.toMatchObject({ status: 403 });
+      expect(readBytes).not.toHaveBeenCalled();
+      workspaceFiles.mockClear();
+      const readOnly = workspaceFileResourceService(db, undefined, { allowComputerAccess: false });
+      await expect(readOnly.prepareDownload(graph.issueId, { path: "README.md", workspace: "execution" })).rejects.toMatchObject({ status: 422, details: { code: "remote_workspace" } });
+      expect(workspaceFiles).not.toHaveBeenCalled();
+    } finally { factory.mockRestore(); await fs.rm(workspace.root, { recursive: true, force: true }); }
   });
 
   it("withholds private task files and private cross-project targets", async () => {

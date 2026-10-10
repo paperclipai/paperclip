@@ -37,6 +37,18 @@ const secretRefSchema = z.object({
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
+const computerEnvironmentConfigSchema = z.object({
+  provider: z.literal("boat"),
+  sandboxId: z.string().trim().regex(/^bx_[a-zA-Z0-9]+$/, "Enter an existing Boat ID."),
+  apiKeySecretRef: secretRefSchema,
+  runnerIdleTimeoutMs: z.number().int().min(1_000).max(86_400_000).optional(),
+}).strict();
+
+const computerEnvironmentInputSchema = computerEnvironmentConfigSchema.extend({
+  apiKeySecretRef: secretRefSchema.optional(),
+  apiKey: z.string().trim().min(1).optional(),
+}).refine((value) => value.apiKey || value.apiKeySecretRef, "A Boat API key is required.");
+
 const sshEnvironmentConfigSchema = z.object({
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
@@ -121,6 +133,7 @@ const pluginEnvironmentConfigSchema = z.object({
 
 export type ParsedEnvironmentConfig =
   | { driver: "local"; config: LocalEnvironmentConfig }
+  | { driver: "computer"; config: z.infer<typeof computerEnvironmentConfigSchema> }
   | { driver: "ssh"; config: SshEnvironmentConfig }
   | { driver: "sandbox"; config: SandboxEnvironmentConfig }
   | { driver: "plugin"; config: PluginEnvironmentConfig };
@@ -373,6 +386,10 @@ export async function collectEnvironmentSecretRefs(input: {
   environment: Pick<Environment, "id" | "driver" | "config">;
 }): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
   const parsed = parseEnvironmentDriverConfig(input.environment);
+  if (parsed.driver === "computer") {
+    return [{ secretId: parsed.config.apiKeySecretRef.secretId,
+      configPath: "apiKeySecretRef", versionSelector: parsed.config.apiKeySecretRef.version }];
+  }
   if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
     return [{
       secretId: parsed.config.privateKeySecretRef.secretId,
@@ -437,6 +454,11 @@ export function normalizeEnvironmentConfig(input: {
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
+  if (input.driver === "computer") {
+    const parsed = computerEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) throw unprocessable(toErrorMessage(parsed.error));
+    return parsed.data;
+  }
   if (input.driver === "local") {
     return { ...parseObject(input.config) };
   }
@@ -551,6 +573,17 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   actor?: { userId?: string | null; agentId?: string | null };
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
+  if (input.driver === "computer") {
+    const parsed = computerEnvironmentInputSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) throw unprocessable(toErrorMessage(parsed.error));
+    const { apiKey, ...stored } = parsed.data;
+    const apiKeySecretRef = apiKey ? await createEnvironmentSecret({
+      db: input.db, companyId: input.companyId, environmentName: input.environmentName,
+      driver: input.driver, field: "boat-api-key", provider: input.secretProvider,
+      value: apiKey, actor: input.actor,
+    }) : stored.apiKeySecretRef;
+    return computerEnvironmentConfigSchema.parse({ ...stored, apiKeySecretRef });
+  }
   if (input.driver === "ssh") {
     const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
@@ -788,6 +821,9 @@ export function readSshEnvironmentPrivateKeySecretId(
 export function parseEnvironmentDriverConfig(
   environment: Pick<Environment, "driver" | "config">,
 ): ParsedEnvironmentConfig {
+  if (environment.driver === "computer") {
+    return { driver: "computer", config: computerEnvironmentConfigSchema.parse(environment.config) };
+  }
   if (environment.driver === "local") {
     return {
       driver: "local",

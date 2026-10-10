@@ -181,6 +181,7 @@ const environmentCapabilities: EnvironmentCapabilities = {
     local: "supported",
     ssh: "supported",
     sandbox: "supported",
+    computer: "supported",
     plugin: "supported",
   },
   sandboxProviders: {

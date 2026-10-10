@@ -1,3 +1,4 @@
+import * as persistentFiles from "../services/persistent-agent-files.js";
 import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -9,7 +10,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
+import { agentFileStore, preparePersistentAgentExecutionHome, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
 import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
@@ -72,6 +73,95 @@ describe("persistent agent directories", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agentId] } });
     await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true });
     await fs.writeFile(path.join(root, entryFile), initial);
+  });
+
+  it("seeds a persistent execution home before a run or instruction-copy receipt exists", async () => {
+    const remoteRoot = "/home/user/paperclip/test/agents/target";
+    let exists = false;
+    const seedBytes = vi.fn(async () => { exists = true; });
+    const remote = { root: remoteRoot, listPage: async () => {
+      if (!exists) throw { code: "not_found" };
+      return { entries: [], truncated: false };
+    }, seedBytes };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    const environmentId = randomUUID();
+    const executionTarget = { kind: "remote", transport: "computer", environmentId,
+      fileAuthority: { kind: "remote-persistent", agentHome: remoteRoot } } as never;
+    try {
+      await fs.writeFile(path.join(root, "memory.bin"), Buffer.from([0, 255, 7]));
+      expect(await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget })).toBe(remoteRoot);
+      expect(lookup).toHaveBeenCalledWith(db, companyId, agentId, environmentId);
+      expect(seedBytes).toHaveBeenCalledOnce();
+      expect(seedBytes).toHaveBeenCalledWith(expect.objectContaining({
+        [entryFile]: Buffer.from(initial), "memory.bin": Buffer.from([0, 255, 7]),
+      }));
+      // Subsequent setup adopts the remote tree, regardless of controller edits.
+      await fs.writeFile(path.join(root, "memory.bin"), "stale controller bytes");
+      await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget });
+      expect(seedBytes).toHaveBeenCalledOnce();
+      expect(await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.agentId, agentId))).toEqual([]);
+    } finally { lookup.mockRestore(); }
+  });
+
+  it("creates an external-instruction agent home without importing the external path", async () => {
+    await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "external", instructionsFilePath: "/private/external.md" } }).where(eq(agents.id, agentId));
+    const remote = { root: "/home/user/agents/external", seedBytes: vi.fn(async () => ({ seeded: true })) };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    try {
+      const executionTarget = { kind: "remote", transport: "computer", environmentId: randomUUID(),
+        fileAuthority: { kind: "remote-persistent", agentHome: remote.root } } as never;
+      await preparePersistentAgentExecutionHome(db, { companyId, agentId, target: executionTarget });
+      expect(remote.seedBytes).toHaveBeenCalledWith({});
+    } finally { lookup.mockRestore(); }
+  });
+
+  it("keeps Boat personal bytes authoritative through warm checkpoints, collection, and editor conflicts", async () => {
+    const remoteRoot = "/home/user/paperclip/test/agents/target";
+    const remoteFiles = new Map([[entryFile, Buffer.from("remote instructions")], ["memory.txt", Buffer.from("remote memory")]]);
+    const readBytes = vi.fn(async (relative: string) => {
+      const bytes = remoteFiles.get(relative);
+      if (!bytes) throw { code: "not_found" };
+      return { bytes, sha256: fileHash(bytes) };
+    });
+    const writeBytes = vi.fn(async (relative: string, bytes: Buffer, base: string | null) => {
+      const current = remoteFiles.get(relative);
+      if ((current ? fileHash(current) : null) !== base) throw new Error("remote CAS rejected");
+      remoteFiles.set(relative, bytes); return { sha256: fileHash(bytes) };
+    });
+    const seedBytes = vi.fn();
+    const remote = { root: remoteRoot, list: async () => [], listPage: async () => ({ entries: [], truncated: false }), readBytes, writeBytes, seedBytes };
+    const lookup = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand");
+    try {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+      const target = { kind: "remote", transport: "computer", environmentId: randomUUID(), remoteCwd: "/workspace",
+        fileAuthority: { kind: "remote-persistent", placementId: randomUUID(), root: "/workspace", agentHome: remoteRoot } } as never;
+      const copy = (await copies.prepare({ companyId, agentId, runId, cwd: home, target, warm: true }))!;
+      expect(copy.executionRoot).toBe(remoteRoot);
+      expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe("remote instructions");
+      expect(seedBytes).not.toHaveBeenCalled();
+      remoteFiles.set("memory.txt", Buffer.from("edited while warm"));
+      expect(await copies.hasChanges({ companyId, runId, target })).toBe(false);
+      await copies.checkpointWarm({ companyId, runId, target });
+      await copies.collectStopped({ companyId, runId, target });
+      await copies.release(companyId, runId);
+      expect(shell).not.toHaveBeenCalled();
+      expect(remoteFiles.get("memory.txt")?.toString()).toBe("edited while warm");
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      await expect(fs.stat(path.join(root, "memory.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      const store = agentFileStore(db);
+      await expect(store.write({ companyId, agentId, path: "memory.txt", bytes: Buffer.from("stale"), baseHash: fileHash(Buffer.from("remote memory")) }, board())).rejects.toMatchObject({ status: 409 });
+      expect(writeBytes).not.toHaveBeenCalled();
+      await store.write({ companyId, agentId, path: "memory.txt", bytes: Buffer.from("editor"), baseHash: fileHash(Buffer.from("edited while warm")) }, board());
+      expect(remoteFiles.get("memory.txt")?.toString()).toBe("editor");
+      const current = await revisions.readCurrent({ companyId, agentId }, board());
+      expect(current?.content).toBe("remote instructions");
+      await revisions.commit({ companyId, agentId, entryFile, content: "editor changed instructions", baseRevisionId: current!.revision.id, source: "api" }, board());
+      expect(remoteFiles.get(entryFile)?.toString()).toBe("editor changed instructions");
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+
+    } finally { lookup.mockRestore(); shell.mockRestore(); }
   });
 
   describe("warm directory ownership", () => {

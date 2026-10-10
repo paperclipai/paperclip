@@ -56,7 +56,7 @@ export type WorkspaceFileResourceService = {
     issueId: string,
     input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
     opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> },
-  ): Promise<{ resource: ResolvedWorkspaceResource; realPath: string }>;
+  ): Promise<{ resource: ResolvedWorkspaceResource; realPath: string } | { resource: ResolvedWorkspaceResource; bytes: Buffer }>;
 };
 
 type FileResourceLimiter = {
@@ -886,7 +886,8 @@ export function fileResourceRoutes(db: Db, opts: {
         res.setHeader("Cache-Control", "private, max-age=60");
         res.setHeader("X-Content-Type-Options", "nosniff");
         res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
-        await pipeline(createReadStream(result.realPath), res);
+        if ("bytes" in result) res.end(result.bytes);
+        else await pipeline(createReadStream(result.realPath), res);
         return;
       }
 
