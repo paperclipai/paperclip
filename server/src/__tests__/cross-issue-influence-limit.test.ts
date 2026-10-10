@@ -10,30 +10,38 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  claimedIssueIds: string[] = [],
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  const resolved = <T,>(value: T) => ({ then: (resolve: (rows: T[]) => unknown) => resolve(value) });
+  const runRow = {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    responsibleUserId: "user-1",
+    contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+    ...runOverrides,
+  };
   const tx = {
     select: (selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
-            return {
-              then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
-            };
+            return resolved([{ count: observedCount }]);
           }
-          return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
-          };
+          // The run lock (`.for`) and the checked-out-issue claim lookup
+          // (`.then`) both start here; only the run select carries the
+          // agent and snapshot columns.
+          if (Object.keys(selection).includes("contextSnapshot")) {
+            const runLock = {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve(runOverrides === null ? [] : [runRow]),
+              for: () => runLock,
+            };
+            return runLock;
+          }
+          return resolved(claimedIssueIds.map((id) => ({ id })));
         },
       }),
     }),
@@ -198,7 +206,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed when the run holds no live issue claim", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -212,5 +220,45 @@ describe("cross-issue influence limit rollout", () => {
       details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
+  });
+
+  it("does not charge a heartbeat run for writing to the only issue it has checked out", async () => {
+    const checkedOut = "55555555-5555-4555-8555-555555555555";
+    const fake = counterDb(0, { contextSnapshot: {} }, [checkedOut]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: checkedOut,
+      kind: "comment",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still charges a heartbeat run for writing to an issue it has not checked out", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} }, ["55555555-5555-4555-8555-555555555555"]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "66666666-6666-4666-8666-666666666666",
+      kind: "update",
+    })).resolves.toMatchObject({ count: 1, allowed: true });
+  });
+
+  it("charges writes once a run juggles two live checkouts instead of buying them free", async () => {
+    const checkedOut = "55555555-5555-4555-8555-555555555555";
+    const fake = counterDb(0, { contextSnapshot: {} }, [checkedOut, "66666666-6666-4666-8666-666666666666"]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: checkedOut,
+      kind: "comment",
+    })).resolves.toMatchObject({ count: 1, allowed: true });
+    expect(fake.inserted[0]).toMatchObject({ details: { sourceIssueId: null } });
   });
 });
