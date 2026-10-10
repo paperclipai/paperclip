@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
@@ -1442,6 +1442,20 @@ export function readAdapterExecutionTarget(input: {
   );
 }
 
+/** Keep mutable legacy assets separate for owners sharing the same checkout. */
+export function adapterExecutionTargetRuntimeRoot(
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>,
+  adapterKey: string,
+  baseRoot = path.posix.join(target.remoteCwd, ".paperclip-runtime", adapterKey),
+): string {
+  if (target.transport !== "computer") return baseRoot;
+  const owner = target.resourceAuthority;
+  const scope = createHash("sha256").update(JSON.stringify([
+    owner.computerId, owner.ownerId, owner.generation,
+  ])).digest("hex");
+  return path.posix.join(baseRoot, "owners", scope);
+}
+
 export async function prepareAdapterExecutionTargetRuntime(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
@@ -1535,7 +1549,9 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
-    runtimeRootDir: input.runtimeRootDir,
+    runtimeRootDir: target.transport === "computer"
+      ? adapterExecutionTargetRuntimeRoot(target, input.adapterKey, input.runtimeRootDir)
+      : input.runtimeRootDir,
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
@@ -2033,7 +2049,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       ? Math.trunc(input.timeoutSec * 1000)
       : target.timeoutMs ?? undefined;
   const bridgeRuntimeDir = path.posix.join(
-    input.runtimeRootDir?.trim() || path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey),
+    input.runtimeRootDir?.trim() || adapterExecutionTargetRuntimeRoot(target, input.adapterKey),
     "process-sessions",
   );
   const sessionId = randomUUID();
@@ -4402,7 +4418,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const runtimeRootDir =
     input.runtimeRootDir?.trim().length
       ? input.runtimeRootDir.trim()
-      : path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey);
+      : adapterExecutionTargetRuntimeRoot(target, input.adapterKey);
   const bridgeRuntimeDir = path.posix.join(runtimeRootDir, "paperclip-bridge");
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
