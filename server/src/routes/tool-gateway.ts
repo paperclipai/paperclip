@@ -111,12 +111,44 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
+      const { tools, allowedActions } = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
         signal,
       }));
+      // Only advertise a context wrapper the gateway token can actually
+      // perform. Heartbeat and narrowly scoped tokens carry only
+      // tools/list + tools/call, so unconditionally listing the context
+      // tools produces calls that the token check then denies with
+      // gateway_token_action_denied.
+      const allowedActionSet = new Set(allowedActions);
+      const contextTools = [
+        {
+          action: "resources/list" as const,
+          name: "paperclip_list_resources",
+          description: "List resources from fully assigned MCP connections.",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+        {
+          action: "resources/read" as const,
+          name: "paperclip_read_resource",
+          description: "Read a resource URI returned by paperclip_list_resources.",
+          inputSchema: { type: "object", required: ["uri"], properties: { uri: { type: "string" } }, additionalProperties: false },
+        },
+        {
+          action: "prompts/list" as const,
+          name: "paperclip_list_prompts",
+          description: "List prompts from fully assigned MCP connections.",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+        {
+          action: "prompts/get" as const,
+          name: "paperclip_get_prompt",
+          description: "Get a prompt returned by paperclip_list_prompts.",
+          inputSchema: { type: "object", required: ["name"], properties: { name: { type: "string" }, arguments: { type: "object" } }, additionalProperties: false },
+        },
+      ].filter((tool) => allowedActionSet.has(tool.action));
       res.json({
         jsonrpc: "2.0",
         id,
@@ -128,26 +160,7 @@ async function handleMcpGatewayProtocol(
             description: tool.description,
             inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
             })),
-            {
-              name: "paperclip_list_resources",
-              description: "List resources from fully assigned MCP connections.",
-              inputSchema: { type: "object", properties: {}, additionalProperties: false },
-            },
-            {
-              name: "paperclip_read_resource",
-              description: "Read a resource URI returned by paperclip_list_resources.",
-              inputSchema: { type: "object", required: ["uri"], properties: { uri: { type: "string" } }, additionalProperties: false },
-            },
-            {
-              name: "paperclip_list_prompts",
-              description: "List prompts from fully assigned MCP connections.",
-              inputSchema: { type: "object", properties: {}, additionalProperties: false },
-            },
-            {
-              name: "paperclip_get_prompt",
-              description: "Get a prompt returned by paperclip_list_prompts.",
-              inputSchema: { type: "object", required: ["name"], properties: { name: { type: "string" }, arguments: { type: "object" } }, additionalProperties: false },
-            },
+            ...contextTools.map(({ action: _action, ...tool }) => tool),
           ],
         },
       });

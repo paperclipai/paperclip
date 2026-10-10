@@ -87,10 +87,10 @@ export async function createAssignedMcpTools(input: {
   bearerToken: string;
   workMode?: WorkMode;
 }) {
-  const listed = await input.gateway.listToolsForNamedGateway({
+  const listed = (await input.gateway.listToolsForNamedGateway({
     gatewayPublicId: input.gatewayPublicId,
     bearerToken: input.bearerToken,
-  });
+  })).tools;
   const tools = new Map<string, ToolGatewayDescriptor>();
   for (const descriptor of listed) {
     const name = assignedToolName(descriptor.name);
@@ -116,7 +116,7 @@ export async function createAssignedMcpTools(input: {
     // take effect immediately; newly assigned tools require a new session.
     const current = new Map((await input.gateway.listToolsForNamedGateway({
       gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
-    })).map(tool => [tool.name, tool]));
+    })).tools.map(tool => [tool.name, tool]));
     const terms = args.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
     const authorized = [...tools].filter(([, tool]) => {
       const fresh = current.get(tool.name);

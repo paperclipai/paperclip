@@ -36,7 +36,7 @@ suite("MCP discovery over HTTP", () => {
         ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
         : { content: [{ type: "text", text: "fixture result" }] } }), { headers: { "content-type": "application/json" } });
     } });
-    const tools = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const { tools } = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
     const tool = tools.find((entry) => entry.catalogEntryId === fixture.entries[4]!.id)!;
     const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(gateway));
     const post = () => request(app).post(`/mcp/gateways/${fixture.namedGateway.gatewayPublicId}`)
@@ -77,7 +77,7 @@ suite("MCP discovery over HTTP", () => {
     const listings = await Promise.all(Array.from({ length: 16 }, () => post("tools/list").expect(200)));
     const tools = listings[0]!.body.result.tools as Array<{ name: string; description: string }>;
     expect(listings.every((response) => JSON.stringify(response.body.result.tools) === JSON.stringify(tools))).toBe(true);
-    const descriptors = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
+    const { tools: descriptors } = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token });
     expect(descriptors.filter((tool) => tool.connectionId === fixture.connection.id)).toHaveLength(498);
     const readName = descriptors.find((tool) => tool.catalogEntryId === fixture.entries[4]!.id)!.name;
     const read = tools.find((tool) => tool.name === readName)!;

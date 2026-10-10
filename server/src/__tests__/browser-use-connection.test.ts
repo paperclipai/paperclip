@@ -476,7 +476,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       const gatewayPublicId = new URL(servers[0]!.url).pathname
         .split("/")
         .at(-1)!;
-      const tools = await f.gateway.listToolsForNamedGateway({
+      const { tools } = await f.gateway.listToolsForNamedGateway({
         gatewayPublicId,
         bearerToken: servers[0]!.token!,
       });
