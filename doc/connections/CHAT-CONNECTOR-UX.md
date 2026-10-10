@@ -199,6 +199,14 @@ a way to finish without the optional test. Do not block completion solely becaus
 the event has not arrived or the status poll failed. Conversely, optional testing
 does not waive required credentials, verification, or identity authorization.
 
+When the test is required, show which step the test is waiting for: the first
+message, the follow-up, or the agent reply. If the operator presses the manual
+action before the agent reply arrives, keep that confirmation and finish setup
+when the reply arrives, so the operator does not have to guess when to press
+again. Do not finish setup without the manual action: other people in the chat
+can also complete the test conversation. Attempt the automatic finish one time.
+If that attempt fails, stop the busy state and ask the operator to try again.
+
 ## 9. Make ongoing management compact and contextual
 
 After setup, replace Browse/Review with the connection's Settings, Access,

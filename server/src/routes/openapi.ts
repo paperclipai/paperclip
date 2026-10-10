@@ -1,4 +1,5 @@
 import { updateFastResponseSchema } from "@paperclipai/shared";
+import { CHAT_SETUP_TEST_WAITING_FOR } from "@paperclipai/shared";
 import { slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
@@ -2642,9 +2643,9 @@ registry.registerPath({
 });
 registry.registerPath({
   method: "get", path: "/api/chat-endpoints/{endpointId}/test-status", tags: ["chat-channels"],
-  summary: "Check for the current user's first setup message",
+  summary: "Check the progress of the setup test",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
-  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable(), ready: z.boolean(), waitingFor: z.enum(CHAT_SETUP_TEST_WAITING_FOR).nullable() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 registry.registerPath({
   method: "post", path: "/api/chat-identity-links/request-access", tags: ["chat-channels"],

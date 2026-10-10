@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   setup: vi.fn(),
   setupTestStatus: vi.fn(),
+  test: vi.fn(),
   finishSlackSetup: vi.fn(),
   generateSetupSecret: vi.fn(),
   listPrincipals: vi.fn(),
@@ -536,6 +537,51 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(mocks.listResources.mock.calls.length).toBeGreaterThan(1);
     expect(container.textContent).toContain("Invite Maya to a channel to add it");
   }, 10_000);
+
+  async function renderDiscordTestStep() {
+    const endpoint = await render("discord");
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], {
+      ...endpoint, status: "verifying", providerAccountId: "guild-a", botUsername: "maya",
+      setup: { ...endpoint.setup, step: "test", testStartedAt: "2026-09-18T20:00:00Z" },
+    }));
+    await settle();
+    return endpoint;
+  }
+
+  const testStatusKey = ["chat-endpoint-setup-test-status", "endpoint-a"];
+
+  it("does not finish the setup test without the operator's confirmation", async () => {
+    mocks.setupTestStatus.mockResolvedValue({ messageReceivedAt: null, ready: true, waitingFor: null });
+    await renderDiscordTestStep();
+    expect(container.textContent).toContain("Reply received. Press “I've sent the test message” to finish setup.");
+    expect(mocks.test).not.toHaveBeenCalled();
+  });
+
+  it("keeps an early confirmation and finishes the setup test one time when the agent reply arrives", async () => {
+    mocks.test.mockRejectedValue(new Error("The connection changed"));
+    mocks.setupTestStatus.mockResolvedValue({ messageReceivedAt: null, ready: false, waitingFor: "agent_reply" });
+    const endpoint = await renderDiscordTestStep();
+    await click("I've sent the test message");
+    // The server would refuse the test now, so the page does not send it.
+    expect(mocks.test).not.toHaveBeenCalled();
+    expect(mocks.pushToast).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Waiting for Maya to reply. Setup finishes when the reply arrives.");
+
+    mocks.setupTestStatus.mockResolvedValue({ messageReceivedAt: null, ready: true, waitingFor: null });
+    await client.refetchQueries({ queryKey: testStatusKey });
+    await settle();
+    expect(mocks.test).toHaveBeenCalledTimes(1);
+    expect(mocks.test).toHaveBeenCalledWith(endpoint.id);
+
+    // A failed attempt does not repeat, and the page does not look busy.
+    await client.refetchQueries({ queryKey: testStatusKey });
+    await settle();
+    expect(mocks.test).toHaveBeenCalledTimes(1);
+    expect(mocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Test not complete" }));
+    expect(container.textContent).toContain("Reply received, but setup did not finish.");
+    await click("I've sent the test message");
+    expect(mocks.test).toHaveBeenCalledTimes(2);
+  });
 
   it("waits for a fresh connect command and links the selected identity inside the wizard", async () => {
     mocks.listPrincipals.mockResolvedValue([

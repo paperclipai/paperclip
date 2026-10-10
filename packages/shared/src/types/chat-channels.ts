@@ -242,6 +242,17 @@ export interface ChatEndpointSetupSecret {
 export type ChannelPublicationMode = "automatic" | "explicit";
 export type ExternalMessageExecutionPolicy = "restricted" | "agent";
 
+export const CHAT_SETUP_TEST_WAITING_FOR = ["message", "follow_up", "agent_reply"] as const;
+export type ChatSetupTestWaitingFor = (typeof CHAT_SETUP_TEST_WAITING_FOR)[number];
+
+export interface ChatSetupTestStatus {
+  messageReceivedAt: string | null;
+  /** True when the setup test can be completed now. */
+  ready: boolean;
+  /** The step the setup test is waiting for. Null when ready, or when the provider does not report it. */
+  waitingFor: ChatSetupTestWaitingFor | null;
+}
+
 export interface ChatEndpoint {
   /** Additional presentation instructions captured only for newly created tasks. */
   communicationInstructions?: string;

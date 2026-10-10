@@ -18190,6 +18190,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       id: "slack:C-SETUP-FAILED:9001.1",
       name: "setup-failed",
     });
+    await expect(service.setupTestStatus(endpoint.id, "owner-user")).resolves.toMatchObject({ ready: false, waitingFor: "message" });
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -18201,6 +18202,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
+    await expect(service.setupTestStatus(endpoint.id, "owner-user")).resolves.toMatchObject({ ready: false, waitingFor: "follow_up" });
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -18255,6 +18257,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: 409,
       details: { code: "chat_test_round_trip_incomplete" },
     });
+    await expect(service.setupTestStatus(endpoint.id, "owner-user")).resolves.toMatchObject({ ready: false, waitingFor: "agent_reply" });
 
     const contextSnapshot = await chatWakeContext({
       endpointId: endpoint.id,
@@ -18279,10 +18282,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await service.processPendingPublications();
 
+    await expect(service.setupTestStatus(endpoint.id, "owner-user")).resolves.toMatchObject({ ready: true, waitingFor: null });
     await expect(service.test(endpoint.id)).resolves.toMatchObject({
       status: "active",
       setup: { step: "complete" },
     });
+    await expect(service.setupTestStatus(endpoint.id, "owner-user")).resolves.toMatchObject({ ready: false, waitingFor: null });
   });
 
   it("requires the successful setup final to consume the qualifying follow-up", async () => {
@@ -51736,7 +51741,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(notice).toContain("Connect your Paperclip account");
     expect((postEphemeral.mock.calls[0] as unknown[])[2]).toEqual({ fallbackToDM: false });
     expect(await service.previewIdentityLink(token, "owner-user")).toMatchObject({ selfService: true, canConfirm: true, externalLabel: "Connect Person" });
-    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: null });
     await expect(service.finishSlackSetup(endpoint.id, "owner-user")).rejects.toMatchObject({ status: 403 });
     const outsiderId = `outsider-${fixture.companyId}`;
     const now = new Date();
@@ -51763,7 +51768,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(service.test(endpoint.id)).rejects.toMatchObject({ details: { code: "chat_test_follow_up_missing" } });
     await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
     await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token }).expect(422);
-    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: null });
     const finished = await service.finishSlackSetup(endpoint.id, "owner-user");
     expect(finished).toMatchObject({ status: "active", setup: { step: "complete", testSkipped: true } });
     expect(wakeup).not.toHaveBeenCalled();
@@ -51781,14 +51786,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fresh = await service.createLinkIntent(endpoint.id, principal.id, 600);
     await service.confirmIdentityLink(new URL(fresh.confirmationUrl).searchParams.get("token")!, "owner-user");
     await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "old-test-message", createdAt: new Date(now.getTime() - 60_000), status: "processed" });
-    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: null });
     if (kind === "slash") {
     await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "current-test-message", status: "processed" });
     } else {
       await db.insert(chatDeliveries).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, providerEventId: "current-test-message", deduplicationKey: "current-test-message", eventKind: kind, normalizedEvent: {}, state: "processed" });
     }
     expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: expect.any(String) });
-    expect(await service.setupTestStatus(endpoint.id, "someone-else")).toEqual({ messageReceivedAt: null });
+    expect(await service.setupTestStatus(endpoint.id, "someone-else")).toMatchObject({ messageReceivedAt: null });
   });
 
   it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {
