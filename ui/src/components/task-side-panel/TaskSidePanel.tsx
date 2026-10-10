@@ -868,7 +868,21 @@ export function TaskSidePanel({
       >
         {controller.tabs.map(tab => tab.payload.kind === "computer" ? (
           <div key={tab.id} hidden={tab.id !== controller.activeTabId} className={cn("h-full min-h-0", tab.id !== controller.activeTabId && "hidden")}>
-            <TaskComputerPanel active={tab.id === controller.activeTabId} issueId={issue.id} environmentId={tab.payload.environmentId} />
+            {computerQuery.data !== undefined && computerQuery.data?.environmentId !== tab.payload.environmentId ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {computerQuery.data ? "This task now uses a different computer." : "This task no longer has a computer."}
+                </p>
+                {computerQuery.data && (
+                  <Button onClick={() => {
+                    controller.closeTab(tab.id);
+                    controller.openTab(taskPanelComputerTab(computerQuery.data!.environmentId));
+                  }}>Open current computer</Button>
+                )}
+              </div>
+            ) : (
+              <TaskComputerPanel active={tab.id === controller.activeTabId} issueId={issue.id} environmentId={tab.payload.environmentId} />
+            )}
           </div>
         ) : null)}
         {controller.tabs.map(tab => tab.payload.kind === "browser" ? (

@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
+  taskPanelComputerTab,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
   writeTaskSidePanelState,
@@ -26,8 +27,12 @@ class ResizeObserverStub {
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
-const computerFixture = vi.hoisted(() => ({ get: vi.fn<() => Promise<import("@paperclipai/shared").TaskComputer | null>>() }));
-vi.mock("@/api/computers", () => ({ computersApi: { get: computerFixture.get } }));
+const computerFixture = vi.hoisted(() => ({
+  get: vi.fn<() => Promise<import("@paperclipai/shared").TaskComputer | null>>(),
+  connect: vi.fn(),
+  disconnect: vi.fn(async () => undefined),
+}));
+vi.mock("@/api/computers", () => ({ computersApi: computerFixture }));
 vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
 vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
 const fixture = vi.hoisted(() => ({
@@ -135,6 +140,8 @@ describe("TaskSidePanel", () => {
     browserFixture.data = [];
     browserFixture.control.mockClear();
     computerFixture.get.mockReset().mockResolvedValue(null);
+    computerFixture.connect.mockReset();
+    computerFixture.disconnect.mockClear();
     fixture.documents = [];
     fixture.plan = null;
     routeFixture.location.search = "";
@@ -210,6 +217,36 @@ describe("TaskSidePanel", () => {
     expect(document.body.textContent).not.toContain("Could not load the computer.");
     expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
       .some((item) => item.textContent === "Retry")).toBe(false);
+  });
+
+  it("releases a saved computer viewer after reassignment and opens the current computer", async () => {
+    const owner = { computerId: "computer-a", ownerId: "viewer-a", generation: 1 };
+    computerFixture.get.mockResolvedValue({ environmentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "First Boat" });
+    computerFixture.connect.mockResolvedValue({
+      viewerUrl: "https://desktop.example.test/viewer",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), owner,
+    });
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelComputerTab("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")], activeTabId: "computer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: 1,
+    });
+    await render(panel());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find(button => button.textContent === "Connect")?.click());
+    expect(container.querySelector("iframe")).not.toBeNull();
+    await act(async () => queryClient.setQueryData(["task-computer", "task-1"], {
+      environmentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Second Boat",
+    }));
+    await vi.waitFor(() => expect(container.textContent).toContain("This task now uses a different computer."));
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(computerFixture.disconnect).toHaveBeenCalledWith("task-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", owner);
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find(button => button.textContent === "Open current computer")?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="computer:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]')).toBeNull();
+    expect(container.querySelector('[data-side-panel-tab-target="computer:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"][aria-selected="true"]')).not.toBeNull();
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find(button => button.textContent === "Connect")?.click());
+    expect(computerFixture.connect).toHaveBeenLastCalledWith("task-1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
   });
 
   it("lets an attachment request take focus from a workspace-file route", async () => {
