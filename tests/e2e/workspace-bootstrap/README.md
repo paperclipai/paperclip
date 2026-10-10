@@ -9,13 +9,12 @@ timeout only when the test explicitly arms a marker inside its repository.
 From a development worktree, start the foreground instance:
 
 ```sh
-BOOTSTRAP_FIXTURE_KEY=not-a-provider-key \
-PATH="$PWD/tests/e2e/workspace-bootstrap/bin:$PATH" \
-NODE_ENV=test \
-node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive \
-  --harness codex --api-key-env BOOTSTRAP_FIXTURE_KEY \
-  --company-name 'Workspace Recovery QA' --no-browser
+node cli/node_modules/tsx/dist/cli.mjs tests/e2e/workspace-bootstrap/launch.ts
 ```
+
+The launcher creates an isolated test-drive, installs the Git shim, and sets a
+10-second snapshot deadline after test-drive clears inherited configuration.
+Production's longer snapshot deadline would outlast the injected failure.
 
 Set `BOOTSTRAP_REAL_GIT` to the absolute Git executable if it is not
 `/usr/bin/git`. Do not point this fixture at a normal development or production
