@@ -210,6 +210,31 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.provider = nextProvider;
   }
 
+  // Container-level global instruction ruleset (e.g. terseness rules like
+  // Paperclip issue FIN-64). The per-run global config dir is created empty and
+  // wiped after the run, so a durable ruleset can only come from a persistent
+  // host path, registered here via OpenCode's `instructions` config (verified
+  // against opencode 1.18.31: a global AGENTS.md in the config dir is NOT
+  // auto-loaded). Deployments opt in by placing the file at the default path;
+  // a missing file is a no-op, so removing the file is the rollback path.
+  const globalRulesetPath =
+    (input.env.PAPERCLIP_OPENCODE_AGENTS_FILE ?? process.env.PAPERCLIP_OPENCODE_AGENTS_FILE)?.trim() ||
+    "/paperclip/caveman-AGENTS.md";
+  const existingInstructions = Array.isArray(existingConfig.instructions)
+    ? existingConfig.instructions.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  try {
+    await fs.access(globalRulesetPath);
+    nextConfig.instructions = Array.from(new Set([...existingInstructions, globalRulesetPath]));
+    notes.push(`Injected global instruction ruleset ${globalRulesetPath} into the runtime OpenCode config.`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+      notes.push(
+        `Global instruction ruleset ${globalRulesetPath} is not readable (${(err as Error).message}); continuing without it.`,
+      );
+    }
+  }
+
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
   // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
   // defaults the small model to a built-in provider default (e.g. a claude-* model

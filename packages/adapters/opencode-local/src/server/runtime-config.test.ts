@@ -170,6 +170,46 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("registers a persistent global instruction ruleset from PAPERCLIP_OPENCODE_AGENTS_FILE and is a no-op when the file is missing", async () => {
+    const ruleset = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agents-file-")),
+      "caveman-AGENTS.md",
+    );
+    cleanupPaths.add(path.dirname(ruleset));
+    await fs.writeFile(ruleset, "Keep answers terse.\n", "utf8");
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_AGENTS_FILE: ruleset },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { instructions?: string[] };
+    expect(runtimeConfig.instructions).toEqual([ruleset]);
+    expect(prepared.notes).toContain(
+      `Injected global instruction ruleset ${ruleset} into the runtime OpenCode config.`,
+    );
+    await prepared.cleanup();
+
+    const missingHome = await makeConfigHome();
+    await fs.rm(ruleset, { force: true });
+    const withoutRuleset = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: missingHome, PAPERCLIP_OPENCODE_AGENTS_FILE: ruleset },
+      config: {},
+    });
+    cleanupPaths.add(withoutRuleset.env.XDG_CONFIG_HOME);
+    const missingRulesetConfig = JSON.parse(
+      await fs.readFile(
+        path.join(withoutRuleset.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as { instructions?: string[] };
+    expect(missingRulesetConfig.instructions).toBeUndefined();
+    await withoutRuleset.cleanup();
+  });
+
   it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block and surfaces a note", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
