@@ -2214,6 +2214,69 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+type InlineWakeCommentRow = {
+  id: string;
+  issueId: string;
+  body: string;
+  authorType: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  presentation: unknown;
+  metadata: unknown;
+  deletedAt: Date | null;
+  deletedByType: string | null;
+  deletedByAgentId: string | null;
+  deletedByUserId: string | null;
+  deletedByRunId: string | null;
+  sourceTrust: SourceTrustMetadata | null;
+  createdAt: Date;
+};
+
+function buildInlineWakeCommentEntry<T extends InlineWakeCommentRow>(
+  row: T,
+  opts: { exposeLowTrustRaw: boolean; maxBodyChars: number },
+): {
+  comment: Record<string, unknown>;
+  body: string;
+  bodyTruncated: boolean;
+} {
+  const deletedAt = row.deletedAt ?? null;
+  const safeRow =
+    deletedAt || opts.exposeLowTrustRaw
+      ? row
+      : sanitizeQuarantinedCommentForHigherTrust(row);
+  const fullBody = deletedAt ? "" : safeRow.body;
+  const body = fullBody.slice(0, opts.maxBodyChars);
+  const bodyTruncated = body.length < fullBody.length;
+  return {
+    body,
+    bodyTruncated,
+    comment: {
+      id: row.id,
+      issueId: row.issueId,
+      authorType:
+        row.authorType ??
+        (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+      body,
+      bodyTruncated,
+      presentation: deletedAt ? null : (safeRow.presentation ?? null),
+      metadata: deletedAt ? null : (safeRow.metadata ?? null),
+      deletedAt: deletedAt ? deletedAt.toISOString() : null,
+      deletedByType: deletedAt ? (row.deletedByType ?? null) : null,
+      deletedByAgentId: deletedAt ? (row.deletedByAgentId ?? null) : null,
+      deletedByUserId: deletedAt ? (row.deletedByUserId ?? null) : null,
+      deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
+      sourceTrust: row.sourceTrust ?? null,
+      createdAt: row.createdAt.toISOString(),
+      author: row.authorAgentId
+        ? { type: "agent", id: row.authorAgentId }
+        : row.authorUserId
+          ? { type: "user", id: row.authorUserId }
+          : { type: "system", id: null },
+    },
+  };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -2343,12 +2406,6 @@ export async function buildPaperclipWakePayload(input: {
       break;
     }
 
-    const deletedAt = row.deletedAt ?? null;
-    const safeRow =
-      deletedAt || input.exposeLowTrustRaw
-        ? row
-        : sanitizeQuarantinedCommentForHigherTrust(row);
-    const fullBody = deletedAt ? "" : safeRow.body;
     const allowedBodyChars = Math.min(
       MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
       remainingBodyChars,
@@ -2358,37 +2415,39 @@ export async function buildPaperclipWakePayload(input: {
       break;
     }
 
-    const body =
-      fullBody.length > allowedBodyChars
-        ? fullBody.slice(0, allowedBodyChars)
-        : fullBody;
-    const bodyTruncated = body.length < fullBody.length;
+    const { comment, body, bodyTruncated } = buildInlineWakeCommentEntry(row, {
+      exposeLowTrustRaw: input.exposeLowTrustRaw === true,
+      maxBodyChars: allowedBodyChars,
+    });
     if (bodyTruncated) truncated = true;
     remainingBodyChars -= body.length;
 
-    comments.push({
-      id: row.id,
-      issueId: row.issueId,
-      authorType:
-        row.authorType ??
-        (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
-      body,
-      bodyTruncated,
-      presentation: deletedAt ? null : (safeRow.presentation ?? null),
-      metadata: deletedAt ? null : (safeRow.metadata ?? null),
-      deletedAt: deletedAt ? deletedAt.toISOString() : null,
-      deletedByType: deletedAt ? (row.deletedByType ?? null) : null,
-      deletedByAgentId: deletedAt ? (row.deletedByAgentId ?? null) : null,
-      deletedByUserId: deletedAt ? (row.deletedByUserId ?? null) : null,
-      deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
-      sourceTrust: row.sourceTrust ?? null,
-      createdAt: row.createdAt.toISOString(),
-      author: row.authorAgentId
-        ? { type: "agent", id: row.authorAgentId }
-        : row.authorUserId
-          ? { type: "user", id: row.authorUserId }
-          : { type: "system", id: null },
-    });
+    comments.push(comment);
+  }
+
+  // Guarantee the triggering (latest) comment body is always inlined, even
+  // when the bounded window above dropped it (too many comments, or the shared
+  // body budget was exhausted). The agent must see "why it was woken" without a
+  // fallback fetch. This only adds context: the window's `truncated` /
+  // `fallbackFetchNeeded` flags stay conservative (never under-report), so any
+  // genuinely omitted in-between comment still routes through fallback fetch.
+  if (commentIds.length > 0) {
+    const latestCommentId = commentIds[commentIds.length - 1];
+    const latestAlreadyInlined = comments.some(
+      (comment) => comment.id === latestCommentId,
+    );
+    if (!latestAlreadyInlined) {
+      const latestRow = commentsById.get(latestCommentId);
+      if (latestRow) {
+        const { comment: latestComment, bodyTruncated: latestBodyTruncated } =
+          buildInlineWakeCommentEntry(latestRow, {
+            exposeLowTrustRaw: input.exposeLowTrustRaw === true,
+            maxBodyChars: MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
+          });
+        if (latestBodyTruncated) truncated = true;
+        comments.push(latestComment);
+      }
+    }
   }
 
   const attachmentCommentIds = comments.flatMap((comment) =>

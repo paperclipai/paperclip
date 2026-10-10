@@ -286,6 +286,47 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(JSON.stringify(wakePayload)).not.toContain("FOREIGN-ISSUE-SECRET");
   });
 
+  it("always inlines the triggering (latest) comment body even beyond the bounded window", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const commentIds: string[] = [];
+    for (let i = 1; i <= 9; i++) {
+      const id = randomUUID();
+      commentIds.push(id);
+      await db.insert(issueComments).values({
+        id,
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: `latest-window-comment-${i}`,
+      });
+    }
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeCommentIds: commentIds,
+        wakeReason: "issue_commented",
+      },
+    });
+
+    const latestCommentId = commentIds[commentIds.length - 1];
+    const inlinedLatest = wakePayload?.comments.find(
+      (comment) => comment.id === latestCommentId,
+    );
+    expect(inlinedLatest).toBeDefined();
+    expect(inlinedLatest?.body).toBe("latest-window-comment-9");
+    expect(JSON.stringify(wakePayload)).toContain("latest-window-comment-9");
+    // The triggering comment is inlined on top of the bounded window, so every
+    // requested comment is present and accounted for.
+    expect(wakePayload?.commentWindow).toEqual({
+      requestedCount: 9,
+      includedCount: 9,
+      missingCount: 0,
+    });
+  });
+
   it("includes bounded attachment descriptors only for requested comments in the same company and issue", async () => {
     const { companyId, issueId } = await seedIssue();
     const otherIssueId = randomUUID();
