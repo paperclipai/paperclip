@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+# hermes_local is in the legacy sessioned-adapter set but has no upstream
+# npm package wired into Paperclip locally yet (see
+# packages/adapter-utils/src/session-compaction.ts vs the absent
+# packages/adapters/hermes-local/). This stub image preserves a cloud
+# runtime slot for hermes_local; whoever ports the hermes binary to
+# Paperclip locally adds the `npm install -g <pkg>` and the PATH check
+# to this Dockerfile.
+#
+# Until then, runs targeting hermes_local on the cloud adapter will boot
+# the container but `agent-shim` will fail with "hermes not on PATH" when
+# it tries to invoke the CLI.
+
+USER 1000:1000

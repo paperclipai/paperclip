@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "@paperclipai/shared";
 import {
   createContext,
   useCallback,
@@ -13,8 +14,19 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export interface ToastAction {
   label: string;
-  href: string;
+  /** Navigate on click (mutually exclusive with `onClick`). */
+  href?: string;
+  /** Run a callback on click, e.g. an undo (mutually exclusive with `href`). */
+  onClick?: () => void;
 }
+
+export type ToastActor = {
+  type: "user" | "agent";
+  id: string;
+  name: string;
+  image?: string | null;
+  appearance?: AgentAppearance | null;
+};
 
 export interface ToastInput {
   id?: string;
@@ -24,6 +36,7 @@ export interface ToastInput {
   tone?: ToastTone;
   ttlMs?: number;
   action?: ToastAction;
+  actor?: ToastActor;
 }
 
 export interface ToastItem {
@@ -33,14 +46,18 @@ export interface ToastItem {
   tone: ToastTone;
   ttlMs: number;
   action?: ToastAction;
+  actor?: ToastActor;
   createdAt: number;
 }
 
-interface ToastContextValue {
-  toasts: ToastItem[];
+interface ToastActionsContextValue {
   pushToast: (input: ToastInput) => string | null;
   dismissToast: (id: string) => void;
   clearToasts: () => void;
+}
+
+interface ToastContextValue extends ToastActionsContextValue {
+  toasts: ToastItem[];
 }
 
 const DEFAULT_TTL_BY_TONE: Record<ToastTone, number> = {
@@ -55,7 +72,8 @@ const MAX_TOASTS = 5;
 const DEDUPE_WINDOW_MS = 3500;
 const DEDUPE_MAX_AGE_MS = 20000;
 
-const ToastContext = createContext<ToastContextValue | null>(null);
+const ToastStateContext = createContext<ToastItem[] | null>(null);
+const ToastActionsContext = createContext<ToastActionsContextValue | null>(null);
 
 function normalizeTtl(value: number | undefined, tone: ToastTone) {
   const fallback = DEFAULT_TTL_BY_TONE[tone];
@@ -127,6 +145,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           tone,
           ttlMs,
           action: input.action,
+          actor: input.actor,
           createdAt: now,
         };
 
@@ -150,23 +169,48 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     timersRef.current.clear();
   }, []);
 
-  const value = useMemo<ToastContextValue>(
+  const actions = useMemo<ToastActionsContextValue>(
     () => ({
-      toasts,
       pushToast,
       dismissToast,
       clearToasts,
     }),
-    [toasts, pushToast, dismissToast, clearToasts],
+    [pushToast, dismissToast, clearToasts],
   );
 
-  return <ToastContext.Provider value={value}>{children}</ToastContext.Provider>;
+  return (
+    <ToastActionsContext.Provider value={actions}>
+      <ToastStateContext.Provider value={toasts}>{children}</ToastStateContext.Provider>
+    </ToastActionsContext.Provider>
+  );
+}
+
+export function useToastState() {
+  const context = useContext(ToastStateContext);
+  if (!context) {
+    throw new Error("useToastState must be used within a ToastProvider");
+  }
+  return context;
+}
+
+export function useToastActions() {
+  const context = useContext(ToastActionsContext);
+  if (!context) {
+    throw new Error("useToastActions must be used within a ToastProvider");
+  }
+  return context;
+}
+
+export function useOptionalToastActions() {
+  return useContext(ToastActionsContext);
+}
+
+export function useOptionalToastState() {
+  return useContext(ToastStateContext);
 }
 
 export function useToast() {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error("useToast must be used within a ToastProvider");
-  }
-  return context;
+  const toasts = useToastState();
+  const actions = useToastActions();
+  return useMemo<ToastContextValue>(() => ({ toasts, ...actions }), [toasts, actions]);
 }
