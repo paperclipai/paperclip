@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import {
   and,
   asc,
@@ -623,6 +624,7 @@ async function enqueueSafeNativeChatProgress(
           .limit(1);
         if (explicitlyAuthoredFinal.length > 0) return 0;
 
+        await notifyChatPublicationWork(tx);
         const insertedRows = await tx
           .insert(chatPublications)
           .values({
@@ -997,30 +999,33 @@ export async function enqueueChatRunMilestones(
           .limit(1);
         if (explicitlyAuthoredPublication.length > 0) continue;
       }
-      const result = await db
-        .insert(chatPublications)
-        .values({
-          companyId: row.companyId,
-          endpointId: row.endpointId,
-          conversationId: row.conversationId,
-          issueId: row.issueId,
-          idempotencyKey: `run:${row.runId}:${milestone}:${row.endpointId}`,
-          payload: projectSafeChatPublication({
-            classification: "external",
-            source: "safe_milestone",
-            text: safeMilestoneText({
-              agentName: row.agentName,
-              errorCode: row.runErrorCode,
-              milestone,
-              issueId: row.issueId,
-              publicBaseUrl: input.publicBaseUrl,
+      const result = await db.transaction(async (tx) => {
+        await notifyChatPublicationWork(tx);
+        return tx
+          .insert(chatPublications)
+          .values({
+            companyId: row.companyId,
+            endpointId: row.endpointId,
+            conversationId: row.conversationId,
+            issueId: row.issueId,
+            idempotencyKey: `run:${row.runId}:${milestone}:${row.endpointId}`,
+            payload: projectSafeChatPublication({
+              classification: "external",
+              source: "safe_milestone",
+              text: safeMilestoneText({
+                agentName: row.agentName,
+                errorCode: row.runErrorCode,
+                milestone,
+                issueId: row.issueId,
+                publicBaseUrl: input.publicBaseUrl,
+              }),
+              progressState: milestone,
             }),
-            progressState: milestone,
-          }),
-          state: "pending",
-        })
-        .onConflictDoNothing()
-        .returning({ id: chatPublications.id });
+            state: "pending",
+          })
+          .onConflictDoNothing()
+          .returning({ id: chatPublications.id });
+      });
       inserted += result.length;
     }
     if (rows.length < pageSize) break;

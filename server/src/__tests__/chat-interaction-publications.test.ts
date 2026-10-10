@@ -226,6 +226,7 @@ describeEmbeddedPostgres(
           wrapQuery(Reflect.apply(db.select, db, args))) as typeof db.select,
         insert: db.insert.bind(db),
         update: db.update.bind(db),
+        transaction: db.transaction.bind(db),
       };
     }
 

@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   assets,
@@ -121,6 +122,7 @@ export async function mirrorSlackBoardComment(
       .onConflictDoNothing()
       .returning();
     if (!receipt) continue;
+    await notifyChatPublicationWork(db);
     const [publication] = await db
       .insert(chatPublications)
       .values({
@@ -162,7 +164,7 @@ export async function mirrorSlackBoardComment(
         )
       : files;
     for (const [index, file] of orderedFiles.entries())
-      await db
+      { await notifyChatPublicationWork(db); await db
         .insert(chatPublications)
         .values({
           companyId: comment.companyId,
@@ -180,7 +182,7 @@ export async function mirrorSlackBoardComment(
           state: "pending",
           createdAt: new Date(Date.now() + index + 1),
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing(); }
     await logActivity(db as Db, {
       companyId: comment.companyId,
       actorType: "user",
