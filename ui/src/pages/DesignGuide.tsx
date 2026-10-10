@@ -25,6 +25,12 @@ import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPa
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
+import { BlockedReasonChip } from "@/components/BlockedReasonChip";
+import {
+  blockedRowActionLabel,
+} from "@/lib/blockedInbox";
+import type { IssueBlockedInboxAttention, IssueBlockedInboxReason } from "@paperclipai/shared";
 import { AgentCharacter } from "@/components/AgentCharacter";
 import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
@@ -299,6 +305,207 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <Separator />
       {children}
     </section>
+  );
+}
+
+// Blocked Inbox reason + action (K-20108). The chip prints the *reason*, the
+// variant only drives colour/icon/aria, and the action line renders only when
+// `blockedRowActionLabel` returns something. Both come from the real lib so the
+// showcase cannot drift from the inbox.
+// A dated snapshot. The board drains between runs, so the row counts go stale
+// within hours — read the two degenerate columns, not the totals. They are
+// properties of the server branch and hold at any queue depth.
+const BLOCKED_ROW_CENSUS: ReadonlyArray<{
+  label: string;
+  rows: string;
+  leafNull: string;
+  details: string;
+  shown: boolean;
+}> = [
+  { label: "Inspect blocker chain", rows: "51 of 60 (85%)", leafNull: "51/51", details: "1", shown: false },
+  { label: "Answer confirmation", rows: "5", leafNull: "5/5", details: "1", shown: true },
+  { label: "Choose disposition", rows: "2", leafNull: "2/2", details: "1", shown: true },
+  { label: "Assign blocker", rows: "1", leafNull: "0/1", details: "1", shown: true },
+  { label: "Resume parked blocker", rows: "1", leafNull: "0/1", details: "1", shown: true },
+];
+
+// Every action label below is copied from the server, not invented for the
+// showcase. `server/src/services/issues.ts` picks the label from the branch it
+// took: one literal per hardcoded branch, and a `switch` over `finding.state`
+// for the finding branch. A showcase that invents plausible-looking labels
+// teaches reviewers the wrong strings, so these track the server.
+const BLOCKED_ROW_EXAMPLES: ReadonlyArray<{
+  reason: IssueBlockedInboxReason;
+  action: string;
+  detail: string | null;
+  leafIssue?: { id: string; identifier: string | null; title: string } | null;
+}> = [
+  {
+    reason: "blocked_chain_stalled",
+    action: "Inspect blocker chain",
+    detail: "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+  },
+  // The same fallback label, but the server reached it on a row that *does*
+  // carry a leaf. Condition 2 of the rule lifts suppression, so it renders.
+  {
+    reason: "blocked_chain_stalled",
+    action: "Inspect blocker chain",
+    detail: "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+    leafIssue: { id: "leaf-1", identifier: "PAP-20119", title: "The blocker this chain stalls on" },
+  },
+  { reason: "pending_board_decision", action: "Answer confirmation", detail: null },
+  { reason: "pending_user_decision", action: "Answer question", detail: null },
+  { reason: "blocked_by_unassigned_issue", action: "Assign blocker", detail: null },
+  { reason: "blocked_by_assigned_backlog_issue", action: "Resume parked blocker", detail: null },
+  { reason: "blocked_by_cancelled_issue", action: "Replace blocker", detail: null },
+  { reason: "in_review_without_action_path", action: "Choose review path", detail: null },
+  { reason: "invalid_review_participant", action: "Repair review participant", detail: null },
+  {
+    reason: "blocked_by_uninvokable_assignee",
+    action: "Assign active owner",
+    detail: null,
+  },
+  { reason: "missing_successful_run_disposition", action: "Choose disposition", detail: null },
+  { reason: "open_recovery_issue", action: "Resolve recovery", detail: null },
+  { reason: "external_owner_action", action: "External owner action", detail: null },
+];
+
+function BlockedInboxRowShowcase() {
+  return (
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          The reason chip prints the <strong>specific server reason</strong>, not the collapsed
+          variant label. <code className="font-mono">data-variant</code> still carries the group, so
+          colour, icon and grouping are unchanged — only the words on screen move. The four{" "}
+          <code className="font-mono">needs_attention</code> reasons below all share one variant and
+          are now four distinct things you can read and search for. Every action label is the
+          server&apos;s own string, and the two{" "}
+          <code className="font-mono">Inspect blocker chain</code> rows show the rule both ways.
+        </p>
+        <div className="flex flex-col gap-1.5">
+          {BLOCKED_ROW_EXAMPLES.map((example, index) => {
+            const attention = {
+              action: { label: example.action, detail: example.detail },
+              leafIssue: example.leafIssue ?? null,
+            } as IssueBlockedInboxAttention;
+            const actionLabel = blockedRowActionLabel(attention);
+            return (
+              <div key={`${example.reason}-${index}`} className="flex flex-wrap items-center gap-2">
+                <BlockedReasonChip reason={example.reason} severity="high" />
+                <span className="font-mono text-xs text-muted-foreground">{example.reason}</span>
+                {example.leafIssue ? (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    leaf {example.leafIssue.identifier}
+                  </span>
+                ) : null}
+                {actionLabel ? (
+                  <span className="text-(length:--text-nano) text-muted-foreground sm:text-(length:--text-micro)">
+                    → {actionLabel}
+                  </span>
+                ) : (
+                  <span className="text-(length:--text-nano) text-muted-foreground/60 sm:text-(length:--text-micro)">
+                    → action suppressed
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          <strong>Suppression rule.</strong> An action is dropped when it carries no target: the
+          label is one of the attention build&apos;s fixed fallbacks, <em>and</em> there is no leaf
+          to point at, <em>and</em> the detail is the one string that fallback always ships. A
+          dated snapshot from the live board on 2026-09-28 (
+          <code className="font-mono">status=blocked&amp;includeBlockedInboxAttention=true&amp;limit=500</code>),
+          60 of 74 blocked rows carried an action:
+        </p>
+        <table className="w-full max-w-2xl text-left text-xs">
+          <thead className="text-muted-foreground">
+            <tr>
+              <th className="py-1 pr-3 font-medium">action label</th>
+              <th className="py-1 pr-3 font-medium">rows</th>
+              <th className="py-1 pr-3 font-medium">leafIssue null</th>
+              <th className="py-1 pr-3 font-medium">detail strings</th>
+              <th className="py-1 font-medium">rendered</th>
+            </tr>
+          </thead>
+          <tbody>
+            {BLOCKED_ROW_CENSUS.map((row) => (
+              <tr key={row.label} className="border-t border-border/60">
+                <td className="py-1 pr-3 font-mono">{row.label}</td>
+                <td className="py-1 pr-3">{row.rows}</td>
+                <td className="py-1 pr-3">{row.leafNull}</td>
+                <td className="py-1 pr-3">{row.details}</td>
+                <td className="py-1">{row.shown ? "yes" : "no — suppressed"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-sm text-muted-foreground">
+          <strong>Read the two right-hand columns, not the row counts.</strong> The totals drift —
+          the same day read 76 attended rows on one pass, 67 on the next, 60 on the last. The
+          degeneracy does not: across all 51 stalled rows at once,{" "}
+          <code className="font-mono">leafIssue</code> is null,{" "}
+          <code className="font-mono">recoveryIssue</code> is null,{" "}
+          <code className="font-mono">owner.type</code> is{" "}
+          <code className="font-mono">&quot;unknown&quot;</code>, and the detail string is one
+          byte-identical string. Those are properties of the server branch, so they hold at any
+          queue depth. <code className="font-mono">Assign blocker</code> names a real leaf (PAP-20119)
+          and <code className="font-mono">Resume parked blocker</code> names another (PAP-20035), but
+          that is not why they render: neither label is in the fallback set, so they return at the
+          first check. The leaf test only matters to a row still wearing a fallback label.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          The fallback is dropped for two independent reasons. It names no target, so{" "}
+          <code className="font-mono">Inspect the stalled blocker or review leaf</code> points at
+          nothing. And the rows already sit under a group header that says{" "}
+          <code className="font-mono">Blocked chain stalled</code>, so rendering it would add ~51
+          lines of noise and zero information.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          <strong>What re-opens it.</strong> These three are implemented, not just documented — a
+          row is suppressed only while all three hold, so the first one to become true renders the
+          action with no code change:
+        </p>
+        <ul className="ml-5 list-disc space-y-1 text-sm text-muted-foreground">
+          <li>
+            the label stops being a known fallback — e.g. it becomes{" "}
+            <code className="font-mono">Unblock K-20015 by removing done blocker K-20016</code>, or
+          </li>
+          <li>
+            <code className="font-mono">leafIssue</code> becomes non-null on a stalled row (0 of 51
+            today) — the second showcase row above, or
+          </li>
+          <li>
+            the detail stops being the canonical stall string <em>and is present</em> (1 distinct
+            string today), so the row carries something the label alone does not. An absent detail
+            does not re-open the action.
+          </li>
+        </ul>
+        <p className="text-sm text-muted-foreground">
+          The rule keys on the <em>label</em> to recognise the fallback, never on the reason. The
+          finding branch reuses <code className="font-mono">finding.state</code> as the reason{" "}
+          <em>and</em> as the switch that picks the label, so a reason branch would have had to
+          enumerate every label the server might ever emit — and would have silently swallowed any
+          of the three cases above.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          <strong>Search parity.</strong> The inbox search box indexes exactly the tokens the row
+          displays — title, identifier, the owner name <em>as resolved</em>, the specific reason, the
+          displayed action, and the variant group label <em>only when grouping is on</em> (with
+          grouping set to &quot;None&quot; there is no header, so indexing it would match a row that
+          says only &quot;Parked blocker&quot;).{" "}
+          <code className="font-mono">action.detail</code> is not indexed, a suppressed action is
+          not findable either, and <code className="font-mono">leafIssue</code>/
+          <code className="font-mono">recoveryIssue</code> refs are not indexed because no render
+          path draws them; otherwise the filter would match on text the row does not show.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -2518,6 +2725,16 @@ export function DesignGuide() {
           + <span className="font-mono">InlineBanner</span> to render the loading / setup /
           pending-approval / paused / ready states of a feature that depends on a built-in agent.
         </p>
+      </Section>
+
+      <Section title="Blocked Inbox reason and action (K-20108)">
+        <p className="text-sm text-muted-foreground">
+          A blocked-inbox row has three jobs: which task, why it stopped, what to do. The server
+          computes the third for every row. This section pins the two rules that decide when it is
+          allowed to reach pixels — the chip prints the specific reason rather than the group label,
+          and the action line obeys a documented suppression rule.
+        </p>
+        <BlockedInboxRowShowcase />
       </Section>
     </div>
   );

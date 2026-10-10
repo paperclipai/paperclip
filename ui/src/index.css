@@ -2641,7 +2641,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-108px: 108px;
   --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */
   --sz-240px: 240px; /* Extracted from ui/src/components/AgentConfigForm.tsx (max-h-[240px]). */
-  --sz-10_5rem: 10.5rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[10.5rem]). */
+  --sz-13_5rem: 13.5rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[13.5rem]); widened from 10.5rem for the specific blocked-reason label plus its action line (K-20108). */
   --sz-150px: 150px; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[150px]). */
   --sz-5_75rem: 5.75rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[5.75rem]). */
   --sz-12rem: 12rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (max-w-[12rem]). */
