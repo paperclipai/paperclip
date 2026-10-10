@@ -58,6 +58,10 @@ The agent request is built as:
 ## Timeouts
 
 - `timeoutSec` controls adapter-level request budget
+- `dispatchTimeoutMs` controls the `agent` request acknowledgement budget
+  (default 60,000 ms). Numbers and numeric strings use the existing integer
+  parser and are clamped to at least 1 ms. This budget is separate from
+  connection setup and run completion.
 - `waitTimeoutMs` controls `agent.wait.timeoutMs`
 
 If `agent.wait` returns `timeout`, adapter returns `openclaw_gateway_wait_timeout`.
