@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  authUsers,
   agentWakeupRequests,
   chatActions,
   chatConversations,
@@ -219,7 +220,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
   async function grantFixtureWorkspaceAccess(companyId: string, userIds: string[]) {
     // Later admissions reauthorize the retained workspace for the responsible
-    // user, so synthetic human commenters need real company membership too.
+    // user, so synthetic human commenters need a real identity and membership.
+    await db.insert(authUsers).values(userIds.map(id => ({
+      id, name: "Fixture commenter", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date(),
+    }))).onConflictDoNothing();
     await db.insert(companyMemberships).values(userIds.map(principalId => ({
       companyId, principalId, principalType: "user", status: "active", membershipRole: "member",
     })));
