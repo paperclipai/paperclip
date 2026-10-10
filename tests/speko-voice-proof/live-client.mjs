@@ -45,7 +45,7 @@ await mkdir(dirname(out), { recursive: true, mode: 0o700 });
 await mkdir(out, { mode: 0o700 });
 const startedAt = new Date().toISOString();
 const sourceDigests = {};
-for (const name of ["live-client.mjs", "proof.mjs"]) {
+for (const name of ["live-client.mjs", "proof.mjs", "media-failure.mjs"]) {
   sourceDigests[name] = createHash("sha256").update(await readFile(new URL(name, import.meta.url))).digest("hex");
 }
 const began = performance.now();

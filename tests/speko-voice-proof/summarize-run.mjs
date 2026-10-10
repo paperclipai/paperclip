@@ -26,7 +26,7 @@ const cleanupFailureCount = Math.max(run.cleanupFailures?.length ?? 0, run.event
 const report = {
   date: run.startedAt ?? "2026-09-11 (exact start available from provider session)",
   sourceDigests: run.sourceDigests ? Object.fromEntries(
-    ["live-client.mjs", "proof.mjs"]
+    ["live-client.mjs", "proof.mjs", "media-failure.mjs"]
       .filter((name) => /^[a-f0-9]{64}$/.test(run.sourceDigests[name] ?? ""))
       .map((name) => [name, run.sourceDigests[name]]),
   ) : null,
