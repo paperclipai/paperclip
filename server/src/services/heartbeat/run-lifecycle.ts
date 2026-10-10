@@ -120,6 +120,7 @@ import {
 } from "../activity-log.js";
 import { runnerGoalService } from "../runner-goals.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
+import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-delivery.js";
 import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
@@ -1679,6 +1680,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      armedWatchdog,
     ] = await Promise.all([
       issue
         ? db
@@ -1825,6 +1827,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? hasArmedInvokableIssueWatchdog(db, issue)
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -1842,6 +1847,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         pendingInteraction || pendingApproval,
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasArmedWatchdog: armedWatchdog,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
