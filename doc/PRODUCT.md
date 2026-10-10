@@ -52,6 +52,8 @@ Agent runs can use project and execution workspaces, managed runtime services su
 
 ### Task Management
 
+The sole approved root agent receives the default agent-change and skill-change grants even when its role label is general. These defaults do not apply to low-trust agents. A single explicit CEO still takes precedence when a company has several root agents. Pending hires and ambiguous roots do not gain these defaults.
+
 Task management is hierarchical. At any moment, every piece of work must trace back to the company's top-level goal through a chain of parent tasks:
 
 ```

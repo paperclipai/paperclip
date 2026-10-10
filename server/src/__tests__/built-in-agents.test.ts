@@ -606,6 +606,56 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("grants a sole approved non-built-in root the default changes regardless of role label", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const root = await agentService(db).create(companyId, { name: "Root", role: "general", status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    // Reproduce a legacy root that predates the standard-agent grant defaults.
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, root.id));
+    await reconcileBuiltInAgentsOnStartup(db);
+    expect(await permissionKeysForAgent(root.id)).toEqual(expect.arrayContaining(["agents:configure", "skills:create"]));
+  });
+
+  it("does not choose between multiple non-CEO roots or grant a pending root", async () => {
+    for (const statuses of [["idle", "idle"], ["pending_approval"]] as const) {
+      const companyId = await seedCompany({ requireApproval: false });
+      const roots = [];
+      for (const status of statuses) roots.push(await agentService(db).create(companyId, { name: "Root", role: "general", status, adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} }));
+      for (const root of roots) await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, root.id));
+      await reconcileBuiltInAgentsOnStartup(db);
+      for (const root of roots) expect(await permissionKeysForAgent(root.id)).not.toContain("agents:configure");
+    }
+  });
+
+  it("does not elevate a low-trust root during default-grant reconciliation", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const root = await agentService(db).create(companyId, { name: "Review root", role: "general", status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: { authorizationPolicy: { trustBoundary: { kind: "review" } } } });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, root.id));
+    await reconcileBuiltInAgentsOnStartup(db);
+    expect(await permissionKeysForAgent(root.id)).not.toContain("agents:configure");
+    expect(await permissionKeysForAgent(root.id)).not.toContain("skills:create");
+  });
+
+  it.each([
+    { roles: ["ceo", "general"] as const, selected: 0 },
+    { roles: ["ceo", "ceo"] as const, selected: null },
+  ])("selects only the unambiguous CEO when root roles are $roles", async ({ roles, selected }) => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const roots = [];
+    for (const role of roles) {
+      const root = await agentService(db).create(companyId, { name: role, role, status: "idle", reportsTo: null, adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+      roots.push(root);
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, root.id));
+    }
+    await reconcileBuiltInAgentsOnStartup(db);
+    for (const [index, root] of roots.entries()) {
+      const grants = await permissionKeysForAgent(root.id);
+      for (const key of ["agents:configure", "skills:create"]) {
+        if (index === selected) expect(grants).toContain(key);
+        else expect(grants).not.toContain(key);
+      }
+    }
+  });
+
   it("reconciles an enabled Reflection Coach bundle with skill sync and a disabled routine", async () => {
     const companyId = await seedCompany({ requireApproval: false });
     const root = await createAgentLifecycle(db).requestHire(companyId, {
