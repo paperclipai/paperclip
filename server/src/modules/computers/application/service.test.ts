@@ -63,6 +63,7 @@ function fixture() {
     stop: vi.fn(async () => ({ id: "stop_1", status: stopStatus })),
     stopStatus: vi.fn(async () => ({ id: "stop_1", status: stopStatus })),
     renew: vi.fn(async () => {}),
+    computerTool: () => ({ command: "cua-driver", args: ["mcp"] }),
     desktop: vi.fn(async () => ({
       viewerUrl: "https://test.on.boat.dev/#credential",
       expiresAt: new Date(clock.getTime() + 540_000).toISOString(),

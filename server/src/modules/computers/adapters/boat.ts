@@ -19,6 +19,38 @@ const desktopCache = new Map<
   string,
   { viewerUrl: string; expiresAt: string }
 >();
+export const desktopReadinessProgram = String.raw`
+import os,sys,json,stat,fcntl,subprocess,time
+# Boat restores its persistent home, but Unix sockets there can refer to stale
+# kernel listeners. Keep a healthy IBus unchanged; repair only a failed probe.
+uid=os.getuid();runtime='/run/user/'+str(uid)
+st=os.lstat(runtime)
+if not stat.S_ISDIR(st.st_mode) or st.st_uid!=uid:raise RuntimeError('invalid desktop runtime directory')
+env={**os.environ,'DISPLAY':':0','XAUTHORITY':'/home/user/.Xauthority','DBUS_SESSION_BUS_ADDRESS':'unix:path='+runtime+'/bus','XDG_RUNTIME_DIR':runtime,'IBUS_ENABLE_SYNC_MODE':'0'}
+env.pop('IBUS_ADDRESS',None)
+def healthy():
+ try:
+  address=subprocess.run(['ibus','address'],env=env,capture_output=True,text=True,timeout=5)
+  if address.returncode or not address.stdout.strip().startswith('unix:'):return False
+  return subprocess.run(['gdbus','call','--address',address.stdout.strip(),'--dest','org.freedesktop.IBus','--object-path','/org/freedesktop/IBus','--method','org.freedesktop.DBus.Peer.Ping'],env=env,capture_output=True,timeout=5).returncode==0
+ except subprocess.TimeoutExpired:return False
+root=runtime+'/paperclip-ibus'
+os.makedirs(root,mode=0o700,exist_ok=True)
+st=os.lstat(root)
+if not stat.S_ISDIR(st.st_mode) or st.st_uid!=uid:raise RuntimeError('invalid desktop input directory')
+os.chmod(root,0o700)
+fd=os.open(root+'/lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+with os.fdopen(fd,'a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX)
+ if not healthy():
+  result=subprocess.run(['ibus-daemon','--replace','--daemonize','--xim','--address','unix:path='+root+'/bus'],env=env,capture_output=True,timeout=20)
+  if result.returncode:raise RuntimeError('desktop input repair failed')
+  for attempt in range(10):
+   if healthy():break
+   time.sleep(0.2)
+  else:raise RuntimeError('desktop input did not become ready')
+`;
+
 export const processProgram = String.raw`
 import os,sys,json,fcntl,subprocess,shutil,re
 p=json.load(sys.stdin);base='/home/user/.paperclip-owners';os.makedirs(base,exist_ok=True)
@@ -389,7 +421,14 @@ print('{}')
     async renew(record) {
       await api(record, "PATCH", "", { ttlSeconds: 300 });
     },
+    computerTool() {
+      return {
+        command: "python3",
+        args: ["-c", `${desktopReadinessProgram}\nos.execv('/opt/ascii/cua-driver/cua-driver',['cua-driver','mcp','--socket','/run/ascii-cua/driver.sock'])`],
+      };
+    },
     async desktop(record) {
+      await execute(record, `${desktopReadinessProgram}\nprint('{}')`, {});
       const cached = desktopCache.get(record.id);
       if (cached && Date.parse(cached.expiresAt) > Date.now() + 60_000)
         return cached;

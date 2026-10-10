@@ -289,6 +289,7 @@ finally:
     return {
       owner: ownerRef,
       runner: runnerFor(false),
+      computerTool: backend.computerTool(),
       process: {
         runner: runnerFor(true),
         async ingress(input?: { port?: number; path?: string }) {

@@ -131,6 +131,6 @@ export async function computerExecutionTarget(db: Db, lease: EnvironmentLease, i
       if (port !== binding.listenerPort) throw new Error("computer_runner_port_mismatch");
       return ingress(path);
     },
-    computerTool: { command: "/opt/ascii/cua-driver/cua-driver", args: ["mcp", "--socket", "/run/ascii-cua/driver.sock"] },
+    computerTool: binding.computerTool,
   };
 }
