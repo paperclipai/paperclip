@@ -1069,9 +1069,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    // On remote targets the saved cwd is a per-run directory, so comparing it
+    // with the current run's directory would reject every resume; the remote
+    // execution identity (host, user, workspace) is the guard there.
     const canResumeSession =
       runtimeSessionId.length > 0 &&
-      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+      (runtimeSessionCwd.length === 0 ||
+        executionTargetIsRemote ||
+        path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
     const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
