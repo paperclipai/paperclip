@@ -109,6 +109,7 @@ function getConfiguredModel(agent: Agent): string | null {
 
 function formatEnvironmentDriver(driver: Environment["driver"]): string {
   if (driver === "ssh") return "SSH";
+  if (driver === "computer") return "Boat";
   return driver.charAt(0).toUpperCase() + driver.slice(1);
 }
 

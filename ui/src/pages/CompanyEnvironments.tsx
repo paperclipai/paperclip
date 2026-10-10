@@ -2613,12 +2613,12 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         >
                           <option value="">
                             Default: {instanceDefaultEnvironment
-                              ? `${instanceDefaultEnvironment.name} · ${instanceDefaultEnvironment.driver}`
+                              ? environmentDisplayLabel(instanceDefaultEnvironment)
                               : "Local"}
                           </option>
                           {reassignTargetEnvironments.map((environment) => (
                             <option key={environment.id} value={environment.id}>
-                              {environment.name} · {environment.driver}
+                              {environmentDisplayLabel(environment)}
                             </option>
                           ))}
                         </select>

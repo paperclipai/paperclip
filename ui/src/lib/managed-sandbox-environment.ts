@@ -24,7 +24,7 @@ export function environmentDisplayLabel(
   environment: Pick<Environment, "name" | "driver" | "metadata">,
 ): string {
   if (isPlatformManagedEnvironment(environment)) return environment.name;
-  return `${environment.name} · ${environment.driver}`;
+  return `${environment.name} · ${environment.driver === "computer" ? "Boat" : environment.driver}`;
 }
 
 /**
