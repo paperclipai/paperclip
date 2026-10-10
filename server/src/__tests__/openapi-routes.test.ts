@@ -38,6 +38,7 @@ const apiPrefixes: Record<string, string> = {
   "cloud.ts": "/api/cloud",
   "customer-success.ts": "/api/customer-success/v1",
   "companies.ts": "/api/companies",
+  "computers.ts": "/api",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
@@ -862,6 +863,23 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/voice-webhooks/{publicId}/events"]).toBeUndefined();
     const decision=spec.paths["/api/companies/{companyId}/voice-phone/{endpointId}/incoming/{callId}"].post;
     expect(decision.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining(["approve", "approvalCode"]));
+  });
+
+  it("documents board-only computer ownership and private viewer responses", () => {
+    const { spec } = loadSpecRoutes();
+    for (const suffix of ["", "/connect", "/presence", "/disconnect", "/preview"]) {
+      const operation = spec.paths[`/api/issues/{issueId}/computer${suffix}`][suffix ? "post" : "get"];
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    const viewer = spec.paths["/api/issues/{issueId}/computer/connect"].post;
+    expect(viewer.responses["200"].headers["Cache-Control"].schema.enum).toEqual(["no-store"]);
+    expect(viewer.responses["200"].content["application/json"].schema.required).toContain("owner");
+    const preview = spec.paths["/api/issues/{issueId}/computer/preview"].post;
+    expect(preview.requestBody.content["application/json"].schema.properties.owner).toBeUndefined();
+    const disconnect = spec.paths["/api/issues/{issueId}/computer/disconnect"].post;
+    expect(disconnect.responses["204"]).toBeDefined();
+    expect(disconnect.description).toContain("disabled");
   });
 
   it("covers the mounted server routes exactly", () => {
