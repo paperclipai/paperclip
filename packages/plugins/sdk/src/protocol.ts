@@ -34,6 +34,7 @@ import type {
   IssueThreadInteraction,
   CreateIssueThreadInteractionInput,
   Approval,
+  ApprovalComment,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -2084,6 +2085,10 @@ export interface WorkerToHostMethods {
   "approvals.get": [
     params: { approvalId: string; companyId: string },
     result: Approval | null,
+  ];
+  "approvals.listComments": [
+    params: { approvalId: string; companyId: string },
+    result: ApprovalComment[],
   ];
   "approvals.decide": [
     params: {

@@ -32,6 +32,7 @@ import type {
   ConnectionRequestResult,
   ConnectionsSearchResult,
   Approval,
+  ApprovalComment,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -129,6 +130,7 @@ export type {
   Project,
   Issue,
   IssueComment,
+  ApprovalComment,
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
@@ -1644,14 +1646,20 @@ export interface PluginIssuesClient {
 /**
  * `ctx.approvals` — read and decide company approvals.
  *
- * Requires `approvals.read` for `list` / `get`; `approvals.respond` for
- * `decide`. Approval payloads returned by `list` / `get` are redacted host-side
- * to match the web app's own approval read surface (no secret leakage through
- * the bridge).
+ * Requires `approvals.read` for `list` / `get` / `listComments`;
+ * `approvals.respond` for `decide`. Approval payloads returned by `list` /
+ * `get` are redacted host-side to match the web app's own approval read
+ * surface (no secret leakage through the bridge).
  */
 export interface PluginApprovalsClient {
   list(input: { companyId: string; status?: string | null }): Promise<Approval[]>;
   get(approvalId: string, companyId: string): Promise<Approval | null>;
+  /**
+   * List the comments on an approval, oldest first. The web app stores a
+   * board user's reason for a decision as a comment on the approval, so a
+   * plugin that reacts to `approval.decided` reads the reason from here.
+   */
+  listComments(approvalId: string, companyId: string): Promise<ApprovalComment[]>;
   /**
    * Approve or reject an approval on behalf of a paired board user.
    *

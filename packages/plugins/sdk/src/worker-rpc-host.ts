@@ -1138,6 +1138,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("approvals.get", { approvalId, companyId });
         },
 
+        async listComments(approvalId: string, companyId: string) {
+          return callHost("approvals.listComments", { approvalId, companyId });
+        },
+
         async decide(
           approvalId: string,
           input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
