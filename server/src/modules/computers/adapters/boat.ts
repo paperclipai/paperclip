@@ -558,7 +558,13 @@ print('{}')
       if (options?.checkInput !== false)
         await execute(record, `${desktopReadinessProgram}\nprint('{}')`, {});
       const cached = desktopCache.get(record.id);
-      if (cached && Date.parse(cached.expiresAt) > Date.now() + 60_000)
+      // Explicit Connect must obtain a new stream session, including after a
+      // failed connection. Only presence renewals reuse existing credentials.
+      if (
+        options?.checkInput === false &&
+        cached &&
+        Date.parse(cached.expiresAt) > Date.now() + 60_000
+      )
         return cached;
       const value = await api(record, "POST", "/desktop", {});
       const url = new URL(value.desktopUrl);
