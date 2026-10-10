@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, desc, eq, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -41,6 +41,94 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+/**
+ * Records the issue a run checked out into that run's context snapshot.
+ *
+ * The snapshot is the anchor the influence gate reads. Checkout is where a
+ * run commits to an issue, so it is recorded here as well as on the issue
+ * row: a timer heartbeat is woken with no task, so without this its run
+ * carries no anchor at all and the gate fails closed for every write it
+ * makes.
+ *
+ * The stamp carries `checkoutAnchoredIssueId` alongside `issueId`. That
+ * marker tells later checkouts the anchor is one this run made itself, so
+ * it may move: release clears the issue's run claim but never the snapshot,
+ * so without the marker a run that checks out A, releases A, and checks out
+ * B would keep free writes on A — which it no longer holds — while being
+ * charged for B, the issue it now owns. A run anchored by its wake keeps
+ * that anchor: the wake is the stronger statement of what the run was woken
+ * to do, and re-anchoring it onto a different issue would hand it free
+ * writes on an issue it never woke for.
+ */
+export async function stampRunContextIssueId(
+  runDb: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    issueId: string;
+  },
+) {
+  const stamped = await runDb
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify(
+        {
+          issueId: input.issueId,
+          checkoutAnchoredIssueId: input.issueId,
+        },
+      )}::jsonb`,
+    })
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') is null
+          or ${heartbeatRuns.contextSnapshot}->>'checkoutAnchoredIssueId' is not null`,
+      ),
+    )
+    .returning({ id: heartbeatRuns.id })
+    .then((rows) => rows.length > 0);
+  if (!stamped) {
+    logger.debug(
+      { runId: input.runId, issueId: input.issueId },
+      "run already anchored; left context snapshot unchanged",
+    );
+  }
+  return stamped;
+}
+
+/**
+ * A run's anchor may live on the issue it holds checked out rather than in
+ * its context snapshot. Timer heartbeats start unanchored — the scheduler
+ * wakes them with no task — and they pick work up from the inbox and then
+ * check it out, so the checkout row is the only place that names the issue.
+ * Without this fallback every heartbeat run fails closed and the whole timer
+ * path loses the ability to comment on or update any issue.
+ */
+async function readCheckedOutIssueId(
+  tx: Db,
+  input: { companyId: string; runId: string },
+): Promise<string | null> {
+  const row = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        or(
+          eq(issues.checkoutRunId, input.runId),
+          eq(issues.executionRunId, input.runId),
+        ),
+      ),
+    )
+    .orderBy(desc(issues.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row?.id ?? null;
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
@@ -109,7 +197,9 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    const sourceIssueId =
+      readRunSourceIssueId(run.contextSnapshot) ??
+      (await readCheckedOutIssueId(tx, { companyId: input.companyId, runId: input.runId }));
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||

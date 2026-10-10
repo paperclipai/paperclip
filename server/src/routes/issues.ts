@@ -355,6 +355,7 @@ import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
+  stampRunContextIssueId,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
@@ -15937,6 +15938,25 @@ export function issueRoutes(
         entityId: issue.id,
         details: { agentId: req.body.agentId, status: updated?.status, _previous: { status: issue.status } },
       });
+
+      // A timer heartbeat starts with no task, so its run has no `issueId` in
+      // its context snapshot and the cross-issue influence gate fails closed for
+      // every write it makes. Checkout is where the run commits to an issue, so
+      // record that commitment in the run context as well as the issue row:
+      // writes to this issue become same-issue and uncharged, writes elsewhere
+      // are metered against the same per-run cap. The stamp follows the run's
+      // checkouts, so an anchor is never left pointing at an issue the run no
+      // longer holds, and the claim itself is cleared once the run reaches a
+      // terminal status — leaving the snapshot the only record of what the run
+      // was working on when the work is reviewed later.
+      if (checkoutRunId && req.actor.type === "agent") {
+        await stampRunContextIssueId(db, {
+          companyId: issue.companyId,
+          runId: checkoutRunId,
+          agentId: actor.agentId ?? req.body.agentId,
+          issueId: issue.id,
+        });
+      }
 
       if (
         shouldWakeAssigneeOnCheckout({
