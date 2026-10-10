@@ -932,6 +932,23 @@ export function recoveryService(
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    /**
+     * Teardown the stale-lock sweep shares with the normal terminal path. When
+     * the sweep terminalizes a run whose process is gone, it releases the run's
+     * environment leases and settles the agent status through these hooks.
+     */
+    releaseEnvironmentLeasesForRun?: (input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      status: string | null | undefined;
+      failureReason?: string | null;
+    }) => Promise<void>;
+    finalizeAgentStatus?: (
+      agentId: string,
+      outcome: "succeeded" | "cancelled" | "interrupted",
+      failureReason?: string | null,
+    ) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -5885,6 +5902,20 @@ export function recoveryService(
   // - Process-death authority: the run has no in-memory handle and its recorded
   //   process and process group are both gone. This catches a hard server crash
   //   that skipped the graceful teardown, even when the issue is not terminal.
+  async function waitForOrphanedRunCleanup(operation: () => Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("orphaned run cleanup exceeded 5000ms")), 5_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function terminalizeOrphanedRunningRun(
     run: typeof heartbeatRuns.$inferSelect,
     options?: {
@@ -6059,6 +6090,39 @@ export function recoveryService(
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, run.id));
       return { terminalized: false, status: current?.status ?? run.status };
+    }
+
+    // The sweep bypasses heartbeat's usual terminal path, so a crashed run would
+    // otherwise keep its environment leases and leave its agent marked running.
+    // Once process death is established, run the normal teardown. Terminal issue
+    // status alone does not prove the provider stopped, so that authority keeps
+    // leases and agent status until the owning execution settles. Failures here
+    // must not hide the committed terminal outcome or block clearing the lock.
+    // Bound each wait: a timed-out operation can still settle in the background,
+    // while the existing lease backstop remains responsible for stranded leases.
+    if (processGone) {
+      try {
+        await waitForOrphanedRunCleanup(async () => deps.releaseEnvironmentLeasesForRun?.({
+          runId: updated.id,
+          companyId: updated.companyId,
+          agentId: updated.agentId,
+          status: updated.status,
+          failureReason: updated.error ?? undefined,
+        }));
+      } catch (error) {
+        logger.error(
+          { err: error, runId: run.id },
+          "orphaned run lease cleanup failed; operator recovery required",
+        );
+      }
+      try {
+        await waitForOrphanedRunCleanup(async () => deps.finalizeAgentStatus?.(updated.agentId, terminalStatus, updated.error));
+      } catch (error) {
+        logger.error(
+          { err: error, runId: run.id },
+          "orphaned run agent finalization failed; operator recovery required",
+        );
+      }
     }
 
     // Telemetry is best-effort background work; it must not delay clearing

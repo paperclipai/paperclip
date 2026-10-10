@@ -212,3 +212,11 @@ Source discovery, selection, and refresh add no first-party telemetry events.
 Repository URLs, paths, commits, connection IDs, names, and file contents stay out
 of these telemetry dimensions. Review this suppression in privacy review alongside
 changes to the legacy import caller; the event schema and envelope are unchanged.
+
+## Agent finalization privacy boundary
+
+Any completion or recovery caller of the normal agent finalizer must preserve
+the existing `agent.first_heartbeat` contract and typed helper. A missing prior
+heartbeat timestamp can cause that event to emit. Callers must not add issue
+content, error text, or environment metadata to its dimensions. The stale
+issue-lock sweep follows this same privacy boundary.
