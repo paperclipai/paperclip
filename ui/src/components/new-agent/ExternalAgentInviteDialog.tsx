@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { MuseInvitation } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
+import { museInvitationsApi } from "@/api/museInvitations";
+import { useAccountIdentity } from "@/api/companies-query";
+import { useMuseConnection, museConnectionState } from "@/hooks/useMuseConnection";
+import { clearMuseInvitationDraft, readMuseInvitationDraft, saveMuseInvitationDraft, type MuseInvitationDraft } from "@/lib/muse-invitation-draft";
 import { accessApi } from "@/api/access";
 import { dotInvitationsApi, type DotInvitation, type DotPairing } from "@/api/dotInvitations";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -12,14 +18,16 @@ import { Dialog } from "../ui/dialog";
 import { ExternalAgentInviteContent, type DotConnectionState, type ExternalAgentPreset } from "./ExternalAgentInviteContent";
 
 /** Pairing secrets live only in this mounted dialog. Reloads resume the agent, never duplicate it. */
-export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
+export function ExternalAgentInviteDialog({ companyId, onClose, onBack, initialPreset = null, initialMuseName = "" }: {
   companyId: string;
+  initialPreset?: ExternalAgentPreset | null;
+  initialMuseName?: string;
   onClose: () => void;
   onBack: () => void;
 }) {
   const cache = useQueryClient();
   const { selectedCompany } = useCompany();
-  const [preset, setPreset] = useState<ExternalAgentPreset | null>(null);
+  const [preset, setPreset] = useState<ExternalAgentPreset | null>(initialPreset);
   const [invitation, setInvitation] = useState<DotInvitation | null>(null);
   const [pairing, setPairing] = useState<DotPairing | null>(null);
   const [expiredPairingBindingId, setExpiredPairingBindingId] = useState<string | null>(null);
@@ -114,6 +122,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   const busy = generate.isPending || pair.isPending || test.isPending || preparePairing
     || (preset === "dot" && !!invitation && (state.isPending || (!prompt && state.isFetching)));
   const retry = () => {
+    if (preset === "muse") { void experimental.refetch(); return; }
     if (unavailable) { void state.refetch(); return; }
     if (state.error) { void state.refetch(); return; }
     if (generate.error || !invitation) { if (preset) generate.mutate(preset); return; }
@@ -121,14 +130,91 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     test.mutate();
   };
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
-    <AnimatedDialogContent className="sm:max-w-(--sz-560px)">
-      <ExternalAgentInviteContent preset={preset} prompt={prompt} companyName={selectedCompany?.name ?? "your organization"}
-        connection={connection} dotDisabledReason={dotDisabledReason} busy={busy}
-        error={error?.message ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined)}
+    <AnimatedDialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-(--sz-560px)">
+      {preset === "muse" && experimental.data?.enableMuse && experimental.data?.enableNativeRunner ? <MuseInvitationController initialName={initialMuseName} companyId={companyId} companyName={selectedCompany?.name ?? "your organization"} onClose={onClose} onBack={() => setPreset(null)} /> :
+      <ExternalAgentInviteContent preset={preset === "muse" ? null : preset} prompt={prompt} companyName={selectedCompany?.name ?? "your organization"}
+        connection={connection} museEnabled={experimental.data?.enableMuse === true && experimental.data?.enableNativeRunner === true} dotDisabledReason={dotDisabledReason} busy={busy}
+        error={preset === "muse" ? experimental.isPending ? undefined : "Enable Muse and Paperclip Runner in experimental settings to connect your personal Muse." : error?.message ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined)}
         approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
-        onSelect={kind => { setPreset(kind); if (kind === "dot" ? !invitation : !genericPrompt) generate.mutate(kind); }}
+        onSelect={kind => { setPreset(kind); if (kind !== "muse" && (kind === "dot" ? !invitation : !genericPrompt)) generate.mutate(kind); }}
         onBack={() => setPreset(null)} onClose={preset ? onClose : onBack} onCopied={() => { if (preset === "dot") void state.refetch(); }}
-        onRetry={retry} onNewPrompt={() => pair.mutate(binding?.id)} />
+        onRetry={retry} onNewPrompt={() => pair.mutate(binding?.id)} />}
     </AnimatedDialogContent>
   </Dialog>;
+}
+
+
+function MuseInvitationController({ companyId, companyName, onClose, onBack, initialName }: {
+  companyId: string; companyName: string; initialName: string; onClose: () => void; onBack: () => void;
+}) {
+  const cache = useQueryClient();
+  const identity = useAccountIdentity();
+  const scopeKey = `${companyId}:${identity.userId}`;
+  const loadDraft = () => { const value = readMuseInvitationDraft(companyId, identity.userId); return { ...value, name: value.name || initialName }; };
+  const [draftState, setDraftState] = useState(() => ({ scopeKey, value: loadDraft() }));
+  if (draftState.scopeKey !== scopeKey) setDraftState({ scopeKey, value: loadDraft() });
+  const draft = draftState.value;
+  const [created, setCreated] = useState<{ scopeKey: string; invitation: MuseInvitation } | null>(null);
+  const currentScope = useRef(scopeKey); currentScope.current = scopeKey;
+  const resume = useQuery({ queryKey: ["muse-invitation", companyId, identity.userId],
+    queryFn: ({ signal }) => museInvitationsApi.resume(companyId, signal), enabled: identity.settled,
+    retry: false, staleTime: 0, refetchOnMount: "always",
+    refetchInterval: query => query.state.data?.agent.status === "pending_approval" ? 2500 : false });
+  const invitation = created?.scopeKey === scopeKey ? created.invitation : resume.isFetchedAfterMount ? resume.data : null;
+  const muse = useMuseConnection(companyId, invitation?.agent.id);
+  const attemptedAutomaticPairing = useRef(false);
+  const attemptedAutomaticVerification = useRef<string | null>(null);
+  useEffect(() => { attemptedAutomaticPairing.current = false; attemptedAutomaticVerification.current = null; }, [scopeKey, invitation?.agent.id]);
+  const create = useMutation({ mutationFn: async (input: MuseInvitationDraft) => {
+    const requestScope = scopeKey;
+    const result = await museInvitationsApi.create(companyId, { name: input.name.trim(), role: input.role });
+    if (currentScope.current === requestScope) setCreated({ scopeKey: requestScope, invitation: result });
+    void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    // The creation receipt contains no ticket; pairing happens in the mounted connection hook.
+  }, gcTime: 0 });
+  const b = muse.binding;
+  const canPrepare = !!invitation && muse.state.data?.enabled && muse.state.data.canConfigureConnection
+    && !!muse.state.data.publicOrigin && (!b || b.status === "pairing");
+  useEffect(() => {
+    if (canPrepare && muse.state.isFetchedAfterMount && !muse.state.isFetching && !muse.pair.isPending
+      && !muse.pairing && !attemptedAutomaticPairing.current) {
+      attemptedAutomaticPairing.current = true;
+      muse.repair();
+    }
+  }, [canPrepare, muse.state.isFetchedAfterMount, muse.state.isFetching, muse.pair.isPending, muse.pairing, b?.id, b?.revision]);
+  useEffect(() => {
+    if (b?.paired && b.receiverDetected && !b.backgroundReplyVerified && !b.challengeExpiresAt
+      && muse.state.data?.enabled && muse.state.data.canConfigureConnection
+      && muse.state.isFetchedAfterMount && !muse.state.isFetching && !muse.verify.isPending && !muse.verify.isError) {
+      const identity = `${b.id}:${b.generation}`;
+      if (attemptedAutomaticVerification.current !== identity) {
+        attemptedAutomaticVerification.current = identity;
+        muse.verify.mutate(b);
+      }
+    }
+  }, [b, muse.state.data, muse.state.isFetchedAfterMount, muse.state.isFetching, muse.verify.isPending, muse.verify.isError]);
+  const pendingApproval = (muse.state.data?.agentStatus ?? invitation?.agent.status) === "pending_approval";
+  const busy = create.isPending || muse.pair.isPending || muse.verify.isPending || (!invitation && (resume.isPending && !identity.failed || !identity.settled && !identity.failed))
+    || (!!invitation && muse.state.isPending);
+  const promptUnavailable = !!b && !b.paired && b.status === "pairing" && !muse.pairing
+    && attemptedAutomaticPairing.current && !muse.pair.isPending && !muse.state.isFetching;
+  const connection = museConnectionState(muse.state.data, { offline: muse.state.isError, promptUnavailable });
+  const verifyError = muse.verify.error instanceof ApiError && muse.verify.error.status === 409 && b?.challengeExpiresAt
+    && Date.parse(b.challengeExpiresAt) > Date.now() ? null : muse.verify.error;
+  const error = create.error ?? resume.error ?? muse.pair.error ?? verifyError;
+  const operatorRequired = error instanceof ApiError && (error.status === 401 || error.status === 403)
+    && !invitation;
+  const missingPublicOrigin = !!invitation && muse.state.isSuccess && !muse.state.data.publicOrigin;
+  const errorMessage = missingPublicOrigin ? "This instance has no public HTTPS URL for Muse. Ask your instance administrator to configure a stable public HTTPS address, then refresh setup. Muse cannot connect through a local-only address." : operatorRequired ? "Use an authenticated Paperclip instance with a public HTTPS URL and a company operator account. Local trusted access alone cannot connect Muse." : error?.message;
+  return <ExternalAgentInviteContent preset="muse" companyName={companyName} prompt={muse.pairing?.setupInstruction ?? ""}
+    connection={{ phase: "waiting" }} museConnection={invitation && !missingPublicOrigin && b ? connection : undefined} busy={busy} error={identity.failed ? "Unable to confirm your account. Refresh to resume Muse setup." : errorMessage}
+    approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
+    museDraft={!invitation && resume.isSuccess && identity.settled ? draft : undefined}
+    onMuseDraftChange={value => { setDraftState({ scopeKey, value }); saveMuseInvitationDraft(companyId, identity.userId, value); }}
+    onMuseContinue={() => create.mutate(draft)} onSelect={() => {}} onBack={onBack}
+    onClose={() => { if (connection.ready) { clearMuseInvitationDraft(companyId, identity.userId); void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) }); } onClose(); }}
+    onCopied={() => { void muse.state.refetch(); }}
+    onRetry={() => { if (identity.failed) { void cache.invalidateQueries({ queryKey: queryKeys.auth.session }); return; } if (resume.isError) { void resume.refetch(); return; } if (missingPublicOrigin) { void muse.state.refetch(); return; } if (create.isError && !invitation) { create.mutate(draft); return; }
+      if (muse.state.isError) { void muse.state.refetch(); return; } if (b?.paired) muse.verify.mutate(b); else muse.repair(); }}
+    onNewPrompt={() => muse.repair()} />;
 }

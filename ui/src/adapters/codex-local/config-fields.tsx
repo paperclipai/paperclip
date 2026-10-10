@@ -1,5 +1,6 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
+import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -79,6 +80,8 @@ export function CodexLocalConfigFields({
   )
     ? configuredRunnerProvider
     : "codex";
+  const isMuse = configuredRunnerProvider === "muse";
+  const isExternal = isMuse || runnerProvider === "openai_dot";
   const runnerPermissionCapability =
     PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider];
   const configuredRunnerPermissionMode =
@@ -201,7 +204,7 @@ export function CodexLocalConfigFields({
           </select>
         </Field>
       )}
-      {runnerManaged && runnerProvider !== "openai_dot" && (
+      {runnerManaged && !isExternal && (
         <Field configSection="adapter"
           label="Harness"
           hint="Choose the agent harness that runs your tasks."
@@ -272,6 +275,13 @@ export function CodexLocalConfigFields({
         <ToggleField label="Workspace files and commands" hint="Let Dot read and write its assigned workspace and publish files. Requires a local Runner. Commands are available only on Linux with bubblewrap; they cannot read your home directory or use injected credentials."
           checked={runnerSchemaValue("dotWorkspaceAccess", false) === true} onChange={value => updateRunnerSchemaValue("dotWorkspaceAccess", value)} />
         <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
+          checked={runnerSchemaValue("allowUnmeteredProvider", false) === true} onChange={value => updateRunnerSchemaValue("allowUnmeteredProvider", value)} />
+      </>}
+      {runnerManaged && isMuse && <>
+        <Field configSection="adapter" label="Muse connection" hint="Pairing, receiver contact, background reply, and agent setup are verified separately.">
+          <MuseRunnerConnection companyId={companyId} agentId={agentId} />
+        </Field>
+        <ToggleField label="Allow externally billed provider" hint="Muse does not report usage or cost. Paperclip cannot enforce a Muse spend ceiling; known company and agent budget limits still apply."
           checked={runnerSchemaValue("allowUnmeteredProvider", false) === true} onChange={value => updateRunnerSchemaValue("allowUnmeteredProvider", value)} />
       </>}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") !== "grok" && (
@@ -456,7 +466,7 @@ export function CodexLocalConfigFields({
           />
         </>
       )}
-      {runnerManaged && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
+      {runnerManaged && !isExternal && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
         <Field
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} The selected mode does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
@@ -516,7 +526,7 @@ export function CodexLocalConfigFields({
           )}
         </Field>
       )}
-      {runnerManaged && runnerProvider !== "openai_dot" && (
+      {runnerManaged && !isExternal && (
         <Field configSection="runPolicy"
           label="Runner lifecycle"
           hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
@@ -536,7 +546,7 @@ export function CodexLocalConfigFields({
           </select>
         </Field>
       )}
-      {runnerManaged && runnerProvider !== "openai_dot" && runnerLifecycleMode === "warm" && (
+      {runnerManaged && !isExternal && runnerLifecycleMode === "warm" && (
         <Field configSection="runPolicy"
           label="Warm idle timeout (ms)"
           hint="After this much inactivity, runnerd checkpoints and suspends the provider session. The maximum is 24 hours."
@@ -800,7 +810,7 @@ export function CodexLocalConfigFields({
           )}
         </>
       )}
-      {runnerProvider !== "openai_dot" && <LocalWorkspaceRuntimeFields
+      {!isExternal && <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
         values={values}
         set={set}

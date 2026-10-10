@@ -58,6 +58,15 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(dot).toContain("Dot connection");
     expect(dot).toContain("Allow externally billed provider");
   });
+  it("uses the shared Muse connection and excludes local harness, workspace, and lifecycle fields", async () => {
+    const muse = await renderRunner({ provider: "muse" });
+    expect(muse).toContain("Muse connection");
+    expect(muse).toContain("Allow externally billed provider");
+    expect(muse).not.toContain('aria-label="Harness"');
+    expect(muse).not.toContain("Runner lifecycle");
+    expect(muse).not.toContain("Workspace files and commands");
+    expect(muse).not.toContain("Capture raw provider traces");
+  });
   it.each([
     [undefined, "Full auto (approve all)"],
     ["approve-paperclip", "Automatic Paperclip actions"],
