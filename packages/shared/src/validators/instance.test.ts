@@ -132,10 +132,20 @@ describe("instance experimental settings validators", () => {
     });
   });
 
-  it("defaults the decisions sidebar link off", () => {
+  it("defaults the decisions sidebar link on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
-    expect(settings.enableDecisions).toBe(false);
+    expect(settings.enableDecisions).toBe(true);
+  });
+
+  it("defaults simplified English interactions on and accepts an explicit opt-out", () => {
+    expect(
+      instanceExperimentalSettingsSchema.parse({}).enableSimplifiedEnglishInteractions,
+    ).toBe(true);
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSimplifiedEnglishInteractions: false })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(false);
   });
 
   it("accepts decisions patches", () => {

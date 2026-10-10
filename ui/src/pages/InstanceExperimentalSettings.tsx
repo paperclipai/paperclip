@@ -258,7 +258,8 @@ export function InstanceExperimentalSettings() {
           <h1 className="text-lg font-semibold">Experimental</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Opt into features that are still being evaluated before they become default behavior.
+          Turn features that are still being evaluated on or off. Some are on by default; the rest are
+          opt-in.
         </p>
       </div>
 
@@ -271,8 +272,9 @@ export function InstanceExperimentalSettings() {
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">Experimental features may break at any time.</p>
             <p className="text-muted-foreground">
-              These features are opt-in and come with no compatibility guarantees. They may change, break, or be
-              removed without notice. Avoid relying on them for critical or production workflows.
+              These features come with no compatibility guarantees. Some ship on and some ship off. They
+              may change, break, or be removed without notice. Avoid relying on them for critical or
+              production workflows.
             </p>
           </div>
         </div>

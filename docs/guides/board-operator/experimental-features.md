@@ -3,7 +3,7 @@ title: Experimental Features
 summary: What Paperclip experimental features mean for board operators
 ---
 
-Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
+Experimental features are provided without compatibility guarantees. Some ship on and some ship off, and any of them may break, change, or be removed at any time. Use them at your own risk.
 
 ## What "experimental" means
 
@@ -29,7 +29,20 @@ pnpm paperclipai instance settings:experimental
 npx paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 
-Those commands change the same opt-in settings that the UI manages.
+Those commands change the same settings that the UI manages.
+
+## Defaults
+
+Most experiments are off until you turn them on. Two ship on:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Decisions** | On | Adds the Decisions item to the main sidebar, the attention home for tasks that wait for a human answer. |
+| **Simplified English Interactions** | On | Asks agents to write user interactions — confirmations, questions, suggested tasks — in ASD-STE100 Simplified Technical English. |
+
+Both are independent. Turn either one off to go back to the previous behavior.
+
+An instance that already stored a value keeps it. Only instances with no stored value see the current default, so turning a default on does not override a choice you made earlier.
 
 ## Chat connectors
 
