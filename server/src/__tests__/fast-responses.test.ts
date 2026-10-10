@@ -33,6 +33,7 @@ import {
   fastResponseReceipt,
   type FastResponseOutcome,
 } from "../services/fast-response-provider.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { settleConversationTurn } from "../services/agent-conversations.js";
 import { buildLowTrustSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
@@ -63,6 +64,7 @@ const outcome: FastResponseOutcome = {
 };
 let sequence = 0;
 async function fixture() {
+  await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
   const companyId = randomUUID(),
     agentId = randomUUID(),
     issueId = randomUUID();
@@ -160,6 +162,38 @@ async function fixture() {
   };
 }
 describe("fast response accepted turns", () => {
+  it("does not enqueue or infer while the experimental setting is disabled", async () => {
+    const f = await fixture();
+    await instanceSettingsService(db).updateExperimental({ enableFastResponses: false });
+    expect(await f.enqueue()).toBeUndefined();
+    expect(await f.service.availability(f.companyId, "alice")).toMatchObject({ available: false });
+    expect(await f.service.test(f.companyId, "alice")).toMatchObject({ status: "unavailable", reason: "disabled" });
+    expect(f.provider).not.toHaveBeenCalled();
+  });
+
+  it("suppresses pending work when the experimental setting is switched off", async () => {
+    const f = await fixture();
+    const request = await f.enqueue();
+    await instanceSettingsService(db).updateExperimental({ enableFastResponses: false });
+    await f.service.process(request);
+    expect(f.provider).not.toHaveBeenCalled();
+    const [row] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, request.id));
+    expect(row).toMatchObject({ status: "skipped", publicationStatus: "suppressed", commentId: null });
+  });
+
+  it("retains charges but suppresses a response when disabled during inference", async () => {
+    const f = await fixture();
+    const request = await f.enqueue();
+    f.provider.mockImplementationOnce(async () => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: false });
+      return structuredClone(outcome);
+    });
+    await f.service.process(request);
+    const [row] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, request.id));
+    expect(row).toMatchObject({ status: "succeeded", publicationStatus: "suppressed", commentId: null });
+    expect(row.costEventId).toBeTruthy();
+  });
+
   it.each(["recent", "source"] as const)("keeps quarantined %s text out of the acknowledgement prompt", async location => {
     const f = await fixture();
     const untrusted = "QUARANTINED_PRIVATE_FINDING_DO_NOT_PROMOTE";

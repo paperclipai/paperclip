@@ -97,6 +97,8 @@ export interface InstanceExperimentalSettings {
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
+  /** Show company connection settings and allow contextual fast-response acknowledgements. */
+  enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */

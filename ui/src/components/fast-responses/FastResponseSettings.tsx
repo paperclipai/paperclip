@@ -100,7 +100,7 @@ export function FastResponseSettingsView({
   return (
     <section className="max-w-2xl space-y-4" aria-label="Fast response">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <h2 className="text-lg font-semibold">
           Fast response
         </h2>
         <Link

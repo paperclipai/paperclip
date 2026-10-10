@@ -49,6 +49,7 @@ import {
   type FastResponseTestResult,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import { accessService } from "./access.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -164,6 +165,7 @@ export async function supersedeFastResponse(
 
 /** Called only at an authenticated, accepted human-turn boundary, on its transaction. */
 export async function enqueueFastResponse(tx: Db, source: FastResponseSource) {
+  if (!(await instanceSettingsService(tx).getExperimental()).enableFastResponses) return;
   const [config] = await tx
     .select({ enabled: companyFastResponses.enabled })
     .from(companyFastResponses)
@@ -208,6 +210,7 @@ export async function enqueueFastResponse(tx: Db, source: FastResponseSource) {
 
 /** Shared with external transport admission. Caller already checks destination authority. */
 export async function fastResponseSourceCurrent(tx: Db, request: Request) {
+  if (!(await instanceSettingsService(tx).getExperimental()).enableFastResponses) return false;
   if (!request.issueId || request.expiresAt.getTime() <= Date.now())
     return false;
   const [company] = await tx
@@ -432,6 +435,8 @@ export function fastResponseService(
     > &
       Partial<Pick<Request, "connectionId" | "grantId" | "model">>,
   ) {
+    if (!(await instanceSettingsService(tx).getExperimental()).enableFastResponses)
+      throw unprocessable("disabled");
     const [config] = await tx
       .select()
       .from(companyFastResponses)
@@ -529,6 +534,8 @@ export function fastResponseService(
     return { config, connection, issue };
   }
   async function availability(companyId: string, userId: string) {
+    if (!(await instanceSettingsService(db).getExperimental()).enableFastResponses)
+      return { available: false as const, reason: "disabled" };
     try {
       await resolve(db, {
         companyId,
@@ -778,9 +785,12 @@ export function fastResponseService(
           issueId: request.issueId,
         },
       );
-    } catch {
-      await skip(request, "connection_unavailable");
-      return { status: "unavailable", reason: "connection_unavailable" };
+    } catch (error) {
+      const reason = error instanceof Error && error.message === "disabled"
+        ? "disabled"
+        : "connection_unavailable";
+      await skip(request, reason);
+      return { status: "unavailable", reason };
     }
     const metadata = aiConnectionMetadataSchema.parse(
       selected.connection.connection.config.ai,
