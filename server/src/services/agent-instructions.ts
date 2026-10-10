@@ -491,13 +491,20 @@ export function syncInstructionsBundleConfigFromFilePath(
 
 export function agentInstructionsService(db?: Db) {
   async function remoteFiles(agent: AgentLike) {
+    // External instructions keep their configured authority even when the
+    // agent has a separate personal directory on a computer.
+    if (agentInstructionsBundleMode(agent) === "external") return null;
     const remote = db ? await persistentAgentFiles(db, agent.companyId, agent.id) : null;
     if (remote && db) {
       const root = await db.transaction(async tx => {
         const [current] = await tx.select().from(agents).where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId)));
         if (!current) throw notFound("Agent not found");
+        // updateBundle previews the prospective managed config before the
+        // caller saves it. Do not adopt a still-external persisted bundle.
+        if (agentInstructionsBundleMode(current) === "external") return null;
         return adoptAgentFiles(tx, current);
       });
+      if (!root) return null;
       await seedPersistentAgentHome(remote, root);
     }
     return remote;
