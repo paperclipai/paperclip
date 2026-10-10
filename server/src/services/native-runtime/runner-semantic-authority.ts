@@ -1,3 +1,4 @@
+import { fastResponseHistoryBody } from "@paperclipai/shared";
 import { readTaskQuestionContext } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
@@ -155,6 +156,7 @@ export class PaperclipRunnerSemanticAuthority {
               .select({
                 id: issueComments.id,
                 body: issueComments.body,
+                origin: issueComments.origin,
                 authorAgentId: issueComments.authorAgentId,
                 authorUserId: issueComments.authorUserId,
                 createdAt: issueComments.createdAt,
@@ -170,7 +172,7 @@ export class PaperclipRunnerSemanticAuthority {
               .orderBy(desc(issueComments.createdAt))
               .limit(boundedLimit(input.limit));
             return {
-              value: jsonValue({ comments: rows.reverse() }),
+              value: jsonValue({ comments: rows.reverse().map(comment => ({ ...comment, body: fastResponseHistoryBody(comment) })) }),
               references: [{ kind: "task", id: context.issue.id }],
             };
           }
