@@ -2349,6 +2349,35 @@ describe("rebindNativeSessionCheckpoint", () => {
     ).toBeNull();
   });
 
+  it.each([false, true])("rotates the old hiring prompt even with tool refresh %s", (toolRefreshOnResume) => {
+    const current = execution(currentRunId);
+    const previous = execution(previousRunId);
+    const oldText = previous.runtimeContext.prompt.text.replace(
+      "Provider helper threads do not create Paperclip agents.",
+      "To hire or reuse a persistent teammate, use list_agents, then search_api for agent-hires and call_api if a hire is needed. Provider helper threads do not create Paperclip agents.",
+    );
+    // A real retained v5 input: keep its text and both digests internally consistent.
+    const oldContext = {
+      ...previous.runtimeContext,
+      prompt: {
+        revision: "paperclip-execution.v5",
+        text: oldText,
+        digest: createHash("sha256").update(oldText).digest("hex"),
+      },
+    } as unknown as typeof previous.runtimeContext;
+    oldContext.aggregateDigest = canonicalNativeRuntimeContextDigest(oldContext);
+    expect(rebindNativeSessionCheckpoint({
+      previousRun: previousRun({ nativeExecutionInput: { ...previous, runtimeContext: oldContext } }),
+      currentExecution: current,
+      toolRefreshOnResume,
+      refreshTools: toolRefreshOnResume,
+    })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({
+      previousRun: previousRun(), currentExecution: current,
+      toolRefreshOnResume, refreshTools: toolRefreshOnResume,
+    })).not.toBeNull();
+  });
+
   it("rotates when assigned context changes but permits a fresh run-scoped MCP binding", () => {
     const reboundCredential = execution(currentRunId);
     reboundCredential.runtimeContext.mcp.bindingId = "native-mcp:fresh-run";
