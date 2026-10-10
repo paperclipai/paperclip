@@ -855,6 +855,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { environmentId, leaseId };
   }
 
+  it("does not reap a local run without a pid while process metadata is still fresh", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // The fixture seeds a fixed past timestamp; make the run look freshly
+    // started so it falls inside the metadata grace window.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
+  it("keeps the pid-metadata grace keyed to the newer timestamp and reaps once both age out", async () => {
+    const graceMs = 60_000;
+    const fresh = new Date();
+    const beyondGrace = new Date(Date.now() - graceMs * 5);
+
+    // Fresh startedAt protects even when updatedAt has aged out — the grace
+    // window is keyed to max(startedAt, updatedAt), not either one alone.
+    const freshStart = await seedRunFixture({ processPid: null, includeIssue: false });
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: fresh, updatedAt: beyondGrace })
+      .where(eq(heartbeatRuns.id, freshStart.runId));
+
+    // And the other way around: fresh updatedAt protects an old startedAt.
+    const freshUpdate = await seedRunFixture({ processPid: null, includeIssue: false });
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: beyondGrace, updatedAt: fresh })
+      .where(eq(heartbeatRuns.id, freshUpdate.runId));
+
+    // Both timestamps beyond the grace window: protection has ended.
+    const agedOut = await seedRunFixture({ processPid: null, includeIssue: false });
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: beyondGrace, updatedAt: beyondGrace })
+      .where(eq(heartbeatRuns.id, agedOut.runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ metadataMissingGraceMs: graceMs });
+
+    expect(result.runIds).toContain(agedOut.runId);
+    expect(result.runIds).not.toContain(freshStart.runId);
+    expect(result.runIds).not.toContain(freshUpdate.runId);
+    expect((await heartbeat.getRun(freshStart.runId))?.status).toBe("running");
+    expect((await heartbeat.getRun(freshUpdate.runId))?.status).toBe("running");
+    expect((await heartbeat.getRun(agedOut.runId))?.status).not.toBe("running");
+  });
+
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
     let releaseAdapter!: () => void;
     const adapterRelease = new Promise<void>(resolve => { releaseAdapter = resolve; });
