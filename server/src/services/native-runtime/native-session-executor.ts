@@ -12612,7 +12612,7 @@ async function createRunnerdBackendWithinSessionClaim(
         timeoutMs: 10_000,
       });
       if (created.exitCode !== 0 || created.timedOut) {
-        throw new Error(`runner_remote_directory_staging_failed: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`);
+        throw new Error(`runner_remote_directory_staging_failed: exit=${created.exitCode} timedOut=${created.timedOut}${created.stderr.trim() ? ` ${redactSensitiveText(created.stderr).trim().slice(-512)}` : ""}`);
       }
 
       // Codex launch credentials are intentionally excluded from failover

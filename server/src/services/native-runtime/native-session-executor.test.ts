@@ -1,3 +1,4 @@
+import { prepareHeartbeatGitHubLaunchers } from "../heartbeat-github-launchers.js";
 import { gunzipSync } from "node:zlib";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7609,9 +7610,15 @@ describe("native warm session supervision", () => {
       expect(options.existingSession).toBe(session);
       await options.onSession?.(session); return result;
     });
+    const environmentForRun = async (runId: string) => (await prepareHeartbeatGitHubLaunchers({
+      native: true, githubConfigured: false, agentId: name, runId, target: target as never,
+      cwd: target.remoteCwd, env: {}, brokerUrl: "http://127.0.0.1:3104",
+      createBrokerToken: () => { throw new Error("Anonymous computer must not mint per-run authority"); },
+    }, async (input) => input.env)).env;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never,
+        runnerEnvironment: await environmentForRun(current.binding.runId) });
       generation = 2; // The durable admission committed before local reservation.
       await vi.advanceTimersByTimeAsync(60_000);
       expect(retire).toHaveBeenCalledOnce();
@@ -7620,6 +7627,7 @@ describe("native warm session supervision", () => {
       const next = { ...current, binding: { ...current.binding, runId: `${name}-two` } };
       const nextRetire = vi.fn(async () => true);
       await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+        runnerEnvironment: await environmentForRun(next.binding.runId),
         runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, generation: 2 }, retire: nextRetire } as never });
       await closeWarmNativeSessionsForRun({ runId: next.binding.runId, reason: "fixture cleanup" });
       expect(nextRetire).toHaveBeenCalledOnce();
