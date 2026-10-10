@@ -885,9 +885,23 @@ finally:
     if (record.ledger.action) {
       const action = record.ledger.action;
       // A lost stop response is retried only while admission is fenced. Boat returns its same pending ID.
-      const stop = action.providerStopId
+      let stop = action.providerStopId
         ? await backend.stopStatus(record, action.providerStopId)
         : await backend.stop(record);
+      if (stop.status === "superseded") {
+        // A provider-side resume can supersede the recorded stop. Keep admission
+        // fenced until current physical state proves stopped or a replacement
+        // normal snapshot operation completes; never force or delete the host.
+        const current = await backend.inspect(record);
+        if (["stopped", "archived"].includes(current.state)) {
+          stop = { id: stop.id, status: "completed" };
+        } else if (current.stop && current.stop.id !== stop.id &&
+          ["pending", "failing"].includes(current.stop.status)) {
+          stop = current.stop;
+        } else {
+          stop = await backend.stop(record);
+        }
+      }
       await repository.update(record, (current) => {
         if (current.ledger.action?.id !== action.id) return;
         current.ledger.action.providerStopId = stop.id;
