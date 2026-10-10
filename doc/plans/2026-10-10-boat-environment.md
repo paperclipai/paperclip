@@ -218,7 +218,30 @@ module boundaries, and UI token gates before PR handoff. Never merge to master.
 ## Current implementation status
 
 The computer ledger, Boat backend, execution target, persistent file access, and
-Computer panel are integrated. Live verification is resolving first-use home and
-harness-probe behavior before the four runtime paths and warm-turn acceptance
-matrix. Legacy Codex and Claude use explicit CLI engines for in-place homes.
-Native Codex and Claude retain their native runner configuration.
+Computer panel are integrated. Legacy Codex and Claude use explicit CLI engines
+for in-place homes. Native Codex and Claude retain their native runner configuration.
+
+Local qualification has demonstrated real native Codex, legacy Codex, and legacy
+Claude execution; separate durable personal directories; native desktop capture
+and app launch; browser desktop rendering and human mouse input; and bounded
+viewer expiry. Native Codex's Vite source and proof file survived a Boat stop and
+resume. Private preview routing reached Vite, whose allowed-host configuration
+still needs qualification against the resumed host.
+
+Warm continuity is not yet verified. A real runner's process monitor reported
+disconnection while the provider was still producing output; the runner then
+suspended at the reconnect deadline and its Vite listener disappeared. The
+launch journal identified systemd expansion of shell variables in the supplied
+command. Correct literal argument handling and bounded monitoring of unknown
+transport outcomes are being verified before repeating the two-turn HMR test.
+
+Native Claude's first provider-pack upload exceeded the existing 15-minute
+bootstrap budget. The qualified pack includes all supported providers. Real
+compressed-byte uploads with remote file writes and hash verification support
+eight concurrent chunks; uploads now share a controller-wide limit of eight.
+The full native Claude run still needs to pass with that change.
+
+Required remaining evidence includes both native warm-turn paths, integrated
+Vite HMR without a page reload, exact last-owner process retirement, and the
+same matrix on the final source revision at the designated staging instance.
+Provider-only smoke checks do not substitute for these product journeys.
