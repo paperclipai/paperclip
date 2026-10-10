@@ -15939,6 +15939,32 @@ export function issueRoutes(
       });
 
       if (
+        checkoutRunId &&
+        issue.assigneeAgentId === req.body.agentId &&
+        issue.status === "in_progress" &&
+        issue.checkoutRunId &&
+        issue.checkoutRunId !== checkoutRunId &&
+        updated?.checkoutRunId === checkoutRunId &&
+        updated?.executionRunId === checkoutRunId
+      ) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.checkout_lock_adopted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            previousCheckoutRunId: issue.checkoutRunId,
+            checkoutRunId,
+            reason: "stale_checkout_run",
+          },
+        });
+      }
+
+      if (
         shouldWakeAssigneeOnCheckout({
           actorType: req.actor.type,
           actorAgentId:
