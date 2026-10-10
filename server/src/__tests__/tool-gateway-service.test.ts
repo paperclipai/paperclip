@@ -1761,6 +1761,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       }],
       config: {
         url: resource,
+        mcpSessionRequired: true,
         govnaApprovalAuthority: {
           mode: "required",
           prepareEndpoint,
@@ -1813,11 +1814,33 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const now = () => Math.floor(Date.now() / 1000);
     let immutableBinding: Record<string, unknown> | null = null;
     const dispatches: Array<Record<string, unknown>> = [];
+    const sessionRequests: string[] = [];
     const remoteHttpRequest = vi.fn(async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
       expect(headers.get("authorization")).toBe("Bearer synthetic-govna-bearer");
-      const proof = parseCompactJws(headers.get("govna-authority-proof")!);
       const body = JSON.parse(String(init.body)) as Record<string, any>;
+      if (body.method === "initialize") {
+        expect(headers.get("govna-authority-proof")).toBeNull();
+        sessionRequests.push(body.method);
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "govna-test", version: "1" },
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json", "mcp-session-id": "govna-session-1" },
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        expect(headers.get("govna-authority-proof")).toBeNull();
+        sessionRequests.push(body.method);
+        return new Response(null, { status: 202 });
+      }
+      const proof = parseCompactJws(headers.get("govna-authority-proof")!);
       const issuedAt = now();
 
       if (url === prepareEndpoint) {
@@ -1967,6 +1990,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     if (includeReceipt) expect((await resumed).status).toBe("completed");
     else await expect(resumed).rejects.toMatchObject({ reasonCode: "govna_outcome_unknown" });
     expect(dispatches).toHaveLength(1);
+    expect(sessionRequests).toEqual(["initialize", "notifications/initialized"]);
     const [operation] = await db.select().from(toolGovnaAuthorityOperations);
     const [invocation] = await db.select().from(toolInvocations);
     if (includeReceipt) {

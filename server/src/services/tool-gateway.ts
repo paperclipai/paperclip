@@ -6159,7 +6159,6 @@ export function createToolGatewayService(
       if (new Headers(headers).has("govna-authority-proof")) {
         throw new ToolGatewayHttpError(409, "Govna authority proof header collision", "govna_header_collision");
       }
-      headers = { ...headers, "Govna-Authority-Proof": govnaAuthority.proof };
     }
     let headerSummary = builtHeaders.summary;
     const requestId = `paperclip-tool-${randomUUID()}`;
@@ -6258,6 +6257,9 @@ export function createToolGatewayService(
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
       }
+      const callHeaders = govnaAuthority
+        ? { ...requestHeaders, "Govna-Authority-Proof": govnaAuthority.proof }
+        : requestHeaders;
       // The guard runs inside this call and the connection is pinned to the
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
@@ -6267,7 +6269,7 @@ export function createToolGatewayService(
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
         // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(requestHeaders),
+        headers: mcpHttpRequestHeaders(callHeaders),
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
