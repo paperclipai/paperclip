@@ -32852,6 +32852,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db.update(chatDeliveries).set({ state: "filtered" }).where(eq(chatDeliveries.id, follower!.id));
       await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
       expect(await service.nextInboundDeliveryAt()).toBeNull();
+      await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+      await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "installation", state: "retry",
+        nextAttemptAt: retryAt, normalizedEvent: { lifecycle: { kind: "endpoint", provider: "slack",
+          providerEventId: randomUUID(), availability: "available", reason: "Recovered" } } });
+      expect(await service.nextInboundDeliveryAt()).toBe(retryAt.getTime());
     } finally { await f.cleanup(); }
   });
 

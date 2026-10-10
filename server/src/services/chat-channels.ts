@@ -38633,7 +38633,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           and a.kind = 'inbound_wakeup' and a.status in ('issued', 'processing'))
       else coalesce(${chatDeliveries.nextAttemptAt}, now()) end` })
       .from(chatDeliveries).where(and(
-        sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and (e.provider = 'agentmail' or e.status in ('paused', 'attention')))`,
+        sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
+        // Provider lifecycle receipts can restore an unavailable endpoint.
+        // The ordinary conversation drain still waits for operator resume.
+        or(sql`${chatDeliveries.normalizedEvent}->'lifecycle' is not null`,
+          sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.status in ('paused', 'attention'))`),
         or(inArray(chatDeliveries.state, ["received", "retry", "processing"]),
           and(eq(chatDeliveries.state, "processed"), pendingInboundWakeupCondition())),
       )).orderBy(...conversationDeliveryOrder());
