@@ -8,7 +8,7 @@ import {
 } from "@playwright/test";
 
 // Real local Board UI, upload storage, comment HTTP routes, and disposable DB.
-// Only the interface flag, announcement feed, and explicit transport/upload rejection faults are mocked.
+// Only the interface flag and explicit transport/upload rejection faults are mocked.
 // Tasks belong to the Board user: no agent, runner, or provider is contacted.
 type Attachment = {
   id: string;
@@ -27,9 +27,12 @@ async function body<T>(
 }
 
 async function setup(page: Page, request: APIRequestContext, classic: boolean) {
-  // Unrelated live announcements must not cover the attachment controls.
-  await page.route("**/api/announcements/current", (route) =>
-    route.fulfill({ contentType: "application/json", body: "null" }),
+  // Announcements can appear after navigation or reload and cover the classic
+  // composer's attachment button. Dismiss through the same UI as a Board user.
+  await page.addLocatorHandler(
+    page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
+      .getByRole("button", { name: "Dismiss announcement", exact: true }),
+    async (dismiss) => { await dismiss.click(); },
   );
   const company = await body<{ id: string; issuePrefix: string }>(
     await request.post("/api/companies", {
@@ -82,14 +85,6 @@ async function setup(page: Page, request: APIRequestContext, classic: boolean) {
     comments: () =>
       request.get(`/api/issues/${issue.id}/comments`).then(body<Comment[]>),
   };
-}
-
-// Human-owned tasks no longer default replies to the current person. These
-// attachment tests explicitly retain Board ownership, including after reload.
-async function sendBoardReply(page: Page, fixture: Awaited<ReturnType<typeof setup>>) {
-  await fixture.composer.getByRole("button", { name: "Select assignee", exact: true }).click();
-  await page.getByTestId("composer-model-popover").getByRole("option").filter({ has: page.getByText("Me", { exact: true }) }).click();
-  await fixture.send.click();
 }
 
 const files = [
@@ -188,7 +183,7 @@ for (const classic of [false, true]) {
         req.method() === "POST" &&
         new URL(req.url()).pathname.endsWith("/comments"),
     );
-    await sendBoardReply(page, fixture);
+    await fixture.send.click();
     expect((await outbound).postDataJSON().attachmentIds.sort()).toEqual(
       receipts.map((row) => row.id).sort(),
     );
@@ -249,7 +244,7 @@ for (const classic of [false, true]) {
       accepted = true;
       await route.abort("connectionreset");
     });
-    await sendBoardReply(page, fixture);
+    await fixture.send.click();
     await expect.poll(() => accepted).toBe(true);
     expect(await fixture.comments()).toHaveLength(1);
     expect(acceptedRequestId).toEqual(expect.any(String));
@@ -281,7 +276,7 @@ for (const classic of [false, true]) {
     await fixture.editor.fill(
       "A deliberately new comment after the original receipt settled.",
     );
-    await sendBoardReply(page, fixture);
+    await fixture.send.click();
     await expect.poll(async () => (await fixture.comments()).length).toBe(2);
   });
 
@@ -303,14 +298,14 @@ for (const classic of [false, true]) {
         body: JSON.stringify({ error: "Fixture policy rejected this attempt" }),
       });
     });
-    await sendBoardReply(page, fixture);
+    await fixture.send.click();
     await expect(fixture.editor).toContainText("Known rejection,");
     await expect(fixture.send).toBeEnabled();
     expect(await fixture.comments()).toHaveLength(0);
     await page.reload();
     await expect(fixture.editor).toContainText("Known rejection,");
     await expect(fixture.composer.getByRole("alert")).toHaveCount(0);
-    await sendBoardReply(page, fixture);
+    await fixture.send.click();
     await expect.poll(async () => (await fixture.comments()).length).toBe(1);
     expect(
       (await fixture.attachments()).find((row) => row.id === receipt.id)
@@ -344,7 +339,7 @@ for (const classic of [false, true]) {
       await route.fulfill({ response }).catch(() => {});
     });
     try {
-      await sendBoardReply(page, fixture);
+      await fixture.send.click();
       await expect.poll(() => accepted).toBe(true);
       expect(await fixture.comments()).toHaveLength(1);
       await fixture.editor.fill("A newer draft written while delivery was pending.");
@@ -359,7 +354,7 @@ for (const classic of [false, true]) {
       expect(await fixture.comments()).toHaveLength(1);
       expect(acceptedRequestId).toEqual(expect.any(String));
       expect((await fixture.comments())[0]!.clientRequestId).toBe(acceptedRequestId);
-      await sendBoardReply(page, fixture);
+      await fixture.send.click();
       await expect.poll(async () => (await fixture.comments()).length).toBe(2);
       expect(attempts).toBe(2);
       expect((await fixture.comments()).map((comment) => comment.body).sort()).toEqual([
@@ -417,7 +412,7 @@ for (const classic of [false, true])
           req.method() === "POST" &&
           new URL(req.url()).pathname.endsWith("/comments"),
       );
-      await sendBoardReply(page, fixture);
+      await fixture.send.click();
       expect((await outbound).postDataJSON().attachmentIds).toBeUndefined();
       await expect.poll(async () => (await fixture.comments()).length).toBe(1);
       expect((await fixture.comments())[0]!.body).not.toContain(
@@ -455,7 +450,7 @@ test("legacy failed upload can be removed before sending the retained text", asy
   });
   await expect(remove).toBeVisible();
   await remove.click();
-  await sendBoardReply(page, fixture);
+  await fixture.send.click();
   await expect.poll(async () => (await fixture.comments()).length).toBe(1);
   expect((await fixture.comments())[0]!.body).toBe(
     "Keep this text after removing the failed file.",

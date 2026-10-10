@@ -6,6 +6,7 @@ import { nativeCompletionSource, buildNativeCompletionContract } from "./complet
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
   it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
@@ -455,6 +456,28 @@ describe("native execution input external-chat framing", () => {
         "Never infer the file's contents or substitute an older file",
       );
 
+      const runtimeContext = nativeRuntimeContextFixture();
+      runtimeContext.skills = ["configured", "provider-mentioned"].map((name) => ({
+        key: `company/test/${name}`,
+        runtimeName: name,
+        versionId: null,
+        bundle: { ...runtimeContext.instructions.bundle },
+      }));
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+      const skillArgs = {
+        ...args,
+        issue: { ...args.issue, description: "Stale provider message: /provider-mentioned" },
+        taskPrompt: `${args.taskPrompt}\nGitHub message: /provider-mentioned`,
+        runtimeContext,
+        githubInstructionSkillKeys: ["company/test/configured", "company/other/unknown"],
+      };
+      const skillInput = buildNativeExecutionInput(skillArgs);
+      expect(skillInput.task.description).toBe("Configured GitHub instruction skills:\n/configured");
+      expect(buildNativeModelEnvelope(skillInput)).toMatchObject({ requestedSkills: ["configured"] });
+      expect(buildNativeModelEnvelope(buildNativeExecutionInput({
+        ...skillArgs, githubInstructionSkillKeys: [],
+      }))).toMatchObject({ requestedSkills: [] });
+
       const wake = args.wakePayload as Record<string, unknown>;
       for (const patch of [
         { externalChatProvider: "slack" },
@@ -472,6 +495,13 @@ describe("native execution input external-chat framing", () => {
         expect(unrelated.task.prompt).not.toContain(
           "Paperclip owns recovery navigation for unavailable GitHub attachments",
         );
+        if (["slack", "discord", "telegram", "microsoft-teams"].includes(patch.externalChatProvider ?? "")) {
+          const unrelatedSkills = buildNativeExecutionInput({
+            ...skillArgs, wakePayload: { ...wake, ...patch },
+          });
+          expect(unrelatedSkills.task.description).toBeNull();
+          expect(buildNativeModelEnvelope(unrelatedSkills)).toMatchObject({ requestedSkills: [] });
+        }
       }
     },
   );
@@ -583,5 +613,54 @@ describe("native completion references", () => {
     const input = buildNativeExecutionInput({ ...args, turnContext });
     expect(input.completionSources).toBeUndefined();
     expect(input.completionContract.contract).toEqual(args.completionContract.contract);
+  });
+});
+
+
+describe("Cursor mode native execution projection", () => {
+  function fixture(acpxSessionMode?: "agent" | "plan" | "ask") {
+    return {
+      companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      issue: { id: "issue-1", identifier: "MODE-1", title: "Review a plan", description: null, workMode: "standard" },
+      taskPrompt: "Review the project.",
+      workspace: { id: "workspace-1", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx" as const, acpxAgent: "cursor" as const,
+      model: "exact-cursor-model", acpxSessionMode, acpxPermissionMode: "deny-all" as const,
+      completionContract: { id: "contract-1", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Review", criteria: [{ id: "output", requirement: "Review" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    };
+  }
+  it.each([undefined, "agent", "plan", "ask"] as const)("preserves mode %s independently of permissions and task planning", mode => {
+    const result = buildNativeExecutionInput(fixture(mode));
+    expect(result.provider).toMatchObject({ kind: "acpx", agent: "cursor", mode: mode ?? "agent", permissionMode: "deny-all" });
+    expect(result.executionMode).toBe("default");
+    expect(result.task.workMode).toBe("standard");
+  });
+  it("rejects a Cursor mode attached to another harness", () => {
+    expect(() => buildNativeExecutionInput({ ...fixture("plan"), acpxAgent: "copilot" })).toThrow("only for Cursor");
+  });
+});
+
+describe("Pi thinking native execution projection", () => {
+  function fixture(piThinkingLevel?: "off" | "low" | "high" | "max") {
+    return {
+      companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      issue: { id: "issue-1", identifier: "MODE-1", title: "Review a plan", description: null, workMode: "standard" },
+      taskPrompt: "Review the project.",
+      workspace: { id: "workspace-1", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx" as const, acpxAgent: "pi" as const,
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", piThinkingLevel, acpxPermissionMode: "deny-all" as const,
+      completionContract: { id: "contract-1", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Review", criteria: [{ id: "output", requirement: "Review" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    };
+  }
+  it.each([undefined, "off", "low", "high", "max"] as const)("preserves mode %s independently of permissions and task planning", mode => {
+    const result = buildNativeExecutionInput(fixture(mode));
+    expect(result.provider).toMatchObject({ kind: "acpx", agent: "pi", piThinkingLevel: mode ?? "low", permissionMode: "deny-all" });
+    expect(result.executionMode).toBe("default");
+    expect(result.task.workMode).toBe("standard");
+  });
+  it("rejects a Pi thinking level attached to another harness", () => {
+    expect(() => buildNativeExecutionInput({ ...fixture("low"), acpxAgent: "copilot" })).toThrow("only for Pi");
   });
 });

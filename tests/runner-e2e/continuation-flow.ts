@@ -1,3 +1,4 @@
+import { validResumeQuestionForm } from "./question-resume-scoring.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
 import { prepareLegacyContinuationSkill, prepareContinuationBudget } from "./continuation-fixtures.js";
@@ -106,7 +107,7 @@ export async function runContinuationFlow(input: {
         return ready;
       },
       reject: (state) =>
-        state.runs.length > 12
+        state.runs.length > (scenario.id === "question-answer-resume" ? 3 : 12)
           ? "Bounded continuation run count exceeded"
           : state.runs.some((r) =>
                 ["failed", "timed_out", "cancelled"].includes(r.status),
@@ -185,7 +186,9 @@ export async function runContinuationFlow(input: {
     );
     expect(questions, "one real question must be shown").toHaveLength(1);
     const set = chatQuestionPresentation(questions[0].payload);
-    if (scenario.id === "provider-question-bridge") {
+    if (scenario.id === "question-answer-resume") {
+      expect(validResumeQuestionForm(checkpoints.at(-1)!, questions[0], !!choice), "a verified native question path and the requested form").toBe(true);
+    } else if (scenario.id === "provider-question-bridge") {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
     } else expect(set.questions, "ask only the requested next question").toHaveLength(1);
     const before = new Set(runs.map((r) => r.id));
@@ -267,7 +270,7 @@ export async function runContinuationFlow(input: {
       await input.restart();
       await open();
     }
-    if (scenario.id === "question-tool-documentation") {
+    if (["question-tool-documentation", "question-answer-resume"].includes(scenario.id)) {
       await answer("Afternoon");
       await snapshot("answered");
       assertWaiting();

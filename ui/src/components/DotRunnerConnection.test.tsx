@@ -119,7 +119,7 @@ it("copies the complete Dot setup with its server URL, one-use code and event in
   expect(prompt).toContain("paperclip.dot.mailbox_updated");
   expect(prompt).toContain("paperclip_dot_inbox");
   expect(prompt).toContain("paperclip_dot_confirm_event");
-  expect(prompt).toContain('"Test event delivery"');
+  expect(prompt).toContain("Paperclip will send a test event automatically");
   expect(document.querySelector('[aria-label="Setup prompt"]')?.textContent).toBe(prompt);
   expect(document.querySelector(".agent-setup-copy")?.textContent).toBe("Copied to clipboard");
   expect(api.post).toHaveBeenCalledTimes(1);

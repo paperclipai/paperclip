@@ -52,10 +52,49 @@ counted after readiness until its writes settle.
 
 Scheduler work already in flight remains counted until its promise settles.
 Idle holds pause new scheduler admissions. Database backup promises remain
-counted through success or failure. Configured periodic backups also block
-sleep until a host owns a durable wake schedule for them. A generation counter invalidates a
+counted through success or failure. Configured periodic backups block sleep by
+default. The opt-in checkpoint mode below preserves a final backup instead of
+running the timer while asleep. A generation counter invalidates a
 scan if tracked work both starts and finishes during inspection. Reports remain
 unknown until startup recovery and HTTP tracking are installed.
+
+### Backup checkpoints for idle instances
+
+`PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED=1` opts an instance with automatic
+backups enabled into this mode. Keep its database and persistent backup volume
+attached across sleep. All writers must use the instance's admission protocol;
+this mode cannot cover independent writers to the same database.
+On managed instances, checkpoint-enabled safety reads require a verified signed
+Cloud control actor. Tenant instance-admin elevation does not grant platform
+backup authority. Self-hosted instance administrators retain operator access.
+
+Each owned safety read first checks local work, plugin drains and durable work.
+Known local blockers return before opening a database transaction. If every
+other check passes, the server takes a fresh backup with the existing backup
+engine and the retention policy from Instance Settings. It reads the full gzip
+archive, checks its trailer and nonempty content, and syncs the archive and
+directory before returning `none`. The final pre-stop revalidation takes another
+fresh backup. Reads can therefore take longer; the host must bound its request
+and still leave enough lease time for a confirmed provider stop.
+
+There is no cached backup exemption. Failed, concurrent or untracked backups,
+other work during the scan, changed owners and expired holds cannot authorize
+sleep. Client timeouts do not clear the backup's in-flight token. Slow backups
+may retain an awake instance until a later sleep attempt.
+
+A durable `.idle-backup-wake-required` marker is written before the dump.
+No recurring duplicate archives are produced while the instance is asleep.
+The last pre-sleep archive and existing history stay on persistent storage;
+no retention pruning runs during sleep. On restart, the server attempts a fresh
+backup before enabling idle eligibility, then resumes the normal interval.
+Only a verified new backup clears the marker. Failure keeps it for the next
+scheduled retry. Disabling automatic backups explicitly still disables this
+startup backup. Disabling only checkpoint mode restores the sleep blocker and
+continues to honor an existing restart marker.
+
+This does not replace filesystem backups, encryption-key recovery or off-provider
+disaster recovery. Validate restoration of a staging checkpoint before enabling
+the flag on customer instances.
 
 The report inspects accounting and sandbox-cleanup spools directly. Any entry,
 including malformed JSON, temporary files and failed write probes, blocks sleep.
@@ -80,6 +119,15 @@ sources conservatively block on any retained records. Active issue watchdogs
 block sleep even when their watched issue is complete and no review has started.
 Missing migrations, malformed configuration and database errors produce unknown
 without exposing SQL or tenant data.
+
+Finished login-session history permits sleep only after its promotion claim is
+cleared and any retained provider reference has a matching released or expired
+lease with successful cleanup and a release timestamp in the same company and
+environment. Missing cleanup evidence, `cleanup_pending`, and live login flows
+remain blockers. A finished coalesced wake is history only when its exact
+company/agent's linked run has finished without retry or accounting debt.
+Image-setup history still blocks: promotion can succeed before teardown is
+confirmed, so a terminal label does not prove that its provider resource is gone.
 
 Every enabled plugin blocks sleep. A version label does not prove that arbitrary
 worker code has no background activity. No plugin approval or configuration

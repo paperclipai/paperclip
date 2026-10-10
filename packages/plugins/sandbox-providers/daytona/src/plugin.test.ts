@@ -36,9 +36,24 @@ import plugin, {
   __setDaytonaPluginContextForTest,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
+
+describe("Daytona idle eligibility", () => {
+  it("permits a fresh unused provider but remains conservative after provider access", async () => {
+    __resetDaytonaSandboxHandleCacheForTest();
+    const signal = new AbortController().signal;
+    expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
+    mockGet.mockRejectedValueOnce(new Error("provider unreachable"));
+    await plugin.definition.onEnvironmentProbe!({
+      driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
+      config: { apiKey: "fixture-not-a-key" },
+    }).catch(() => undefined);
+    expect(await plugin.definition.onIdleDrain!(signal)).toBe("present");
+    __resetDaytonaSandboxHandleCacheForTest();
+  });
+});
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -538,6 +553,57 @@ describe("Daytona sandbox provider plugin", () => {
     });
     afterEach(() => { vi.useRealTimers(); });
 
+    it.each(["create", "workspace", "shell", "expiry", "sentinel"] as const)("records the %s acquisition deadline without advancing late setup", async phase => {
+      const sandbox = createMockSandbox();
+      const never = () => new Promise<never>(() => {});
+      mockCreate.mockResolvedValue(sandbox);
+      if (phase === "create") mockCreate.mockImplementation(never);
+      if (phase === "workspace") sandbox.getWorkDir.mockImplementation(never);
+      if (phase === "shell") sandbox.process.executeCommand.mockImplementation(never);
+      if (phase === "expiry") sandbox.setTtl.mockImplementation(never);
+      if (phase === "sentinel") sandbox.fs.uploadFile.mockImplementation(never);
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params,
+        config: { ...params.config, timeoutMs: 2_000 },
+        ...(phase === "sentinel" ? { agentId: "agent-fixture", issueId: "issue-fixture" } : {}),
+        ...(phase === "expiry" ? { requestedExpiresAt: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const error = await pending;
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase, elapsedMs: 2_000, budgetMs: 2_000 });
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(["create", "workspace"] as const)("keeps the original %s observation when cleanup consumes the remaining deadline", async phase => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      const fail = () => new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("private-provider-failure")), 100));
+      if (phase === "create") { mockCreate.mockImplementation(fail); mockGet.mockImplementation(() => new Promise(() => {})); }
+      else { sandbox.getWorkDir.mockImplementation(fail); sandbox.delete.mockImplementation(() => new Promise(() => {})); }
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 2_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const error = await pending;
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase, elapsedMs: 100, budgetMs: 2_000 });
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(JSON.stringify(environmentCreationCleanupErrorData(error, true))).not.toContain("private-");
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(readEnvironmentAcquisitionDiagnostic(error)?.elapsedMs).toBe(100);
+    });
+
+    it("isolates overlapping acquisition observations and does not annotate successful leases", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementationOnce(() => new Promise(() => {})).mockResolvedValueOnce(sandbox);
+      sandbox.getWorkDir.mockImplementation(() => new Promise(() => {}));
+      const first = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 2_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(100);
+      const second = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 3_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(readEnvironmentAcquisitionDiagnostic(await first)).toEqual({ phase: "create", elapsedMs: 2_000, budgetMs: 2_000 });
+      expect(readEnvironmentAcquisitionDiagnostic(await second)).toEqual({ phase: "workspace", elapsedMs: 3_000, budgetMs: 3_000 });
+      mockCreate.mockResolvedValue(createMockSandbox());
+      expect(await plugin.definition.onEnvironmentAcquireLease!(params)).not.toHaveProperty("acquisitionDiagnostic");
+    });
+
     it("allows a slow create and setup that finish inside the total budget", async () => {
       const sandbox = createMockSandbox();
       mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
@@ -602,6 +668,7 @@ describe("Daytona sandbox provider plugin", () => {
         observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
       });
       expect(vi.getTimerCount()).toBe(0);
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 300_000 });
     });
   });
 
@@ -5248,33 +5315,32 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
-  it("classifies a deleted sandbox during syncOut with a stable unrecoverable code", async () => {
+  it.each(["sandbox_access", "file_download"] as const)("keeps the deleted-sandbox policy and bounded %s evidence", async (step) => {
     const hostDir = await makeHostDir();
-    mockGet.mockRejectedValue(
-      new MockDaytonaNotFoundError("provider detail must not escape"),
-    );
-
-    await expect(
-      plugin.definition.onEnvironmentSyncOut?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: true },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-missing-sandbox",
-            files: [
-              {
-                sourcePath: `${REMOTE_DIR}/out/result.txt`,
-                targetPath: path.join(hostDir, "result.txt"),
-                kind: "file",
-              },
-            ],
-          },
-        ],
-      }),
-    ).rejects.toThrow("daytona_sandbox_not_found");
+    const source = Object.freeze(Object.assign(new MockDaytonaNotFoundError("private-provider-detail"), {
+      status: 404, cause: { code: "EIO", token: "private-provider-token" },
+    }));
+    if (step === "sandbox_access") mockGet.mockRejectedValue(source);
+    else {
+      const sandbox = createMockSandbox();
+      sandbox.fs.downloadFiles.mockRejectedValue(source);
+      mockGet.mockResolvedValue(sandbox);
+    }
+    await withEnvironmentSyncErrorCapture(async () => {
+      const error = await plugin.definition.onEnvironmentSyncOut!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: true }, lease: syncLease(),
+        operations: [{ operationId: "sync-op-missing-sandbox", files: [{
+          sourcePath: `${REMOTE_DIR}/out/result.txt`, targetPath: path.join(hostDir, "result.txt"), kind: "file",
+        }] }],
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("daytona_sandbox_not_found");
+      expect(error).not.toHaveProperty("cause");
+      const diagnostic = readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(error) });
+      expect(diagnostic).toEqual({ errorCode: "EIO", httpStatus: 404, transferStep: step });
+      expect(JSON.stringify(diagnostic)).not.toContain("private-provider-");
+    });
   });
 
   it("syncOut snapshot guard re-checks the resolved source is a non-symlink regular file immediately before copying (validation→copy TOCTOU)", async () => {

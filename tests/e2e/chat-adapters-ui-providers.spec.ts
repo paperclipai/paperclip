@@ -1,7 +1,7 @@
 import { oauthCallbackInterstitialHtml } from "../../server/src/lib/oauth-browser-return";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 import {
   expectMinimumProviderSetup,
@@ -20,58 +20,68 @@ import {
   GITHUB_PRIVATE_KEY_PASTE_FIXTURE,
 } from "./chat-adapters-ui.shared";
 
-async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed, provider: ProviderCase) {
+async function findConnectorBySearch(page: Page, query: string, slug: string) {
+  const search = page.getByRole("searchbox", { name: "Search connectors" });
+  await expect(search).toBeVisible();
+  await search.fill(query);
+  const connector = page.locator(`[role="listitem"][data-app-slug="${slug}"]`);
+  await expect(connector).toBeVisible({ timeout: 30_000 });
+  return connector;
+}
+
+async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed, provider: ProviderCase, testInfo: TestInfo) {
   await expect(page.getByRole("heading", { name: "Choose agent", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Choose an agent", exact: true }).click();
+  await page.getByRole("button", { name: "Select agent…", exact: true }).click();
   await page.getByRole("button", { name: "Select Maya", exact: true }).click();
   await expect(page.getByText("Maya is not configured for low-trust review")).toBeVisible();
   await expect(page.getByRole("link", { name: "Learn about low-trust agents" })).toHaveAttribute("href", /trust-and-low-trust-review/);
+  await testInfo.attach("Choose agent — inline low-trust warning", { body: await page.screenshot(), contentType: "image/png" });
+  await page.getByRole("button", { name: "Change Maya to a low trust agent" }).click();
+  await expect(page.getByText("Maya is not configured for low-trust review")).toHaveCount(0);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
-  await expect(page.getByRole("heading", { name: "Connect GitHub App", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Use an existing App" }).click();
+  await expect(page.getByRole("heading", { name: "Connect GitHub", exact: true })).toBeVisible();
+  await expect(page.getByLabel("GitHub account")).toHaveValue("personal");
+  await expect(page.getByLabel("App name", { exact: true })).toHaveValue("Maya");
+  await page.getByLabel("GitHub account").selectOption("organization");
+  await page.getByLabel("Organization", { exact: true }).fill("paperclip-ai");
+  await testInfo.attach("Connect GitHub — organization", { body: await page.screenshot(), contentType: "image/png" });
+  await page.getByRole("button", { name: "Save & exit", exact: true }).click();
+  await page.goto(`/${seed.prefix}/apps/chat/connect?provider=github&purpose=chat&resume=endpoint-github`);
+  await expect(page.getByLabel("GitHub account")).toHaveValue("organization");
+  await expect(page.getByLabel("Organization", { exact: true })).toHaveValue("paperclip-ai");
+  await expect(page.getByRole("button", { name: "Select agent…", exact: true })).toHaveCount(0);
+  // Existing-App recovery stays available and preserves entered credentials after failure.
+  await page.getByRole("button", { name: "I already have an App" }).click();
   await page.getByLabel("App ID", { exact: true }).fill("123456");
   await page.getByLabel("Private key", { exact: true }).fill(GITHUB_PRIVATE_KEY_PASTE_FIXTURE);
   await page.getByLabel("Webhook secret", { exact: true }).fill("github-webhook-secret");
-  await page.getByRole("button", { name: "Connect App", exact: true }).click();
+  await page.getByRole("button", { name: "Connect existing App", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("GitHub rejected the supplied App credentials.");
   await expect(page.getByLabel("Private key", { exact: true })).toHaveValue(GITHUB_PRIVATE_KEY_PASTE_FIXTURE);
-  await page.getByRole("button", { name: "Connect App", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Install GitHub App", exact: true })).toBeVisible();
-  await expect(page.getByText(provider.resourceLabel, { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "I’ve installed the App" }).click();
-  await expect(page.getByRole("heading", { name: "Select repositories", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Configure access on GitHub" })).toHaveAttribute("href", "https://github.com/settings/installations/2468");
-  await page.getByRole("button", { name: "Refresh access" }).click();
-  await expect.poll(() => mock.githubRepositoryRefreshes).toBe(2);
-  await page.getByRole("switch", { name: provider.resourceLabel, exact: true }).click();
-  await page.getByRole("button", { name: "Save repositories" }).click();
-  await expect(page.getByRole("heading", { name: "Verify connection & tools", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Verify connection", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "Assign this bot’s GitHub tools" }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Connect existing App", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Connect your account", exact: true })).toBeVisible();
-  await page.getByLabel("Your GitHub connection").selectOption("personal-github");
-  await page.getByRole("button", { name: "Verify my account" }).click();
+  await page.getByLabel("Existing GitHub connection").selectOption("personal-github");
+  await expect(page.getByRole("button", { name: "Check my account" })).toBeVisible();
+  await page.getByRole("button", { name: "Check my account" }).click();
   expect(mock.githubIdentityConfirmed).toBe(false);
-  await page.getByRole("button", { name: "Confirm this is my account" }).click();
+  await page.getByRole("button", { name: "Confirm my account" }).click();
   await expect.poll(() => mock.githubIdentityConfirmed).toBe(true);
-  await expect(page.getByRole("heading", { name: "Configure behavior", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Save behavior" }).click();
-  await expect(page.getByRole("heading", { name: "Try it", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Finish without test" }).click();
+  await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
+  await expect(page.getByText("1 repository enabled", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Finish|Verify connection|Refresh access|Save repositories/ })).toHaveCount(0);
+  await page.getByRole("dialog").getByRole("button", { name: "Done", exact: true }).click();
   await expect(page).toHaveURL(/\/apps\/chat\/endpoint-github\/settings$/);
   const nav = page.getByRole("navigation", { name: "Chat connection" });
   for (const tab of ["Settings", "Access", "Reviews", "Conversations", "Activity"]) {
     await expect(nav.getByRole("link", { name: tab, exact: true })).toBeVisible();
   }
   await nav.getByRole("link", { name: "Access", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Who can start work", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "People", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Reviews", exact: true }).click();
-  await expect(page.getByText(/^No reviews yet\. Mention the bot/)).toBeVisible();
+  await expect(page.getByText("No reviews yet", { exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Conversations", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Conversations", exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Conversations", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Connection activity", exact: true })).toBeVisible();
   await page.getByText("Connection health and controls", { exact: true }).click();
@@ -84,8 +94,8 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await page.reload();
   await page.getByText("Connection health and controls", { exact: true }).click();
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Connect GitHub App", exact: true })).toBeVisible();
-  await expect(page.getByText(/Leave the credentials blank to keep them/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connect GitHub", exact: true })).toBeVisible();
+  await expect(page.getByText(/Leave these blank to reuse/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Choose an agent", exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Private key", { exact: true })).toHaveValue("");
   const reconnectResponse = page.waitForResponse((response) =>
@@ -97,10 +107,10 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   const reconnected = await reconnectResponse;
   expect(reconnected.request().postDataJSON()).toEqual({ action: "reconnect" });
   expect(await reconnected.json()).toMatchObject({ assignedAgentId: seed.agentId, assignedAgentName: "Maya" });
-  await expect(page.getByRole("heading", { name: "Verify connection & tools", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "GitHub connected", exact: true })).toBeVisible();
   mock.setStatus("active");
-  await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
-  await expect(page.getByText(/Maya is permanently assigned to this bot/)).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Maya", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await page.getByText("Connection health and controls", { exact: true }).click();
   await page.getByRole("button", { name: "Remove connection", exact: true }).click();
@@ -282,17 +292,15 @@ test.describe.serial("native chat adapter UI", () => {
       (provider) => provider.provider === "github",
     )!;
     const mock = await installChatControlPlaneMock(page, github, seed, {
-      enableChatConnectors: false,
+      enableChatConnectors: true,
+      enableGitHubReviewBots: false,
     });
 
     await page.goto(`/${seed.prefix}/apps`);
     await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible(
       { timeout: 30_000 },
     );
-    const connector = page.locator(
-      '[role="listitem"][data-app-slug="github"]',
-    );
-    await expect(connector).toBeVisible();
+    const connector = await findConnectorBySearch(page, "GitHub", "github");
     // Without the cloud connector GitHub's default method is a token, so the
     // card's verb is "Add key" rather than "Connect".
     await connector.getByRole("button", { name: "Add key GitHub" }).click();
@@ -358,26 +366,25 @@ test.describe.serial("native chat adapter UI", () => {
   for (const provider of PROVIDERS) {
     test(`${provider.name}: catalog, setup, and connection management tabs`, async ({
       page,
-    }) => {
+    }, testInfo) => {
       const mock = await installChatControlPlaneMock(page, provider, seed, {
-        enableChatConnectors: true,
+        enableChatConnectors: provider.provider !== "github",
+        enableGitHubReviewBots: provider.provider === "github",
       });
 
       await page.goto(`/${seed.prefix}/apps`);
       await expect(
         page.getByRole("heading", { name: "Connectors" }),
       ).toBeVisible({ timeout: 30_000 });
-      const connector = page.locator(
-        `[role="listitem"][data-app-slug="${provider.slug}"]`,
-      );
-      await expect(connector).toBeVisible({ timeout: 30_000 });
+      let connector = await findConnectorBySearch(page, provider.name, provider.slug);
       if (provider.provider === "github") {
-        const tools = page.locator('[role="listitem"][data-app-slug="github"]');
+        const tools = await findConnectorBySearch(page, "GitHub", "github");
         await tools.getByRole("button", { name: "Add key GitHub", exact: true }).click();
         await page.getByRole("button", { name: "Change", exact: true }).click();
         await expect(page.getByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Choose how to connect" })).toHaveCount(0);
         await page.goto(`/${seed.prefix}/apps`);
+        connector = await findConnectorBySearch(page, provider.name, provider.slug);
       }
       await connector
         .getByRole("button", { name: `Connect ${provider.provider === "github" ? "GitHub Code Review Bot" : provider.name}` })
@@ -422,7 +429,7 @@ test.describe.serial("native chat adapter UI", () => {
       }
 
       if (provider.provider === "github") {
-        await exerciseGitHubReviewSetup(page, mock, seed, provider);
+        await exerciseGitHubReviewSetup(page, mock, seed, provider, testInfo);
         return;
       }
 
@@ -706,7 +713,7 @@ test.describe.serial("native chat adapter UI", () => {
 
       await page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: "Conversations", exact: true }).click();
       await expect(
-        page.getByRole("heading", { name: "Conversations" }),
+        page.getByRole("list", { name: "Conversations", exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText(`Investigate ${provider.name} delivery`, { exact: true }),
@@ -980,10 +987,7 @@ test.describe("iMessage Photon setup and management", () => {
         theme,
       );
       await page.goto(`/${seed.prefix}/apps`);
-      const card = page.locator(
-        '[role="listitem"][data-app-slug="imessage-photon"]',
-      );
-      await expect(card).toBeVisible();
+      const card = await findConnectorBySearch(page, "iMessage Photon", "imessage-photon");
       await card
         .getByRole("button", { name: "Connect iMessage Photon" })
         .click();

@@ -5,6 +5,7 @@ import { stopAtPendingPermission } from "./native-active-stop-flow.js";
 import { runnerMatrix, runnerSuites, suiteDefinitionHash } from "./catalog.js";
 import { selectRunnerExecutions, parseRunnerSelectors } from "./selectors.js";
 import { createCursorToolEvidence } from "../../packages/paperclip-runner/src/drivers/acpx/cursor-tool-evidence.js";
+import { createCopilotToolEvidence } from "../../packages/paperclip-runner/src/drivers/acpx/copilot-tool-evidence.js";
 import type { CanonicalProviderEvent } from "../../packages/paperclip-runner/src/provider-events.js";
 
 import { CodexSessionState } from "../../packages/paperclip-runner/src/drivers/codex/codex-session-state.js";
@@ -13,7 +14,7 @@ import { mapTerminalTurn } from "../../packages/paperclip-runner/src/drivers/cod
 const caller = readActiveStopCaller({ deploymentMode: "local_trusted" }, { session: { userId: "local-board", id: "paperclip:local_implicit:local-board" } });
 const cancellationRequestId = "11111111-2222-4333-8444-555555555555";
 type Row = Record<string, any>;
-function fixture(provider: ActiveStopProvider = "cursor") {
+function fixture(provider: ActiveStopProvider = "copilot") {
   const scope = { provider, companyId: "company", issueId: "issue", runId: "run", target: "target.txt", ...(provider === "cursor" ? { commandSha256: `sha256:${"a".repeat(64)}` } : {}) };
   const row = (seq: number, eventType: string, payload: Row): Row => ({ companyId: "company", runId: "run", seq, eventType, protocolSchemaVersion: 1,
     payload: { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", eventType, runId: "run", turnId: "turn",
@@ -81,7 +82,7 @@ function withProjectedArrivalOrder(provider: ActiveStopProvider, order: typeof a
   }
   f.events.length = 0;
   const append = (eventType: string, value: Row) => f.events.push(f.row(f.events.length + 1, eventType, value));
-  const projector = (createCursorToolEvidence)({
+  const projector = (provider === "cursor" ? createCursorToolEvidence : createCopilotToolEvidence)({
     sessionId: "native-session", turnId: "turn", workingDirectory: "/fixture", active: () => true,
     emit: (event: CanonicalProviderEvent) => { append(event.eventType, event.payload); },
   });
@@ -124,10 +125,11 @@ function withSessionPrefix(provider: ActiveStopProvider = "cursor") {
 }
 
 describe("definitely active native permission Stop", () => {
-  describe.each(["cursor"] as const)("%s pre-Stop arrival orders", provider => {
+  describe.each(["cursor", "copilot"] as const)("%s pre-Stop arrival orders", provider => {
     it.each(arrivalOrders)("accepts %s only after both exact origins exist and retains them through settlement", order => {
       const f = withProjectedArrivalOrder(provider, order), pending = f.pending();
-      expect(f.nativeStageOrder()).toEqual(["tool", "permission_requested"]);
+      expect(f.nativeStageOrder()).toEqual(provider === "copilot" && order === "permission-first"
+        ? ["permission_requested", "tool"] : ["tool", "permission_requested"]);
       expect(pending.schema).toBe("paperclip.e2e.native-active-stop-pending.v2");
       expect(pending.toolOriginRowSha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
       expect(pending.toolStartedRowSha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
@@ -187,7 +189,7 @@ describe("definitely active native permission Stop", () => {
     });
     expect(f.pending).toThrow("duplicate native operation lifecycle");
   });
-  it.each(["cursor"] as const)("accepts the mixed v1/v2 session prefix before strict %s pending proof", provider => {
+  it.each(["cursor", "copilot"] as const)("accepts the mixed v1/v2 session prefix before strict %s pending proof", provider => {
     const f = withSessionPrefix(provider);
     expect(f.pending()).toMatchObject({ requestId: "request", toolCallId: "tool", permissionSourceSeq: 6, requestSourceSeq: 7 });
   });
@@ -211,7 +213,7 @@ describe("definitely active native permission Stop", () => {
     delete payload(f.events.find(row => row.eventType === "runtime_request.created")!).request.details.toolCallId;
     expect(f.pending).toThrow("native notice/card identity mismatch");
   });
-  it.each(["cursor"] as const)("binds %s's unanswered callback to cancelled provider settlement and caller-owned Stop", provider => {
+  it.each(["cursor", "copilot"] as const)("binds %s's unanswered callback to cancelled provider settlement and caller-owned Stop", provider => {
     const f = fixture(provider), pending = f.pending(); f.settle();
     expect(f.permissionResponse.mock.calls).toEqual([[{ action: "cancel" }]]);
     expect(readActiveStopSettlement({ ...f.state(), pending, dispatchMonotonicNs: (BigInt(pending.observedMonotonicNs) + 1n).toString() })).toMatchObject({
@@ -327,6 +329,7 @@ describe("definitely active native permission Stop", () => {
 describe("active Stop flow wiring", () => {
   it.each([
     ["cursor", "tool-first"], ["cursor", "permission-first"],
+    ["copilot", "tool-first"], ["copilot", "permission-first"],
   ] as const)("awaits retention and rechecks real %s %s evidence before issuing the single caller UUID request", async (provider, arrivalOrder) => {
     const f = withProjectedArrivalOrder(provider, arrivalOrder); const order: string[] = []; let retainedId = "";
     const stop = vi.fn(async (runId: string, id: string) => { expect(runId).toBe("run"); expect(id).toBe(retainedId); order.push("stop"); return f.settle(id); });
@@ -367,11 +370,11 @@ describe("active Stop flow wiring", () => {
 });
 
 describe("explicit active Stop discovery", () => {
-  it("adds exactly two versioned cells without enabling them in --all", () => {
+  it("adds exactly four versioned cells without enabling them in --all", () => {
     const suite = runnerSuites.find(s => s.id === "native-active-stop")!;
     const cells = runnerMatrix.filter(e => e.suite === suite);
-    expect(cells).toHaveLength(2); expect(suite.manualOnly).toBe(true);
-    expect(cells.map(e => `${e.profile.qualificationCandidate}/${e.environment.id}`).sort()).toEqual(["cursor/daytona", "cursor/local"]);
+    expect(cells).toHaveLength(4); expect(suite.manualOnly).toBe(true);
+    expect(cells.map(e => `${e.profile.qualificationCandidate}/${e.environment.id}`).sort()).toEqual(["copilot/daytona", "copilot/local", "cursor/daytona", "cursor/local"]);
     expect(cells.every(e => e.task.expectedRunCount === 1 && e.task.flow === "native_active_stop" && e.task.expectedTerminalState?.run === "cancelled")).toBe(true);
     expect(suite.definitionMetadata).toMatchObject({ version: 4, evidence: "paperclip.e2e.native-active-stop-settlement.v2", normalCompletionAccepted: false, providerDeath: "not-covered" });
     expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, version: 3 } }));

@@ -1,103 +1,108 @@
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import {
-  CheckCircle2,
-  Copy,
-  ExternalLink,
-  Loader2,
-  RefreshCw,
-  XCircle,
-} from "lucide-react";
-import type { ChatEndpointSetupState } from "@paperclipai/shared";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, Loader2 } from "lucide-react";
+import type { GitHubAppWizardState } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
-import {
-  chatEndpointsApi,
-  type ChatEndpoint,
-  type ChatEndpointResource,
-} from "@/api/chatEndpoints";
-import {
-  githubChatApi,
-  type GitHubConfigurationRecord,
-  type GitHubIdentity,
-  type GitHubVerification,
-} from "@/api/githubChat";
+import { chatEndpointsApi } from "@/api/chatEndpoints";
+import { githubChatApi } from "@/api/githubChat";
+import { projectsApi } from "@/api/projects";
+import { toolsApi } from "@/api/tools";
 import { AgentSelect } from "@/components/AgentMultiSelect";
 import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
-import { GitHubSetupPrompt } from "./GitHubSetupPrompt";
 import {
   SetupWizardNavigation,
   SetupWizardFooter,
 } from "@/components/SetupWizard";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { useToast } from "@/context/ToastContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
-import { copyTextToClipboard } from "@/lib/clipboard";
-import {
-  GitHubAccessEditor,
-  GitHubPolicyEditor,
-  GitHubToggle,
-  githubSelectClass,
-} from "./GitHubBotConfiguration";
+import { buildPermissionsForTrustPreset } from "@/lib/trust-policy-ui";
+import { queryKeys } from "@/lib/queryKeys";
+import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 
-const steps = [
-  "Choose agent",
-  "Connect GitHub App",
-  "Install GitHub App",
-  "Select repositories",
-  "Verify connection & tools",
-  "Connect your account",
-  "Configure behavior",
-  "Try it",
-];
-const stages: NonNullable<ChatEndpointSetupState["github"]>["stage"][] = [
-  "connect",
-  "connect",
-  "install",
-  "repositories",
-  "verify",
-  "identity",
-  "behavior",
-  "test",
-];
+/** Restrict native manifest submission to GitHub registration endpoints. */
+export function gitHubAppManifestAction(
+  registration: NonNullable<GitHubAppWizardState["registration"]>,
+) {
+  const url = new URL(registration.registrationUrl);
+  if (
+    url.origin !== "https://github.com" ||
+    url.username || url.password || url.hash ||
+    !/^\/(settings|organizations\/[A-Za-z0-9-]+\/settings)\/apps\/new$/.test(
+      url.pathname,
+    )
+  )
+    throw new Error("GitHub returned an invalid registration address");
+  return url.toString();
+}
+function GitHubAppManifestForm({
+  registration, onSaveExit, disabled, autoSubmit, onSubmit,
+}: {
+  registration: NonNullable<GitHubAppWizardState["registration"]>;
+  onSaveExit: () => void;
+  disabled: boolean;
+  autoSubmit: boolean;
+  onSubmit: () => void;
+}) {
+  const form = useRef<HTMLFormElement>(null);
+  const requested = useRef(false);
+  useEffect(() => {
+    if (!autoSubmit) requested.current = false;
+    if (autoSubmit && !disabled && !requested.current && form.current) {
+      requested.current = true;
+      form.current.requestSubmit();
+    }
+  }, [autoSubmit, disabled]);
+  return (
+    <form
+      ref={form}
+      method="post"
+      action={gitHubAppManifestAction(registration)}
+      onSubmit={onSubmit}
+    >
+      <input type="hidden" name="manifest" value={JSON.stringify(registration.manifest)} />
+      <SetupWizardFooter onSaveExit={onSaveExit} disabled={disabled}>
+        <Button type="submit" disabled={disabled}>Continue to GitHub</Button>
+      </SetupWizardFooter>
+    </form>
+  );
+}
 export function GitHubChatSetup() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const { pushToast } = useToast();
-  const [secretCopy, setSecretCopy] = useState<"idle" | "copied" | "failed">("idle");
-  const identityOnly = params.get("stage") === "identity";
-  const reconnecting = params.get("reconnect") === "1";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [endpoint, setEndpoint] = useState<ChatEndpoint | null>(null);
+  const queryClient = useQueryClient();
+  const resume = params.get("resume");
+  const identityOnly = params.get("stage") === "identity";
+  const reconnect = params.get("reconnect") === "1";
   const [agentId, setAgentId] = useState(params.get("agentId") ?? "");
-  const [step, setStep] = useState(0);
-  const [availableStep, setAvailableStep] = useState(0);
+  const [ownerType, setOwnerType] = useState<"personal" | "organization">(
+    "personal",
+  );
+  const [ownerLogin, setOwnerLogin] = useState("");
+  const [customOrganization, setCustomOrganization] = useState(false);
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [submitManifest, setSubmitManifest] = useState(false);
   const [error, setError] = useState("");
-  const [name, setName] = useState("Paperclip Review");
-  const [existing, setExisting] = useState(reconnecting);
+  const [existing, setExisting] = useState(params.get("reconnect") === "1");
   const [credentials, setCredentials] = useState({
     appId: "",
     privateKey: "",
     webhookSecret: "",
   });
-  const [registration, setRegistration] = useState<Awaited<
-    ReturnType<typeof githubChatApi.registration>
+  const [appNotCreated, setAppNotCreated] = useState(false);
+  const [legacyAccount, setLegacyAccount] = useState("");
+  const [identityLinked, setIdentityLinked] = useState(false);
+  const [legacyIdentity, setLegacyIdentity] = useState<Awaited<
+    ReturnType<typeof githubChatApi.identity>
   > | null>(null);
-  const [resources, setResources] = useState<ChatEndpointResource[]>([]);
-  const [record, setRecord] = useState<GitHubConfigurationRecord | null>(null);
-  const [verification, setVerification] = useState<GitHubVerification | null>(
-    null,
-  );
-  const [personalConnectionId, setPersonalConnectionId] = useState("");
-  const [identity, setIdentity] = useState<GitHubIdentity | null>(null);
-  const [copied, setCopied] = useState(false);
-  const resume = params.get("resume");
   const agents = useQuery({
     queryKey: ["github-setup-agents", selectedCompanyId],
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -108,20 +113,79 @@ export function GitHubChatSetup() {
     queryFn: () => chatEndpointsApi.get(resume!),
     enabled: !!resume,
     refetchInterval: 3000,
-    refetchIntervalInBackground: false,
+  });
+  const bot = current.data;
+  const progress = useQuery({
+    queryKey: ["github-wizard", resume],
+    queryFn: () => githubChatApi.advance(resume!),
+    enabled: !!bot && !existing && !identityOnly,
+    refetchInterval: (query) =>
+      ["connected", "create", "identity", "enrollment", "recovery"].includes(
+        query.state.data?.state ?? "",
+      )
+        ? false
+        : 5000,
+    retry: false,
   });
   const accounts = useQuery({
-    queryKey: ["github-personal-connections", endpoint?.id],
-    queryFn: () => githubChatApi.personalConnections(endpoint!.id),
-    enabled: !!endpoint && step === 5,
+    queryKey: ["github-personal-connections", resume],
+    queryFn: () => githubChatApi.personalConnections(resume!),
+    enabled: !!bot && (identityOnly || progress.data?.state === "identity"),
   });
-  const test = useQuery({
-    queryKey: ["github-test-status", endpoint?.id],
-    queryFn: () => chatEndpointsApi.setupTestStatus(endpoint!.id),
-    enabled: !!endpoint && step === 7,
-    refetchInterval: 3000,
+  const selectedAgent = agents.data?.find(
+    (agent) => agent.id === (bot?.assignedAgentId ?? agentId),
+  );
+  const state = identityOnly ? undefined : progress.data;
+  const choosingAccount = !!bot && !identityOnly && !existing && state?.state === "create";
+  const repositories = useQuery({
+    queryKey: ["project-repositories", selectedCompanyId],
+    queryFn: () => projectsApi.repositoryOptions(selectedCompanyId!),
+    enabled: !!selectedCompanyId && choosingAccount,
+    staleTime: 30_000,
   });
-  const selectedAgent = agents.data?.find((agent) => agent.id === agentId);
+  const connectedBots = useQuery({
+    queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
+    queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && choosingAccount,
+    staleTime: 30_000,
+  });
+  const organizations = new Map<string, string>();
+  for (const repository of repositories.data?.repositories ?? []) {
+    if (repository.ownerType !== "organization") continue;
+    const login = repository.fullName.split("/")[0];
+    organizations.set(login.toLowerCase(), login);
+  }
+  for (const endpoint of connectedBots.data ?? []) {
+    const github = endpoint.setup?.github;
+    if (endpoint.provider === "github" && ["active", "paused"].includes(endpoint.status) &&
+        github?.ownerType === "organization" && github.ownerLogin) {
+      organizations.set(github.ownerLogin.toLowerCase(), github.ownerLogin);
+    }
+  }
+  const knownOrganizations = [...organizations.values()].sort((a, b) => a.localeCompare(b));
+  const knownOwner = organizations.get(ownerLogin.toLowerCase());
+  const accountChoice = ownerType === "personal" ? "personal"
+    : !customOrganization && knownOwner ? `organization:${knownOwner}` : "organization";
+  const deliveryVerifiedWhileChecking =
+    state?.state === "verify" &&
+    !!bot?.setup?.webhookVerifiedAt &&
+    state.verification?.checks.some(
+      (check) => !check.ok && ["webhook", "delivery"].includes(check.key),
+    );
+  const existingIdentityMethod =
+    identityOnly || state?.identityMethod === "existing_connection";
+  const connected = state?.state === "connected" && !existing;
+  useEffect(() => {
+    if (!connected || !bot) return;
+    queryClient.setQueryData(queryKeys.chatEndpoints.detail(bot.id), bot);
+    if (selectedAgent) queryClient.setQueryData(queryKeys.agents.detail(selectedAgent.id), selectedAgent);
+    navigate(`/apps/chat/${bot.id}/settings`, {
+      replace: true,
+      state: {
+        githubConnectionComplete: { endpointId: bot.id, runtimeChecks: state.runtimeChecks },
+      } satisfies GitHubConnectionCompleteLocationState,
+    });
+  }, [connected, bot, selectedAgent, state, queryClient, navigate]);
   useEffect(() => {
     setBreadcrumbs([
       { label: "Connectors", href: "/apps" },
@@ -130,37 +194,20 @@ export function GitHubChatSetup() {
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   useEffect(() => {
-    if (!current.data) return;
-    setEndpoint(current.data);
-    setAgentId(current.data.assignedAgentId);
-    if (availableStep === 0) {
-      const next = identityOnly
-        ? 5
-        : reconnecting
-          ? 1
-          : current.data.setup?.github?.stage
-            ? Math.max(1, stages.indexOf(current.data.setup.github.stage))
-            : current.data.status === "active"
-              ? 6
-              : 1;
-      setStep(next);
-      setAvailableStep(next);
-      if (identityOnly) return;
-      void Promise.all([
-        chatEndpointsApi.listResources(current.data.id),
-        githubChatApi.configuration(current.data.id),
-      ])
-        .then(([resources, config]) => {
-          setResources(resources);
-          setRecord(config);
-        })
-        .catch((error) =>
-          setError(
-            error instanceof Error ? error.message : "Could not resume setup",
-          ),
-        );
+    if (bot) {
+      setAgentId(bot.assignedAgentId);
+      if (bot.setup?.github?.ownerType)
+        setOwnerType(bot.setup.github.ownerType);
+      setOwnerLogin(bot.setup?.github?.ownerLogin ?? "");
+      setCustomOrganization(false);
+      if (bot.setup?.github?.appName) setName(bot.setup.github.appName);
     }
-  }, [current.data, availableStep, params]);
+  }, [
+    bot?.id,
+    bot?.setup?.github?.ownerType,
+    bot?.setup?.github?.ownerLogin,
+    bot?.setup?.github?.appName,
+  ]);
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -170,718 +217,495 @@ export function GitHubChatSetup() {
       setError(
         error instanceof Error
           ? error.message
-          : "Could not save this step. Try again.",
+          : "Could not connect GitHub. Try again.",
       );
     } finally {
       setBusy(false);
     }
   }
-  async function go(next: number, bot = endpoint) {
-    if (bot && next > 0)
-      setEndpoint(await githubChatApi.progress(bot.id, stages[next]!));
-    setStep(next);
-    setAvailableStep((value) => Math.max(value, next));
+  async function refresh() {
+    await current.refetch();
+    if (!identityOnly) await progress.refetch();
   }
-  async function saveConfiguration() {
-    if (!endpoint || !record) return;
-    const saved = await githubChatApi.save(
-      endpoint.id,
-      record.revision,
-      record.configuration,
-    );
-    setRecord(saved);
-  }
+  const appInput = () => ({
+    name: (
+      name ||
+      selectedAgent?.name ||
+      bot?.assignedAgentName ||
+      "GitHub Reviewer"
+    ).slice(0, 34),
+    ownerType,
+    ...(ownerType === "organization" ? { ownerLogin: ownerLogin.trim() } : {}),
+  });
   const exit = () =>
     void run(async () => {
-      if (step === 6) await saveConfiguration();
-      if (endpoint && step > 0 && !identityOnly)
-        await githubChatApi.progress(endpoint.id, stages[step]!);
+      if (
+        !identityOnly &&
+        bot &&
+        !bot.botExternalId &&
+        !state?.registration &&
+        state?.state !== "recovery"
+      ) {
+        await githubChatApi.saveDraft(bot.id, appInput());
+        await current.refetch();
+      }
       navigate("/apps");
     });
   const footer = (
-    label: string,
-    action: () => Promise<void>,
+    label?: string,
+    action?: () => Promise<void>,
     disabled = false,
-    extra?: React.ReactNode,
   ) => (
-    <SetupWizardFooter onSaveExit={exit}>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {step > 0 && !identityOnly && (
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() => setStep(step - 1)}
-          >
-            Back
-          </Button>
-        )}
-        {extra}
+    <SetupWizardFooter onSaveExit={exit} disabled={busy}>
+      {label && action && (
         <Button disabled={busy || disabled} onClick={() => void run(action)}>
           {busy && <Loader2 className="mr-2 size-4 animate-spin" />}
           {label}
         </Button>
-      </div>
+      )}
     </SetupWizardFooter>
   );
-  const publicHttps = !!endpoint?.setup?.webhookUrl?.startsWith("https://");
-  const mention = `@${endpoint?.botUsername?.replace(/\[bot\]$/, "") ?? "your-bot"} review this pull request`;
+  if (resume && !bot)
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
+        <h1 className="text-2xl font-semibold">Resume GitHub setup</h1>
+        {current.error ? (
+          <p role="alert" className="text-sm text-destructive">
+            Could not load this connection. Try again to resume your draft.
+          </p>
+        ) : (
+          <p role="status" className="text-sm text-muted-foreground">
+            Loading your draft…
+          </p>
+        )}
+        {footer(current.error ? "Try again" : undefined, async () => {
+          await current.refetch();
+        })}
+      </div>
+    );
+  if (connected) return null;
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
-      <SetupWizardNavigation
-        labels={identityOnly ? ["Connect your account"] : steps}
-        step={identityOnly ? 0 : step}
-        availableStep={identityOnly ? 0 : availableStep}
-        onSelect={identityOnly ? () => {} : setStep}
-        disabled={busy}
-        takeover
-      />
-      <div>
-        <p className="text-xs text-muted-foreground">
-          {identityOnly
-            ? "GitHub account linking"
-            : `GitHub bot · Step ${step + 1} of ${steps.length}`}
-        </p>
-        <h1 className="mt-2 text-2xl font-semibold">{steps[step]}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          GitHub conversations run as Paperclip tasks on one assigned agent.
-        </p>
-      </div>
-      {(error || current.error || agents.error) && (
-        <p
-          role="alert"
-          className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm"
-        >
-          {error || "Could not load this setup. Refresh to try again."}
+      {!identityOnly && (
+        <SetupWizardNavigation
+          labels={["Choose agent", "Connect GitHub"]}
+          step={bot ? 1 : 0}
+          availableStep={bot ? 1 : 0}
+          onSelect={() => {}}
+          disabled
+          takeover
+        />
+      )}
+      <h1 className="text-2xl font-semibold">
+        {!bot
+          ? "Choose agent"
+          : identityOnly || state?.state === "identity"
+              ? "Connect your account"
+              : "Connect GitHub"}
+      </h1>
+      {(error || (!identityOnly && progress.error) || accounts.error) && (
+        <p role="alert" className="text-sm text-destructive">
+          {error ||
+            (accounts.error instanceof Error
+              ? accounts.error.message
+              : undefined) ||
+            (progress.error instanceof Error
+              ? progress.error.message
+              : "Could not check GitHub setup. Try again.")}
         </p>
       )}
-      {step === 0 && (
+      {!bot ? (
         <>
-          <GitHubSetupPrompt />
-          <p className="text-sm">
-            This assignment is permanent. The agent works through its existing
-            permissions, budgets, and tools.
-          </p>
-          {endpoint ? (
-            <Input
-              aria-label="Assigned agent"
-              value={
-                endpoint.assignedAgentName ?? selectedAgent?.name ?? agentId
+          <AgentSelect
+            agents={agents.data ?? []}
+            value={agentId}
+            onChange={setAgentId}
+          />
+          {selectedAgent && (
+            <GitHubAgentTrustWarning
+              agent={selectedAgent}
+              disabled={busy}
+              onChangeToLowTrust={() =>
+                void run(async () => {
+                  const permissions = buildPermissionsForTrustPreset(
+                    selectedAgent.permissions,
+                    "low_trust_review",
+                  );
+                  await agentsApi.updatePermissions(
+                    selectedAgent.id,
+                    {
+                      ...permissions,
+                      canCreateAgents: false,
+                      canCreateSkills: false,
+                      canAssignTasks:
+                        typeof selectedAgent.permissions.canAssignTasks ===
+                        "boolean"
+                          ? selectedAgent.permissions.canAssignTasks
+                          : true,
+                    },
+                    selectedCompanyId!,
+                  );
+                  await queryClient.invalidateQueries({
+                    queryKey: ["github-setup-agents", selectedCompanyId],
+                  });
+                })
               }
-              readOnly
-            />
-          ) : (
-            <AgentSelect
-              agents={(agents.data ?? []).filter(
-                (agent) => !["terminated", "archived"].includes(agent.status),
-              )}
-              value={agentId}
-              onChange={setAgentId}
-              placeholder="Choose an agent"
-              emptyMessage="No agents available"
             />
           )}
-          <GitHubAgentTrustWarning agent={selectedAgent} />
           {footer(
             "Continue",
             async () => {
-              const bot =
-                endpoint ??
-                (await chatEndpointsApi.create(selectedCompanyId!, {
-                  provider: "github",
-                  assignedAgentId: agentId,
-                }));
-              setEndpoint(bot);
-              setParams(
-                { provider: "github", resume: bot.id },
-                { replace: true },
+              const created = await chatEndpointsApi.create(
+                selectedCompanyId!,
+                { provider: "github", assignedAgentId: agentId },
               );
-              setRecord(await githubChatApi.configuration(bot.id));
-              await go(1, bot);
+              setName((selectedAgent?.name ?? "GitHub Reviewer").slice(0, 34));
+              const next = new URLSearchParams(params);
+              next.set("resume", created.id);
+              setParams(next, { replace: true });
+              queryClient.setQueryData(["github-setup", created.id], created);
             },
             !agentId || !selectedCompanyId,
           )}
         </>
-      )}
-      {step === 1 && endpoint && (
+      ) : !identityOnly && !existing && progress.isPending ? (
         <>
-          {!publicHttps && (
-            <div
-              role="alert"
-              className="rounded-lg border border-(--status-task-todo)/30 bg-(--status-task-todo)/10 p-4 text-sm"
-            >
-              A publicly reachable HTTPS address is required before App
-              registration. Configure the instance’s public URL or an explicit
-              webhook ingress URL, then refresh. {" "}
-              <a className="underline" href="https://docs.paperclip.ing/reference/deploy/https/" target="_blank" rel="noreferrer">Learn how to set up HTTPS</a>
-            </div>
-          )}
-          <p className="text-sm">
-            Create a dedicated GitHub App for{" "}
-            {selectedAgent?.name ?? endpoint.assignedAgentName}. Paperclip
-            stores the credentials in its vault and uses this same App for the
-            agent’s GitHub tools.
+          <p role="status" className="text-sm text-muted-foreground">
+            Checking your GitHub connection…
           </p>
-          {reconnecting && (
-            <p className="text-sm text-muted-foreground">
-              Verify the saved App and refresh its webhook configuration. Leave
-              the credentials blank to keep them, or enter a replacement private
-              key for the same App.
-            </p>
-          )}
-          <div className="flex gap-2">
-            <Button
-              variant={!existing ? "default" : "outline"}
-              onClick={() => setExisting(false)}
-            >
-              Create an App
-            </Button>
-            <Button
-              variant={existing ? "default" : "outline"}
-              onClick={() => setExisting(true)}
-            >
-              Use an existing App
-            </Button>
-          </div>
-          {existing ? (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="github-app-id">App ID</Label>
-                <Input
-                  id="github-app-id"
-                  value={credentials.appId}
-                  onChange={(e) =>
-                    setCredentials({ ...credentials, appId: e.target.value })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">
-                  Find this in your GitHub App’s settings.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="github-private-key">Private key</Label>
-                <Textarea
-                  id="github-private-key"
-                  autoComplete="off"
-                  value={credentials.privateKey}
-                  onChange={(e) =>
-                    setCredentials({
-                      ...credentials,
-                      privateKey: e.target.value,
-                    })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">
-                  Paste the PEM key. It is vaulted server-side.
-                </p>
-              </div>
-              <div className="space-y-2">
+          {footer()}
+        </>
+      ) : existing ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            {reconnect
+              ? "Leave these blank to reuse this App’s stored credentials, or enter both fields to repair them."
+              : "Use the credentials from this App’s GitHub settings."}
+          </p>
+          <Label htmlFor="github-app-id">App ID</Label>
+          <Input
+            id="github-app-id"
+            value={credentials.appId}
+            onChange={(event) =>
+              setCredentials({ ...credentials, appId: event.target.value })
+            }
+          />
+          <Label htmlFor="github-private-key">Private key</Label>
+          <Textarea
+            id="github-private-key"
+            value={credentials.privateKey}
+            onChange={(event) =>
+              setCredentials({ ...credentials, privateKey: event.target.value })
+            }
+          />
+          {!reconnect &&
+            !["active", "paused", "revoked"].includes(bot.status) && (
+              <>
                 <Label htmlFor="github-webhook-secret">Webhook secret</Label>
                 <Input
                   id="github-webhook-secret"
                   type="password"
-                  autoComplete="off"
                   value={credentials.webhookSecret}
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setCredentials({
                       ...credentials,
-                      webhookSecret: e.target.value,
+                      webhookSecret: event.target.value,
                     })
                   }
                 />
-                <p className="text-xs text-muted-foreground">
-                  Use the same secret in GitHub’s webhook settings.
-                </p>
-                {!reconnecting && <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" disabled={busy} onClick={() => void run(async () => {
-                    const generated = await chatEndpointsApi.generateSetupSecret(endpoint.id);
-                    setCredentials(current => ({ ...current, webhookSecret: generated.webhookSecret }));
-                    setSecretCopy("idle");
-                  })}>Generate webhook secret</Button>
-                  {credentials.webhookSecret && <Button variant="outline" onClick={async () => {
-                    try { await copyTextToClipboard(credentials.webhookSecret); setSecretCopy("copied"); }
-                    catch { setSecretCopy("failed"); pushToast({ title: "Couldn't copy to clipboard", body: "Select and copy the value manually.", tone: "error" }); }
-                  }}>{secretCopy === "copied" ? "Webhook secret copied" : secretCopy === "failed" ? "Couldn’t copy — select it manually" : "Copy webhook secret"}</Button>}
-                </div>}
-
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <Label htmlFor="github-app-name">GitHub App name</Label>
-              <Input
-                id="github-app-name"
-                maxLength={34}
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setRegistration(null);
-                }}
-              />
-              <p className="text-xs text-muted-foreground">
-                GitHub requires a unique name. Continue on GitHub, then return
-                automatically to finish setup.
-              </p>
-              {registration && (
-                <form
-                  action={registration.registrationUrl}
-                  method="POST"
-                >
-                  <input
-                    type="hidden"
-                    name="manifest"
-                    value={JSON.stringify(registration.manifest)}
-                  />
-                  <Button type="submit">
-                    Create App on GitHub
-                    <ExternalLink className="ml-2 size-4" />
-                  </Button>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Registration expires at{" "}
-                    {new Date(registration.expiresAt).toLocaleTimeString()}.
-                  </p>
-                </form>
-              )}
-            </div>
-          )}
-          <details className="rounded-lg border border-border p-4">
-            <summary className="cursor-pointer text-sm">
-              App permissions and callback details
-            </summary>
-            <p className="mt-3 text-sm">
-              Contents: read. Issues, Pull requests, Checks: write. Events:
-              issue_comment, pull_request_review_comment, pull_request.
-            </p>
-            <p className="mt-2 break-all text-xs">
-              {endpoint.setup?.webhookUrl ?? "Public webhook URL unavailable"}
-            </p>
-            {endpoint.setup?.webhookUrl && <Button variant="outline" size="sm" className="mt-2" onClick={() => void run(async () => { await copyTextToClipboard(endpoint.setup!.webhookUrl!); pushToast({ title: "Webhook URL copied", tone: "success" }); })}>Copy webhook URL</Button>}
-            {registration && (
-              <pre className="mt-3 overflow-auto text-xs">
-                {JSON.stringify(registration.manifest, null, 2)}
-              </pre>
+              </>
             )}
-          </details>
           {footer(
-            reconnecting
-              ? "Reconnect App"
-              : endpoint.setup?.github?.appSlug
-                ? "Continue to installation"
-                : existing
-                  ? "Connect App"
-                  : "Prepare registration",
+            reconnect ? "Reconnect App" : "Connect existing App",
             async () => {
-              if (reconnecting) {
-                const saved = await chatEndpointsApi.setup(endpoint.id, {
+              if (
+                reconnect ||
+                ["active", "paused", "revoked"].includes(bot.status)
+              )
+                await chatEndpointsApi.setup(bot.id, {
                   action: "reconnect",
-                  ...(credentials.privateKey
+                  ...(credentials.appId.trim() || credentials.privateKey.trim()
                     ? {
                         credentials: {
-                          appId: credentials.appId || endpoint.botExternalId!,
+                          appId: credentials.appId,
                           privateKey: credentials.privateKey,
                         },
                       }
                     : {}),
                 });
-                setEndpoint(saved);
-                setCredentials({
-                  appId: "",
-                  privateKey: "",
-                  webhookSecret: "",
-                });
-                await go(4, saved);
-              } else if (endpoint.setup?.github?.appSlug) await go(2);
-              else if (existing) {
-                const saved = await githubChatApi.connectApp(
-                  endpoint.id,
-                  credentials,
-                );
-                setEndpoint(saved);
-                setCredentials({
-                  appId: "",
-                  privateKey: "",
-                  webhookSecret: "",
-                });
-                await go(2, saved);
-              } else
-                setRegistration(
-                  await githubChatApi.registration(endpoint.id, name),
-                );
+              else await githubChatApi.connectApp(bot.id, credentials);
+              setCredentials({ appId: "", privateKey: "", webhookSecret: "" });
+              setExisting(false);
+              await refresh();
             },
-            !publicHttps ||
-              (existing &&
-                !reconnecting &&
-                (!credentials.appId ||
-                  !credentials.privateKey ||
-                  !credentials.webhookSecret) &&
-                !endpoint.setup?.github?.appSlug),
+            reconnect
+              ? !!(credentials.appId.trim() || credentials.privateKey.trim()) &&
+                  (!credentials.appId.trim() || !credentials.privateKey.trim())
+              : !credentials.appId.trim() ||
+                  !credentials.privateKey.trim() ||
+                  (!["active", "paused", "revoked"].includes(bot.status) &&
+                    !credentials.webhookSecret.trim()),
           )}
         </>
-      )}
-      {step === 2 && endpoint && (
+      ) : state?.state === "identity" || identityOnly ? (
+        <>
+          {identityOnly && identityLinked ? (
+            <>
+              <p role="status" className="text-sm">
+                GitHub account <strong>{legacyIdentity?.login}</strong>{" "}
+                connected. You can now mention this bot on GitHub.
+              </p>
+              {footer()}
+            </>
+          ) : state?.identity ? (
+            <>
+              <p className="text-sm">
+                Connect GitHub account <strong>{state.identity.login}</strong>{" "}
+                to your Paperclip account.
+              </p>
+              {footer("Confirm my account", async () => {
+                await githubChatApi.confirmIdentity(
+                  bot.id,
+                  state.identity!.githubUserId,
+                );
+                await refresh();
+              })}
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Link your GitHub account so your mentions use your Paperclip
+                permissions.
+              </p>
+              {(accounts.data?.length ?? 0) > 0 && (
+                <>
+                  <Label htmlFor="github-personal-account">
+                    Existing GitHub connection
+                  </Label>
+                  <select
+                    id="github-personal-account"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={legacyAccount}
+                    onChange={(event) => {
+                      setLegacyAccount(event.target.value);
+                      setLegacyIdentity(null);
+                      setIdentityLinked(false);
+                    }}
+                  >
+                    <option value="">Choose an account</option>
+                    {accounts.data
+                      ?.filter(
+                        (account) =>
+                          account.status === "active" && account.enabled,
+                      )
+                      .map((account) => (
+                        <option
+                          key={account.connectionId}
+                          value={account.connectionId}
+                        >
+                          {account.login ?? account.name}
+                        </option>
+                      ))}
+                  </select>
+                  {legacyIdentity && (
+                    <p className="text-sm">
+                      GitHub account: <strong>{legacyIdentity.login}</strong>
+                    </p>
+                  )}
+                </>
+              )}
+              {existingIdentityMethod && !legacyAccount && (
+                <Link
+                  className="text-sm underline"
+                  to="/apps/connect?source=github"
+                >
+                  Add a personal GitHub connection, then return to this draft
+                </Link>
+              )}
+              {footer(
+                legacyAccount
+                  ? legacyIdentity
+                    ? "Confirm my account"
+                    : "Check my account"
+                  : "Connect my GitHub account",
+                async () => {
+                  if (legacyAccount) {
+                    const observed = await githubChatApi.identity(
+                      bot.id,
+                      legacyAccount,
+                      legacyIdentity?.githubUserId,
+                    );
+                    setLegacyIdentity(observed);
+                    if (legacyIdentity) {
+                      setIdentityLinked(true);
+                      await refresh();
+                    }
+                  } else {
+                    const result = await githubChatApi.startIdentity(bot.id);
+                    window.location.assign(result.authorizationUrl);
+                  }
+                },
+                existingIdentityMethod && !legacyAccount,
+              )}
+            </>
+          )}
+        </>
+      ) : state?.state === "install" ? (
+        <>
+          <p role="status" className="text-sm text-muted-foreground">
+            Waiting for GitHub installation or administrator approval…
+          </p>
+          {state.installationUrl && (
+            <a
+              className="inline-flex items-center gap-1 text-sm underline"
+              href={state.installationUrl}
+            >
+              Continue installation on GitHub
+              <ExternalLink className="size-3" />
+            </a>
+          )}
+          {footer()}
+        </>
+      ) : state?.state === "enrollment" ? (
         <>
           <p className="text-sm">
-            Install the bot’s App into your GitHub account or organization. On
-            GitHub, choose the repositories the installation can access.
+            Paperclip Cloud receives GitHub events and securely delivers them to
+            this instance.
           </p>
-          <p className="text-sm text-muted-foreground">
-            You will choose the subset enabled in Paperclip in the next step.
-            Changing the installation does not automatically enable repositories
-            here.
-          </p>
-          {endpoint.setup?.github?.installationUrl && (
-            <Button asChild>
-              <a
-                href={endpoint.setup.github.installationUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Install App on GitHub
-                <ExternalLink className="ml-2 size-4" />
-              </a>
-            </Button>
-          )}
-          {footer("I’ve installed the App", async () => {
-            setResources(await githubChatApi.refreshRepositories(endpoint.id));
-            await go(3);
+          {footer("Connect Paperclip Cloud", async () => {
+            const result = await toolsApi.startCloudConnectorEnrollment(
+              selectedCompanyId!,
+              undefined,
+              `/apps/chat/connect${window.location.search}`,
+            );
+            if (!result.verificationUrl)
+              throw new Error("Cloud enrollment could not be started");
+            window.location.assign(result.verificationUrl);
           })}
         </>
-      )}
-      {step === 3 && endpoint && (
+      ) : state?.state === "recovery" ? (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  setResources(
-                    await githubChatApi.refreshRepositories(endpoint.id),
-                  );
-                  setEndpoint(await chatEndpointsApi.get(endpoint.id));
-                })
-              }
-            >
-              <RefreshCw className="mr-2 size-4" />
-              Refresh access
-            </Button>
-            <Button variant="outline" asChild>
-              <a
-                href={
-                  endpoint.setup?.github?.managementUrl ??
-                  "https://github.com/settings/installations"
-                }
-                target="_blank"
-                rel="noreferrer"
-              >
-                Configure access on GitHub
-                <ExternalLink className="ml-2 size-4" />
-              </a>
-            </Button>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            This list comes from the bot App’s installation. Enable the
-            repositories where it should respond and review.
+          <p role="status" className="text-sm">
+            {state.message}
           </p>
-          <div className="divide-y divide-border rounded-lg border border-border">
-            {resources.length === 0 && (
-              <p className="p-4 text-sm">
-                No repositories found. Configure installation access on GitHub,
-                then refresh.
-              </p>
-            )}
-            {resources.map((resource) => (
-              <div key={resource.id} className="p-4">
-                <GitHubToggle
-                  label={resource.label}
-                  description={
-                    resource.availability !== "available"
-                      ? "GitHub installation access is unavailable"
-                      : "Available to this App installation"
-                  }
-                  checked={
-                    resource.enabled && resource.availability === "available"
-                  }
-                  onChange={(enabled) =>
-                    setResources(
-                      resources.map((row) =>
-                        row.id === resource.id
-                          ? {
-                              ...row,
-                              enabled:
-                                enabled && row.availability === "available",
-                            }
-                          : row,
-                      ),
-                    )
-                  }
-                />
-              </div>
-            ))}
-          </div>
-          {footer(
-            "Save repositories",
-            async () => {
-              await chatEndpointsApi.updateResources(
-                endpoint.id,
-                resources.map((resource) => ({
-                  id: resource.id,
-                  enabled: resource.enabled,
-                })),
-              );
-              await chatEndpointsApi.update(endpoint.id, {
-                allowGroupChats: true,
-              });
-              const configured = await chatEndpointsApi.setup(endpoint.id, {
-                action:
-                  endpoint.status === "draft" || endpoint.status === "attention"
-                    ? "configure"
-                    : "reconnect",
-              });
-              setEndpoint(configured);
-              await go(4, configured);
-            },
-            !resources.some(
-              (resource) =>
-                resource.enabled && resource.availability === "available",
-            ),
-          )}
-        </>
-      )}
-      {step === 4 && endpoint && (
-        <>
-          <p className="text-sm">
-            Verify signed delivery, App identity, repository access, and the
-            assigned agent’s effective tools separately.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void run(async () =>
-                  setVerification(await githubChatApi.verify(endpoint.id)),
-                )
-              }
-            >
-              Verify connection
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy || !record}
-              onClick={() =>
-                void run(async () => {
-                  if (!record) return;
-                  setRecord(
-                    await githubChatApi.save(endpoint.id, record.revision, {
-                      ...record.configuration,
-                      toolsEnabled: true,
-                    }),
-                  );
-                  setVerification(await githubChatApi.verify(endpoint.id));
-                })
-              }
-            >
-              Assign this bot’s GitHub tools
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Tool assignment grants this agent the bot App’s task-scoped tools
-            through its Paperclip tool profile. Existing deny and approval
-            policies still apply.
-          </p>
-          <div className="divide-y divide-border rounded-lg border border-border">
-            {verification?.checks.map((check) => (
-              <div key={check.key} className="flex gap-3 p-4">
-                {check.ok ? (
-                  <CheckCircle2 className="mt-1 size-4 shrink-0 text-(--status-task-done)" />
-                ) : (
-                  <XCircle className="mt-1 size-4 shrink-0 text-destructive" />
-                )}
-                <div>
-                  <p className="text-sm font-medium">{check.label}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {check.detail}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <GitHubAgentTrustWarning agent={selectedAgent} />
-          {footer("Continue", () => go(5), !verification?.ready)}
-        </>
-      )}
-      {step === 5 && endpoint && (
-        <>
-          <p className="text-sm">
-            Choose your existing personal GitHub connection. Paperclip verifies
-            the account, then asks you to confirm ownership. This link
-            identifies your requests; the bot still uses its own App
-            credentials.
-          </p>
-          <div className="space-y-2">
-            <Label htmlFor="github-personal-account">
-              Your GitHub connection
-            </Label>
-            <select
-              id="github-personal-account"
-              className={githubSelectClass}
-              value={personalConnectionId}
-              onChange={(e) => {
-                setPersonalConnectionId(e.target.value);
-                setIdentity(null);
-              }}
-            >
-              <option value="">Choose a personal connection</option>
-              {accounts.data?.map((account) => (
-                <option
-                  key={account.connectionId}
-                  value={account.connectionId}
-                  disabled={!account.enabled || account.status !== "active"}
-                >
-                  {account.name}
-                  {account.login ? ` · @${account.login}` : ""}
-                  {account.status !== "active" ? " · reconnect required" : ""}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground">
-              Shared and agent connections cannot prove your identity.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              disabled={!personalConnectionId || busy}
-              onClick={() =>
-                void run(async () =>
-                  setIdentity(
-                    await githubChatApi.identity(
-                      endpoint.id,
-                      personalConnectionId,
-                    ),
-                  ),
-                )
-              }
-            >
-              Verify my account
-            </Button>
-            <Button variant="ghost" onClick={() => void accounts.refetch()}>
-              Refresh connections
-            </Button>
-            <Link className="self-center text-sm underline" to="/apps/connect?source=github">
-              Connect GitHub
-            </Link>
-          </div>
-          {accounts.error && (
-            <p role="alert" className="text-sm text-destructive">
-              Could not load personal connections.
-            </p>
-          )}
-          {identity && (
-            <div className="rounded-lg border border-border p-4">
-              <p className="font-medium">@{identity.login}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                GitHub ID {identity.githubUserId}. Confirm that this is your
-                account.
-              </p>
+          <Button variant="ghost" onClick={() => setExisting(true)}>
+            Use existing App credentials
+          </Button>
+          {state.restartableRegistrationId && (
+            <div className="flex items-center gap-2">
+              <Checkbox id="github-app-not-created" checked={appNotCreated} disabled={busy}
+                onCheckedChange={(checked) => setAppNotCreated(checked === true)} />
+              <Label htmlFor="github-app-not-created">I haven't created this App on GitHub.</Label>
             </div>
           )}
-          {footer(
-            "Confirm this is my account",
-            async () => {
-              await githubChatApi.identity(
-                endpoint.id,
-                personalConnectionId,
-                identity!.githubUserId,
-              );
-              if (identityOnly) navigate("/apps");
-              else await go(6);
-            },
-            !identity,
-          )}
+          {state.restartableRegistrationId
+            ? footer("Continue to GitHub", async () => {
+                const result = await githubChatApi.restartRegistration(bot.id, state.restartableRegistrationId!);
+                setAppNotCreated(false);
+                queryClient.setQueryData(["github-wizard", bot.id], result);
+                if (result.registration) setSubmitManifest(true);
+              }, !appNotCreated)
+            : footer("Try again", refresh)}
         </>
-      )}
-      {step === 6 && endpoint && record && (
+      ) : state?.state === "verify" ? (
         <>
-          <GitHubAccessEditor
-            endpointId={endpoint.id}
-            companyId={endpoint.companyId}
-            configuration={record.configuration}
-            onChange={(configuration) =>
-              setRecord({ ...record, configuration })
-            }
-          />
-          <GitHubPolicyEditor
-            policy={record.configuration.defaults}
-            onChange={(defaults) =>
-              setRecord({
-                ...record,
-                configuration: { ...record.configuration, defaults },
-              })
-            }
-          />
-          {footer("Save behavior", async () => {
-            await saveConfiguration();
-            await go(7);
-          })}
-        </>
-      )}
-      {step === 7 && endpoint && (
-        <>
-          <p className="text-sm">
-            Mention the bot in an enabled repository. The request should create
-            a real Paperclip task on{" "}
-            {selectedAgent?.name ?? endpoint.assignedAgentName} and reply on
-            GitHub.
+          <p role="status" className="text-sm text-muted-foreground">
+            {deliveryVerifiedWhileChecking
+              ? "GitHub delivery verified. Checking App and repository access…"
+              : state.message ?? "Checking GitHub access…"}
           </p>
-          <div className="flex items-center gap-3 rounded-lg border border-border p-4">
-            <code className="min-w-0 flex-1 break-all text-sm">{mention}</code>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Copy test mention"
-              onClick={() =>
-                void copyTextToClipboard(mention).then(() => setCopied(true))
-              }
-            >
-              <Copy className="size-4" />
-            </Button>
-          </div>
-          {copied && (
-            <p role="status" className="text-xs text-muted-foreground">
-              Mention copied
-            </p>
-          )}
-          <p role="status" className="text-sm">
-            {test.data?.messageReceivedAt
-              ? "Message received. Wait for the agent’s response, then finish."
-              : "Waiting for your test message…"}
-          </p>
+          {state.verification?.checks
+            .filter(
+              (check) =>
+                !check.ok &&
+                !(deliveryVerifiedWhileChecking && ["webhook", "delivery"].includes(check.key)),
+            )
+            .map((check) => (
+              <p key={check.key} className="text-sm">
+                {check.detail}
+              </p>
+            ))}
           <Link
             className="text-sm underline"
-            to={`/apps/chat/${endpoint.id}/conversations`}
+            to={`/apps/chat/${bot.id}/settings`}
           >
-            Open underlying tasks
+            Connection settings
           </Link>
-          {footer(
-            "Verify response and finish",
-            async () => {
-              await chatEndpointsApi.test(endpoint.id);
-              navigate(`/apps/chat/${endpoint.id}/settings`);
-            },
-            !test.data?.messageReceivedAt,
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  await chatEndpointsApi.finishSlackSetup(endpoint.id);
-                  navigate(`/apps/chat/${endpoint.id}/settings`);
-                })
-              }
+          {footer("Try again", refresh)}
+        </>
+      ) : (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="github-owner-type">GitHub account</Label>
+            <select
+              id="github-owner-type"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={accountChoice}
+              disabled={busy || !!state?.registration}
+              onChange={(event) => {
+                const choice = event.target.value;
+                setOwnerType(choice === "personal" ? "personal" : "organization");
+                setCustomOrganization(choice === "organization");
+                if (choice.startsWith("organization:")) setOwnerLogin(choice.slice("organization:".length));
+                else if (choice === "organization") setOwnerLogin("");
+              }}
             >
-              Finish without test
-            </Button>,
+              <option value="personal">My account</option>
+              {knownOrganizations.map((login) => (
+                <option key={login.toLowerCase()} value={`organization:${login}`}>{login}</option>
+              ))}
+              <option value="organization">Another organization</option>
+            </select>
+            {(repositories.isError || connectedBots.isError) && (
+              <p role="alert" className="text-sm text-destructive">
+                Could not load some connected GitHub accounts. Choose Another organization to enter a name.
+              </p>
+            )}
+          </div>
+          {accountChoice === "organization" && (
+            <div className="space-y-2">
+              <Label htmlFor="github-owner-login">Organization</Label>
+              <Input
+                id="github-owner-login"
+                disabled={busy || !!state?.registration}
+                value={ownerLogin}
+                onChange={(event) => setOwnerLogin(event.target.value)}
+                placeholder="GitHub organization name"
+              />
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="github-app-name">App name</Label>
+            <Input
+              id="github-app-name"
+              disabled={busy || !!state?.registration}
+              maxLength={34}
+              value={
+                name ||
+                selectedAgent?.name?.slice(0, 34) ||
+                bot.assignedAgentName?.slice(0, 34) ||
+                "GitHub Reviewer"
+              }
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <button
+            className="text-sm text-muted-foreground underline"
+            onClick={() => setExisting(true)}
+          >
+            I already have an App
+          </button>
+          {state?.registration ? (
+            <GitHubAppManifestForm registration={state.registration} onSaveExit={exit}
+              disabled={busy} autoSubmit={submitManifest} onSubmit={() => setSubmitManifest(false)} />
+          ) : footer(
+            "Continue to GitHub",
+            async () => {
+              const result = await githubChatApi.registration(bot.id, appInput());
+              queryClient.setQueryData(["github-wizard", bot.id], result);
+              if (result.registration) setSubmitManifest(true);
+            },
+            progress.isPending || (ownerType === "organization" && !ownerLogin.trim()),
           )}
         </>
       )}

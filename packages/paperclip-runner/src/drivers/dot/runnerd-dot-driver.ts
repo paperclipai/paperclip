@@ -19,6 +19,10 @@ export interface RunnerdDotDriverOptions {
   identity: DurableRecoveryIdentity;
   port: ExternalProviderPort;
   runnerBinary?: string;
+  runnerStateDirectory?: string;
+  runnerProcessLauncher?: CapabilityRunnerdCodexTransportOptions["runnerProcessLauncher"];
+  /** Reads the checkpoint from the execution target. Missing state cannot authorize replay. */
+  readProviderState?: () => Promise<Record<string, unknown> | null>;
   controlPlaneRegistration?: CapabilityRunnerdCodexTransportOptions["controlPlaneRegistration"];
   onSpawn?: CodexNativeSessionBackendOptions["onSpawn"];
   dynamicTools?: CodexNativeSessionBackendOptions["dynamicTools"];
@@ -59,16 +63,24 @@ export class RunnerdDotDriver implements HarnessDriver {
         || snapshot.driverSessionId !== this.options.identity.normalizedSessionId || snapshot.providerSessionId != null) {
       return { recovered: false, reason: "Dot bridge checkpoint identity mismatch" };
     }
-    const path = resolve(this.options.stateDirectory, "runner/dot-provider-state.json");
-    if (!existsSync(path) || statSync(path).size > 32 * 1024 * 1024) return { recovered: false, reason: "Dot bridge checkpoint missing; external work requires reconciliation" };
-    let saved: Record<string, unknown>;
-    try { saved = JSON.parse(readFileSync(path, "utf8")); } catch { return { recovered: false, reason: "Dot bridge checkpoint invalid; external work requires reconciliation" }; }
+    let saved: Record<string, unknown> | null;
+    try { saved = await readProviderCheckpoint(this.options); }
+    catch { return { recovered: false, reason: "Dot bridge checkpoint invalid; external work requires reconciliation" }; }
+    if (!saved) return { recovered: false, reason: "Dot bridge checkpoint missing; external work requires reconciliation" };
     if (saved.schema !== "paperclip.runner.dot-provider-state.v1" || saved.runId !== snapshot.runId || saved.sessionId !== snapshot.driverSessionId || saved.turnId !== this.options.identity.turnId) {
       return { recovered: false, reason: "Dot bridge checkpoint authority mismatch" };
     }
     return { recovered: true, session: await this.openSession({ runId: snapshot.runId,
       normalizedSessionId: snapshot.driverSessionId, workingDirectory: this.options.stateDirectory, signal: options.signal }) };
   }
+}
+
+async function readProviderCheckpoint(options: RunnerdDotDriverOptions): Promise<Record<string, unknown> | null> {
+  if (options.readProviderState) return options.readProviderState();
+  const path = resolve(options.runnerStateDirectory ?? resolve(options.stateDirectory, "runner"), "dot-provider-state.json");
+  if (!existsSync(path)) return null;
+  if (statSync(path).size > 32 * 1024 * 1024) throw new Error("dot_provider_checkpoint_too_large");
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 class RunnerdDotSession implements HarnessSession {
@@ -86,8 +98,8 @@ class RunnerdDotSession implements HarnessSession {
   async open(signal?: AbortSignal) {
     const o = this.options;
     mkdirSync(o.stateDirectory, { recursive: true, mode: 0o700 });
-    const runnerState = resolve(o.stateDirectory, "runner");
-    mkdirSync(runnerState, { recursive: true, mode: 0o700 });
+    const runnerState = o.runnerStateDirectory ?? resolve(o.stateDirectory, "runner");
+    if (!o.runnerProcessLauncher) mkdirSync(runnerState, { recursive: true, mode: 0o700 });
     const binary = o.runnerBinary ?? defaultCapabilityRunnerdBinary();
     const artifact = readRunnerdArtifactBinding(binary);
     const core = this.#core = new DurablePrpControlPlane({
@@ -125,36 +137,51 @@ class RunnerdDotSession implements HarnessSession {
     if (!registration) await core.start();
     signal?.throwIfAborted();
     if (!o.adoptExistingRunner) {
-      this.#process = spawnRunner({ connectUrl: registration?.connectUrl ?? core.connectUrl,
+      this.#process = spawnRunner({
+        processLauncher: o.runnerProcessLauncher, connectUrl: registration?.connectUrl ?? (registration?.connection ? undefined : core.connectUrl),
         connection: registration?.connection, stateDirectory: runnerState, identity: o.identity,
         ticket: core.issueBootstrapTicket(60_000), runnerBinaryPath: binary,
         runnerVersion: artifact.version, runnerDigest: artifact.digest,
         maxOutboxBytes: 16 * 1024 * 1024, p0ReserveBytes: 1024 * 1024,
-        maxRuntimeMs: 0, reconnectGraceMs: 60_000,
+        // A managed controller rollout can outlast a minute. Task authority
+        // remains gated by the current controller lease throughout the gap.
+        maxRuntimeMs: 0, reconnectGraceMs: o.runnerProcessLauncher ? 300_000 : 60_000,
         // No agent, OAuth, ChatGPT or provider API credentials are inherited.
         environment: { PATH: process.env.PATH },
       });
       const pid = this.#process.child.pid;
-      if (pid) await o.onSpawn?.({ pid, processGroupId: this.#process.processGroupId ?? null,
+      if (pid && !o.runnerProcessLauncher) await o.onSpawn?.({ pid, processGroupId: this.#process.processGroupId ?? null,
         startedAt: this.#process.startedAt ?? new Date().toISOString() });
       void this.#process.completion.then(result => {
         if (this.#closed) return;
         // Rust exits after the authenticated shutdown receipt is committed and
         // ACKed. That exit can precede the SDK's next command poll.
-        if (result.code === 0 && core.getCommand("dot_shutdown")?.status === "completed") return;
+        // Remote monitors do not report an exit code. The authenticated,
+        // persisted receipt is the evidence of shutdown, for either launcher.
+        if (core.getCommand("dot_shutdown")?.status === "completed") return;
         this.#failure ??= new Error(`dot_runner_process_exited_recovery_required: code=${result.code} signal=${result.signal}`);
         this.#wake();
       }, () => {
-        if (this.#closed) return;
+        if (this.#closed || core.getCommand("dot_shutdown")?.status === "completed") return;
         this.#failure ??= new Error("dot_runner_process_exited_recovery_required");
         this.#wake();
       });
     } else if (!await o.adoptExistingRunner.isAlive()) { throw new Error("dot_runner_adoption_failed"); }
     await registration?.activate?.();
     await registration?.ready?.();
+    if (registration?.failure) void registration.failure.catch(error => {
+      if (!this.#closed) { this.#failure = error instanceof Error ? error : new Error("dot_runner_transport_failed"); this.#wake(); }
+    });
+    const checkpoint = await readProviderCheckpoint(o);
+    if (!checkpoint && this.#events.some(event => event.eventType === "external_provider.dispatch_requested")) {
+      throw new Error("dot_provider_checkpoint_missing_reconciliation_required");
+    }
+    if (checkpoint && (checkpoint.schema !== "paperclip.runner.dot-provider-state.v1"
+      || checkpoint.runId !== o.identity.runId || checkpoint.sessionId !== o.identity.normalizedSessionId
+      || checkpoint.turnId !== o.identity.turnId)) throw new Error("dot_runner_checkpoint_authority_mismatch");
     this.#detachPort = await o.port.attach(async operation => {
       await this.#command("external_provider.operation", { ...operation }, `dot_operation_${operation.requestId}`);
-    }, () => this.interrupt(), existsSync(resolve(runnerState, "dot-provider-state.json")));
+    }, () => this.interrupt(), !!checkpoint);
     await this.#command("run.prepare", {
       provider: { kind: "openai_dot", ...o.execution.provider.binding,
         instructions: `${nativeSystemInstructions(o.execution)}\n\nAccept the assignment before calling tools. Invoke paperclip_finish or paperclip_block, then submit the same structured result with paperclip_dot_finish. Keep request IDs stable across retries.` },
@@ -203,6 +230,11 @@ class RunnerdDotSession implements HarnessSession {
   async interrupt() { await this.#command("run.cancel", {}, "dot_cancel"); }
   async snapshot(): Promise<PersistedHarnessSession> {
     const state = await this.read();
+    // Target-owned state is authoritative. Also retain the controller's recovery
+    // evidence through the supplied reader after this authenticated snapshot.
+    if (this.options.readProviderState && !await readProviderCheckpoint(this.options)) {
+      throw new Error("dot_provider_checkpoint_missing_reconciliation_required");
+    }
     const proposed = this.#events.findLast(event => event.eventType === "run.result.proposed");
     const result = proposed ? validatePrpStructuredRunResult(proposed.payload) : null;
     const terminal = this.#events.findLast(event => event.eventType === "run.terminal");

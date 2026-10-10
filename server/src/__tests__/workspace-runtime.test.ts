@@ -42,6 +42,7 @@ import {
   refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
   UnresolvedWorkspaceBaseRefError,
+  readUnresolvedWorkspaceBaseRefDiagnostic,
   resetRuntimeServicesForTests,
   resetRuntimeServicePortReservationsForTests,
   MANAGED_RUNTIME_PUBLIC_URL_ENV,
@@ -291,8 +292,9 @@ async function pushRemoteOnlyBranch(
   return sha;
 }
 
-function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
+function realizeWorktreeForTest(repoRoot: string, repoRef: string | null, resolveGitAuth?: Parameters<typeof realizeExecutionWorkspace>[0]["resolveGitAuth"]) {
   return realizeExecutionWorkspace({
+    resolveGitAuth,
     base: {
       baseCwd: repoRoot,
       source: "project_primary",
@@ -629,6 +631,21 @@ describe("resolveRuntimeProvisionCommand", () => {
 });
 
 describe("refreshRemoteTrackingBaseRef git auth", () => {
+  it("does not diagnose a missing remote branch as a rejected credential", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/main", async () => ({
+      configArgs: [],
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      source: "server_environment",
+      secretName: null,
+    }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("couldn't find remote ref refs/heads/main");
+    expect(warnings[0]).toContain("server-environment GitHub credential");
+    expect(warnings[0]).not.toContain("rejected");
+    expect(warnings[0]).not.toContain("authenticated with");
+  });
+
   it("offers the remote URL to the provider and keeps ambient behavior when it returns null", async () => {
     const { remotePath, repoRoot } = await createClonedRepoWithRemote();
     const offeredUrls: string[] = [];
@@ -1239,10 +1256,40 @@ describe("realizeExecutionWorkspace", () => {
     expect(unresolved.requestedRef).toBe("fix/does-not-exist");
     expect(unresolved.recoveryIdentityRef).toBe("origin/fix/does-not-exist");
     expect(unresolved.attemptedRefs).toEqual(["origin/fix/does-not-exist"]);
+    const diagnostic = readUnresolvedWorkspaceBaseRefDiagnostic(Object.freeze(unresolved));
+    expect(diagnostic).toEqual({ schemaVersion: 1, remoteLookup: "resolved", authLookup: "not_requested",
+      fetch: "failed", fetchExitCode: 128, fetchFailureKind: "remote_ref_not_found", refResolution: "failed", refExitCode: 128 });
+    diagnostic!.fetch = "succeeded";
+    expect(readUnresolvedWorkspaceBaseRefDiagnostic(unresolved)?.fetch).toBe("failed");
+    expect(JSON.stringify(readUnresolvedWorkspaceBaseRefDiagnostic(unresolved))).not.toContain("fix/");
+    const forged = Object.assign(new UnresolvedWorkspaceBaseRefError({ requestedRef: "private-ref",
+      recoveryIdentityRef: "private-ref", attemptedRefs: [] }), { baseRefDiagnostic: diagnostic });
+    expect(readUnresolvedWorkspaceBaseRefDiagnostic(forged)).toBeNull();
     // No worktree directory was created for the fresh-create path.
     await expect(
       fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
     ).rejects.toThrow();
+  });
+
+  it("rejects explicit main on a master-only remote and succeeds after correcting the base ref", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const error = await realizeWorktreeForTest(repoRoot, "main").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const unresolved = error as UnresolvedWorkspaceBaseRefError;
+    expect(unresolved.requestedRef).toBe("main");
+    expect(unresolved.defaultBranch).toBe("master");
+    expect(unresolved.attemptedRefs).toEqual(["origin/main"]);
+    expect(unresolved.fetchError).toContain("couldn't find remote ref refs/heads/main");
+    expect(unresolved.message).toContain("Check that the ref exists");
+    expect(unresolved.message).not.toContain("authenticated fetch");
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees", "PAP-447-add-worktree-support")),
+    ).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "master");
+    expect(workspace.created).toBe(true);
+    expect(workspace.baseRefSha).toBe(await readGit(repoRoot, ["rev-parse", "origin/master"]));
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(workspace.baseRefSha);
   });
 
   it("gives equivalent spellings of one absent remote ref the same recovery identity", async () => {
@@ -1299,6 +1346,82 @@ describe("realizeExecutionWorkspace", () => {
     expect(unresolved.fetchError).toEqual(
       expect.stringContaining("Could not refresh base ref origin/fix/unreachable"),
     );
+    expect(readUnresolvedWorkspaceBaseRefDiagnostic(unresolved)).toEqual({ schemaVersion: 1,
+      remoteLookup: "resolved", authLookup: "not_requested", fetch: "failed", fetchExitCode: 128,
+      fetchFailureKind: "unknown", refResolution: "failed", refExitCode: 128 });
+  });
+
+  it.each(["missing", "empty"] as const)("records the actual lookup and fetch outcome for a %s origin", async (mode) => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, mode === "missing" ? ["remote", "remove", "origin"] : ["config", "remote.origin.url", ""]);
+    let authCalls = 0;
+    const error = await realizeWorktreeForTest(repoRoot, "absent-fixture", async () => { authCalls++; return null; }).catch(error => error);
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    if (mode === "missing") {
+      expect(error.fetchError).toBeNull();
+      expect(authCalls).toBe(0);
+      expect(readUnresolvedWorkspaceBaseRefDiagnostic(error)).toEqual({ schemaVersion: 1,
+        remoteLookup: "failed", authLookup: "not_requested", fetch: "not_attempted", refResolution: "failed", refExitCode: 128 });
+    } else {
+      // Git returns the remote name when its URL is empty, then the fetch fails.
+      expect(error.fetchError).toBeTruthy();
+      // Fetch and the bounded default-branch suggestion each use the credential resolver.
+      expect(authCalls).toBe(2);
+      expect(error.defaultBranch).toBeNull();
+      expect(readUnresolvedWorkspaceBaseRefDiagnostic(error)).toEqual({ schemaVersion: 1,
+        remoteLookup: "resolved", authLookup: "unavailable", fetch: "failed", fetchExitCode: 128,
+        fetchFailureKind: "unknown", refResolution: "failed", refExitCode: 128 });
+    }
+  });
+
+  it("isolates rejected and unavailable auth lookup evidence during concurrent real Git failures", async () => {
+    const results = await Promise.all(["failed", "unavailable"].map(async authLookup => {
+      const { repoRoot } = await createClonedRepoWithRemote();
+      const error = await realizeWorktreeForTest(repoRoot, "absent-fixture", async () => {
+        if (authLookup === "failed") throw new Error("private-auth-lookup-failure");
+        return null;
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+      expect(error.fetchError).not.toContain("private-auth-");
+      return { authLookup, diagnostic: readUnresolvedWorkspaceBaseRefDiagnostic(error) };
+    }));
+    for (const { authLookup, diagnostic } of results) expect(diagnostic).toEqual({ schemaVersion: 1,
+      remoteLookup: "resolved", authLookup, fetch: "failed", fetchExitCode: 128,
+      fetchFailureKind: "remote_ref_not_found", refResolution: "failed", refExitCode: 128 });
+  });
+
+  it.each([
+    ["authentication_failed", "fatal: Authentication failed for 'https://fixture.example.invalid/private-repo'\n", 128],
+    ["dns_failure", "fatal: unable to access 'https://fixture.example.invalid/private-repo': Could not resolve host: fixture.example.invalid\n", 128],
+    ["unknown", "fatal: Authentication failed for 'https://fixture.example.invalid/private-repo'\nfatal: unable to create local lock\n", 128],
+    ["unknown", "fatal: Authentication failed for 'https://fixture.example.invalid/private-repo'\n" + "private-output".repeat(700), 128],
+    [undefined, "", 0],
+  ] as const)("records only bounded fetch process evidence (%s)", async (kind, stderr, code) => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, ["remote", "set-url", "origin", "https://fixture.example.invalid/private-repo"]);
+    const bin = path.join(repoRoot, "fixture-bin"), calls = path.join(repoRoot, "fixture-calls.jsonl");
+    await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${code}; });
+`);
+    await fs.chmod(path.join(bin, "git"), 0o700);
+    const error = await realizeWorktreeForTest(repoRoot, "absent-fixture", async () => ({
+      configArgs: [], env: { PATH: `${bin}:${process.env.PATH}` }, source: "server_env",
+    })).catch(error => error);
+    expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
+    const diagnostic = readUnresolvedWorkspaceBaseRefDiagnostic(error);
+    expect(diagnostic).toEqual({ schemaVersion: 1, remoteLookup: "resolved", authLookup: "resolved",
+      fetch: code === 0 ? "succeeded" : "failed", fetchExitCode: code,
+      ...(kind ? { fetchFailureKind: kind } : {}), refResolution: "failed", refExitCode: 128 });
+    expect(JSON.stringify(diagnostic)).not.toContain("private-");
+    expect(JSON.stringify(diagnostic)).not.toContain("example.invalid");
+    expect((await fs.readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line))).toEqual([
+      ["fetch", "--prune", "origin", "+refs/heads/absent-fixture:refs/remotes/origin/absent-fixture"],
+      ["ls-remote", "--symref", "origin", "HEAD"],
+    ]);
+    expect(error.defaultBranch).toBeNull();
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
@@ -6678,7 +6801,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       }
       throw new Error("Timed out waiting for runtime service process marker");
     };
-    const waitForPersistedStatus = async (status: string) => {
+    const waitForPersistedStatus = async (status: string, requireProviderRef = false) => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         const row = await db
@@ -6686,7 +6809,9 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           .from(workspaceRuntimeServices)
           .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId))
           .then((rows) => rows[0] ?? null);
-        if (row?.status === status) return row;
+        // The provisional starting row is durable before spawn; the child can
+        // write its marker before the subsequent PID update reaches the DB.
+        if (row?.status === status && (!requireProviderRef || /^\d+$/.test(row.providerRef ?? ""))) return row;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       throw new Error(`Timed out waiting for persisted runtime service status ${status}`);

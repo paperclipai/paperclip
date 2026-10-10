@@ -1,3 +1,6 @@
+import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
+import { useWorkspaceBaseRefRecovery } from "./WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
@@ -1163,30 +1166,7 @@ function formatInteractionActorLabel(args: {
   return "System";
 }
 
-export function resolveIssueChatHumanAuthor(args: {
-  authorName?: string | null;
-  authorUserId?: string | null;
-  currentUserId?: string | null;
-  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-}) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
-  const profile = authorUserId
-    ? (userProfileMap?.get(authorUserId) ?? null)
-    : null;
-  const isCurrentUser = Boolean(
-    authorUserId && currentUserId && authorUserId === currentUserId,
-  );
-  const resolvedAuthorName =
-    profile?.label?.trim() ||
-    authorName?.trim() ||
-    (authorUserId === "local-board" ? "Board" : isCurrentUser ? "You" : "User");
-
-  return {
-    isCurrentUser,
-    authorName: resolvedAuthorName,
-    avatarUrl: profile?.image ?? null,
-  };
-}
+export { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   if (toolParts.length === 0) return null;
@@ -3518,6 +3498,7 @@ function SystemNoticeCommentContent({
     ? custom.commentMetadata
     : null;
   const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(commentMetadata);
   const runAgentId =
     typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -3613,6 +3594,8 @@ function SystemNoticeCommentContent({
         });
       });
   };
+
+  if (authorType === "system" && branchRecovery) return <div id={anchorId}><WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} /></div>;
 
   if (authorType === "system" && recoverySnapshot) {
     return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;

@@ -120,6 +120,12 @@ describe("ACPX sidecar input sequencing", () => {
     expect(acpxBootstrapBlockedError(null, "turn.start")).toBeNull();
   });
 
+  it.each(["COPILOT_POLICY_VIOLATION", "COPILOT_DETACHED_WORK_UNSUPPORTED"])("preserves Copilot policy identity %s", code => {
+    const error = Object.assign(new Error("safe fixed policy message"), { code });
+    expect(acpxSidecarErrorCode(error)).toBe(code);
+    expect(acpxSidecarErrorCode(new Error("wrapped", { cause: error }))).toBe(code);
+  });
+
   it("preserves stable ACPX error identities without copying startup stderr", () => {
     const missingModule = Object.assign(new Error("provider exited"), {
       detailCode: "AGENT_STARTUP_FAILED",

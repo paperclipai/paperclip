@@ -197,7 +197,11 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
 
 export function publicMcpManagementRoutes(oauth: PublicMcpOAuth, agentOAuth?: PublicMcpOAuth) {
   const router = Router();
-  const requestOAuth = async (id: string) => agentOAuth && await agentOAuth.ownsRequest(id) ? agentOAuth : oauth;
+  const requestOAuth = async (id: string, dotOnly = false) => {
+    if (agentOAuth && await agentOAuth.ownsRequest(id)) return agentOAuth;
+    if (dotOnly) throw new McpOAuthError("invalid_request", "Dot connection request is expired or unavailable.", 404);
+    return oauth;
+  };
   const deviceOAuth = async (code: string) => agentOAuth && await agentOAuth.ownsDevice(code) ? agentOAuth : oauth;
   const realUser: RequestHandler = (req, _res, next) => {
     if (req.actor.type !== "board" || !req.actor.userId || !["session", "cloud_tenant"].includes(req.actor.source ?? "")) {
@@ -210,7 +214,7 @@ export function publicMcpManagementRoutes(oauth: PublicMcpOAuth, agentOAuth?: Pu
     if (origin !== oauth.config.origin && origin !== oauth.config.authorizationOrigin) throw new McpOAuthError("access_denied", "Connection changes require the Paperclip browser origin.", 403);
     next();
   };
-  router.use("/mcp", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+  router.use(["/mcp", "/dot-mcp"], (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
   router.get("/mcp/device", authRateLimit(), async (req, res) => {
     const code = z.string().regex(/^[A-Za-z0-9 -]{8,12}$/).safeParse(req.query.user_code);
     if (!code.success) throw new McpOAuthError("invalid_request", "Enter the code shown by your assistant.");
@@ -221,23 +225,23 @@ export function publicMcpManagementRoutes(oauth: PublicMcpOAuth, agentOAuth?: Pu
     if (!parsed.success) throw new McpOAuthError("invalid_request", "Enter your code and choose the requested access.");
     res.json(await (await deviceOAuth(parsed.data.userCode)).consentDevice(parsed.data.userCode, req.actor, parsed.data));
   });
-  router.get("/mcp/requests/:id", async (req, res) => {
+  router.get(["/mcp/requests/:id", "/dot-mcp/requests/:id"], async (req, res) => {
     let setupUrl: string | null = null;
     if (process.env.PAPERCLIP_CLOUD_API_ORIGIN) {
       const base = new URL(process.env.PAPERCLIP_CLOUD_API_ORIGIN);
       if (base.protocol === "https:") setupUrl = new URL("/orgs/new", base).toString();
     }
-    res.json(await (await requestOAuth(String(req.params.id))).describeRequest(String(req.params.id), req.actor, setupUrl));
+    res.json(await (await requestOAuth(String(req.params.id), req.path.startsWith("/dot-mcp/"))).describeRequest(String(req.params.id), req.actor, setupUrl));
   });
-  router.post("/mcp/requests/:id/dot-pairing/preview", sameOrigin, authRateLimit(), async (req, res) => {
+  router.post(["/mcp/requests/:id/dot-pairing/preview", "/dot-mcp/requests/:id/dot-pairing/preview"], sameOrigin, authRateLimit(), async (req, res) => {
     const parsed = z.object({ pairingCode: z.string().regex(/^[A-Za-z0-9_-]{32}$/) }).strict().safeParse(req.body);
     if (!parsed.success) throw new McpOAuthError("invalid_request", "Enter the one-use code from the Dot setup prompt.");
-    res.json(await (await requestOAuth(String(req.params.id))).describeDotPairing(String(req.params.id), parsed.data.pairingCode));
+    res.json(await (await requestOAuth(String(req.params.id), req.path.startsWith("/dot-mcp/"))).describeDotPairing(String(req.params.id), parsed.data.pairingCode));
   });
-  router.post("/mcp/requests/:id/dot-pairing", sameOrigin, authRateLimit(), async (req, res) => {
+  router.post(["/mcp/requests/:id/dot-pairing", "/dot-mcp/requests/:id/dot-pairing"], sameOrigin, authRateLimit(), async (req, res) => {
     const parsed = z.object({ pairingCode: z.string().regex(/^[A-Za-z0-9_-]{32}$/) }).strict().safeParse(req.body);
     if (!parsed.success) throw new McpOAuthError("invalid_request", "Enter the one-use code from the Dot setup prompt.");
-    res.json(await (await requestOAuth(String(req.params.id))).consentDotPairing(String(req.params.id), parsed.data.pairingCode));
+    res.json(await (await requestOAuth(String(req.params.id), req.path.startsWith("/dot-mcp/"))).consentDotPairing(String(req.params.id), parsed.data.pairingCode));
   });
   router.post("/mcp/requests/:id/consent", realUser, sameOrigin, async (req, res) => {
     const parsed = mcpConsentSchema.safeParse(req.body);
@@ -253,6 +257,6 @@ export function publicMcpManagementRoutes(oauth: PublicMcpOAuth, agentOAuth?: Pu
     if (!z.uuid().safeParse(req.params.id).success) throw new McpOAuthError("invalid_request", "Invalid connection ID.");
     await oauth.revokeConnection(String(req.params.id), req.actor.userId!); res.status(204).end();
   });
-  router.use("/mcp", oauthErrors);
+  router.use(["/mcp", "/dot-mcp"], oauthErrors);
   return router;
 }

@@ -10,6 +10,7 @@ import { composioAppAccounts, composioAppSetupResult } from "./composio-app-setu
 import { honchoManagedArguments } from "./honcho-connection.js";
 import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
@@ -2562,6 +2563,12 @@ function managedConnectorProfile(value: string | undefined): {
   return null;
 }
 
+function gitHubRepositoryOwnerType(repository: Record<string, unknown>) {
+  const type = recordValue(repository.owner) ? repository.owner.type : undefined;
+  return type === "Organization" ? "organization" as const
+    : type === "User" ? "personal" as const : undefined;
+}
+
 export async function loadGitHubTokenRepositories(
   headers: Record<string, string>,
   request: typeof fetch = fetch,
@@ -2569,6 +2576,7 @@ export async function loadGitHubTokenRepositories(
   const repositories: Array<{
     id: string;
     fullName: string;
+    ownerType?: "personal" | "organization";
     private?: boolean;
   }> = [];
   for (let page = 1; ; page += 1) {
@@ -2605,6 +2613,7 @@ export async function loadGitHubTokenRepositories(
       repositories.push({
         id: githubId(row.id)!,
         fullName: row.full_name,
+        ...(gitHubRepositoryOwnerType(row) ? { ownerType: gitHubRepositoryOwnerType(row) } : {}),
         ...(typeof row.private === "boolean" ? { private: row.private } : {}),
       });
     }
@@ -2631,6 +2640,7 @@ export async function loadGitHubGrantMetadata(
     id: string;
     fullName: string;
     installationId: string;
+    ownerType?: "personal" | "organization";
     private?: boolean;
   }>;
   installationUrl: string;
@@ -2712,7 +2722,7 @@ export async function loadGitHubGrantMetadata(
   const managementUrls = new Set<string>();
   const repositories = new Map<
     string,
-    { id: string; fullName: string; installationId: string; private?: boolean }
+    { id: string; fullName: string; installationId: string; ownerType?: "personal" | "organization"; private?: boolean }
   >();
   for (const installation of installations) {
     const installationId = githubId(installation.id);
@@ -2762,6 +2772,7 @@ export async function loadGitHubGrantMetadata(
         id,
         fullName,
         installationId,
+        ...(gitHubRepositoryOwnerType(repository) ? { ownerType: gitHubRepositoryOwnerType(repository) } : {}),
         ...(typeof repository.private === "boolean"
           ? { private: repository.private }
           : {}),
@@ -2885,6 +2896,7 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "oauth_challenge") return 422;
   if (failure.code === "oauth_refresh_missing") return 422;
   if (failure.code === "oauth_reauthorization_required") return 422;
+  if (failure.code === "oauth_insufficient_scope") return 422;
   if (failure.code === "slack_mcp_access_disabled") return 422;
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
@@ -7141,13 +7153,26 @@ export function toolAccessService(
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
+    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
         body: JSON.stringify({ jsonrpc: "2.0", id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }) });
     };
-    let usedInitializedSession = connection.config.mcpSessionRequired === true;
+    const connectionConfig = asRecord(connection.config);
+    const sourceTemplateKey = typeof connectionConfig?.sourceTemplateKey === "string"
+      ? connectionConfig.sourceTemplateKey
+      : null;
+    const connectionMethodKey = typeof connectionConfig?.connectionMethodKey === "string"
+      ? connectionConfig.connectionMethodKey
+      : null;
+    const curatedMethodRequiresMcpSession = Boolean(
+      sourceTemplateKey && connectionMethodKey &&
+      getConnectableAppDefinition(sourceTemplateKey)?.methods.some((method) =>
+        method.key === connectionMethodKey && method.defaults?.mcpSessionRequired === true
+      ),
+    );
+    let usedInitializedSession = connectionConfig?.mcpSessionRequired === true || curatedMethodRequiresMcpSession;
     let response: Response;
     if (usedInitializedSession) {
       try {
@@ -7192,7 +7217,7 @@ export function toolAccessService(
     }
     if (
       usedInitializedSession &&
-      connection.config.mcpSessionRequired !== true
+      connectionConfig?.mcpSessionRequired !== true
     ) {
       const nextConfig = { ...connection.config, mcpSessionRequired: true };
       await db
@@ -7329,14 +7354,12 @@ export function toolAccessService(
           oauthSupported: Boolean(endpoints),
         });
       }
-      throw new HttpError(502, `Remote app returned HTTP ${response.status}`, {
-        status: response.status,
-      });
+      throw mcpDiscoveryHttpFailure(response, `Remote app returned HTTP ${response.status}`);
     }
     const descriptors: McpToolDescriptor[] = [];
     const seenCursors = new Set<string>();
     for (let page = 0; ; page += 1) {
-      const payload = await readMcpHttpResponse(response, listRequestId);
+      const payload = await withMcpConnectionFailure(() => readMcpHttpResponse(response, listRequestId));
       const record = asRecord(payload);
       if (record.error) throw new HttpError(502, "Remote MCP tool discovery failed", { code: "mcp_catalog_error" });
       const result = asRecord(record.result);
@@ -7348,7 +7371,7 @@ export function toolAccessService(
       seenCursors.add(cursor);
       listRequestId = `paperclip-catalog-refresh-${page + 1}`;
       response = await sendToolsList(sessionHeaders, cursor);
-      if (!response.ok) throw new HttpError(502, "Remote MCP catalog page could not be read", { status: response.status });
+      if (!response.ok) throw mcpDiscoveryHttpFailure(response, "Remote MCP catalog page could not be read");
     }
     if (!isRailwayConnection(connection)) return descriptors;
     if (descriptors.some((tool) => normalizeRailwayToolName(tool.name).startsWith(RAILWAY_TOOL_PREFIX))) {
@@ -7699,13 +7722,13 @@ export function toolAccessService(
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
-      throw new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
         connection: toConnection(updated),
         runtimeSlot,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
-      });
+      }));
     }
   }
 
@@ -7752,11 +7775,11 @@ export function toolAccessService(
         details: { status: failure.status },
         actor,
       });
-      throw new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
-      });
+      }));
     }
 
     const existingRows = await db
@@ -9954,8 +9977,15 @@ export function toolAccessService(
     );
 
     const host = new URL(input.redirectUri).host;
+    const clientNameHost = host
+      .replace(/[^A-Za-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
     const requestedMetadata = {
-      client_name: `Paperclip (${host})`,
+      // Some DCR servers restrict client_name to alphanumeric characters,
+      // hyphens and spaces. Keep the deployment host recognizable without
+      // sending punctuation such as dots, colons or parentheses.
+      client_name: `Paperclip ${clientNameHost}`,
       redirect_uris: [input.redirectUri],
       grant_types: [
         "authorization_code",
@@ -10427,7 +10457,14 @@ export function toolAccessService(
         source: "preconfigured" as const,
       };
     }
-    const metadataDocumentUrl = input.endpoints
+    const method = input.galleryEntry
+      ? connectionMethodForConnection(input.galleryEntry, input.connection)
+      : null;
+    const dcrRequired = method?.oauthClientRegistration === "dcr";
+    // A reviewed provider compatibility choice may require DCR even when the
+    // server also advertises CIMD. Do not resolve/adopt a metadata URL for that
+    // method; the default for every other method remains CIMD-first.
+    const metadataDocumentUrl = !dcrRequired && input.endpoints
       .clientIdMetadataDocumentSupported
       ? await resolveOAuthClientIdMetadataDocumentUrl(
           input.redirectUri,
@@ -10486,6 +10523,12 @@ export function toolAccessService(
         },
       );
     }
+    if (dcrRequired && !input.endpoints.registrationUrl) {
+      throw unprocessable(
+        "This provider requires dynamic client registration, but its authorization server did not advertise a registration endpoint.",
+        { code: "oauth_dcr_not_supported" },
+      );
+    }
 
     const key = `${input.connection.id}:${input.redirectUri}`;
     return singleFlight(oauthRegistrationFlights, key, async () => {
@@ -10527,8 +10570,9 @@ export function toolAccessService(
           source: storedOAuthClientRegistrationSource(bound),
         };
       }
-      // 3. Client ID Metadata Documents: no registration call at all, so prefer
-      //    them over DCR when the authorization server advertises support.
+      // 3. By default, Client ID Metadata Documents need no registration call,
+      //    so prefer them over DCR when the authorization server advertises
+      //    support. Curated DCR opt-ins leave metadataDocumentUrl null above.
       if (metadataDocumentUrl) {
         const adopted = await adoptClientIdMetadataDocument({
           connection: latest,
@@ -10630,6 +10674,8 @@ export function toolAccessService(
     });
     const headers: Record<string, string> = {
       "content-type": "application/x-www-form-urlencoded",
+      // Some providers otherwise return a legacy form-encoded token response.
+      accept: "application/json",
     };
     if (tokenEndpointAuthMethod === "client_secret_basic") {
       if (!input.clientSecret) {
@@ -12771,6 +12817,9 @@ export function toolAccessService(
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
+          ...(method?.defaults?.mcpSessionRequired === true
+            ? { mcpSessionRequired: true }
+            : {}),
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
@@ -15311,7 +15360,13 @@ export function toolAccessService(
         : suggestedAgentIds.length > 0
           ? { agentIds: suggestedAgentIds }
           : "all_agents";
-    const remoteMcpAccess = isRemoteMcpConnectorMethod(input.connection.config.sourceTemplateKey, input.connection.config.connectionMethodKey);
+    // An explicitly saved empty Access selection means no agents. A missing
+    // selection must still use managed OAuth's subject/recommended defaults.
+    const remoteMcpAccess = isRemoteMcpConnectorMethod(
+      input.connection.config.sourceTemplateKey,
+      input.connection.config.connectionMethodKey,
+    ) || (input.connection.transport === "mcp_remote"
+      && input.connection.config.mcpAgentAccessConfigured === true);
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
@@ -18789,12 +18844,26 @@ export function toolAccessService(
           );
         }
       }
+      const markMcpAccessConfigured = connection.transport === "mcp_remote"
+        && connection.config.mcpAgentAccessConfigured !== true;
       const accessExtensions: Array<{
         targetType: "company" | "agent";
         targetId: string;
         profileId: string;
       }> = [];
       await db.transaction(async (tx) => {
+        if (markMcpAccessConfigured) {
+          // Preserve an explicit zero-agent selection through OAuth. Merge the
+          // marker in SQL so concurrent credential/config changes are retained.
+          await tx.update(toolConnections).set({
+            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            updatedAt: now(),
+          }).where(and(
+            eq(toolConnections.companyId, connection.companyId),
+            eq(toolConnections.id, connection.id),
+          ));
+        }
         const existing = await tx
           .select()
           .from(toolConnectionInstalls)
@@ -18903,7 +18972,7 @@ export function toolAccessService(
               });
           }
         }
-        if (removeIds.length > 0 || additions.length > 0) {
+        if (markMcpAccessConfigured || removeIds.length > 0 || additions.length > 0) {
           const binding = actorBinding(actor);
           await tx.insert(toolAccessAuditEvents).values({
             companyId: connection.companyId,
@@ -18914,6 +18983,7 @@ export function toolAccessService(
             outcome: "success",
             reasonCode: "installs_changed",
             details: {
+              ...(markMcpAccessConfigured ? { mcpAgentAccessConfigured: true } : {}),
               added: additions.map((install) => ({
                 targetType: install.targetType,
                 targetId: install.targetId,

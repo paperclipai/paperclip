@@ -1,6 +1,6 @@
 import { PERMISSION_KEYS } from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
-import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "./agent-permissions.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../lib/agent-permissions.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
 
 export function grantsFromDefaults(

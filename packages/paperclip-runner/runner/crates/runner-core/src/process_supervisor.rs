@@ -40,6 +40,8 @@ pub(crate) fn is_node_interpreter(path: &Path) -> bool {
 pub struct VerifiedProcessArtifact {
     display_path: PathBuf,
     file: Arc<File>,
+    #[cfg(target_os = "macos")]
+    executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 impl VerifiedProcessArtifact {
@@ -65,7 +67,245 @@ impl VerifiedProcessArtifact {
         Ok(Self {
             display_path,
             file: Arc::new(file),
+            #[cfg(target_os = "macos")]
+            executable: None,
         })
+    }
+
+    /// Executable snapshots need a named image on Darwin. Construct that image
+    /// once, beside the source runtime for loader-relative shared libraries.
+    pub fn snapshot_verified_executable(
+        display_path: PathBuf,
+        file: File,
+        expected_sha256: &str,
+    ) -> Result<Self, LocalRunnerError> {
+        #[cfg(target_os = "macos")]
+        {
+            let mut file = file;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|error| snapshot_error(&display_path, error))?;
+            let executable = Arc::new(NamedExecutableSnapshot::create(
+                &display_path,
+                &mut file,
+                expected_sha256,
+            )?);
+            Ok(Self {
+                display_path,
+                file: executable.file.clone(),
+                executable: Some(executable),
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Self::snapshot_verified(display_path, file, expected_sha256)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct NamedExecutablePath {
+    parent: File,
+    path: PathBuf,
+    basename: std::ffi::OsString,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl NamedExecutablePath {
+    fn open_image(&self) -> Result<File, LocalRunnerError> {
+        use rustix::fs::{openat, Mode, OFlags};
+        let fd = openat(
+            &self.parent,
+            &self.basename,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| snapshot_error(&self.path, error))?;
+        Ok(File::from(fd))
+    }
+
+    fn validate(&self) -> Result<File, LocalRunnerError> {
+        let parent_path = self.path.parent().expect("named image has a parent");
+        let visible_parent =
+            fs::symlink_metadata(parent_path).map_err(|error| snapshot_error(&self.path, error))?;
+        let held_parent = self
+            .parent
+            .metadata()
+            .map_err(|error| snapshot_error(&self.path, error))?;
+        if !visible_parent.is_dir()
+            || visible_parent.dev() != held_parent.dev()
+            || visible_parent.ino() != held_parent.ino()
+            || visible_parent.permissions().mode() & 0o022 != 0
+        {
+            return Err(snapshot_error(&self.path, "executable parent changed"));
+        }
+        let image = self.open_image()?;
+        let metadata = image
+            .metadata()
+            .map_err(|error| snapshot_error(&self.path, error))?;
+        if !metadata.is_file()
+            || metadata.dev() != self.device
+            || metadata.ino() != self.inode
+            || metadata.permissions().mode() & 0o777 != 0o500
+        {
+            return Err(snapshot_error(&self.path, "executable image changed"));
+        }
+        Ok(image)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for NamedExecutablePath {
+    fn drop(&mut self) {
+        // Resolve relative to the retained directory, never through a replaced
+        // parent pathname. A substituted image does not belong to this guard.
+        if let Ok(file) = self.open_image() {
+            if let Ok(metadata) = file.metadata() {
+                if metadata.is_file()
+                    && metadata.dev() == self.device
+                    && metadata.ino() == self.inode
+                {
+                    let _ = rustix::fs::unlinkat(
+                        &self.parent,
+                        &self.basename,
+                        rustix::fs::AtFlags::empty(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct NamedExecutableSnapshot {
+    image: NamedExecutablePath,
+    file: Arc<File>,
+    expected_sha256: String,
+    expected_len: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl NamedExecutableSnapshot {
+    fn create(
+        display_path: &Path,
+        source: &mut File,
+        expected_sha256: &str,
+    ) -> Result<Self, LocalRunnerError> {
+        use rustix::fs::{open, openat, Mode, OFlags};
+        let parent_path = display_path
+            .parent()
+            .ok_or_else(|| snapshot_error(display_path, "executable has no parent"))?;
+        let parent = File::from(
+            open(
+                parent_path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| snapshot_error(display_path, error))?,
+        );
+        let parent_metadata = parent
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        if parent_metadata.permissions().mode() & 0o022 != 0 {
+            return Err(snapshot_error(
+                display_path,
+                "executable parent is group- or world-writable",
+            ));
+        }
+        let basename = std::ffi::OsString::from(format!(
+            ".paperclip-verified-executable-{}",
+            Uuid::new_v4().simple()
+        ));
+        let path = parent_path.join(&basename);
+        let mut writable = File::from(
+            openat(
+                &parent,
+                &basename,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR | Mode::XUSR,
+            )
+            .map_err(|error| snapshot_error(display_path, error))?,
+        );
+        // If fstat itself fails, ownership cannot be proven. Fail closed and
+        // leave the randomized entry rather than unlink a possibly substituted
+        // name without its inode identity.
+        let metadata = writable
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        let image = NamedExecutablePath {
+            parent,
+            path,
+            basename,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        copy_verified(source, &mut writable, display_path, expected_sha256)?;
+        writable
+            .sync_all()
+            .map_err(|error| snapshot_error(display_path, error))?;
+        rustix::fs::fchmod(&writable, Mode::RUSR | Mode::XUSR)
+            .map_err(|error| snapshot_error(display_path, error))?;
+        let file = Arc::new(image.validate()?);
+        drop(writable);
+        let expected_len = file
+            .metadata()
+            .map_err(|error| snapshot_error(display_path, error))?
+            .len();
+        Ok(Self {
+            image,
+            file,
+            expected_sha256: expected_sha256.to_owned(),
+            expected_len,
+        })
+    }
+
+    fn validate_before_spawn(&self) -> Result<(), LocalRunnerError> {
+        self.image.validate()?;
+        let before = self
+            .file
+            .metadata()
+            .map_err(|error| snapshot_error(&self.image.path, error))?;
+        if before.len() != self.expected_len {
+            return Err(snapshot_error(
+                &self.image.path,
+                "executable length changed",
+            ));
+        }
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut offset = 0;
+        while offset < self.expected_len {
+            let remaining = (self.expected_len - offset).min(buffer.len() as u64) as usize;
+            let count = self
+                .file
+                .read_at(&mut buffer[..remaining], offset)
+                .map_err(|error| snapshot_error(&self.image.path, error))?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+            offset += count as u64;
+        }
+        let after = self
+            .file
+            .metadata()
+            .map_err(|error| snapshot_error(&self.image.path, error))?;
+        if format!("sha256:{:x}", digest.finalize()) != self.expected_sha256
+            || before.len() != after.len()
+            || offset != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return Err(snapshot_error(
+                &self.image.path,
+                "executable digest or metadata changed",
+            ));
+        }
+        self.image.validate()?;
+        Ok(())
     }
 }
 
@@ -232,11 +472,18 @@ impl VerifiedProcessLaunch {
         #[cfg(target_os = "linux")]
         inherited.push(program_fd);
         #[cfg(target_os = "macos")]
-        let program_snapshot = materialize_executable(&self.program)?;
+        let named_executable = self.program.executable.clone();
         #[cfg(target_os = "macos")]
-        let program = program_snapshot.path.clone();
+        let mut temporary_executables = Vec::new();
         #[cfg(target_os = "macos")]
-        let mut temporary_executables = vec![program_snapshot];
+        let program = if let Some(executable) = &named_executable {
+            executable.image.path.clone()
+        } else {
+            let snapshot = materialize_executable(&self.program)?;
+            let path = snapshot.path.clone();
+            temporary_executables.push(snapshot);
+            path
+        };
         let mut args = Vec::with_capacity(self.args.len());
         for argument in &self.args {
             match argument {
@@ -269,12 +516,18 @@ impl VerifiedProcessLaunch {
                 }
             }
         }
+        #[cfg(target_os = "macos")]
+        if let Some(executable) = &named_executable {
+            executable.validate_before_spawn()?;
+        }
         Ok(InheritedCommand {
             program,
             args,
             _inherited: inherited,
             #[cfg(target_os = "macos")]
             temporary_executables,
+            #[cfg(target_os = "macos")]
+            named_executable,
         })
     }
 }
@@ -286,6 +539,8 @@ struct InheritedCommand {
     _inherited: Vec<rustix::fd::OwnedFd>,
     #[cfg(target_os = "macos")]
     temporary_executables: Vec<TemporaryExecutable>,
+    #[cfg(target_os = "macos")]
+    named_executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -641,6 +896,8 @@ pub struct SupervisedProcess {
     finished: bool,
     #[cfg(target_os = "macos")]
     _temporary_executables: Vec<TemporaryExecutable>,
+    #[cfg(target_os = "macos")]
+    _named_executable: Option<Arc<NamedExecutableSnapshot>>,
 }
 
 impl SupervisedProcess {
@@ -722,6 +979,7 @@ impl SupervisedProcess {
             if let Ok(process) = result.as_mut() {
                 process._temporary_executables =
                     std::mem::take(&mut inherited.temporary_executables);
+                process._named_executable = inherited.named_executable.take();
             }
             drop(inherited);
             result
@@ -827,6 +1085,8 @@ impl SupervisedProcess {
             finished: false,
             #[cfg(target_os = "macos")]
             _temporary_executables: Vec::new(),
+            #[cfg(target_os = "macos")]
+            _named_executable: None,
         })
     }
 
@@ -1099,6 +1359,260 @@ mod tests {
         while process.try_recv().is_ok() {}
         assert!(process.stdout_failed());
         assert!(!process.stdout_drained());
+    }
+
+    // These tests exercise file admission and ownership only. They never launch
+    // a native runner, shell, Node executable, provider, or child process.
+    #[cfg(target_os = "macos")]
+    mod darwin_named_snapshot {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        struct Fixture {
+            directory: PathBuf,
+        }
+        impl Fixture {
+            fn new() -> Self {
+                let directory = std::env::temp_dir().join(format!(
+                    "paperclip-darwin-snapshot-{}",
+                    Uuid::new_v4().simple()
+                ));
+                fs::create_dir(&directory).unwrap();
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+                Self {
+                    directory: fs::canonicalize(directory).unwrap(),
+                }
+            }
+            fn artifact(&self) -> VerifiedProcessArtifact {
+                let path = self.directory.join("node");
+                fs::write(&path, b"authenticated executable bytes").unwrap();
+                VerifiedProcessArtifact::snapshot_verified_executable(
+                    path.clone(),
+                    File::open(path).unwrap(),
+                    &format!(
+                        "sha256:{:x}",
+                        Sha256::digest(b"authenticated executable bytes")
+                    ),
+                )
+                .unwrap()
+            }
+            fn image_count(&self) -> usize {
+                fs::read_dir(&self.directory)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".paperclip-verified-executable-")
+                    })
+                    .count()
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        #[test]
+        fn source_changes_and_closed_source_do_not_change_single_image() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            let source = fixture.directory.join("node");
+            fs::write(&source, b"overwrite original inode").unwrap();
+            fs::rename(&source, fixture.directory.join("retired-node")).unwrap();
+            fs::write(&source, b"replacement source inode").unwrap();
+            fs::remove_file(&source).unwrap();
+            executable.validate_before_spawn().unwrap();
+            assert_eq!(
+                executable.image.path.parent(),
+                Some(fixture.directory.as_path())
+            );
+            assert_eq!(fixture.image_count(), 1);
+            let launch = VerifiedProcessLaunch::new(artifact, vec![]);
+            let inherited = launch.inherited_command().unwrap();
+            assert_eq!(
+                fixture.image_count(),
+                1,
+                "admission must not materialize another image"
+            );
+            assert_eq!(
+                fs::read(&inherited.program).unwrap(),
+                b"authenticated executable bytes"
+            );
+        }
+
+        #[test]
+        fn same_inode_mutation_is_rejected_even_after_restoring_readonly_mode() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(
+                &executable.image.path,
+                vec![b'X'; executable.expected_len as usize],
+            )
+            .unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+        }
+
+        #[test]
+        fn replacement_image_is_rejected_and_not_removed_by_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            fs::rename(&path, fixture.directory.join("retired-image")).unwrap();
+            fs::write(&path, b"replacement").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        }
+
+        #[test]
+        fn symlink_image_is_rejected_and_its_target_and_link_survive_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            fs::remove_file(&path).unwrap();
+            let target = fixture.directory.join("unrelated");
+            fs::write(&target, b"unrelated").unwrap();
+            symlink(&target, &path).unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert!(fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(&target).unwrap(), b"unrelated");
+        }
+
+        #[test]
+        fn directory_image_is_rejected_and_survives_drop() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            let path = executable.image.path.clone();
+            fs::remove_file(&path).unwrap();
+            // rustix does not expose safe FIFO creation on Darwin. This tests
+            // nonregular-entry rejection; FIFO-specific calibration remains
+            // separate. Production opens retain NONBLOCK for FIFO substitution.
+            fs::create_dir(&path).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+            drop(artifact);
+            assert!(fs::symlink_metadata(&path).unwrap().is_dir());
+        }
+
+        #[test]
+        fn writable_mode_is_rejected_even_with_original_bytes() {
+            let fixture = Fixture::new();
+            let artifact = fixture.artifact();
+            let executable = artifact.executable.as_ref().unwrap();
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(executable.validate_before_spawn().is_err());
+            fs::set_permissions(&executable.image.path, fs::Permissions::from_mode(0o500)).unwrap();
+            executable.validate_before_spawn().unwrap();
+        }
+
+        #[test]
+        fn replaced_parent_fails_admission_and_cleanup_uses_held_parent() {
+            let fixture = Fixture::new();
+            let parent = fixture.directory.join("runtime");
+            fs::create_dir(&parent).unwrap();
+            let source = parent.join("node");
+            fs::write(&source, b"original").unwrap();
+            let artifact = VerifiedProcessArtifact::snapshot_verified_executable(
+                source.clone(),
+                File::open(&source).unwrap(),
+                &format!("sha256:{:x}", Sha256::digest(b"original")),
+            )
+            .unwrap();
+            let path = artifact.executable.as_ref().unwrap().image.path.clone();
+            let retired = fixture.directory.join("retired-runtime");
+            fs::rename(&parent, &retired).unwrap();
+            fs::create_dir(&parent).unwrap();
+            fs::write(&path, b"replacement parent image").unwrap();
+            assert!(artifact
+                .executable
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .is_err());
+            drop(artifact);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement parent image");
+            assert!(!retired.join(path.file_name().unwrap()).exists());
+        }
+
+        #[test]
+        fn launch_clones_and_inherited_owner_keep_image_until_last_drop() {
+            let fixture = Fixture::new();
+            let launch = VerifiedProcessLaunch::new(fixture.artifact(), vec![]);
+            let clone = launch.clone();
+            let mut inherited = launch.inherited_command().unwrap();
+            let path = inherited.program.clone();
+            // This is the same ownership transfer performed after spawn succeeds.
+            let process_owner = inherited.named_executable.take();
+            drop(inherited);
+            drop(launch);
+            assert!(path.exists());
+            drop(clone);
+            assert!(
+                path.exists(),
+                "descendant runtime pathname must remain live"
+            );
+            process_owner
+                .as_ref()
+                .unwrap()
+                .validate_before_spawn()
+                .unwrap();
+            drop(process_owner);
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn digest_failure_and_late_abort_remove_owned_image() {
+            let fixture = Fixture::new();
+            let source = fixture.directory.join("node");
+            fs::write(&source, b"original").unwrap();
+            assert!(VerifiedProcessArtifact::snapshot_verified_executable(
+                source.clone(),
+                File::open(source).unwrap(),
+                "sha256:wrong"
+            )
+            .is_err());
+            assert_eq!(fixture.image_count(), 0);
+            let launch = VerifiedProcessLaunch::new(fixture.artifact(), vec![]);
+            let inherited = launch.inherited_command().unwrap();
+            let path = inherited.program.clone();
+            drop(launch);
+            assert!(path.exists());
+            drop(inherited); // Includes the spawn-error/late-abort ownership path.
+            assert!(!path.exists());
+        }
+
+        #[test]
+        fn commonjs_snapshots_stay_anonymous() {
+            let fixture = Fixture::new();
+            let script = verified_artifact(
+                &fixture.directory.join("sidecar.cjs"),
+                b"module.exports = {};\n",
+            );
+            assert!(script.executable.is_none());
+            assert_eq!(script.file.metadata().unwrap().nlink(), 0);
+        }
     }
 
     fn verified_artifact(path: &Path, bytes: &[u8]) -> VerifiedProcessArtifact {

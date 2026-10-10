@@ -1,3 +1,5 @@
+import type { ActivityPublication } from "../types/activity-publication.js";
+export type { ActivityPublication } from "../types/activity-publication.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -66,11 +68,6 @@ export interface LogActivityInput {
   responsibleUserIdOverride?: string | null;
 }
 
-export interface ActivityPublication {
-  companyId: string;
-  payload: Record<string, unknown>;
-  pluginEvent: PluginEvent | null;
-}
 
 export async function createActivityDetailsRedactor(db: Db) {
   const currentUserRedactionOptions = {

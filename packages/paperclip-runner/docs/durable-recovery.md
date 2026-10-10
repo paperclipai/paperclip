@@ -314,6 +314,14 @@ the lease TTL to match its required revocation bound.
 
 ## Restart and reconciliation
 
+Local Linux process receipts use the kernel's `/proc/PID/stat` start ticks,
+`/proc/stat` boot time and `CLK_TCK` to record process birth. The server and
+retained Runner maintenance use the same reader. `/proc/PID` directory ctime
+can differ from birth and must not grant process ownership. Invalid or missing
+birth metadata fails closed. PID, process group and owner checks remain required.
+Drain active Linux runs before updating or rolling back across the previous
+ctime-based receipt format; do not rewrite a live receipt to force adoption.
+
 A socket drop keeps the same Rust process and in-memory lease. The process
 reconnects and reloads the mock-core command and event cursor.
 

@@ -1,3 +1,5 @@
+import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
+import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFailure } from "../git-connection-failure.js";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
 import {
   PROJECT_REPOSITORIES_DIR,
@@ -549,22 +551,30 @@ async function materializeManagedProjectWorkspace(
     : null;
   const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
   try {
-    await execFile(
-      "git",
-      [...(auth?.configArgs ?? []), "clone", "--no-hardlinks", "--", input.localSource ?? input.repoUrl, cloneTmpDir],
-      {
-        env: {
-          // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
-          // credential-helper token env if it came first. GIT_TERMINAL_PROMPT=0 fails a
-          // credential-less private clone immediately instead of hanging on a prompt until
-          // the clone timeout.
-          ...sanitizeRuntimeServiceBaseEnv(process.env),
-          GIT_TERMINAL_PROMPT: "0",
-          ...(auth?.env ?? {}),
+    try {
+      await execFile(
+        "git",
+        [...(auth?.configArgs ?? []), "clone", "--no-hardlinks", "--", input.localSource ?? input.repoUrl, cloneTmpDir],
+        {
+          env: {
+            // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
+            // credential-helper token env if it came first. GIT_TERMINAL_PROMPT=0 fails a
+            // credential-less private clone immediately instead of hanging on a prompt until
+            // the clone timeout.
+            ...sanitizeRuntimeServiceBaseEnv(process.env),
+            GIT_TERMINAL_PROMPT: "0",
+            ...(auth?.env ?? {}),
+          },
+          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
         },
-        timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-      },
-    );
+      );
+    } catch (error) {
+      const connectionFailure = !input.localSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
+      if (connectionFailure) throw new GitConnectionFailureError(
+        error instanceof Error ? error.message : "Git clone failed", connectionFailure,
+      );
+      throw error;
+    }
     if (input.localSource) {
       const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
       if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
@@ -595,6 +605,8 @@ async function materializeManagedProjectWorkspace(
     // Preserve the closed failure code without copying subprocess output or
     // credentials into the durable run. Setup recovery needs the actual cause.
     if (isWorkspaceGitScanError(error)) throw new WorkspaceGitScanError(error.code, message);
+    const connectionFailure = readGitConnectionFailure(error);
+    if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
     throw new Error(message);
   }
 
@@ -1060,8 +1072,10 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
     reason: string,
     message: string,
     extra: Record<string, unknown> = {},
+    connectionFailure?: GitConnectionFailure,
   ) => {
     throw new WorkspaceValidationFailure(message, {
+      ...(connectionFailure ? { connectionFailure } : {}),
       workspaceValidation: {
         reason,
         issueId: input.issue!.id,
@@ -1098,10 +1112,15 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
   const materializationFailures = input.anchor?.materializationFailures ?? [];
   if (input.anchor?.baseCwdFallback && materializationFailures.length > 0) {
     const failureDetail = `: ${materializationFailures[0].error.replace(/\s+/g, " ")}`;
+    const connections = materializationFailures.map((failure) => readConnectionFailure(failure.connectionFailure));
+    // Mixed connection/local failures must retain their application-error report.
+    const connectionFailure = connections.every((failure) => failure?.provider === "git")
+      ? connections[0] as GitConnectionFailure : undefined;
     fail(
       "git_worktree_base_materialization_failed",
       `Issue ${issueLabel} requested ${input.requestedExecutionWorkspaceMode} with git_worktree, but the project workspace checkout could not be prepared${failureDetail}. Repair the project workspace repository URL, clone access, or configured local cwd, then retry.`,
       { baseCwdFallback: true, materializationFailures },
+      connectionFailure,
     );
   }
 
@@ -1410,6 +1429,7 @@ export type WorkspaceMaterializationFailure = {
   projectWorkspaceId: string | null;
   repoUrl: string | null;
   error: string;
+  connectionFailure?: GitConnectionFailure;
 };
 
 export type ResolvedWorkspaceForRun = {
@@ -3526,12 +3546,14 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
             error instanceof Error ? error.message : String(error),
           );
           const workspaceRepoUrl = readNonEmptyString(workspace.repoUrl);
+          const connectionFailure = readGitConnectionFailure(error);
           materializationFailures.push({
             projectWorkspaceId: workspace.id,
             repoUrl: workspaceRepoUrl
               ? scrubGitCredentialText(workspaceRepoUrl)
               : null,
             error: scrubbedError,
+            ...(connectionFailure ? { connectionFailure } : {}),
           });
           if (preferredWorkspace?.id === workspace.id) {
             preferredWorkspaceWarning = scrubbedError;

@@ -33,7 +33,7 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       ],
       capabilities: { canSetCompanyInstall: true, canCreatePersonalConnection: true, canCreateOrganizationConnection: true },
     });
-    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: chatEnabled });
+    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: chatEnabled });
     result.setQueryData(queryKeys.tools.applications(companyId), { applications: saved ? [
       { id: "github-tools", companyId, name: "GitHub", status: "active", metadata: { sourceTemplateKey: "github" } },
       // Existing bots retain their provider/source identity after the catalog split.

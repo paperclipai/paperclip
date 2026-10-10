@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -76,7 +77,7 @@ describe("instance settings routes", () => {
     return { errorHandler, instanceSettingsRoutes };
   });
 
-  function createApp(actor: any) {
+  function createApp(actor: any, pluginWorkers?: PluginWorkerManager, prepareBackup?: () => Promise<boolean>) {
     const { errorHandler, instanceSettingsRoutes } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -84,7 +85,7 @@ describe("instance settings routes", () => {
       req.actor = actor;
       next();
     });
-    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    app.use("/api", instanceSettingsRoutes(mockDb as any, pluginWorkers, prepareBackup));
     app.use(errorHandler);
     return app;
   }
@@ -972,7 +973,7 @@ describe("instance settings routes", () => {
       await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
       expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
       await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
-      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId);
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined);
     });
 
     it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
@@ -999,8 +1000,68 @@ describe("instance settings routes", () => {
       const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
-      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined);
       expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it("uses the live worker manager for inspection and releases only the owned hold", async () => {
+      const inspect = vi.fn(async () => ({ backgroundWork: "none", pluginIds: [] }));
+      const release = vi.fn();
+      const workers = {
+        inspectIdleSleep: inspect,
+        releaseIdleSleep: release,
+      } as unknown as PluginWorkerManager;
+      const ownerId = "fixture-idle-owner";
+      const lease = { ownerId, expiresAt: Date.now() + 60_000 };
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId });
+      mockReadIdleSleepSafety.mockImplementation(async (_db, _status, _now, owner, _local, inspectPlugins) => {
+        expect(owner).toBe(ownerId);
+        return { version: 1, backgroundWork: (await inspectPlugins(lease)).backgroundWork };
+      });
+      const app = createApp(adminActor, workers);
+      await request(app).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(inspect).toHaveBeenCalledWith(lease);
+      expect(inspect.mock.contexts[0]).toBe(workers);
+      await request(app).delete("/api/instance/task-drain?ownerId=stale-owner").expect(409);
+      expect(release).not.toHaveBeenCalled();
+      await request(app).delete(`/api/instance/task-drain?ownerId=${ownerId}`).expect(200);
+      expect(release).toHaveBeenCalledOnce();
+    });
+
+    it("passes the operator backup hook only through the protected safety report", async () => {
+      const backup = vi.fn(async () => true);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const app = createApp(adminActor, undefined, backup);
+      await request(app).get("/api/instance/task-drain").expect(200);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(app).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, backup);
+      mockReadIdleSleepSafety.mockClear();
+      await request(createApp(nonAdminActor, undefined, backup)).get("/api/instance/task-drain?idleSleepSafety=1").expect(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      expect(backup).not.toHaveBeenCalled();
+    });
+
+    it("reserves managed checkpoint creation for verified Cloud control actors", async () => {
+      const backup = vi.fn(async () => true);
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-managed-signal";
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      try {
+        for (const source of ["session", "cloud_tenant", "local_implicit"]) {
+          const tenantAdmin = createApp({ ...adminActor, source }, undefined, backup);
+          await request(tenantAdmin).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner")
+            .set("x-paperclip-cloud-control", "unverified-header").expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        expect(backup).not.toHaveBeenCalled();
+        const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
+        await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+          "fixture-owner", expect.any(Function), undefined, backup);
+      } finally {
+        delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      }
     });
 
     it.each([

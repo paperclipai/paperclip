@@ -1,5 +1,7 @@
+import { updateAgentConfigurationInTransaction } from "../agent-configuration-transaction.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHash, randomBytes } from "node:crypto";
+import { canConfigureAgentConnection } from "../../modules/agent-lifecycle/index.js";
 import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Request } from "express";
@@ -7,7 +9,6 @@ import {
   type Db, activityLog, agents, authUsers, companies, companyLogos, dotAgentBindings, mcpOauthClients, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions,
 } from "@paperclipai/db";
 import { DOT_RUNNER_MCP_PATH, DOT_RUNNER_MCP_SCOPES, PUBLIC_MCP_PATH, PUBLIC_MCP_SCOPES, type McpConnectionRequest, type McpDotPairingPreview } from "@paperclipai/shared";
-import { agentService } from "../agents.js";
 import { boardAuthService } from "../board-auth.js";
 import { logActivity } from "../activity-log.js";
 import { createClientMetadataResolver, mcpRedirectMatches, validMcpRedirect as validRedirect, type MetadataFetch } from "./client-metadata.js";
@@ -126,7 +127,8 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     const refresh = grant.scopes.includes("offline_access") ? secret("pcmcp_rt_") : null;
     await tx.insert(mcpOauthTokens).values([
       { grantId: grant.id, tokenHash: hashMcpSecret(access), kind: "access", expiresAt: new Date(Date.now() + accessLifetime) },
-      ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const, expiresAt: new Date(Date.now() + refreshLifetime) }] : []),
+      ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const,
+        expiresAt: agentConnection && grant.purpose === "agent" ? null : new Date(Date.now() + refreshLifetime) }] : []),
     ]);
     return {
       access_token: access, token_type: "Bearer", expires_in: accessLifetime / 1000,
@@ -273,7 +275,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if (!binding || binding.status !== "pairing" || binding.grantId || !binding.pairingExpiresAt || binding.pairingExpiresAt <= new Date()) throw invalidGrant();
     if (request.requestedCompanyId && request.requestedCompanyId !== binding.companyId) throw invalidGrant();
     const [agent] = await queryDb.select().from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId))).for("update");
-    if (!agent || agent.adapterType !== "paperclip_runner" || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw invalidGrant();
+    if (!agent || agent.adapterType !== "paperclip_runner" || !canConfigureAgentConnection(agent)) throw invalidGrant();
     return { request, binding, agent };
   }
 
@@ -381,7 +383,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           state: p.state ?? null, challenge: p.code_challenge, expiresAt: new Date(now.getTime() + 10 * minute),
         });
       });
-      return authorizationOrigin + "/mcp-connect/" + id;
+      return authorizationOrigin + (agentConnection ? "/dot-connect/" : "/mcp-connect/") + id;
     },
     async describeRequest(id: string, actor: Request["actor"], setupUrl: string | null): Promise<McpConnectionRequest> {
       await assertEnabled();
@@ -440,7 +442,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         if (!access.user || !membership || membership.membershipRole === "viewer" || !company || company.status === "archived") throw invalidGrant();
         return { company: { id: company.id, name: company.name }, agent: { id: agent.id, name: agent.name },
           permissions: "Start and accept work as this agent, coordinate permitted tasks and people, read assigned skills, and use assigned app tools. Reading assigned task attachment contents sends those contents to OpenAI and requires the agent’s separate attachment setting. Workspace files and sandboxed commands require the agent’s separate workspace setting. No board account or other-company access.",
-          accessDuration: "Ongoing until revoked. Reconnect after 30 days without refreshing the connection.",
+          accessDuration: "Ongoing until revoked. This connection does not expire from inactivity.",
           pairingExpiresAt: binding.pairingExpiresAt!.toISOString() };
       });
     },
@@ -458,7 +460,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         await tx.update(mcpOauthGrants).set({ agentId: binding.agentId }).where(eq(mcpOauthGrants.id, grant.id));
         await tx.update(dotAgentBindings).set({ grantId: grant.id, status: "connected", pairingCodeHash: null,
           pairingExpiresAt: null, updatedAt: new Date() }).where(eq(dotAgentBindings.id, binding.id));
-        await agentService(tx as unknown as Db).update(agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: binding.id } },
+        await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: binding.id } },
           { recordRevision: { createdByUserId: binding.operatorId, source: "dot-pairing" } });
         await logActivity(tx as unknown as Db, { companyId: binding.companyId, actorType: "user", actorId: binding.operatorId,
           action: "dot.paired", entityType: "agent", entityId: binding.agentId,
@@ -515,7 +517,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
             });
             return null;
           }
-          if (token.expiresAt <= new Date()) return null;
+          // Only agent connections support refresh tokens without an inactivity limit.
+          // Access tokens still expire, refresh still rotates, and replay still revokes.
+          if (token.expiresAt ? token.expiresAt <= new Date() : !agentConnection || grant.purpose !== "agent") return null;
           await actorForGrant(grant, tx as unknown as Db);
           if (input.scope !== undefined && input.scope !== grant.scopes.join(" ")) {
             throw new McpOAuthError("invalid_scope", "Refresh cannot change the consented scopes; reconnect instead.");

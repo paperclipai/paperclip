@@ -29,7 +29,7 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=jira"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=asana"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
@@ -54,6 +54,13 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=slack&reconnect=connection-1"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
+  });
+
+  it("admits hidden providers only for known-provider retained setup routes", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&resume=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&reconnect=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=unknown&resume=connection-1"))).toBe(false);
   });
 
   it("builds a generic source deep link", () => {
@@ -83,7 +90,7 @@ describe("app connect policy", () => {
       const href = appSourceConnectHref(app.slug);
       const searchParams = new URL(href, "http://paperclip.test").searchParams;
 
-      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true }), app.slug).toBe(true);
+      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true, githubReviewBotsEnabled: true }), app.slug).toBe(true);
       expect(resolveAppsConnectRouteKey({ sourceSlug: searchParams.get("source") }), app.slug).toBe(app.slug);
     }
   });
@@ -97,6 +104,13 @@ describe("app connect policy", () => {
     expect(resolveAppsConnectRouteKey({})).toBeUndefined();
   });
 
+  it("admits the GitHub bot independently of chat setup and keeps tools available", () => {
+    const bot = new URLSearchParams("source=github-code-review-bot");
+    expect(canEnterAppsConnect(bot, { chatConnectorsEnabled: true })).toBe(false);
+    expect(canEnterAppsConnect(bot, { githubReviewBotsEnabled: true })).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=discord"), { githubReviewBotsEnabled: true })).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+  });
   it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);

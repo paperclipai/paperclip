@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { watch, lstatSync } from "node:fs";
+import { watch, lstatSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
+
+import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
+const PI_FAULT_SOURCE = readFileSync(new URL("./pi-provider-fault.py", import.meta.url), "utf8");
 
 export const REMOTE_FIXTURE_DAYTONA_SDK_VERSION = "0.203.0";
 const NODE = "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node";
@@ -30,8 +33,8 @@ function relative(value: string): string {
 }
 // Only closed diagnostic enums cross the remote boundary; SDK errors and output
 // are never retained. These diagnostics explain failed evidence, not qualification.
-const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "read", "inject-loss"] as const;
-const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline", "terminal_evidence_incomplete"] as const;
+const RPC_PHASES = ["runtime-ready", "install", "wait", "close", "arm", "publish", "snapshot", "attached", "read", "pi-provider-death"] as const;
+const RPC_CODES = ["node_identity", "sentinel_type", "sentinel", "cwd", "runtime_root_identity", "runtime_binary_identity", "proc_bound", "ambiguous_run_root", "runtime_not_ready", "runtime_identity_changed", "invalid_proc_identity", "invalid_proc_fields", "socket_error", "socket_timeout", "output_bound", "rpc_deadline", "remote_unknown", "transport_failure", "invalid_response", "readiness_deadline", "pi_provider_identity_or_signal_failed"] as const;
 type RpcPhase = typeof RPC_PHASES[number];
 type RpcCode = typeof RPC_CODES[number];
 interface RpcDiagnostic { phase: RpcPhase; code: RpcCode }
@@ -48,12 +51,16 @@ export function remoteNativeFixtureDiagnostics(error: unknown): RpcDiagnostic[] 
 export interface RemoteNativeAuthority { companyId: string; environmentId: string; runId: string; leaseId: string; sandboxId: string; image: string }
 export interface RemoteNativeBinding extends RemoteNativeAuthority { remoteCwd: string }
 export interface RemoteProcessIdentity { pid: number; ppid: number; startTicks: string; bootId: string }
+const INCOMPLETE_REASONS = ["multiple_run_roots", "run_root_changed", "process_identity_reused", "process_sample_failed", "process_read_io", "process_stat_shape", "process_runtime_binding", "process_terminal_seal_failed", "unknown_watch_name", "setup_file_changed", "workspace_event_bound", "workspace_symlink", "unwatched_directory", "directory_identity_changed", "watch_stat_failed", "workspace_watch_error", "target_watch_incomplete", "receipt_byte_bound", "attached_process_live", "control_request_bound", "observer_ttl"] as const;
+type IncompleteReason = typeof INCOMPLETE_REASONS[number];
+const FILESYSTEM_INCOMPLETE_REASONS: readonly IncompleteReason[] = ["unknown_watch_name", "setup_file_changed", "workspace_event_bound", "workspace_symlink", "unwatched_directory", "directory_identity_changed", "watch_stat_failed", "workspace_watch_error", "target_watch_incomplete"];
 export interface RemoteNativeSnapshot {
   binding: RemoteNativeBinding;
   observedAtMs: number;
   observedMonotonicNs: string;
   receivedAtMs: number;
   complete: boolean;
+  incompleteReasons?: IncompleteReason[];
   workspace: Record<string, string>;
   targets: Record<string, { absent: boolean; sha256: string | null; parent: { dev: string; ino: string }; mutationCount: number; complete: boolean }>;
   watcher: { complete: boolean; targetMutationCount: number; workspaceMutationCount: number };
@@ -66,6 +73,26 @@ export interface RemoteNativeSnapshot {
   };
   setup: { path: string; sha256: string | null; published: boolean };
   attached: { connections: number; failure: string | null; commandExit: { code: number; observedAtMs: number; observedMonotonicNs: string } | null; markerWrittenAtMs: number | null; markerWrittenMonotonicNs: string | null; clientExitedAtMs: number | null; clientExitedMonotonicNs: string | null } | null;
+}
+class IncompleteRemoteTerminalEvidenceError extends Error {
+  constructor(readonly snapshot: RemoteNativeSnapshot) {
+    super("remote_native_fixture:terminal_evidence_incomplete");
+  }
+}
+/** Retain only a shape-validated public receipt, without raw RPC text or files. */
+export function remoteNativeIncompleteTerminalEvidence(error: unknown) {
+  if (!(error instanceof IncompleteRemoteTerminalEvidenceError)) return undefined;
+  const row = error.snapshot, root = row.processes.root;
+  return {
+    observedAtMs: row.observedAtMs, receivedAtMs: row.receivedAtMs, complete: row.complete,
+    incompleteReasons: [...(row.incompleteReasons ?? [])],
+    setupPublished: row.setup.published,
+    watcher: { complete: row.watcher.complete, targetMutationCount: row.watcher.targetMutationCount, workspaceMutationCount: row.watcher.workspaceMutationCount },
+    processes: { captured: row.processes.captured, liveCount: row.processes.live.length, journalCount: row.processes.journal.length,
+      root: root ? { pid: root.pid, ppid: root.ppid, startTicks: root.startTicks, bootId: root.bootId } : null },
+    targets: Object.fromEntries(Object.entries(row.targets).map(([name, target]) => [name,
+      { absent: target.absent, sha256: target.sha256, mutationCount: target.mutationCount, complete: target.complete }])),
+  };
 }
 /** Structural subset of pinned SDK0.203.0; caller supplies its authenticated
  * client. No create/list/delete or arbitrary remote command API is exposed. */
@@ -83,6 +110,17 @@ export function parseRemoteProcStat(pid: number, stat: string, bootId: string): 
   const fields = stat.slice(close + 2).trim().split(/\s+/u);
   if (!/^\d+$/u.test(fields[19] ?? "") || !/^\d+$/u.test(fields[1] ?? "") || !/^\d+$/u.test(fields[2] ?? "")) throw new Error("invalid_proc_fields");
   return { pid, ppid: Number(fields[1]), group: Number(fields[2]), state: fields[0]!, startTicks: fields[19]!, bootId };
+}
+/** Linux proc files can fail while a process exits. Confirm absence separately;
+ * an unreadable process that still exists remains a sampling failure. */
+export function remoteProcEntryDisappeared(error: unknown, confirmPresence: () => unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT" || code === "ESRCH") return true;
+  try { confirmPresence(); return false; }
+  catch (confirmation) {
+    const missing = (confirmation as NodeJS.ErrnoException)?.code;
+    return missing === "ENOENT" || missing === "ESRCH";
+  }
 }
 export function isRemoteRunRoot(argv: string[], runId: string, process: RemoteProcessIdentity & { group: number }): boolean {
   if (!/^[a-zA-Z0-9_-]{1,128}$/u.test(runId) || process.group !== process.pid || !argv[0]?.endsWith("/paperclip-runnerd")) return false;
@@ -121,25 +159,25 @@ export function createRemoteTargetWatch(directory: string, name: string, io = { 
 const OBSERVER = String.raw`
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),net=require('node:net'),cp=require('node:child_process');
 const config=JSON.parse(Buffer.from(process.argv[2],'base64').toString());
-const parseStat=PARSE_STAT;const runRoot=RUN_ROOT;const watchTarget=WATCH_TARGET;
+const parseStat=PARSE_STAT;const runRoot=RUN_ROOT;const vanished=PROC_ENTRY_DISAPPEARED;const watchTarget=WATCH_TARGET;const PI_FAULT_SOURCE=PI_FAULT_PROGRAM,PI_CLOSURE_PIN=PI_CLOSURE_DIGEST;
 const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
 const cwdStat=fs.lstatSync(config.binding.remoteCwd,{bigint:true}),rootStat=fs.lstatSync(config.root,{bigint:true}),scriptStat=fs.lstatSync(__filename,{bigint:true}),scriptHash=hash(fs.readFileSync(__filename));
 const runtimeRoot=path.join(config.binding.remoteCwd,config.runtimeRelative),runtimeStat=fs.lstatSync(runtimeRoot,{bigint:true});if(!runtimeStat.isDirectory()||runtimeStat.isSymbolicLink()||fs.realpathSync(runtimeRoot)!==runtimeRoot)throw Error('runtime_root_identity');let observedPrpEnvironmentLeaseId=null;
 const boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
 const targets=new Map();let complete=true,sealed=false,root=null,attached=null,child=null,client=null,childTimer=null;
-const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set(),failureCodes=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false;
-function incomplete(code){complete=false;failureCodes.add(code)}
+const incompleteReasons=new Set();function incomplete(reason){complete=false;incompleteReasons.add(reason)}
+const journal=new Map(),sockets=new Set(),waiters=new Set(),armWaiters=new Set();let observedRootCount=0,publishedHash=null,finalReceipt=null,retiring=false,piFaultAttempted=false;
 function identity(pid){return parseStat(pid,fs.readFileSync('/proc/'+pid+'/stat','utf8'),boot)}
-function table(){const ids=fs.readdirSync('/proc').filter(x=>/^\d+$/.test(x)&&Number(x)>1);if(ids.length>4096)throw Error('process_bound');return ids.flatMap(x=>{try{return [identity(Number(x))]}catch(e){if(e.code==='ENOENT'||e.code==='ESRCH')return [];throw e}})}
+function table(){const ids=fs.readdirSync('/proc').filter(x=>/^\d+$/.test(x)&&Number(x)>1);if(ids.length>4096)throw Error('process_bound');return ids.flatMap(x=>{try{return [identity(Number(x))]}catch(e){if(vanished(e,()=>fs.lstatSync('/proc/'+x)))return [];throw e}})}
 function sample(){
  const all=table();const candidates=[];
- for(const p of all){if(p.state==='Z')continue;let argv;try{argv=fs.readFileSync('/proc/'+p.pid+'/cmdline').toString().split('\0').filter(Boolean)}catch(e){if(e.code==='ENOENT'||e.code==='ESRCH')continue;throw e}
+ for(const p of all){if(p.state==='Z')continue;let argv;try{argv=fs.readFileSync('/proc/'+p.pid+'/cmdline').toString().split('\0').filter(Boolean)}catch(e){if(vanished(e,()=>fs.lstatSync('/proc/'+p.pid)))continue;throw e}
   if(runRoot(argv,config.binding.runId,p)){const at=argv.indexOf('--environment-lease-id'),stateAt=argv.indexOf('--state-dir');if(at<1||argv.lastIndexOf('--environment-lease-id')!==at||!/^[-a-zA-Z0-9._:]{1,256}$/.test(argv[at+1]??''))throw Error('process_prp_identity_shape');if(argv[0]!==path.join(runtimeRoot,'bin','paperclip-runnerd')||stateAt<1||argv.lastIndexOf('--state-dir')!==stateAt||!argv[stateAt+1]?.startsWith(runtimeRoot+'/sessions/')||!/^([a-f0-9]{64})\/runner$/.test(argv[stateAt+1].slice((runtimeRoot+'/sessions/').length)))throw Error('process_runtime_binding');if(observedPrpEnvironmentLeaseId!==null&&observedPrpEnvironmentLeaseId!==argv[at+1])throw Error('process_prp_identity_changed');observedPrpEnvironmentLeaseId=argv[at+1];candidates.push(p);}}
- if(candidates.length>1)incomplete('ambiguous_run_root');
+ if(candidates.length>1)incomplete('multiple_run_roots');
  if(!root&&candidates.length===1){if(hash(fs.readFileSync('/proc/'+candidates[0].pid+'/exe'))!==config.runnerdSha256)throw Error('runner_binary_identity');root=candidates[0];journal.set(root.pid,root);observedRootCount++;}
  if(root&&candidates.some(p=>p.pid!==root.pid||p.startTicks!==root.startTicks))incomplete('run_root_changed');
  let changed=true;while(changed){changed=false;for(const p of all){const parent=journal.get(p.ppid);if(!journal.has(p.pid)&&((parent&&all.some(q=>q.pid===parent.pid&&q.startTicks===parent.startTicks))||(root&&p.group===root.pid))){if(journal.size>=512)throw Error('journal_bound');journal.set(p.pid,p);changed=true;}}}
- if(all.some(p=>journal.has(p.pid)&&journal.get(p.pid).startTicks!==p.startTicks))incomplete('process_pid_reused');
+ if(all.some(p=>journal.has(p.pid)&&journal.get(p.pid).startTicks!==p.startTicks))incomplete('process_identity_reused');
  const live=all.filter(p=>journal.get(p.pid)?.startTicks===p.startTicks&&p.state!=='Z').map(p=>p.pid);
  if(client&&!all.some(p=>p.pid===client.pid&&p.startTicks===client.startTicks&&p.state!=='Z')&&attached&&!attached.clientExitedAtMs){attached.clientExitedAtMs=Date.now();attached.clientExitedMonotonicNs=process.hrtime.bigint().toString();}
  return {captured:root!==null,root,journal:[...journal.values()],live};
@@ -150,23 +188,35 @@ function guard(){const rs=fs.lstatSync(runtimeRoot,{bigint:true});if(!rs.isDirec
 function readSafe(p){const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const before=fs.fstatSync(fd,{bigint:true});if(!before.isFile()||before.size>65536n)throw Error('file_bound_or_type');const bytes=fs.readFileSync(fd),after=fs.fstatSync(fd,{bigint:true}),named=fs.lstatSync(p,{bigint:true});if(before.dev!==named.dev||before.ino!==named.ino||named.isSymbolicLink()||before.size!==after.size||before.mtimeNs!==after.mtimeNs||BigInt(bytes.length)!==before.size)throw Error('file_changed');return bytes}finally{fs.closeSync(fd)}}
 function file(p){try{const s=fs.lstatSync(p);if(s.isSymbolicLink()||!s.isFile()||s.size>65536)throw Error('file_bound_or_type');return {absent:false,sha256:hash(readSafe(p))}}catch(e){if(e.code==='ENOENT')return {absent:true,sha256:null};throw e}}
 function workspace(){const result={};let count=0,bytes=0;function visit(dir,prefix){for(const name of fs.readdirSync(dir).sort()){if(++count>512)throw Error('workspace_entry_bound');const full=path.join(dir,name),rel=prefix+name,s=fs.lstatSync(full);if(rel===config.runtimeRelative)continue;if(rel===config.actionFile){if(!publishedHash||file(full).sha256!==publishedHash)throw Error('setup_file_changed');continue;}if(s.isSymbolicLink())throw Error('workspace_symlink');if(s.isDirectory()){result[rel]='directory';visit(full,rel+'/')}else if(s.isFile()){bytes+=s.size;if(s.size>65536||bytes>4194304)throw Error('workspace_byte_bound');result[rel]=hash(readSafe(full))}else throw Error('workspace_special_file')}}visit(config.binding.remoteCwd,'');return result}
-function snapshot(){guard();verifyWorkspaceWatchRoots();const processes=sample(),out={};let watchComplete=complete,total=0;for(const [name,t] of targets){const status=t.watch.snapshot();out[name]={...file(t.path),...status};watchComplete&&=status.complete;total+=status.mutationCount}return {binding:config.binding,observedAtMs:Date.now(),observedMonotonicNs:process.hrtime.bigint().toString(),complete:complete&&watchComplete,failureCodes:[...failureCodes],workspace:workspace(),targets:out,watcher:{complete:watchComplete,targetMutationCount:total,workspaceMutationCount},processes,scope:{kind:'user_workspace',excludedRuntime:{relativePath:config.runtimeRelative,absolutePath:runtimeRoot,dev:String(runtimeStat.dev),ino:String(runtimeStat.ino),runnerExecutableSha256:config.runnerdSha256},observedPrpEnvironmentLeaseId,prpEnvironmentLeaseIdVerified:false},setup:{path:config.actionFile,sha256:publishedHash,published:publishedHash!==null},attached}}
+function snapshot(){guard();verifyWorkspaceWatchRoots();const processes=sample(),out={},reasons=new Set(incompleteReasons);let watchComplete=complete,total=0;for(const [name,t] of targets){const status=t.watch.snapshot();out[name]={...file(t.path),...status};watchComplete&&=status.complete;if(!status.complete)reasons.add('target_watch_incomplete');total+=status.mutationCount}return {binding:config.binding,observedAtMs:Date.now(),observedMonotonicNs:process.hrtime.bigint().toString(),complete:complete&&watchComplete,incompleteReasons:[...reasons].sort(),workspace:workspace(),targets:out,watcher:{complete:watchComplete,targetMutationCount:total,workspaceMutationCount},processes,scope:{kind:'user_workspace',excludedRuntime:{relativePath:config.runtimeRelative,absolutePath:runtimeRoot,dev:String(runtimeStat.dev),ino:String(runtimeStat.ino),runnerExecutableSha256:config.runnerdSha256},observedPrpEnvironmentLeaseId,prpEnvironmentLeaseIdVerified:false},setup:{path:config.actionFile,sha256:publishedHash,published:publishedHash!==null},attached}}
 for(const name of config.targets){const p=path.join(config.binding.remoteCwd,name);if(fs.realpathSync(path.dirname(p))!==path.dirname(p))throw Error('target_parent_symlink');targets.set(name,{path:p,watch:watchTarget(path.dirname(p),path.basename(p),{watch:fs.watch,lstatSync:fs.lstatSync})})}
 if(config.crossRoot){const p=path.join(config.root,'cross-root-target');fs.writeFileSync(p,config.crossRoot.initialText,{flag:'wx',mode:0o600});targets.set('@cross-root',{path:p,watch:watchTarget(config.root,'cross-root-target',{watch:fs.watch,lstatSync:fs.lstatSync})})}
 let workspaceMutationCount=0;const directoryWatches=[];
-function watchDirectory(directory,prefix=''){if(directoryWatches.length>=512)throw Error('watch_directory_bound');const before=fs.lstatSync(directory,{bigint:true});if(!before.isDirectory()||before.isSymbolicLink())throw Error('watch_directory_identity');const handle=fs.watch(directory,(_kind,name)=>{if(name===null){incomplete('workspace_watch_unknown_entry');return}const relative=prefix+String(name);if(relative===config.runtimeRelative)return;if(relative===config.actionFile){try{if(!publishedHash||file(path.join(config.binding.remoteCwd,config.actionFile)).sha256!==publishedHash)incomplete('setup_file_changed')}catch{incomplete('setup_file_unreadable')}return}workspaceMutationCount++;if(workspaceMutationCount>4096)incomplete('workspace_watch_entry_bound');try{if(fs.lstatSync(path.join(directory,String(name))).isDirectory())incomplete('workspace_watch_new_directory')}catch(e){if(e.code!=='ENOENT')incomplete('workspace_watch_read_failure')}});handle.on('error',()=>{incomplete('workspace_watch_io_failure')});directoryWatches.push({directory,before,handle});for(const name of fs.readdirSync(directory)){const rel=prefix+name;if(rel===config.runtimeRelative)continue;const full=path.join(directory,name),s=fs.lstatSync(full);if(s.isSymbolicLink())throw Error('workspace_symlink');if(s.isDirectory())watchDirectory(full,rel+'/')}}
+// Existing directory attribute notifications do not create an observation gap:
+// accept only the same inode with an already registered recursive watch. New
+// directories and replacements remain incomplete because their writes can race
+// watch installation. Every notification still counts as a workspace mutation.
+function watchDirectory(directory,prefix=''){if(directoryWatches.length>=512)throw Error('watch_directory_bound');const before=fs.lstatSync(directory,{bigint:true});if(!before.isDirectory()||before.isSymbolicLink())throw Error('watch_directory_identity');const handle=fs.watch(directory,(_kind,name)=>{if(name===null){incomplete('unknown_watch_name');return}const relative=prefix+String(name);if(relative===config.runtimeRelative)return;if(relative===config.actionFile){try{if(!publishedHash||file(path.join(config.binding.remoteCwd,config.actionFile)).sha256!==publishedHash)incomplete('setup_file_changed')}catch{incomplete('setup_file_changed')}return}workspaceMutationCount++;if(workspaceMutationCount>4096)incomplete('workspace_event_bound');try{const changed=path.join(directory,String(name)),st=fs.lstatSync(changed,{bigint:true});if(st.isSymbolicLink())incomplete('workspace_symlink');else if(st.isDirectory()){const watched=directoryWatches.find(item=>item.directory===changed);if(!watched)incomplete('unwatched_directory');else if(st.dev!==watched.before.dev||st.ino!==watched.before.ino)incomplete('directory_identity_changed')}}catch(e){if(e.code!=='ENOENT')incomplete('watch_stat_failed')}});handle.on('error',()=>{incomplete('workspace_watch_error')});directoryWatches.push({directory,before,handle});for(const name of fs.readdirSync(directory)){const rel=prefix+name;if(rel===config.runtimeRelative)continue;const full=path.join(directory,name),s=fs.lstatSync(full);if(s.isSymbolicLink())throw Error('workspace_symlink');if(s.isDirectory())watchDirectory(full,rel+'/')}}
 watchDirectory(config.binding.remoteCwd);
 const workspaceWatch={close(){for(const item of directoryWatches)item.handle.close()}};
 function verifyWorkspaceWatchRoots(){for(const item of directoryWatches){const after=fs.lstatSync(item.directory,{bigint:true});if(after.dev!==item.before.dev||after.ino!==item.before.ino||!after.isDirectory()||after.isSymbolicLink())throw Error('workspace_watch_root_replaced')}}
 function publicSnapshot(){const result=snapshot();if(result.attached)result.attached={connections:attached.connections,failure:attached.failure,commandExit:attached.commandExit,markerWrittenAtMs:attached.markerWrittenAtMs,markerWrittenMonotonicNs:attached.markerWrittenMonotonicNs,clientExitedAtMs:attached.clientExitedAtMs,clientExitedMonotonicNs:attached.clientExitedMonotonicNs};return result}
-function seal(){if(sealed)return;sealed=true;workspaceWatch.close();for(const t of targets.values())t.watch.close();clearInterval(observer);finalReceipt=publicSnapshot();finalReceipt.files={};for(const [name,t] of targets){if(!file(t.path).absent)finalReceipt.files[name]=readSafe(t.path).toString('base64');}if(Buffer.byteLength(JSON.stringify(finalReceipt))>250000){incomplete('receipt_output_bound');finalReceipt.complete=false;finalReceipt.failureCodes=[...failureCodes];finalReceipt.files={};}if(child&&child.exitCode===null&&child.signalCode===null){incomplete('attached_child_live');finalReceipt.complete=false;finalReceipt.failureCodes=[...failureCodes];}for(const socket of waiters)socket.end(JSON.stringify({ok:true,result:finalReceipt})+'\n');waiters.clear();setTimeout(()=>shutdown(null),250);}
-const observer=setInterval(()=>{try{const p=sample();if(p.captured&&p.live.length===0&&!retiring){retiring=true;setTimeout(()=>{try{const end=sample();if(end.live.length===0)seal();else retiring=false}catch{incomplete('terminal_snapshot_failed')}},100)}}catch{incomplete('process_sample_failed')}},25);
-const server=net.createServer(socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));socket.on('error',()=>{});let buffer='';socket.on('data',data=>{buffer+=data;if(Buffer.byteLength(buffer)>8192){socket.destroy();complete=false;return}if(!buffer.includes('\n'))return;socket.removeAllListeners('data');try{const r=JSON.parse(buffer);if(r.nonce!==config.nonce)throw Error('control_identity');guard();let result;
+function seal(){if(sealed)return;sealed=true;workspaceWatch.close();for(const t of targets.values())t.watch.close();clearInterval(observer);finalReceipt=publicSnapshot();finalReceipt.files={};for(const [name,t] of targets){if(!file(t.path).absent)finalReceipt.files[name]=readSafe(t.path).toString('base64');}if(Buffer.byteLength(JSON.stringify(finalReceipt))>250000){finalReceipt.complete=false;finalReceipt.incompleteReasons.push('receipt_byte_bound');finalReceipt.files={};}if(child&&child.exitCode===null&&child.signalCode===null){finalReceipt.complete=false;finalReceipt.incompleteReasons.push('attached_process_live')};for(const socket of waiters)socket.end(JSON.stringify({ok:true,result:finalReceipt})+'\n');waiters.clear();setTimeout(()=>shutdown(null),250);}
+function sampleFailure(e){incomplete('process_sample_failed');if(e?.code)incomplete('process_read_io');else if(['invalid_proc_identity','invalid_proc_fields'].includes(e?.message))incomplete('process_stat_shape');else if(['process_prp_identity_shape','process_runtime_binding','process_prp_identity_changed','runner_binary_identity'].includes(e?.message))incomplete('process_runtime_binding')}
+const observer=setInterval(()=>{try{const p=sample();if(p.captured&&p.live.length===0&&!retiring){retiring=true;setTimeout(()=>{let end;try{end=sample()}catch(e){sampleFailure(e);return}if(end.live.length!==0){retiring=false;return}try{seal()}catch{incomplete('process_terminal_seal_failed')}},100)}}catch(e){sampleFailure(e)}},25);
+const server=net.createServer(socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));socket.on('error',()=>{});let buffer='';socket.on('data',data=>{buffer+=data;if(Buffer.byteLength(buffer)>8192){socket.destroy();incomplete('control_request_bound');return}if(!buffer.includes('\n'))return;socket.removeAllListeners('data');try{const r=JSON.parse(buffer);if(r.nonce!==config.nonce)throw Error('control_identity');guard();let result;
  if(r.op==='snapshot')result=finalReceipt??publicSnapshot();
  else if(r.op==='wait'){if(finalReceipt)result=finalReceipt;else{if(waiters.size)throw Error('duplicate_receipt_channel');waiters.add(socket);for(const arm of armWaiters)arm.end(JSON.stringify({ok:true,result:{armed:true,sealed:false}})+'\n');armWaiters.clear();socket.on('close',()=>waiters.delete(socket));return}}
  else if(r.op==='arm'){if(waiters.size)result={armed:true,sealed};else{armWaiters.add(socket);socket.on('close',()=>armWaiters.delete(socket));return}}
  else if(r.op==='publish'){if(sealed||publishedHash||r.path!==config.actionFile||typeof r.text!=='string'||Buffer.byteLength(r.text)>16384)throw Error('publish_bound');const p=path.join(config.binding.remoteCwd,config.actionFile);if(fs.realpathSync(path.dirname(p))!==path.dirname(p))throw Error('publish_parent');publishedHash=hash(r.text);try{fs.writeFileSync(p,r.text,{flag:'wx',mode:0o600})}catch(e){publishedHash=null;throw e}result={path:r.path,sha256:publishedHash,published:true};}
  else if(r.op==='read'){const p=r.path==='@cross-root'&&config.crossRoot?path.join(config.root,'cross-root-target'):path.join(config.binding.remoteCwd,r.path);if(r.path!=='@cross-root'&&!config.targets.includes(r.path))throw Error('unregistered_read');const status=file(p);if(status.absent)throw Error('file_missing');result={...status,base64:readSafe(p).toString('base64')};}
+ else if(r.op==='pi-provider-death'){
+  if(piFaultAttempted||sealed||!publishedHash||!root||!complete||typeof r.runtimeEnvironmentLeaseId!=='string'||r.runtimeEnvironmentLeaseId!==observedPrpEnvironmentLeaseId)throw Error('pi_provider_identity_or_signal_failed');
+  piFaultAttempted=true;const before=sample();if(!before.captured||!before.live.includes(root.pid))throw Error('pi_provider_identity_or_signal_failed');
+  const request={root:{pid:root.pid,ppid:root.ppid,startTicks:root.startTicks,bootId:root.bootId},binding:config.binding,runtimeEnvironmentLeaseId:r.runtimeEnvironmentLeaseId,runnerdSha256:config.runnerdSha256,closureSha256:PI_CLOSURE_PIN};
+  const childResult=cp.spawnSync('/usr/bin/python3',['-I','-c',PI_FAULT_SOURCE,Buffer.from(JSON.stringify(request)).toString('base64')],{env:{PATH:'/usr/bin:/bin'},timeout:8000,maxBuffer:32768,encoding:'utf8'});
+  if(childResult.status!==0||childResult.error)throw Error('pi_provider_identity_or_signal_failed');result=JSON.parse(childResult.stdout);
+ }
  else if(r.op==='attached'){if(attached||sealed)throw Error('attached_already_configured');if(!config.targets.includes(r.marker)||!Number.isInteger(r.delayMs)||r.delayMs<100||r.delayMs>8000)throw Error('attached_bounds');
   attached={connections:0,failure:null,commandExit:null,markerWrittenAtMs:null,markerWrittenMonotonicNs:null,clientExitedAtMs:null,clientExitedMonotonicNs:null};
   const clientScript=path.join(config.root,'client.cjs'),clientSocket=path.join(config.root,'attached.sock');
@@ -186,12 +236,12 @@ const server=net.createServer(socket=>{sockets.add(socket);socket.on('close',()=
  socket.end(JSON.stringify({ok:true,result})+'\n');
  }catch{socket.end(JSON.stringify({ok:false,error:'observer_evidence_incomplete'})+'\n')}})});
 let closing=false;async function shutdown(reply){if(closing){reply?.end(JSON.stringify({ok:false,error:'closing'})+'\n');return}closing=true;sealed=true;workspaceWatch.close();for(const t of targets.values())t.watch.close();clearInterval(observer);let settled=true;try{if(child&&child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');const exited=new Promise(resolve=>child.once('exit',resolve));await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,2000))]);if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,2000))]);}settled=child.exitCode!==null||child.signalCode!==null;}if(reply)reply.end(JSON.stringify({ok:settled,result:{closed:settled}})+'\n');}finally{for(const s of sockets)if(s!==reply)s.destroy();server.close();if(attached?.server)attached.server.close();setTimeout(()=>{reply?.destroy();if(settled){const current=fs.lstatSync(config.root,{bigint:true});if(current.dev===rootStat.dev&&current.ino===rootStat.ino&&!current.isSymbolicLink())fs.rmSync(config.root,{recursive:true,force:true});else settled=false;}process.exit(settled?0:2)},100)}}
-server.listen(path.join(config.root,'control.sock'));setTimeout(()=>{complete=false;shutdown(null)},config.observerTtlMs).unref();
+server.listen(path.join(config.root,'control.sock'));setTimeout(()=>{incomplete('observer_ttl');shutdown(null)},config.observerTtlMs).unref();
 `;
 const ATTACHED_CLIENT = String.raw`const net=require('node:net');const s=net.connect(process.argv[2]);let b='';s.setTimeout(15000,()=>process.exit(3));s.on('error',()=>process.exit(4));s.on('connect',()=>s.write(JSON.stringify({nonce:process.argv[3],pid:process.pid})+'\n'));s.on('data',x=>{b+=x;if(b.length>1024)process.exit(6);if(b.includes('\n')){const r=JSON.parse(b);s.end();process.exit(r.code===0?0:5)}});`;
 function observerSource() {
-  return OBSERVER.replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
-    .replace("WATCH_TARGET", () => createRemoteTargetWatch.toString()).replace("ATTACHED_CLIENT", () => JSON.stringify(ATTACHED_CLIENT));
+  return OBSERVER.replace("PI_FAULT_PROGRAM", () => JSON.stringify(PI_FAULT_SOURCE)).replace("PI_CLOSURE_DIGEST", () => JSON.stringify(PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"])).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString())
+    .replace("PROC_ENTRY_DISAPPEARED", () => remoteProcEntryDisappeared.toString()).replace("WATCH_TARGET", () => createRemoteTargetWatch.toString()).replace("ATTACHED_CLIENT", () => JSON.stringify(ATTACHED_CLIENT));
 }
 const RPC = String.raw`const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process'),crypto=require('node:crypto');const r=JSON.parse(Buffer.from(process.argv[1],'base64').toString());const hash=x=>'sha256:'+crypto.createHash('sha256').update(x).digest('hex');
 const startedAt=Date.now();if(!Number.isInteger(r.timeoutMs)||r.timeoutMs<1000||r.timeoutMs>300000)throw Error('rpc_deadline');setTimeout(()=>{failure('rpc_deadline');process.exit(2)},r.timeoutMs).unref();
@@ -208,6 +258,26 @@ function rpcSource() {
   return RPC.replace("RPC_CODES", () => JSON.stringify(RPC_CODES)).replace("RPC_PHASES", () => JSON.stringify(RPC_PHASES)).replace("PARSE_STAT", () => parseRemoteProcStat.toString()).replace("RUN_ROOT", () => isRemoteRunRoot.toString());
 }
 
+export interface PiProviderDeathReceipt {
+  schema: "paperclip.e2e.pi-provider-death.v1"; binding: RemoteNativeBinding; runtimeEnvironmentLeaseId: string;
+  target: RemoteProcessIdentity; ancestry: RemoteProcessIdentity[]; nodeSha256: string; entrypointSha256: string; closureSha256: string;
+  entrypointAttribution: "pinned_wrapper_parent"; originalChildArgvAvailable: false; observedChildTitle: "pi";
+  signalled: true; signal: "SIGKILL"; targetKind: "pi_native_child"; workerSignalled: false;
+}
+export function validatePiProviderDeathReceipt(value: unknown, binding: RemoteNativeBinding, root: RemoteProcessIdentity, lease: string): PiProviderDeathReceipt {
+  const r = record(value), target = record(r.target), ancestry = Array.isArray(r.ancestry) ? r.ancestry.map(record) : [];
+  fail(r.schema === "paperclip.e2e.pi-provider-death.v1" && JSON.stringify(r.binding) === JSON.stringify(binding)
+    && r.entrypointAttribution === "pinned_wrapper_parent" && r.originalChildArgvAvailable === false && r.observedChildTitle === "pi"
+    && r.runtimeEnvironmentLeaseId === lease && r.signalled === true && r.signal === "SIGKILL" && r.targetKind === "pi_native_child" && r.workerSignalled === false
+    && sha(r.nodeSha256) && sha(r.entrypointSha256) && r.closureSha256 === PI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"], "pi_fault_receipt");
+  fail(ancestry.length >= 3 && ancestry.length <= 64 && new Set(ancestry.map(p => p.pid)).size === ancestry.length
+    && ancestry.every(p => Number.isSafeInteger(p.pid) && Number(p.pid) > 1 && Number.isSafeInteger(p.ppid) && Number(p.ppid) > 0
+      && typeof p.startTicks === "string" && /^\d+$/u.test(p.startTicks) && p.bootId === root.bootId)
+    && ["pid", "ppid", "startTicks", "bootId"].every(k => ancestry[0]?.[k] === target[k] && ancestry.at(-1)?.[k] === record(root)[k])
+    && ancestry.slice(0, -1).every((p, i) => p.ppid === ancestry[i + 1]?.pid) && target.pid !== root.pid, "pi_fault_ancestry");
+  return value as PiProviderDeathReceipt;
+}
+
 export interface RemoteNativeFixture {
   readonly binding: RemoteNativeBinding;
   readonly remoteCwd: string;
@@ -216,9 +286,11 @@ export interface RemoteNativeFixture {
   /** Watchers and exact run-root identity are already armed at return from bind. */
   readonly baseline: RemoteNativeSnapshot;
   snapshot(label: string): Promise<RemoteNativeSnapshot>;
-  injectOwnedRunLoss?(): Promise<unknown>;
+  /** One-shot fault against the exact admitted Pi child; never a worker kill. */
+  terminatePiProvider?(runtimeEnvironmentLeaseId: string): Promise<PiProviderDeathReceipt>;
   readFile(path: string): Promise<Buffer>;
   publishAction(path: string, text: string): Promise<void>;
+  injectOwnedRunLoss(): Promise<Record<string, unknown>>;
   setupAttachedCommand(input: { marker: string; markerText: string; delayMs: number }): Promise<{ command: string; commandSha256: string }>;
   /** Consumes the host-held terminal receipt; never queries a deleted lease. */
   finish(): Promise<RemoteNativeSnapshot>;
@@ -254,6 +326,9 @@ function readSnapshot(value: unknown, binding: RemoteNativeBinding, names: strin
       && /^\d+$/u.test(String(parent.dev)) && /^\d+$/u.test(String(parent.ino)), "target_shape");
   }
   fail(typeof watcher.complete === "boolean" && [watcher.targetMutationCount, watcher.workspaceMutationCount].every(n => Number.isSafeInteger(n) && (n as number) >= 0), "watcher_shape");
+  fail(row.incompleteReasons === undefined || (Array.isArray(row.incompleteReasons) && row.incompleteReasons.length <= INCOMPLETE_REASONS.length
+    && new Set(row.incompleteReasons).size === row.incompleteReasons.length
+    && row.incompleteReasons.every(reason => INCOMPLETE_REASONS.includes(reason as IncompleteReason))), "incomplete_reasons_shape");
   const validProcess = (p: unknown) => {
     const i = record(p); return Number.isSafeInteger(i.pid) && (i.pid as number) >= 2 && Number.isSafeInteger(i.ppid) && (i.ppid as number) >= 0
       && typeof i.startTicks === "string" && /^\d+$/u.test(i.startTicks) && typeof i.bootId === "string" && /^[a-f0-9-]{36}$/u.test(i.bootId);
@@ -429,7 +504,9 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
     stopReceipt();
     throw error;
   }
+  let piFaultAttempted = false;
   let closed = false, published = false, finished: RemoteNativeSnapshot | undefined;
+  let retiredTerminal: RemoteNativeSnapshot | undefined;
   const retainedFiles = new Map<string, Buffer>();
   return {
     binding: binding!, remoteCwd: binding!.remoteCwd, actionFile, outsideTarget: options.crossRoot ? `${root}/cross-root-target` : null, baseline,
@@ -437,6 +514,12 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       fail(typeof label === "string" && /^[a-zA-Z0-9_-]{1,80}$/u.test(label), "snapshot_label");
       fail(!closed && !finished, "fixture_closed");
       return readSnapshot(await rpc({ op: "snapshot" }), binding!, names, actionFile, options.runnerdSha256);
+    },
+    async terminatePiProvider(runtimeEnvironmentLeaseId) {
+      fail(!closed && !finished && published && !piFaultAttempted && /^[A-Za-z0-9._:-]{1,240}$/u.test(runtimeEnvironmentLeaseId), "pi_fault_admission");
+      piFaultAttempted = true; // Uncertain delivery never retries the signal.
+      const receipt = await rpc({ op: "pi-provider-death", runtimeEnvironmentLeaseId });
+      return validatePiProviderDeathReceipt(receipt, binding!, baseline.processes.root!, runtimeEnvironmentLeaseId);
     },
     async readFile(path) {
       fail(!closed && names.includes(path), "unregistered_read");
@@ -477,14 +560,14 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       if ("error" in receipt) throw receipt.error;
       fail(receipt.receivedAtMs <= receiptDeadlineAt, "receipt_deadline");
       const result = readSnapshot(receipt.value, binding!, names, actionFile, options.runnerdSha256);
+      // The observer only seals its receipt after captured descendants retire.
+      // A lost filesystem watch still fails qualification, but must not require
+      // a second RPC to an already deleted lease just to close that observer.
+      const knownFilesystemGap = result.incompleteReasons !== undefined && result.incompleteReasons.length > 0
+        && result.incompleteReasons.every(reason => FILESYSTEM_INCOMPLETE_REASONS.includes(reason));
+      if (result.processes.captured && result.processes.live.length === 0 && (result.complete || knownFilesystemGap)) retiredTerminal = result;
       if (!(published && result.setup.published && result.complete && result.watcher.complete && result.processes.captured && result.processes.live.length === 0)) {
-        // Closed flags explain missing evidence without retaining SDK output,
-        // provider text, file contents or opaque observer control credentials.
-        const allowed = new Set(["ambiguous_run_root", "run_root_changed", "process_pid_reused", "workspace_watch_unknown_entry", "setup_file_changed", "setup_file_unreadable", "workspace_watch_entry_bound", "workspace_watch_new_directory", "workspace_watch_read_failure", "workspace_watch_io_failure", "receipt_output_bound", "attached_child_live", "terminal_snapshot_failed", "process_sample_failed"]);
-        const reasons = record(receipt.value).failureCodes;
-        const codes = Array.isArray(reasons) ? [...new Set(reasons.filter((code): code is string => typeof code === "string" && allowed.has(code)))].slice(0, allowed.size) : [];
-        const flags = [`published=${published && result.setup.published}`, `complete=${result.complete}`, `watcher=${result.watcher.complete}`, `captured=${result.processes.captured}`, `live=${result.processes.live.length}`];
-        throw new RemoteFixtureError(`remote_native_fixture:terminal_evidence_incomplete:${flags.join(",")}:${codes.join(",")}`, { phase: "wait", code: "terminal_evidence_incomplete" });
+        throw new IncompleteRemoteTerminalEvidenceError(result);
       }
       const files = record(record(receipt.value).files);
       for (const name of names) {
@@ -503,7 +586,7 @@ export async function bindRemoteNativeFixture(options: RemoteNativeFixtureOption
       closed = true;
       // A finalized receipt survives ordinary public lease deletion. If the
       // lease still exists, clean our opaque observer; never discover by name.
-      if (!finished) { stopReceipt(); await rpc({ op: "close" }); }
+      if (!retiredTerminal) { stopReceipt(); await rpc({ op: "close" }); }
     },
   };
 }

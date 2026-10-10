@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -77,7 +78,10 @@ it("admits the heartbeat descriptor with the real Dot capabilities and no broker
   } finally { spawnSpy.mockRestore(); }
 });
 
-it.each(["shutdown", "unexpected exit"] as const)("classifies a real Rust %s before the next command poll", async kind => {
+it.each([
+  { kind: "shutdown", remote: false }, { kind: "unexpected exit", remote: false },
+  { kind: "shutdown", remote: true }, { kind: "unexpected exit", remote: true },
+])("classifies a real Rust $kind before the next command poll (remote=$remote)", async ({ kind, remote }) => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-exit-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root);
@@ -85,7 +89,9 @@ it.each(["shutdown", "unexpected exit"] as const)("classifies a real Rust %s bef
   let exited = false;
   const spawn = controlPlane.spawnRunner;
   const spawnSpy = vi.spyOn(controlPlane, "spawnRunner").mockImplementation(options => {
-    handle = spawn(options);
+    const process = spawn(options);
+    // Managed monitors preserve process identity but have no OS exit status.
+    handle = remote ? { ...process, completion: process.completion.then(result => ({ ...result, code: null })) } : process;
     void handle.completion.then(() => { exited = true; });
     return handle;
   });
@@ -110,7 +116,7 @@ it.each(["shutdown", "unexpected exit"] as const)("classifies a real Rust %s bef
     if (kind === "shutdown") {
       await expect(session.close({ reason: "Test complete" })).resolves.toBeUndefined();
       expect(exited).toBe(true);
-      expect((await handle!.completion).code).toBe(0);
+      expect((await handle!.completion).code).toBe(remote ? null : 0);
     } else {
       handle!.child.kill("SIGTERM");
       await handle!.completion;
@@ -125,7 +131,7 @@ it.each(["shutdown", "unexpected exit"] as const)("classifies a real Rust %s bef
   }
 }, 45000);
 
-it("reattaches the same Rust bridge without duplicating a settled operation and refuses a lost checkpoint", async () => {
+it.each(["local", "custom local directory", "external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root);
@@ -151,6 +157,26 @@ it("reattaches the same Rust bridge without duplicating a settled operation and 
     port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
   };
+  const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
+  if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
+  if (launch === "external launcher") {
+    await mkdir(runnerState, { recursive: true });
+    options.runnerStateDirectory = runnerState;
+    options.readProviderState = async () => {
+      try { return JSON.parse(await readFile(join(runnerState, "dot-provider-state.json"), "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    };
+    options.runnerProcessLauncher = spec => {
+      expect(spec.environment).not.toHaveProperty("OPENAI_API_KEY");
+      expect(spec.args).toContain(runnerState);
+      const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
+      const startedAt = new Date().toISOString();
+      spawned = { pid: child.pid!, processGroupId: null, startedAt };
+      return { child, startedAt, completion: new Promise((resolve, reject) => {
+        child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
+      }) };
+    };
+  }
   const driver = new RunnerdDotDriver(options);
   let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
   const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
@@ -176,7 +202,7 @@ it("reattaches the same Rust bridge without duplicating a settled operation and 
     expect(dispatches).toHaveLength(1);
     await session.interrupt!({ reason: "Synthetic test complete" });
     await session.close({ reason: "Synthetic test complete" });
-    await rm(join(root, "state/runner/dot-provider-state.json"));
+    await rm(join(runnerState, "dot-provider-state.json"));
     expect(await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal })).toMatchObject({ recovered: false });
   } finally {
     await session.close({ reason: "Test cleanup", force: true }).catch(() => {});

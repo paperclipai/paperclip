@@ -40,10 +40,12 @@ describe("idle cleanup inspection", () => {
     expect(await readIdleLocalWork()).toBe("none");
     markIdleStartupComplete({ scheduledBackups: true });
     expect(await readIdleLocalWork()).toBe("present");
+    expect(await readIdleLocalWork({ backupCheckpoint: true })).toBe("none");
     markIdleStartupComplete({ scheduledBackups: false });
     await fs.mkdir(custom);
     await fs.writeFile(path.join(custom, "receipt.tmp"), "incomplete");
     expect(await readIdleLocalWork()).toBe("present");
+    expect(await readIdleLocalWork({ backupCheckpoint: true })).toBe("present");
     await fs.rm(custom, { recursive: true });
     expect(await readIdleLocalWork()).toBe("none");
   });

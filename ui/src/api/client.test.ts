@@ -43,6 +43,24 @@ afterEach(() => {
 });
 
 describe("tenant-session recovery", () => {
+  it("loads anonymous Dot consent despite concurrent protected background probes", async () => {
+    const reload = vi.fn();
+    const requestId = `pcmcp_request_${"a".repeat(43)}`;
+    const recovery = createTenantSessionRecoveryCoordinator(reload, () => `/dot-connect/${requestId}`);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      url.includes("/dot-mcp/requests/")
+        ? jsonResponse({ id: requestId, agentConnection: true })
+        : errorResponse({ error: "tenant_session_required" }),
+    ));
+
+    const background = api.get("/health");
+    const consent = api.get(`/dot-mcp/requests/${requestId}`);
+    await expect(background).rejects.toMatchObject({ status: 401 });
+    await expect(consent).resolves.toEqual({ id: requestId, agentConnection: true });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it("keeps concurrent failures pending and schedules one top-level reload", async () => {
     const reload = vi.fn();
     const recovery = createTenantSessionRecoveryCoordinator(reload);

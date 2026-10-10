@@ -1,3 +1,7 @@
+import { appendSemanticToolReceipt } from "../semantic-tool-receipt.js";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
@@ -22,8 +26,190 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it("captures the direct driver's normalized input only when the exact proposal is retained", async () => {
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-normalized-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Complete" } });
+    const { schema: _, attentionRequests: __, artifacts: ___, ...raw } = completedResult();
+    const commit = vi.fn(), capture = vi.fn((value: unknown) => { expect(commit).not.toHaveBeenCalled(); return commit; });
+    const handler = fixture.hostOptions!.semanticTools!.handler;
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "finish", arguments: raw, signal: new AbortController().signal,
+      captureNormalizedInput: capture })).resolves.toMatchObject({ accepted: true });
+    expect(capture).toHaveBeenCalledExactlyOnceWith(completedResult());
+    expect(commit).toHaveBeenCalledOnce();
+    const repeatedCapture = vi.fn(() => vi.fn());
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "different-call-same-result", arguments: raw, signal: new AbortController().signal,
+      captureNormalizedInput: repeatedCapture })).resolves.toMatchObject({ accepted: true });
+    expect(repeatedCapture).not.toHaveBeenCalled();
+    const invalidCapture = vi.fn(() => vi.fn());
+    await expect(handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "invalid", arguments: {}, signal: new AbortController().signal,
+      captureNormalizedInput: invalidCapture })).rejects.toThrow("Invalid semantic run result");
+    expect(invalidCapture).not.toHaveBeenCalled();
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.find(event => event.eventType === "run.result.proposed")?.payload).toEqual(capture.mock.calls[0]![0]);
+    await session.close({ reason: "same-invocation normalization verified" });
+  });
+  it("does not commit a direct normalized input digest when proposal retention is backpressured", async () => {
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, {
+      maxBufferedEvents: 4, terminalEventReserve: 0,
+      runtimeEvents: Array.from({ length: 8 }, (_, n) => ({ type: "text_delta" as const, stream: "output" as const, text: `bounded-${n}` })),
+    });
+    const session = await fixture.driver.openSession({ runId: "run-normalized-pressure", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Complete" } });
+    await vi.waitFor(async () => expect((await session.transcript!()).eventCount).toBeGreaterThanOrEqual(4));
+    const commit = vi.fn(), capture = vi.fn(() => commit);
+    await expect(fixture.hostOptions!.semanticTools!.handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "finish", arguments: completedResult(),
+      signal: new AbortController().signal, captureNormalizedInput: capture })).rejects.toThrow("event consumer must drain");
+    expect(capture).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.some(event => event.eventType === "run.result.proposed")).toBe(false);
+    await session.close({ reason: "unretained input has no digest" });
+  });
+  it.each(["copilot", "cursor", "pi", "codex"] as const)("scopes optional semantic receipts to the actual %s invocation turn", async agent => {
+    const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const first = await session.startTurn({ message: { role: "user", text: "First" } });
+    const capture = fixture.hostOptions!.semanticTools!.captureSemanticReceipt;
+    expect(typeof capture).toBe(agent === "copilot" ? "function" : "undefined");
+    const oldCallback = capture?.();
+    const bound = appendSemanticToolReceipt({ tool: "get_task_context", callId: "1", arguments: {} }, { content: [{ type: "text", text: "{}" }] });
+    oldCallback?.(bound.receipt);
+    fixture.finishTurn({ status: "completed" });
+    const firstEvents = await collectUntil(session.events(), "turn.completed");
+    const receipts = firstEvents.filter(e => e.eventType === "provider.notice.recorded" && e.payload.category === "paperclip_semantic_tool_receipt_v2");
+    expect(receipts).toHaveLength(agent === "copilot" ? 1 : 0);
+    if (agent === "copilot") expect(receipts[0]).toMatchObject({ runId: "run-receipt", turnId: first.turnId, payload: { provenance: { sessionId: "backend-1", turnId: first.turnId } } });
+    const transcript = JSON.parse(JSON.stringify(await session.transcript!()));
+    for (const event of transcript.events) validatePrpEvent(event);
+    expect(transcript.events.filter((e: PrpEvent) => e.payload.category === "paperclip_semantic_tool_receipt_v2")).toEqual(receipts);
+    await session.startTurn({ message: { role: "user", text: "Second" } });
+    oldCallback?.(bound.receipt);
+    fixture.finishTurn({ status: "completed" });
+    const secondEvents = await collectUntil(session.events(), "turn.completed");
+    expect(secondEvents.filter(e => e.payload.category === "paperclip_semantic_tool_receipt_v2")).toEqual([]);
+    await session.close({ reason: "receipt turn scope verified" });
+  });
+
+  it.each(["cursor", "copilot"] as const)("emits partial Cursor metadata only for admitted Cursor, preserving %s settlement", async agent => {
+    const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-native-usage", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const before = { promptMessageIds: [], requestTokenUsage: {} };
+    const after = { lastRequestId: "provider-turn-1", promptMessageIds: ["prompt-1"], requestTokenUsage: {}, cursorPromptUsage: {
+      request_id: "provider-turn-1", prompt_message_id: "prompt-1", receipt: {
+        schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended", promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
+        reasons: ["native_counter_semantics_unverified"], observations: [{ invocationId: "invocation-1", role: "parent", nativeRun: 1, sequence: 1, counters: { inputTokens: 7 } }],
+        limits: { maxObservations: 64, maxInvocations: 64, maxBytes: 16384 }, truncated: false,
+      },
+    } };
+    fixture.host.status.mockResolvedValueOnce(before as never).mockResolvedValue(after as never);
+    await session.startTurn({ message: { text: "fixture" } });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    const notices = events.filter(e => e.eventType === "provider.notice.recorded" && e.payload.category === "cursor_native_usage_observed");
+    expect(notices).toHaveLength(agent === "cursor" ? 1 : 0);
+    expect(events.filter(e => e.eventType === "usage.updated")).toEqual([]);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    await session.close({ reason: "partial diagnostics verified" });
+  });
+
+  it.each(["tool-1", "tool with spaces", "🧭/plan", "x".repeat(300)])("binds a native Cursor plan request to its actual projected tool identity: %s", async toolCallId => {
+    const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", mode: "plan", providerPolicy: { readOnly: false } }, {
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "arbitrary tool display", kind: "execute", status: "pending" }],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-plan-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const toolEvents = collectUntil(session.events(), "tool.execution.started");
+    const { turnId } = await session.startTurn({ message: { text: "Plan" } });
+    const tool = (await toolEvents).find(e => e.eventType === "tool.execution.started")!;
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onExtensionRequest!;
+    const reply = callback("cursor/create_plan", { sessionId: "backend-1", toolCallId, plan: "# Full plan", todos: [] }, { requestId: 1, signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    const events = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    expect(request.itemId).toBe(tool.payload.executionId);
+    expect(events.find(e => e.eventType === "runtime_request.created")!.payload.request).toMatchObject({ itemId: tool.payload.executionId });
+    await session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "cancel" } });
+    await expect(reply).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    fixture.finishTurn({ status: "completed" });
+    await session.close({ reason: "plan identity verified" });
+  });
+  it.each(["codex", "cursor"] as const)("keeps existing %s item and unidentified-text semantics", async agent => {
+    const runtimeEvents: AcpRuntimeEvent[] = [
+      { type: "text_delta", stream: "output", messageId: "first", text: "progress" },
+      { type: "text_delta", stream: "output", messageId: "second", text: "answer" },
+      { type: "text_delta", stream: "output", text: " suffix" },
+    ];
+    const fixture = driverFixture({ agent, model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "other-provider-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const { turnId } = await session.startTurn({ message: { text: "fixture" } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    const messages = events.filter(event => event.payload.kind === "agentMessage");
+    expect(new Set(messages.map(event => event.itemId))).toEqual(new Set([`${turnId}:assistant-message`]));
+    expect(messages.filter(event => event.eventType === "item.completed").map(event => event.payload)).toEqual([{ kind: "agentMessage", channel: "final", text: "answer suffix" }]);
+    await session.close({ reason: "unchanged provider semantics verified" });
+  });
+  it.each(["same-text", "split-final", "empty-final", "cancelled"])("Copilot native message identities preserve interim activity and the actual final message: %s", async scenario => {
+    const chunk = (messageId: string | undefined, text: string, stream: "output" | "thought" = "output"): AcpRuntimeEvent => ({ type: "text_delta", text, stream, ...(messageId ? { messageId } : {}) });
+    const runtimeEvents: AcpRuntimeEvent[] = [chunk("first", ""), chunk("first", "EXACT_MARKER"),
+      { type: "status", tag: "tool_call_update", text: "attached tool continuation" },
+      chunk("second", ""), chunk("second", "private reasoning", "thought")];
+    if (scenario !== "empty-final") runtimeEvents.push(...(scenario === "split-final" ? [chunk("second", "EXACT_"), chunk("second", "MARKER")] : [chunk("second", "EXACT_MARKER")]));
+    runtimeEvents.push(chunk(undefined, "Info: native session activity"));
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-copilot-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Answer exactly" } });
+    fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
+    const events = await collectUntil(session.events(), scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
+    const interim = events.find(event => event.eventType === "item.delta" && event.payload.text === "EXACT_MARKER");
+    expect(interim).toBeDefined();
+    expect(events.some(event => event.eventType === "item.delta" && event.payload.text === "Info: native session activity")).toBe(true);
+    const commentary = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "commentary");
+    expect(commentary.map(event => event.payload.text)).toEqual(["EXACT_MARKER"]);
+    expect(commentary[0]!.itemId).toBe(interim!.itemId);
+    const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
+    expect(final.map(event => event.payload.text)).toEqual(scenario === "empty-final" || scenario === "cancelled" ? [] : ["EXACT_MARKER"]);
+    if (final.length) expect(final[0]!.itemId).not.toBe(interim!.itemId);
+    await session.close({ reason: "Copilot native identity verified" });
+  });
+  it("keeps Pi retry-only activity as a rich notice without inventing a final answer", async () => {
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-pi-notice", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Work" } });
+    const input = fixture.host.startTurn.mock.calls[0]![0];
+    await input.onExtensionNotification!("paperclip/pi_notice", { sessionId: "backend-1", category: "auto_retry_end", summary: "Retry did not recover.", severity: "warning", details: { attempt: 2, success: false } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.find(event => event.eventType === "provider.notice.recorded")?.payload).toMatchObject({ severity: "warning", category: "pi.auto_retry_end", scope: "session" });
+    expect(events.some(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage")).toBe(false);
+    await session.close({ reason: "notice-only verified" });
+  });
+  it.each(["exact-final", "tool-only", "empty-final", "missing-end", "cancelled"])("Pi native boundaries preserve progress without stale final attribution: %s", async scenario => {
+    const chunk = (n: number, kind: string, text = "", stream: "output" | "thought" = "output"): AcpRuntimeEvent => ({
+      type: "text_delta", text, stream, messageId: `pi-message-${String(n).padStart(64, "0")}`,
+      meta: { origin: "pi-native-assistant", source: "pi-rpc-message-v1", kind },
+    });
+    const runtimeEvents = [chunk(1, "start"), chunk(1, "delta", "Calling finish."), chunk(1, "end:toolUse")];
+    if (scenario !== "tool-only") {
+      runtimeEvents.push(chunk(2, "start"), chunk(2, "delta", "private thought", "thought"));
+      if (scenario !== "empty-final") runtimeEvents.push(chunk(2, "delta", "EXACT_MARKER"));
+      if (scenario !== "missing-end" && scenario !== "cancelled") runtimeEvents.push(chunk(2, "end:stop"));
+    }
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-pi-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Answer exactly" } });
+    fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
+    const events = await collectUntil(session.events(), scenario === "missing-end" ? "turn.failed" : scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
+    expect(events.some(event => event.eventType === "item.delta" && event.payload.text === "Calling finish.")).toBe(true);
+    const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage");
+    expect(final.map(event => event.payload.text)).toEqual(scenario === "exact-final" ? ["EXACT_MARKER"] : []);
+    await session.close({ reason: "native attribution verified" });
+  });
+
   it("delivers negotiated steering and follow-up distinctly, once, for the active turn", async () => {
-    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: true });
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     expect(fixture.hostOptions?.providerPolicy).toEqual({ readOnly: true });
@@ -32,7 +218,6 @@ describe("Codex ACPX harness driver", () => {
     const turnInput = fixture.host.startTurn.mock.calls[0]![0];
     const context = { requestId: 0, signal: new AbortController().signal };
     await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "agent-1" }, context)).rejects.toThrow(/session mismatch/);
-    await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "backend-1" }, context)).rejects.toThrow(/adapter is unavailable/);
     await session.steer!({ turnId, correlationId: "control-1", message: { text: "Change focus" } });
     await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { text: "Then validate" } });
     expect(fixture.host.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Change focus", `run-controls:${turnId}`);
@@ -49,7 +234,7 @@ describe("Codex ACPX harness driver", () => {
   });
 
   it("rejects unnegotiated controls and retains ambiguous delivery attempts", async () => {
-    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } });
+    const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     const { turnId } = await session.startTurn({ message: { text: "Work" } });
     await expect(session.steer!({ turnId, message: { text: "No handshake" } })).rejects.toThrow(/did not negotiate/);
@@ -1535,6 +1720,42 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "permission verified" });
   });
 
+  it.each(["safe", "missing", "conflicting", "outside"].flatMap(scenario =>
+    ([undefined, "approve-all", "approve-reads"] as const).map(permissionMode => ({ scenario, permissionMode })),
+  ))("binds Copilot edit context before publishing any actionable request ($scenario, $permissionMode)", async ({ scenario, permissionMode }) => {
+    const safe = scenario === "safe";
+    const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: false }, permissionMode });
+    const session = await fixture.driver.openSession({ runId: "run-target", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    expect(fixture.hostOptions?.permissionMode).toBe(permissionMode ?? "approve-all");
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Request an edit." } });
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const response = callback({ inferredKind: "edit", raw: {
+      sessionId: "backend-1", toolCall: { toolCallId: "edit-target", title: "Create file", kind: "edit",
+        rawInput: { ...(scenario === "missing" ? {} : { path: scenario === "outside" ? "../outside.txt" : "/workspace/new.txt" }),
+          ...(scenario === "conflicting" ? { fileName: "other.txt" } : {}), content: "PRIVATE_CONTENT" } },
+      options: ["allow_once", "allow_always", "reject_once"].map(kind => ({ optionId: kind, kind, name: kind })),
+    } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: Promise.resolve() });
+    const events = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    const prompt = safe ? "Change file: new.txt" : "File change requested; target unavailable. Deny or cancel this request.";
+    expect(request.prompt).toBe(prompt);
+    expect(events.at(-1)?.payload).toMatchObject({ request: { prompt, type: "permission" } });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_CONTENT");
+    if (!safe) {
+      expect(request.details).toMatchObject({ choices: [{ key: "decline" }, { key: "cancel" }] });
+      for (const action of ["accept", "accept_for_session"] as const) {
+        await expect(session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action } })).rejects.toThrow("offered choice");
+      }
+      expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    }
+    await session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: safe ? "accept" : "decline" } });
+    await expect(response).resolves.toEqual({ outcome: safe ? "allow_once" : "reject_once" });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "target context checked" });
+  });
+
   it.each(["written", "failed"] as const)("waits for the exact provider permission reply receipt: %s", async outcome => {
     const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: false } });
     const session = await fixture.driver.openSession({ runId: "run-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
@@ -1543,10 +1764,11 @@ describe("Codex ACPX harness driver", () => {
     const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
     const receipt = deferred<void>();
     const providerResponse = callback({ inferredKind: "execute", raw: {
-      sessionId: "agent-session-1", toolCall: { toolCallId: "receipt-tool", title: "Run validation" },
+      sessionId: "backend-1", toolCall: { toolCallId: "receipt-tool", title: "Run validation", kind: "execute", rawInput: { command: "printf safe", mode: "async", detach: false } },
       options: [{ optionId: "session", kind: "allow_always", name: "Allow for session" }],
     } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
-    await created;
+    const requested = await created;
+    expect(requested.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1").map(event => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(x => [x.name, x.value])))).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: "receipt-tool", mode: "async", detach: "false" })]);
     const request = session.pendingRuntimeRequests!()[0]!;
     expect(request.details).toMatchObject({ choices: [{ key: "accept_for_session" }, { key: "cancel" }] });
     let acknowledged = false;
@@ -1561,11 +1783,78 @@ describe("Codex ACPX harness driver", () => {
       receipt.reject(new Error("pipe failed")); await rejected;
     }
     const events = await emitted;
+    const evidence = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1" && (event.payload.details as Array<{ name: string; value: string }>).some(x => x.name === "stage" && x.value === "permission_delivered"));
+    expect(evidence).toHaveLength(outcome === "written" ? 1 : 0);
+    if (outcome === "written") expect(evidence[0]!.payload.details).toEqual(expect.arrayContaining([{ name: "stage", value: "permission_delivered" }, { name: "outcome", value: "allow_always" }]));
     expect(events.filter(event => event.eventType === "runtime_request.resolved")).toHaveLength(outcome === "written" ? 1 : 0);
     if (outcome === "failed") expect(events.at(-1)?.payload).toMatchObject({ replayAllowed: false, reason: "response_delivery_failed" });
     expect(session.pendingRuntimeRequests!()).toHaveLength(0);
     if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
     await session.close({ reason: "receipt checked" });
+  });
+
+  it.each(["cursor-tool", "native\u0000tool", "native\u007ftool"].flatMap(toolCallId => ["written", "failed"].map(outcome => ({ toolCallId, outcome }))))("binds Cursor denial evidence to its original tool and response write: $outcome/$toolCallId", async ({ outcome, toolCallId }) => {
+    const command = "printf 'sensitive-value' > /workspace/denied.txt";
+    const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", providerPolicy: { readOnly: false } }, {
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "Run command", kind: "execute", status: "pending", rawInput: { command } }],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-cursor-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    const origin = collectUntil(session.events(), "tool.execution.started");
+    const { turnId } = await session.startTurn({ message: { text: "Request the command." } });
+    const originEvents = await origin;
+    const created = collectUntil(session.events(), "runtime_request.created");
+    const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
+    const receipt = deferred<void>();
+    const providerResponse = callback({ inferredKind: "execute", raw: {
+      sessionId: "backend-1", toolCall: { toolCallId, title: "Run command", kind: "execute" },
+      options: [{ optionId: "deny", kind: "reject_once", name: "Deny" }],
+    } } as Parameters<typeof callback>[0], { signal: new AbortController().signal, responseDelivery: receipt.promise });
+    const requested = await created;
+    const request = session.pendingRuntimeRequests!()[0]!;
+    const projectedId = cursorToolIdentity(toolCallId);
+    expect(request.details).toMatchObject({ toolCallId: projectedId });
+    expect(originEvents.find(event => event.eventType === "tool.execution.started")!.payload.executionId).toBe(projectedId);
+    const evidence = (events: PrpEvent[]) => events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "cursor_tool_evidence_v1");
+    const fields = (event: PrpEvent) => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(field => [field.name, field.value]));
+    const commandSha256 = `sha256:${createHash("sha256").update(command).digest("hex")}`;
+    expect(evidence(requested).map(fields)).toEqual([expect.objectContaining({ stage: "permission_requested", toolCallId: projectedId, requestId: request.requestId, commandSha256, declineOffered: "true" })]);
+    const settled = collectUntil(session.events(), outcome === "written" ? "runtime_request.resolved" : "runtime_request.expired");
+    let acknowledged = false;
+    const resolution = session.resolveRuntimeRequest!({ requestId: request.requestId, turnId, resolution: { action: "decline" } }).then(() => { acknowledged = true; });
+    await expect(providerResponse).resolves.toEqual({ outcome: "reject_once" });
+    expect(acknowledged).toBe(false);
+    if (outcome === "written") { receipt.resolve(); await resolution; }
+    else {
+      const failure = expect(resolution).rejects.toThrow("pipe failed");
+      receipt.reject(new Error("pipe failed")); await failure;
+    }
+    const terminalEvents = await settled;
+    expect(evidence(terminalEvents).map(fields)).toEqual(outcome === "written"
+      ? [expect.objectContaining({ stage: "permission_delivered", outcome: "reject_once", commandSha256, requestId: request.requestId })] : []);
+    expect(JSON.stringify([...evidence(originEvents), ...evidence(requested), ...evidence(terminalEvents)])).not.toContain("sensitive-value");
+    expect(session.pendingRuntimeRequests!()).toHaveLength(0);
+    if (outcome === "written") fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await session.close({ reason: "Cursor receipt verified" });
+  });
+
+  it.each(["copilot", "codex"] as const)("preserves pinned attached-shell evidence only on the Copilot direct driver: %s", async agent => {
+    const wire = JSON.parse(readFileSync(new URL("./fixtures/copilot-tool-evidence.json", import.meta.url), "utf8"))["attached-shell"];
+    const runtimeEvents = wire.filter((frame: any) => frame.method === "session/update").map((frame: any) => ({ ...frame.params.update, type: "tool_call", tag: frame.params.update.sessionUpdate })) as AcpRuntimeEvent[];
+    const fixture = driverFixture({ agent, providerPolicy: { readOnly: false } }, { runtimeEvents });
+    const session = await fixture.driver.openSession({ runId: "run-attached", normalizedSessionId: "session-1", workingDirectory: "/fixture/workspace" });
+    const completed = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({ message: { text: "Start attached work." } });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await completed;
+    const evidence = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1");
+    if (agent === "copilot") {
+      expect(evidence.length).toBeGreaterThan(2);
+      expect(evidence.every(event => event.turnId === turnId && event.runId === "run-attached")).toBe(true);
+      const fields = evidence.map(event => Object.fromEntries((event.payload.details as Array<{ name: string; value: string }>).map(x => [x.name, x.value])));
+      expect(fields).toEqual(expect.arrayContaining([expect.objectContaining({ operation: "execute", mode: "async", detach: "false", commandSha256: expect.stringMatching(/^sha256:/u) }), expect.objectContaining({ shellState: "started", shellId: "0" }), expect.objectContaining({ shellState: "completed", shellId: "0", exitCode: "0", commandToolCallId: expect.any(String) })]));
+      expect(JSON.stringify(evidence)).not.toContain("sleep 2");
+    } else expect(evidence).toEqual([]);
+    await session.close({ reason: "projection verified" });
   });
 
   it("round-trips a provider-neutral ACP form through the runtime request boundary", async () => {

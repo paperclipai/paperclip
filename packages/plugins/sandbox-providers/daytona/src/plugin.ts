@@ -9,10 +9,11 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
+  PluginEnvironmentAcquisitionDiagnostic,
   PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
@@ -107,6 +108,10 @@ let timingNow: () => number = () => Date.now();
 // read the tracer through `getPluginTracer()`. Before `setup` runs (or in a
 // test) the tracer is a no-op, so a span never throws.
 let pluginContext: PluginContext | null = null;
+// Provider deadlines and terminal close failures do not prove remote work
+// stopped. Until those paths provide complete cleanup receipts, only a worker
+// which has never contacted the provider can opt into automatic idle sleep.
+let providerUsed = false;
 
 /**
  * Return the plugin tracer. It is the injected `ctx.tracer` after `setup`, or a
@@ -313,6 +318,7 @@ function resolveApiKey(config: DaytonaDriverConfig): string {
 }
 
 function createDaytonaClient(config: DaytonaDriverConfig): Daytona {
+  providerUsed = true;
   const clientConfig: DaytonaConfig = {
     apiKey: resolveApiKey(config),
   };
@@ -948,6 +954,7 @@ async function createSandbox(
   options: {
     purpose?: string;
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
+    onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateRuntimeResourceRequest(config);
@@ -981,6 +988,8 @@ async function createSandbox(
       timeout: toTimeoutSeconds(config.timeoutMs),
     });
   } catch (createError) {
+    // Observe the create failure before compensating deletion can stall or fail.
+    const diagnostic = options.onCreateFailure?.();
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
@@ -988,7 +997,7 @@ async function createSandbox(
       await destroyFailedCreation(config, cleanup);
     } catch (cleanupError) {
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup);
+        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }
@@ -1570,6 +1579,7 @@ const sandboxHandleSessionStore = (() => {
  * Not used in production.
  */
 export function __resetDaytonaSandboxHandleCacheForTest(): void {
+  providerUsed = false;
   sandboxHandleCache.reset();
   sandboxHandleTeardownGates.reset();
   sandboxHandleActivityGates.reset();
@@ -2281,6 +2291,11 @@ const plugin = definePlugin({
     return { status: "ok", message: "Daytona sandbox provider plugin healthy" };
   },
 
+  async onIdleDrain() {
+    return providerUsed || daytonaLoginPtyByRoute.size > 0 || daytonaDuplexChannelByRoute.size > 0
+      ? "present" : "none";
+  },
+
   async onEnvironmentValidateConfig(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult> {
@@ -2395,17 +2410,30 @@ const plugin = definePlugin({
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
     const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
-    const deadline = Date.now() + budgetMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + budgetMs;
     let expired = false;
-    let phase = "create";
+    let phase: PluginEnvironmentAcquisitionDiagnostic["phase"] = "create";
+    let cleanupInProgress = false;
+    let firstFailure: PluginEnvironmentAcquisitionDiagnostic | undefined;
+    const observeFailure = (): PluginEnvironmentAcquisitionDiagnostic => {
+      // Cleanup may consume the rest of the budget. Keep the original failed
+      // step and time, rather than attributing that failure to its cleanup.
+      return firstFailure ??= {
+        phase,
+        elapsedMs: Math.max(0, Math.min(604_800_000, Date.now() - startedAt)),
+        budgetMs,
+      };
+    };
     let cleanup: PluginEnvironmentCreationCleanup | undefined;
     const timeoutFailure = () => {
+      const diagnostic = observeFailure();
       expired = true;
-      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${phase}`);
+      const cause = new Error(`Daytona lease acquisition exceeded ${budgetMs} ms during ${cleanupInProgress ? "cleanup" : phase}`);
       return cleanup
         ? new PluginEnvironmentCreationCleanupError([cause],
             "Daytona lease acquisition timed out; allocation cleanup is pending",
-            { ...cleanup, labels: { ...cleanup.labels } })
+            { ...cleanup, labels: { ...cleanup.labels } }, diagnostic)
         : cause;
     };
     const assertActive = () => {
@@ -2414,6 +2442,7 @@ const plugin = definePlugin({
     const acquire = async (): Promise<PluginEnvironmentLease> => {
       const sandbox = await createSandbox(params, config, {
         onCreateAttempt: (attempt) => { cleanup = attempt; },
+        onCreateFailure: observeFailure,
       });
       try {
         assertActive();
@@ -2476,17 +2505,18 @@ const plugin = definePlugin({
           }),
         };
       } catch (error) {
+        const diagnostic = observeFailure();
         // After timeout the host owns the durable cleanup record. A late SDK
         // completion must not admit this lease or start another setup phase.
         if (!expired) {
-          phase = "cleanup";
+          cleanupInProgress = true;
           try {
             await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())));
           } catch (cleanupError) {
             if (cleanup) {
               throw new PluginEnvironmentCreationCleanupError([error, cleanupError],
                 "Daytona lease setup failed; allocation cleanup is pending",
-                { ...cleanup, labels: { ...cleanup.labels } });
+                { ...cleanup, labels: { ...cleanup.labels } }, diagnostic);
             }
             throw error;
           }
@@ -3260,8 +3290,11 @@ const plugin = definePlugin({
     };
     try {
       return await withSandboxActivityGate(scope, async () => {
-        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, timeoutSeconds);
+        const sandbox = await withEnvironmentSyncTransferStep("sandbox_access", async () => {
+          const resolved = await getSandbox(scope, { bypassTeardownGate: true });
+          await ensureSandboxStarted(resolved, timeoutSeconds);
+          return resolved;
+        });
         const result = await performSyncOut({
           sandbox,
           operations: params.operations,
@@ -3277,7 +3310,7 @@ const plugin = definePlugin({
       // unexported workspace bytes no longer exist. Convert the SDK class to a
       // stable cross-worker message; every other error remains retryable.
       if (error instanceof DaytonaNotFoundError) {
-        throw new Error("daytona_sandbox_not_found");
+        throw preserveEnvironmentSyncErrorDiagnostic(new Error("daytona_sandbox_not_found"), error);
       }
       throw error;
     }

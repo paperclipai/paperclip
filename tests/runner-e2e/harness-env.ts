@@ -1,3 +1,6 @@
+import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { installedCliKeys } from "./installed-cli.js";
 import path from "node:path";
 import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
@@ -114,11 +117,19 @@ export function buildRunnerE2EProcessEnvironment(
   const candidates = new Map<string, string>();
   for (const execution of executions) {
     const agent = execution.profile.qualificationCandidate;
-    if (!agent || agent === "cursor") continue;
+    if (!agent) continue;
     const admittedSuite = execution.suite.id === "extended-harnesses"
-      || execution.suite.id === "rich-acp-warm-continuity";
+      || execution.suite.id === "rich-acp-warm-continuity"
+      || (execution.suite.id === "pi-native" && agent === "pi")
+      || (execution.suite.id === "pi-controls" && agent === "pi")
+      || (["cursor-native", "native-provider-loss"].includes(execution.suite.id) && agent === "cursor")
+      || (execution.suite.id === "copilot-protection" && agent === "copilot")
+      || (execution.suite.id === "native-active-stop" && (agent === "cursor" || agent === "copilot"));
     if (!admittedSuite || !execution.suite.manualOnly) {
       throw new Error("Candidate qualification requires an explicit provider qualification suite");
+    }
+    if (QUALIFIED_ACPX_PROFILES[agent].qualificationStatus !== "pending") {
+      continue;
     }
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
@@ -169,7 +180,7 @@ export function buildPaperclipServerEnvironment(
   ]) {
     delete result[key];
   }
-  for (const key of GENERATED_SERVER_SECRET_KEYS) delete result[key];
+  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys]) delete result[key];
   Object.assign(result, overrides);
   return result;
 }
