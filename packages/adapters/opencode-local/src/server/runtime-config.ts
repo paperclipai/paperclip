@@ -84,6 +84,71 @@ function parseProviderConfig(
   return Object.keys(providers).length > 0 ? providers : null;
 }
 
+// OpenCode waits `options.headerTimeout` ms for a gateway's response headers and
+// defaults that to 300_000. A reverse proxy in front of a gateway (Cloudflare 522,
+// most ELBs) answers an origin stall by HOLDING the socket open rather than
+// refusing it, so the client sees a hang instead of an error -- and the socket
+// stays doomed even after the proxy recovers. A 2-minute edge flap therefore burns
+// the full 300 s on every in-flight request, and because retry backoff is far
+// shorter than 300 s the first retry is spent on another doomed socket instead of
+// on the recovered edge. Bounding time-to-first-byte converts that hang into a
+// prompt, retryable failure so the retry lands after a typical flap has cleared.
+//
+// Only applied to gateway providers injected from PAPERCLIP_OPENCODE_PROVIDERS --
+// the class that dials a remote gateway through a proxy we do not control. An
+// explicit headerTimeout in the provider block always wins, including `false`
+// (meaning "no TTFB bound"), so this is a default and never an override.
+const DEFAULT_GATEWAY_HEADER_TIMEOUT_MS = 120_000;
+
+function resolveGatewayHeaderTimeout(raw: string | undefined): number | false | null {
+  if (raw === undefined) return DEFAULT_GATEWAY_HEADER_TIMEOUT_MS;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return DEFAULT_GATEWAY_HEADER_TIMEOUT_MS;
+  // Opt out entirely and leave OpenCode's own default in place.
+  if (/^(false|off|0|none)$/i.test(trimmed)) return false;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+}
+
+function applyGatewayHeaderTimeout(
+  providers: Record<string, unknown>,
+  rawOverride: string | undefined,
+  notes: string[],
+): Record<string, unknown> {
+  const resolved = resolveGatewayHeaderTimeout(rawOverride);
+  if (resolved === null) {
+    notes.push(
+      "PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS is not a positive number; leaving OpenCode's default header timeout in place.",
+    );
+    return providers;
+  }
+  if (resolved === false) return providers;
+
+  const out: Record<string, unknown> = {};
+  const applied: string[] = [];
+  for (const [name, provider] of Object.entries(providers)) {
+    if (!isPlainObject(provider)) {
+      out[name] = provider;
+      continue;
+    }
+    const options = isPlainObject(provider.options) ? provider.options : {};
+    // Respect an explicit value of any kind, including `false`.
+    if ("headerTimeout" in options) {
+      out[name] = provider;
+      continue;
+    }
+    out[name] = { ...provider, options: { ...options, headerTimeout: resolved } };
+    applied.push(name);
+  }
+  if (applied.length > 0) {
+    notes.push(
+      `Bounded OpenCode provider header timeout to ${resolved}ms for: ${applied.join(", ")}.`,
+    );
+  }
+  return out;
+}
+
 function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -167,8 +232,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
-  let nextProvider = gatewayProviders
-    ? { ...existingProvider, ...gatewayProviders }
+  const boundedGatewayProviders = gatewayProviders
+    ? applyGatewayHeaderTimeout(
+        gatewayProviders,
+        input.env.PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS ??
+          process.env.PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS,
+        notes,
+      )
+    : null;
+  let nextProvider = boundedGatewayProviders
+    ? { ...existingProvider, ...boundedGatewayProviders }
     : existingProvider;
   if (gatewayProviders) {
     notes.push(
