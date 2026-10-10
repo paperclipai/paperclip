@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SmolError } from "smolmachines";
 
 const { create, connect } = vi.hoisted(() => ({ create: vi.fn(), connect: vi.fn() }));
@@ -22,9 +22,14 @@ function machine() {
 const base = { driverKey: "smolmachines", companyId: "company-1", environmentId: "env-1" };
 const acquireParams = { ...base, runId: "run-1", adapterType: "codex_local", config: { target: "local", reuseLease: false } };
 
+const nativeArch = Object.getOwnPropertyDescriptor(process, "arch")!;
 beforeEach(() => {
+  // The default published agent image is amd64; these mocked acquisition
+  // tests exercise that path on any developer host architecture.
+  Object.defineProperty(process, "arch", { ...nativeArch, value: "x64" });
   create.mockReset(); connect.mockReset();
 });
+afterEach(() => Object.defineProperty(process, "arch", nativeArch));
 
 describe("Smol Machines provider", () => {
   it("validates numeric resources and target", async () => {
