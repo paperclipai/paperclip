@@ -55,6 +55,10 @@ import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
   "execution_review_participant_recovery";
 
+// Task keys of plugin agent sessions: `plugin:<pluginKey>:session:<uuid>`
+// (see `agentSessions.create` in plugin-host-services.ts).
+const PLUGIN_SESSION_TASK_KEY = /^plugin:.+:session:/;
+
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
@@ -1535,6 +1539,10 @@ export function createHeartbeatRunState(db: Db) {
         if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
       }
     const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).then((rows) => rows[0] ?? null);
+    // Only `agentSessions.create` opens a plugin session row, and
+    // `agentSessions.close` deletes it. A run that finalizes after the plugin
+    // closed its session must not re-create the row.
+    if (!existing && PLUGIN_SESSION_TASK_KEY.test(input.taskKey)) return null;
     if (existing) {
       return tx
         .update(agentTaskSessions)

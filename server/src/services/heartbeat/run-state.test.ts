@@ -16,6 +16,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import * as legacy from "../heartbeat.js";
+import { buildHostServices } from "../plugin-host-services.js";
 import * as extracted from "./run-state.js";
 
 // SQL_ASCII needs a separate database cluster. Inspect its selected SQL here;
@@ -218,5 +219,32 @@ describePostgres("heartbeat run state database wiring", () => {
     expect(await state.clearTaskSessions(companyId, agent.id, { taskKey: issue.id, expectedRunId: run.id })).toBe(0);
     const [retained] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, saved!.id));
     expect(retained.sessionDisplayId).toBe("retained");
+  });
+
+  it("does not re-create a plugin session row after the plugin closed the session", async () => {
+    const { companyId, agent, state } = await fixture();
+    const eventBus = { forPlugin: () => ({ emit: async () => {}, subscribe: () => {}, clear: () => {} }) };
+    const host = buildHostServices(db, randomUUID(), "paperclip.boardroom-test", eventBus as never);
+    const { sessionId } = await host.agentSessions.create({ companyId, agentId: agent.id });
+    const [created] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, sessionId));
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "automation", status: "running",
+      contextSnapshot: { taskKey: created.taskKey },
+    }).returning();
+    const input = {
+      companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: created.taskKey,
+      sessionParamsJson: { sessionId: "provider-session" }, sessionDisplayId: "provider-session",
+      lastRunId: run.id, lastError: null,
+    };
+
+    // A run of an open session still saves its session state on the plugin's row.
+    expect(await state.upsertTaskSession(input)).toMatchObject({ id: sessionId, sessionDisplayId: "provider-session" });
+
+    // The plugin closes the session on the terminal run event, before run
+    // finalization writes the session state again.
+    await host.agentSessions.close({ companyId, sessionId });
+    expect(await state.upsertTaskSession({ ...input, sessionDisplayId: "late-finalization" })).toBeNull();
+    expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, created.taskKey))).toEqual([]);
+    host.dispose();
   });
 });
