@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { codexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { readConfigFile } from "../config-file.js";
 
 const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
@@ -41,6 +44,35 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
+interface CodexCacheEntry {
+  slug?: unknown;
+  display_name?: unknown;
+  visibility?: unknown;
+}
+
+async function readCodexModelsCache(): Promise<AdapterModel[]> {
+  try {
+    const file = path.join(codexHomeDir(), "models_cache.json");
+    const raw = JSON.parse(await fs.readFile(file, "utf8")) as { models?: unknown };
+    const models = Array.isArray(raw.models) ? raw.models : [];
+    return dedupeModels(
+      models.flatMap((model): AdapterModel[] => {
+        if (typeof model !== "object" || model === null) return [];
+        const entry = model as CodexCacheEntry;
+        if (entry.visibility !== "list" || typeof entry.slug !== "string") return [];
+        const id = entry.slug.trim();
+        if (!id) return [];
+        const label = typeof entry.display_name === "string" && entry.display_name.trim()
+          ? entry.display_name.trim()
+          : id;
+        return [{ id, label }];
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
@@ -72,8 +104,13 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
+
+  // The Codex client owns this file cache; each list/refresh reads its latest catalog.
+  const fromCodexCache = await readCodexModelsCache();
+  if (fromCodexCache.length > 0) return mergedWithFallback(fromCodexCache);
+
+  const apiKey = resolveOpenAiApiKey();
   if (!apiKey) return fallback;
 
   const now = Date.now();
