@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
@@ -129,6 +129,20 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     return companyId;
   }
+
+  it.each(["", " ", "\t\n"])("does not query for a blank lease id %j", async (id) => {
+    const select = vi.spyOn(db, "select");
+    try {
+      await expect(svc.getLeaseById(id)).resolves.toBeNull();
+      expect(select).not.toHaveBeenCalled();
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("returns null for an unknown non-blank lease id", async () => {
+    await expect(svc.getLeaseById(randomUUID())).resolves.toBeNull();
+  });
 
   it("acquires and releases a lease for a run", async () => {
     const { companyId, environmentId, runId } = await seedEnvironment();
