@@ -1,5 +1,11 @@
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { normalizeAgentNameKey } from "./retries.js";
+import {
+  CODEX_PROVIDER_BACKOFF_WAKE_REASON,
+  computeSnoozedTimerBaseline,
+  resolveCodexProviderBackoffGate,
+  serializeCodexProviderBackoffGate,
+} from "./provider-backoff.js";
 import { publishActiveDotComment } from "../dot-assignment-follow-up.js";
 import {
   type WakeupOptions,
@@ -2592,6 +2598,35 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    if (source === "timer") {
+      const providerBackoffCheckedAt = new Date();
+      const providerBackoffGate = await resolveCodexProviderBackoffGate(db, {
+        agent,
+        now: providerBackoffCheckedAt,
+      });
+      if (providerBackoffGate) {
+        await writeSkippedRequest(CODEX_PROVIDER_BACKOFF_WAKE_REASON, {
+          payload: {
+            ...(payload ?? {}),
+            providerBackoff: serializeCodexProviderBackoffGate(providerBackoffGate),
+          },
+          finishedAt: providerBackoffCheckedAt,
+        });
+        await db
+          .update(agents)
+          .set({
+            lastHeartbeatAt: computeSnoozedTimerBaseline({
+              gate: providerBackoffGate,
+              intervalSec: policy.intervalSec,
+              now: providerBackoffCheckedAt,
+            }),
+            updatedAt: providerBackoffCheckedAt,
+          })
+          .where(eq(agents.id, agentId));
+        return null;
+      }
     }
 
     if (issueId) {
