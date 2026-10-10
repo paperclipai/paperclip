@@ -9658,6 +9658,20 @@ export function issueRoutes(
             );
             const automatic = settled.evidence.automaticRecovery as
               { replay?: string } | undefined;
+            // A caller asking to restore this exact hold without evidence gets
+            // a clear reason instead of a 200 that silently changes nothing.
+            if (
+              automatic?.replay === "blocked" &&
+              !executionReconciliation &&
+              outcome === "restored" &&
+              sourceIssueStatus === "todo" &&
+              !activeRecoveryAction
+            ) {
+              throw conflict(
+                "This recovery action is resolved but still holds a no-replay dispatch block. Provide executionReconciliation (the stopped run's id and verified outcome evidence) to restore it.",
+                { code: "execution_reconciliation_required" },
+              );
+            }
             if (automatic?.replay === "blocked" && executionReconciliation) {
               // An automatic no-replay disposition is final until new evidence
               // arrives. Keep the supported evidence API usable without a dialog.
