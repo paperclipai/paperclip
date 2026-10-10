@@ -136,6 +136,12 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  ADAPTER_MODEL_REJECTION_CODE,
+  adapterModelRejectionMessage,
+  evaluateAdapterModel,
+  type AdapterModelGuardInput,
+} from "../services/adapter-model-guard.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
   persistReprojectedWorkspaceDiffs,
@@ -146,6 +152,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  isBuiltinTypeOverridden,
   listServerAdapters,
   listAdapterModels,
   refreshAdapterModels,
@@ -2130,6 +2137,12 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    /**
+     * The caller-named model and the agent's current selection, for the guard
+     * that refuses a model the adapter cannot serve. Omitted on a path that
+     * persists no caller-chosen model.
+     */
+    modelGuard?: AgentModelGuardContext;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2145,6 +2158,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.modelGuard ?? null,
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2319,11 +2333,74 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  /**
+   * What the model guard needs from a write: the model the CALLER named (absent
+   * when it named none, which is not a rejectable condition) and what the agent
+   * already has. `null` disables the guard for a path that persists no
+   * caller-chosen model at all.
+   */
+  type AgentModelGuardContext = {
+    requestedModel: unknown;
+    previous?: AdapterModelGuardInput["previous"];
+  };
+
+  /**
+   * Refuse a write whose model the agent's own adapter cannot serve.
+   *
+   * This is the only point at which the failure is still recoverable. Past it,
+   * an agent set to a model of the wrong vendor fails EVERY dispatch at the
+   * first model call, which means it can no longer exercise the `allow_self`
+   * branch of `agent_config:update` that let it make the write — while undoing
+   * the write from outside needs `agents:configure`. The break is self-service;
+   * the repair is not.
+   *
+   * Fails OPEN on a catalog fault. A discovery outage must not make every agent
+   * unwritable: that is the same lock-out, only wider. The guard rejects on a
+   * positive verdict from a catalog it actually read, never on silence.
+   *
+   * That fail-open is reached WITHOUT a `try`/`catch`, here or in the guard: an
+   * outage degrades to an empty or static catalog inside the adapter loaders, which
+   * the guard answers by passing the write. A catch on this call would instead
+   * swallow the deterministic faults — a bad config, a defect in the guard — and
+   * skip the check silently, turning any future bug into a reopening of the hole
+   * this exists to close. An unexpected throw is therefore allowed to surface as a
+   * 500: a write that errors is recoverable, and the one this guard refuses is not.
+   *
+   * It also rejects only where the catalog is authoritative for THIS agent, so
+   * `isBuiltinTypeOverridden` is passed in: an external adapter serving a builtin
+   * type invalidates the per-adapter verification the guard's allowlist rests on.
+   */
+  async function assertAdapterCanServeModel(
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+    modelGuard: AgentModelGuardContext | null,
+  ): Promise<void> {
+    if (!modelGuard) return;
+    const verdict = await evaluateAdapterModel(
+      {
+        adapterType,
+        adapterConfig,
+        requestedModel: modelGuard.requestedModel,
+        previous: modelGuard.previous ?? null,
+      },
+      listAdapterModels,
+      { isAdapterOverridden: isBuiltinTypeOverridden },
+    );
+    if (verdict.ok) return;
+    throw unprocessable(adapterModelRejectionMessage(verdict), {
+      code: ADAPTER_MODEL_REJECTION_CODE,
+      model: verdict.model,
+      adapterType: verdict.adapterType,
+    });
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    modelGuard: AgentModelGuardContext | null = null,
   ) {
+    await assertAdapterCanServeModel(adapterType, adapterConfig, modelGuard);
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -4286,6 +4363,7 @@ export function agentRoutes(
       companyId,
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
+      modelGuard: { requestedModel: rawHireAdapterConfig.model },
     });
     const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, hireInput.adapterType, normalizedAdapterConfig, hireInput.runtimeConfig);
     const normalizedHireInput = {
@@ -4593,6 +4671,7 @@ export function agentRoutes(
       companyId,
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
+      modelGuard: { requestedModel: rawCreateAdapterConfig.model },
     });
     const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
@@ -5304,6 +5383,13 @@ export function agentRoutes(
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        modelGuard: {
+          requestedModel: requestedAdapterConfig?.model,
+          previous: {
+            adapterType: existing.adapterType,
+            model: existingAdapterConfig.model,
+          },
+        },
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {

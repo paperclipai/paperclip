@@ -5,6 +5,7 @@ export {
   listServerAdapters,
   findServerAdapter,
   findActiveServerAdapter,
+  isBuiltinTypeOverridden,
   detectAdapterModel,
   registerServerAdapter,
   unregisterServerAdapter,

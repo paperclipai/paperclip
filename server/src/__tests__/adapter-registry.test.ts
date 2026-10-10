@@ -7,6 +7,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  isBuiltinTypeOverridden,
   listAdapterModels,
   registerServerAdapter,
   requireServerAdapter,
@@ -86,6 +87,52 @@ describe("server adapter registry", () => {
     expect(() => requireServerAdapter("external_test")).toThrow(
       "Unknown adapter type: external_test",
     );
+  });
+
+  it("reports a builtin type as overridden only while an external adapter actually serves it", () => {
+    // Consumers gate behaviour on this: the adapter-model guard stops enforcing a
+    // model catalog it verified by reading the BUILTIN loader once that loader has
+    // been swapped out. So the predicate has to track the override's lifecycle, not
+    // merely the fact that one happened. `unregisterServerAdapter` restores the
+    // builtin but deliberately KEEPS its `builtinFallbacks` entry, so a presence
+    // check there would latch to true forever and leave the guard off for good.
+    const plugin: ServerAdapterModule = {
+      type: "claude_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      models: [{ id: "plugin-model", label: "Plugin Override" }],
+      supportsLocalAgentJwt: false,
+    };
+
+    expect(isBuiltinTypeOverridden("claude_local")).toBe(false);
+
+    registerServerAdapter(plugin);
+    expect(isBuiltinTypeOverridden("claude_local")).toBe(true);
+
+    // Paused: findActiveServerAdapter serves the builtin again, so the verified
+    // behaviour is back in place even though the external module is still held.
+    setOverridePaused("claude_local", true);
+    expect(isBuiltinTypeOverridden("claude_local")).toBe(false);
+
+    setOverridePaused("claude_local", false);
+    expect(isBuiltinTypeOverridden("claude_local")).toBe(true);
+
+    // The regression: restored builtin must read as not overridden.
+    unregisterServerAdapter("claude_local");
+    expect(findActiveServerAdapter("claude_local")).not.toBe(plugin);
+    expect(isBuiltinTypeOverridden("claude_local")).toBe(false);
+  });
+
+  it("never reports a type that was never overridden as overridden", () => {
+    registerServerAdapter(externalAdapter);
+    // external_test is not a builtin, so no fallback is ever held for it.
+    expect(isBuiltinTypeOverridden("external_test")).toBe(false);
+    expect(isBuiltinTypeOverridden("codex_local")).toBe(false);
   });
 
   it("allows external plugin to override a built-in adapter type", () => {

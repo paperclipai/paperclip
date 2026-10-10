@@ -87,7 +87,12 @@ vi.mock("../services/environments.js", () => ({
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
   findActiveServerAdapter: mockFindServerAdapter,
-  listAdapterModels: vi.fn(),
+  // Resolves to an array, as the real `listAdapterModels` always does. A bare
+  // `vi.fn()` resolves to undefined, which the adapter-model guard then reads as
+  // a catalog and crashes on. Empty means "the catalog says nothing", so the
+  // guard passes the write — these tests are about instructions, not models.
+  listAdapterModels: vi.fn(async () => []),
+  isBuiltinTypeOverridden: vi.fn(() => false),
 }));
 
 function registerModuleMocks() {
@@ -119,7 +124,8 @@ function registerModuleMocks() {
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: mockFindServerAdapter,
     findActiveServerAdapter: mockFindServerAdapter,
-    listAdapterModels: vi.fn(),
+    listAdapterModels: vi.fn(async () => []),
+    isBuiltinTypeOverridden: vi.fn(() => false),
   }));
 }
 
