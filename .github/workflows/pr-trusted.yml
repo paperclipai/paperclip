@@ -502,6 +502,15 @@ jobs:
           # across three dedicated runners (~143s each), and the remaining
           # ~2755s levels across twelve duration-balanced shards at ~230s
           # each, in line with the other ~200-290s lanes.
+          #
+          # The balance only holds while the manifest is fresh. By 2026-10-10
+          # the without-chat group had grown to 871 suites and ~5031s of serial
+          # vitest time (mean of runs 38076844891 and 38076972444), 230 of
+          # them unrecorded and weighted at the median, so the twelve shards
+          # ran 313-554s of tests (server 2/12 at 618s was the slowest check
+          # in the run). Re-recorded durations level them to ~415s each; the
+          # shard count stays at twelve because Build and workspaces-b sit
+          # above that already.
           - group: general-server-without-chat
             group_label: server (1/12)
             shard_index: 0
