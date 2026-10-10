@@ -45,13 +45,13 @@ export function createComputerEnvironmentDriver(db: Db): EnvironmentRuntimeDrive
     driver: "computer",
     async acquireRunLease(input) {
       if (!(await instanceSettingsService(db).getExperimental()).enableBoatEnvironments) throw new Error("boat_environments_disabled");
-      if (!input.agentId) throw new Error("computer_agent_required");
+      if (input.heartbeatRunId && !input.agentId) throw new Error("computer_agent_required");
       const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(input.environment.config.runnerIdleTimeoutMs);
       const binding = input.heartbeatRunId ? await computers.admit({ companyId: input.companyId, environmentId: input.environment.id,
-        agentId: input.agentId, runId: input.heartbeatRunId, idleTimeoutMs,
+        agentId: input.agentId ?? undefined, runId: input.heartbeatRunId, idleTimeoutMs,
         sessionKey: createHash("sha256").update(JSON.stringify([input.agentId, input.executionWorkspaceId ?? input.issueId, input.adapterType, input.executionConfigurationKey])).digest("hex") })
         : await computers.admitProbe({ companyId: input.companyId, environmentId: input.environment.id,
-          agentId: input.agentId, probeId: randomUUID(), idleTimeoutMs });
+          agentId: input.agentId ?? undefined, probeId: randomUUID(), idleTimeoutMs });
       try {
         // The durable owner advanced generation; prior retained bookkeeping no
         // longer owns the process and must not be reaped as an allocation.

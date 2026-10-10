@@ -621,6 +621,35 @@ with open(output,'wb') as out,open(error,'wb') as err:
       rmSync(temp, { recursive: true, force: true });
     }
   });
+  it("admits an unsaved-agent probe in a bounded company-scoped temporary home", async () => {
+    const f = fixture();
+    await f.attach();
+    const probe = await f.service.admitProbe({ ...f.scope, probeId: "unsaved", idleTimeoutMs: 60_000 });
+    const record = await f.repository.get(f.scope);
+    const owner = record.ledger.owners.find((entry) => entry.id === probe.owner.ownerId)!;
+    expect(owner.agentId).toBeUndefined();
+    expect(owner.runId).toBeUndefined();
+    expect(owner.probeId).toBe("unsaved");
+    expect(probe.remoteCwd).toBe(`/home/user/paperclip/${f.scope.companyId}/probes/unsaved`);
+    expect(probe.agentHome).toBe(probe.remoteCwd);
+    expect(Object.keys(record.ledger.placements)).toEqual(["probe-unsaved"]);
+    await expect(f.service.realizeWorkspace({ ...f.scope, owner: probe.owner, mode: "shared" }))
+      .resolves.toMatchObject({ remoteCwd: probe.remoteCwd, agentHome: probe.agentHome });
+    await expect(f.service.realizeWorkspace({ ...f.scope, owner: probe.owner, mode: "shared", projectId: "project" }))
+      .rejects.toMatchObject({ code: "conflict" });
+    await expect(f.service.admitProbe({ ...f.scope, companyId: "foreign", probeId: "other", idleTimeoutMs: 60_000 }))
+      .rejects.toMatchObject({ code: "not_found" });
+    f.advance(60_001);
+    await f.service.reconcile();
+    expect(f.repository.runState).not.toHaveBeenCalled();
+    expect(f.backend.retire).toHaveBeenCalledOnce();
+  });
+  it("still requires an agent for a real heartbeat admission", async () => {
+    const f = fixture();
+    await f.attach();
+    await expect(f.service.admit({ ...f.scope, runId: "run", sessionKey: "session", idleTimeoutMs: 60_000 }))
+      .rejects.toMatchObject({ code: "invalid" });
+  });
   it("gives harness probes a finite owner without fabricating a heartbeat run", async () => {
     const f = fixture();
     await f.attach();

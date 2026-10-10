@@ -13445,6 +13445,8 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     { condition: "retired", expected: "verified" },
+    { condition: "workspace-coordinate", expected: "verified" },
+    { condition: "wrong-workspace-run", expected: "scope_mismatch" },
     { condition: "uncertain", expected: "terminal_state_indeterminate" },
     { condition: "stale-generation", expected: "terminal_state_indeterminate" },
     { condition: "wrong-placement", expected: "scope_mismatch" },
@@ -13460,20 +13462,23 @@ describe("runnerd provider runtime wiring", () => {
     const descriptor = { kind: "remote-persistent", leaseId: "prior-lease", providerLeaseId: owner.ownerId,
       remoteCwd: "/remote/agent", computerId: owner.computerId, ownerGeneration: owner.generation,
       listenerPort: owner.listenerPort, placementId: "placement" };
-    const db = { select: () => ({ from: (table: unknown) => ({ where: () => ({ limit: async () =>
+    let leaseQuery: SQL | undefined;
+    const workspaceCoordinate = ["workspace-coordinate", "wrong-workspace-run"].includes(condition);
+    const db = { select: () => ({ from: (table: unknown) => ({ where: (query: SQL) => { if (table === environmentLeases) leaseQuery = query; return ({ limit: async () =>
       table === environmentLeases ? condition === "wrong-lease" ? [] : [{
         providerLeaseId: owner.ownerId,
+        heartbeatRunId: condition === "wrong-workspace-run" ? "unrelated-run" : prior.binding.runId,
         metadata: { agentId: prior.binding.agentId, computerOwner: { ...owner, generation: 1 } },
       }] : [{ status: condition === "active-run" ? "running" : "succeeded",
         runnerProfileJson: { nativeExecutionInput: prior, nativeComputerWorkspace: descriptor } }],
-    }) }) }) } as unknown as Db;
+    }); } }) }) } as unknown as Db;
     computerRetirement.isRetired.mockReset().mockImplementation(async ({ owner: requested }) => {
       if (condition === "unavailable") throw new Error("ledger unavailable");
       return condition !== "uncertain" && requested.generation === (condition === "stale-generation" ? 3 : 2);
     });
     const input = { db, root, execution: current, identity: { runId: prior.binding.runId,
       normalizedSessionId: prior.session.normalizedSessionId!, runnerInstanceId: "prior-runner",
-      environmentLeaseId: condition === "wrong-lease" ? "other-lease" : "initial-physical-lease" },
+      environmentLeaseId: workspaceCoordinate ? prior.binding.executionWorkspaceId : condition === "wrong-lease" ? "other-lease" : "initial-physical-lease" },
       allowVerifiedBackup: false, remoteRunnerState: true,
       runnerExecutionTarget: { kind: "remote", transport: "computer", environmentId: "environment",
         remoteCwd: "/remote/agent", resourceAuthority: { ...owner, ownerId: "successor-owner", generation: 1 },
@@ -13493,12 +13498,17 @@ describe("runnerd provider runtime wiring", () => {
         expect(computerRetirement.isRetired).not.toHaveBeenCalled();
       }
       expect(await verifyPriorRunnerdStateForSessionScope({ ...input, allowRetainedWarmRunner: false })).toBe(expected);
-      if (["retired", "uncertain", "stale-generation", "unavailable"].includes(condition)) {
+      if (["retired", "workspace-coordinate", "uncertain", "stale-generation", "unavailable"].includes(condition)) {
         expect(computerRetirement.isRetired).toHaveBeenCalledExactlyOnceWith({
           companyId: current.binding.companyId, environmentId: "environment", agentId: current.binding.agentId,
           runId: prior.binding.runId, owner,
         });
       } else expect(computerRetirement.isRetired).not.toHaveBeenCalled();
+      if (workspaceCoordinate) {
+        const query = new PgDialect().sqlToQuery(leaseQuery!);
+        expect(query.params).toContain(descriptor.leaseId);
+        expect(query.params).not.toContain(prior.binding.executionWorkspaceId);
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
