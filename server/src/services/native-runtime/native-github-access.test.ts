@@ -13,7 +13,7 @@ const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<typeof run>) => ({
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
-})), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>) {
+})), remote: boolean | "computer" = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>) {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
@@ -29,20 +29,34 @@ async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<type
     const result = await child;
     return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt };
   };
-  const target = remote ? { kind: "remote" as const, transport: "sandbox" as const, providerKey: "test",
-    remoteCwd: root, runner: { execute }, streamRunLogs: false } : null;
+  let generation = 1;
+  let processLive = true;
+  const processRunner = { execute: vi.fn(async (input: Parameters<typeof execute>[0]) => {
+    if (!processLive) throw new Error("computer_process_claim_stale");
+    return execute(input);
+  }) };
+  const target = remote === "computer" ? {
+    kind: "remote", transport: "computer", remoteCwd: root,
+    runner: { execute: async (input: Parameters<typeof execute>[0]) => {
+      if (generation !== 1) throw new Error("computer_attempt_superseded");
+      return execute(input);
+    } }, processRunner,
+  } as Parameters<typeof createNativeGitHubAccess>[0]["target"] : remote ? {
+    kind: "remote" as const, transport: "sandbox" as const, providerKey: "test",
+    remoteCwd: root, runner: { execute }, streamRunLogs: false,
+  } : null;
   const result = await createNativeGitHubAccess({ scope, target, cwd: root,
     env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog },
     bridgeUnavailable ? async () => { throw new Error("fixture bridge unavailable"); } : undefined);
   cleanups.push(result.stop);
-  return { ...result, root, resolveCredentials };
+  return { ...result, root, resolveCredentials, processRunner, advanceGeneration: () => { generation++; }, retireProcess: () => { processLive = false; } };
 }
 function request(broker: NativeGitHubAccess, extra: RequestInit = {}, endpoint = "/runtime-tools/github/credentials") {
   return fetch(broker.env.PAPERCLIP_GITHUB_BROKER_URL + endpoint, {
     method: "POST", body: "{}", headers: { authorization: `Bearer ${broker.env.PAPERCLIP_GITHUB_BRIDGE_TOKEN}`, "content-type": "application/json" }, ...extra,
   });
 }
-it.each([false, true])("keeps one live parent and its original launcher environment across two authorized runs (callback bridge: %s)", async (remote) => {
+it.each([false, true, "computer"] as const)("keeps one live parent and its original launcher environment across two authorized runs (callback bridge: %s)", async (remote) => {
   const b = await broker(undefined, remote);
   const parent = spawn(process.execPath, ["-e", `
     const {execFile}=require('node:child_process');
@@ -61,6 +75,7 @@ it.each([false, true])("keeps one live parent and its original launcher environm
   expect(a.value).toBe("fixture-run-a");
   releaseA();
   expect((await operation()).value).toBe("anonymous");
+  b.advanceGeneration();
   const releaseB = b.activate(run("run-b"));
   releaseA(); // A's delayed cleanup cannot revoke B.
   const second = await operation();
@@ -70,6 +85,11 @@ it.each([false, true])("keeps one live parent and its original launcher environm
   expect(await readFile(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), "utf8")).not.toContain(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
   releaseB(); await b.stop();
   await expect(access(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toThrow();
+  if (remote === "computer") {
+    expect(b.processRunner.execute).toHaveBeenCalled();
+    b.retireProcess();
+    await expect(b.processRunner.execute({ command: "true" })).rejects.toThrow("computer_process_claim_stale");
+  }
 }, 45_000);
 it("rejects other scopes, concurrent bindings, browser requests and forged authority", async () => {
   const b = await broker();

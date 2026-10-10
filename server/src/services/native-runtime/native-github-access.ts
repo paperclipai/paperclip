@@ -25,7 +25,13 @@ export async function createNativeGitHubAccess(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
   const token = randomBytes(32).toString("hex");
-  const location = { runId: `native-session-${randomUUID()}`, target: input.target };
+  // The broker belongs to the retained process, while its activate() binding
+  // grants one run at a time. A computer attempt advances generation on each
+  // turn; polling must retain the exact process capability across that handoff.
+  const target = input.target?.kind === "remote" && input.target.transport === "computer"
+    ? { ...input.target, runner: input.target.processRunner }
+    : input.target;
+  const location = { runId: `native-session-${randomUUID()}`, target };
   let active: Binding | null = null;
   let stopped = false;
   let ready = true;
