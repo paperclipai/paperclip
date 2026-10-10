@@ -14486,6 +14486,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .onDiscordGatewayEvent;
     if (!onGatewayEvent) throw new Error("Expected Discord Gateway callback");
 
+    const recovered = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, recovered);
     const disconnect = Promise.resolve(
       onGatewayEvent({
         endpointId: endpoint.id,
@@ -14509,7 +14511,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await Promise.resolve();
     expect(recoveryFinished).toBe(false);
     releaseDisconnect();
-    await Promise.all([disconnect, recovery]);
+    try {
+      await Promise.all([disconnect, recovery]);
+      expect(recovered).toHaveBeenCalled();
+    } finally { unsubscribe(); }
     await expect(context.service.get(endpoint.id)).resolves.toMatchObject({
       status: "active",
       healthMessage: "Connected",
@@ -17364,10 +17369,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
+    const originalTransaction = db.transaction.bind(db);
     const transaction = vi.spyOn(db, "transaction");
-    transaction.mockRejectedValueOnce(
-      new Error("injected lifecycle persistence failure"),
-    );
+    let injected = false;
+    transaction.mockImplementation(async (callback, options) => {
+      const [delivery] = await db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, "lifecycle:Ev-lifecycle-retry"),
+      ));
+      // Fail the lifecycle effect after durable admission and claim, regardless
+      // of how many transaction boundaries those writes require.
+      if (!injected && delivery?.state === "processing") {
+        injected = true;
+        throw new Error("injected lifecycle persistence failure");
+      }
+      return originalTransaction(callback, options);
+    });
     await expect(
       service.handleWebhook(
         endpoint.publicId,
@@ -32830,7 +32847,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     f.lanes[0]!.providerRuntime.postHook = () => gate;
     try {
       await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
-      expect(coordinator.nextWakeAt()).toBeNull();
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
       let settle!: () => void;
       const commitGate = new Promise<void>(resolve => { settle = resolve; });
       let staged!: () => void;

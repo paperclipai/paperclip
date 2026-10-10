@@ -411,7 +411,7 @@ export async function enqueueIssueInteractionChatPublications(
     });
     const rows = await db.transaction(async (tx) => {
       await notifyChatPublicationWork(tx);
-      return tx
+      const rows = await tx
         .insert(chatPublications)
         .values({
           companyId: interaction.companyId,
@@ -424,71 +424,72 @@ export async function enqueueIssueInteractionChatPublications(
         })
         .onConflictDoNothing()
         .returning();
+      const publication = rows[0];
+      if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
+        const reference = randomBytes(9).toString("base64url");
+        await tx.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
+          kind: "photon_interaction", providerActionId: `photon:${reference}`,
+          payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
+            expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
+      } else if (publication && formDraft) {
+        await tx.insert(chatActions).values(
+          chatQuestionFormActionRecords(formDraft, {
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            publicationId: publication.id,
+          }),
+        );
+      } else if (publication && question && questionActionTokens.length > 0) {
+        const expiresAt = new Date(
+          publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+        ).toISOString();
+        await tx.insert(chatActions).values(
+          questionActionTokens.map(({ actionId, option }) => ({
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            kind: "question_answer",
+            providerActionId: actionId,
+            payload: {
+              version: 1,
+              publicationId: publication.id,
+              interactionId: interaction.id,
+              questionId: question.id,
+              optionId: option.id,
+              expiresAt,
+            },
+            status: "issued",
+          })),
+        );
+      } else if (
+        publication &&
+        confirmation &&
+        confirmationActionTokens.length > 0
+      ) {
+        const expiresAt = new Date(
+          publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
+        ).toISOString();
+        await tx.insert(chatActions).values(
+          confirmationActionTokens.map(({ actionId, decision }) => ({
+            companyId: interaction.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            kind: "confirmation_response",
+            providerActionId: actionId,
+            payload: {
+              version: 1,
+              publicationId: publication.id,
+              interactionId: interaction.id,
+              decision,
+              expiresAt,
+            },
+            status: "issued",
+          })),
+        );
+      }
+      return rows;
     });
-    const publication = rows[0];
-    if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
-      const reference = randomBytes(9).toString("base64url");
-      await db.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
-        kind: "photon_interaction", providerActionId: `photon:${reference}`,
-        payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
-          expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
-    } else if (publication && formDraft) {
-      await db.insert(chatActions).values(
-        chatQuestionFormActionRecords(formDraft, {
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          publicationId: publication.id,
-        }),
-      );
-    } else if (publication && question && questionActionTokens.length > 0) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        questionActionTokens.map(({ actionId, option }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "question_answer",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
-            publicationId: publication.id,
-            interactionId: interaction.id,
-            questionId: question.id,
-            optionId: option.id,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
-    } else if (
-      publication &&
-      confirmation &&
-      confirmationActionTokens.length > 0
-    ) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
-      await db.insert(chatActions).values(
-        confirmationActionTokens.map(({ actionId, decision }) => ({
-          companyId: interaction.companyId,
-          endpointId: endpoint.id,
-          conversationId: conversation.id,
-          kind: "confirmation_response",
-          providerActionId: actionId,
-          payload: {
-            version: 1,
-            publicationId: publication.id,
-            interactionId: interaction.id,
-            decision,
-            expiresAt,
-          },
-          status: "issued",
-        })),
-      );
-    }
     inserted.push(...rows);
   }
   return inserted;

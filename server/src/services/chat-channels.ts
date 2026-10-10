@@ -5756,6 +5756,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (current.status === "attention" && !gatewayOwnedAttention) return;
         const status =
           current.setup.step === "complete" ? "active" : "verifying";
+        if (status !== current.status) await notifyChatEndpointWork(tx);
         await tx
           .update(chatEndpoints)
           .set({
@@ -24521,6 +24522,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     : currentEndpoint.status === "attention"
                       ? "verifying"
                       : currentEndpoint.status;
+                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx);
                 await tx
                   .update(chatEndpoints)
                   .set({
