@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
+import { agents } from "@paperclipai/db";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fileStore from "../services/agent-file-store.js";
 import * as persistentFiles from "../services/persistent-agent-files.js";
-import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionsService, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 
 type TestAgent = {
   id: string;
@@ -49,6 +50,125 @@ describe("agent instructions service", () => {
       await fs.rm(dir, { recursive: true, force: true });
       cleanupDirs.delete(dir);
     }));
+  });
+
+  function remoteInitializationFixture(existing: Record<string, string> | null, versioned = false) {
+    const agent = makeAgent({});
+    let homeExists = existing !== null;
+    const contents = new Map(Object.entries(existing ?? {}));
+    const absent = () => Object.assign(new Error("Missing remote file"), { code: "not_found" });
+    const seed = vi.fn(async (files: Record<string, string>) => {
+      if (homeExists) return { seeded: false };
+      homeExists = true;
+      for (const [name, content] of Object.entries(files)) contents.set(name, content);
+      return { seeded: true };
+    });
+    const hash = vi.fn(async (name: string) => {
+      const content = contents.get(name);
+      if (content === undefined) throw absent();
+      return { sha256: fileStore.fileHash(Buffer.from(content)), size: Buffer.byteLength(content) };
+    });
+    const write = vi.fn(async (name: string, content: string, expected: string | null) => {
+      expect(expected).toBeNull();
+      if (contents.has(name)) throw Object.assign(new Error("File conflict"), { status: 409 });
+      contents.set(name, content);
+      return { sha256: fileStore.fileHash(Buffer.from(content)) };
+    });
+    const remote = { root: "/remote/home", seed, hash, write,
+      stat: async (name: string) => ({ kind: "file", ...(await hash(name)) }),
+      readBytes: async (name: string) => ({ bytes: Buffer.from(contents.get(name)!), ...(await hash(name)) }),
+      listPage: async () => ({ entries: [...contents].map(([name, content]) => ({ name, kind: "file", size: Buffer.byteLength(content) })), truncated: false }),
+    };
+    const access = vi.spyOn(persistentFiles, "persistentAgentFiles").mockResolvedValue(remote as never);
+    const adopt = vi.spyOn(fileStore, "adoptAgentFiles").mockResolvedValue("/controller/home");
+    const readSeed = vi.spyOn(persistentFiles, "seedPersistentAgentHome").mockImplementation(async () => {
+      expect(homeExists).toBe(true);
+      expect(contents.has("AGENTS.md")).toBe(true);
+    });
+    const tx = { select: () => ({ from: (table: unknown) => ({ where: () => {
+      const rows = table === agents ? [agent] : versioned ? [{ revisionId: "existing-revision" }] : [];
+      return Object.assign(Promise.resolve(rows), { for: async () => rows, limit: async () => rows });
+    } }) }) };
+    const db = { ...tx, transaction: async (fn: (value: unknown) => Promise<unknown>) => fn(tx) };
+    return { agent, contents, remote, access, adopt, readSeed, svc: agentInstructionsService(db as never) };
+  }
+
+  it.each([null, {}, { "AGENTS.md": "initial", "personal.txt": "keep" }])(
+    "initializes persistent instructions without replacing an absent, empty, or identical home (%j)", async (existing) => {
+      const f = remoteInitializationFixture(existing);
+      const result = await f.svc.materializeManagedBundle(f.agent, { "AGENTS.md": "initial", "TOOLS.md": "tools" }, { replaceExisting: false });
+      expect(result.bundle.rootPath).toBe("/remote/home");
+      expect(result.bundle.files.map(file => file.path)).toContain("AGENTS.md");
+      expect(f.contents.get("AGENTS.md")).toBe("initial");
+      expect(f.contents.get("TOOLS.md")).toBe("tools");
+      if (existing && "personal.txt" in existing) expect(f.contents.get("personal.txt")).toBe("keep");
+      if (existing === null) expect(f.remote.write).not.toHaveBeenCalled();
+      expect(f.readSeed).toHaveBeenCalledOnce();
+      f.remote.write.mockClear();
+      await f.svc.materializeManagedBundle(f.agent, { "AGENTS.md": "initial", "TOOLS.md": "tools" });
+      expect(f.remote.write).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves controller personal files before a first remote template initialization", async () => {
+    const f = remoteInitializationFixture(null);
+    const root = resolveManagedInstructionsRoot(f.agent);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, "personal.txt"), "local personal content");
+    f.readSeed.mockImplementationOnce(async (remote, localRoot) => {
+      expect(localRoot).toBe(root);
+      await remote.seed({ "personal.txt": await fs.readFile(path.join(localRoot, "personal.txt"), "utf8") });
+    });
+    await f.svc.materializeManagedBundle(f.agent, { "AGENTS.md": "initial" });
+    expect(Object.fromEntries(f.contents)).toEqual({ "personal.txt": "local personal content", "AGENTS.md": "initial" });
+    expect(f.remote.seed.mock.calls[0][0]).toEqual({ "personal.txt": "local personal content" });
+    expect(f.remote.write).toHaveBeenCalledExactlyOnceWith("AGENTS.md", "initial", null);
+  });
+
+  it("preflights the entire persistent bundle before adding files when existing content differs", async () => {
+    const f = remoteInitializationFixture({ "AGENTS.md": "user edit", "personal.txt": "keep" });
+    await expect(f.svc.materializeManagedBundle(f.agent, { "TOOLS.md": "new", "AGENTS.md": "stock" }))
+      .rejects.toMatchObject({ status: 409, details: { code: "AGENT_FILE_CONFLICT", path: "AGENTS.md" } });
+    expect(f.remote.write).not.toHaveBeenCalled();
+    expect(Object.fromEntries(f.contents)).toEqual({ "AGENTS.md": "user edit", "personal.txt": "keep" });
+    expect(f.adopt).not.toHaveBeenCalled();
+  });
+
+  it("keeps persistent replacement and revision-history guards before any seed or write", async () => {
+    const f = remoteInitializationFixture(null);
+    await expect(f.svc.materializeManagedBundle(f.agent, { "AGENTS.md": "stock" }, { replaceExisting: true }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(f.remote.seed).not.toHaveBeenCalled();
+    expect(f.remote.write).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    const versioned = remoteInitializationFixture({}, true);
+    await expect(versioned.svc.materializeManagedBundle(versioned.agent, { "AGENTS.md": "stock" }))
+      .rejects.toMatchObject({ status: 422, details: { code: "INSTRUCTION_REVISION_REQUIRED" } });
+    expect(versioned.access).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { "AGENTS.md": "stock", ".paperclip-runtime/state": "reserved" },
+    { "AGENTS.md": "stock", "./AGENTS.md": "alias" },
+    { "AGENTS.md": "stock", "../outside": "escape" },
+  ])("validates every initialization path before remote mutations (%j)", async files => {
+    const f = remoteInitializationFixture(null);
+    await expect(f.svc.materializeManagedBundle(f.agent, files)).rejects.toMatchObject({ status: 422 });
+    expect(f.remote.seed).not.toHaveBeenCalled();
+    expect(f.remote.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["initial", "concurrent user edit"])("accepts only identical create-CAS winners (%s)", async winner => {
+    const f = remoteInitializationFixture({});
+    f.remote.write.mockImplementationOnce(async (name) => {
+      f.contents.set(name, winner);
+      throw Object.assign(new Error("File conflict"), { status: 409 });
+    });
+    const operation = f.svc.materializeManagedBundle(f.agent, { "AGENTS.md": "initial" });
+    if (winner === "initial") await expect(operation).resolves.toMatchObject({ bundle: { rootPath: "/remote/home" } });
+    else await expect(operation).rejects.toMatchObject({ status: 409 });
+    expect(f.contents.get("AGENTS.md")).toBe(winner);
+    expect(f.remote.write).toHaveBeenCalledExactlyOnceWith("AGENTS.md", "initial", null);
   });
 
   it.each(["./AGENTS.md", "notes/../AGENTS.md", "notes\\..\\AGENTS.md", "../invalid"])("reads legacy entry configuration %s without breaking the bundle", async (entry) => {
