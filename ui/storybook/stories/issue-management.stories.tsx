@@ -938,3 +938,56 @@ export const IssuePropertiesRelationshipBadgesInline: Story = {
   name: "IssueProperties - relationship badges inline",
   render: () => <IssuePropertiesRelationshipBadgesPane inline />,
 };
+
+
+function PaginatedTaskStorybookData({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const [ready] = useState(() => {
+    hydrateStorybookQueries(queryClient);
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, {
+      enableIsolatedWorkspaces: true,
+      enableRoutineTriggers: true,
+      enableStreamlinedUi: true,
+    });
+    return true;
+  });
+  return ready ? children : null;
+}
+
+
+export const PaginatedTaskLoadMore: Story = {
+  render: () => (
+    <PaginatedTaskStorybookData>
+      <div className="paperclip-story p-6">
+        <IssuesList issues={storybookIssues.slice(0, 2)} agents={storybookAgents} projects={storybookProjects}
+          viewStateKey="storybook:paginated-tasks:more" rowPresentation="task" toolbarPresentation="collection"
+          hasMoreIssues onLoadMoreIssues={() => undefined} onUpdateIssue={() => undefined} />
+      </div>
+    </PaginatedTaskStorybookData>
+  ),
+};
+
+export const PaginatedTaskLoadingEmpty: Story = {
+  render: () => (
+    <PaginatedTaskStorybookData>
+      <div className="paperclip-story p-6">
+        <IssuesList issues={[]} agents={storybookAgents} projects={storybookProjects}
+          viewStateKey="storybook:paginated-tasks:loading" rowPresentation="task" toolbarPresentation="collection"
+          hasMoreIssues isLoadingMoreIssues onLoadMoreIssues={() => undefined} onUpdateIssue={() => undefined} />
+      </div>
+    </PaginatedTaskStorybookData>
+  ),
+};
+
+export const PaginatedTaskRetry: Story = {
+  render: () => (
+    <PaginatedTaskStorybookData>
+      <div className="paperclip-story p-6">
+        <IssuesList issues={[]} agents={storybookAgents} projects={storybookProjects}
+          viewStateKey="storybook:paginated-tasks:retry" rowPresentation="task" toolbarPresentation="collection"
+          hasMoreIssues error={new Error("Could not load the next task page")}
+          onLoadMoreIssues={() => undefined} onUpdateIssue={() => undefined} />
+      </div>
+    </PaginatedTaskStorybookData>
+  ),
+};

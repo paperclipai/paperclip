@@ -2,7 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { AnchorHTMLAttributes, ReactNode } from "react";
+import { useState, type AnchorHTMLAttributes, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1653,6 +1653,83 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps loading sparse filtered pages until an older matching task arrives", async () => {
+    const unrelated = Array.from({ length: 100 }, (_, index) => createIssue({ id: `unrelated-${index}`, assigneeAgentId: "other-agent" }));
+    const target = createIssue({ id: "older-target", title: "Older matching task", assigneeAgentId: "my-agent" });
+    const loadedPages = vi.fn();
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 100 });
+    function PaginatedTasks() {
+      const [page, setPage] = useState(1);
+      const [loading, setLoading] = useState(false);
+      return <IssuesList
+        issues={page < 4 ? unrelated : [...unrelated, target]}
+        agents={[]} projects={[]} viewStateKey="paperclip:test-sparse-filter"
+        initialAssignees={["my-agent"]} initialStatuses={["todo"]}
+        hasMoreIssues={page < 4} isLoadingMoreIssues={loading}
+        onLoadMoreIssues={() => {
+          loadedPages(page);
+          setLoading(true);
+          setTimeout(() => { setPage((current) => current + 1); setLoading(false); }, 0);
+        }}
+        onUpdateIssue={() => undefined}
+      />;
+    }
+    const { root } = renderWithQueryClient(<PaginatedTasks />, container);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Older matching task");
+      expect(loadedPages).toHaveBeenCalledTimes(3);
+    }, 100);
+    await flush();
+    expect(loadedPages).toHaveBeenCalledTimes(3);
+    act(() => { root.unmount(); });
+  });
+
+  it("loads another server page from the visible fallback button without scrolling", async () => {
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2000 });
+    const loadMore = vi.fn();
+    const { root } = renderWithQueryClient(<IssuesList issues={[createIssue()]} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-explicit-load-more" hasMoreIssues onLoadMoreIssues={loadMore} onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => {
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Load more tasks")).toBe(true);
+    });
+    expect(loadMore).not.toHaveBeenCalled();
+    act(() => {
+      const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Load more tasks")!;
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    act(() => { root.unmount(); });
+  });
+
+  it("stops automatic page requests after an error and lets the button retry", async () => {
+    const requests = vi.fn();
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 100 });
+    function FailingPages() {
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState<Error | null>(null);
+      return <IssuesList issues={[]} agents={[]} projects={[]} viewStateKey="paperclip:test-page-errors"
+        hasMoreIssues isLoadingMoreIssues={loading} error={error}
+        onLoadMoreIssues={() => {
+          requests(); setLoading(true);
+          setTimeout(() => { setError(new Error("Page request failed")); setLoading(false); }, 0);
+        }} onUpdateIssue={() => undefined} />;
+    }
+    const { root } = renderWithQueryClient(<FailingPages />, container);
+    await waitForAssertion(() => { expect(container.textContent).toContain("Page request failed"); }, 100);
+    await flushAnimationFrame();
+    await flush();
+    expect(requests).toHaveBeenCalledTimes(1);
+    act(() => {
+      const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Load more tasks")!;
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => { expect(requests).toHaveBeenCalledTimes(2); });
+    await flushAnimationFrame();
+    await flush();
+    expect(requests).toHaveBeenCalledTimes(2);
+    act(() => { root.unmount(); });
   });
 
   it("requests more server issues after scrolling past the rendered rows", async () => {

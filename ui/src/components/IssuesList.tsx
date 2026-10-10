@@ -828,7 +828,6 @@ function StreamlinedIssuesList({
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
-  const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1602,46 +1601,42 @@ function StreamlinedIssuesList({
     && !isLoading
     && (hasMoreRenderedRows || (hasMoreIssues && !isLoadingMoreIssues));
 
+  const canAutomaticallyLoadMoreIssues = canLoadMoreIssues && !error;
+
   useEffect(() => {
-    if (!canLoadMoreIssues) return;
+    if (!canAutomaticallyLoadMoreIssues) return;
     let animationFrameId: number | null = null;
     const scrollContainer = findIssuesScrollContainer(rootRef.current);
     const scrollTarget: Window | HTMLElement = scrollContainer ?? window;
 
-    const checkScrollPosition = (trigger: "initial" | "scroll" | "resize" = "scroll") => {
+    const checkScrollPosition = () => {
       if (animationFrameId !== null) return;
       animationFrameId = window.requestAnimationFrame(() => {
         animationFrameId = null;
         const scrollHeight = scrollContainer?.scrollHeight ?? document.documentElement.scrollHeight;
         if (scrollHeight === 0) return;
-        const viewportHeight = scrollContainer?.clientHeight ?? window.innerHeight;
         const scrollBottom = scrollContainer
           ? scrollContainer.scrollTop + scrollContainer.clientHeight
           : window.scrollY + window.innerHeight;
-        const hasScrollableOverflow = scrollHeight > viewportHeight + 1;
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
-          if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
-            if (initialServerFillRequestedRef.current) return;
-            initialServerFillRequestedRef.current = true;
-          }
           loadMoreIssueRows();
         }
       });
     };
 
-    const handleScroll = () => checkScrollPosition("scroll");
-    const handleResize = () => checkScrollPosition("resize");
+    const handleScroll = () => checkScrollPosition();
+    const handleResize = () => checkScrollPosition();
     scrollTarget.addEventListener("scroll", handleScroll, { passive: true });
     window.addEventListener("resize", handleResize);
-    checkScrollPosition("initial");
+    checkScrollPosition();
 
     return () => {
       scrollTarget.removeEventListener("scroll", handleScroll);
       window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
+  }, [canAutomaticallyLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
     const groupKey = group?.key;
@@ -2019,8 +2014,12 @@ function StreamlinedIssuesList({
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No tasks match the current filters or search."
-          action={createActionLabel}
+          message={error && hasMoreIssues
+            ? "More tasks could not be loaded. Use Load more tasks to try again."
+            : hasMoreIssues || isLoadingMoreIssues
+              ? "Loading more tasks to check the current filters..."
+              : "No tasks match the current filters or search."}
+          action={hasMoreIssues || isLoadingMoreIssues ? undefined : createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
       )}
@@ -2520,8 +2519,13 @@ function StreamlinedIssuesList({
                   ? "Loading more tasks..."
                   : remainingIssueRowCount > 0
                     ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
-                    : "Scroll to load more tasks"}
+                    : "More tasks are available"}
               </p>
+              {!isLoadingMoreIssues && (
+                <Button variant="ghost" size="sm" onClick={loadMoreIssueRows}>
+                  Load more tasks
+                </Button>
+              )}
             </div>
           )}
         </div>
