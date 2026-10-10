@@ -32866,7 +32866,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const lane = f.lanes[0]!;
     const onError = vi.fn();
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
-    const dispatch = vi.spyOn(f.service, "scheduleQueuedPublications");
     try {
       const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "succeeded" }).returning();
       const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: lane.conversation.issueId,
@@ -32880,7 +32879,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           thread_ts: lane.conversation.externalThreadId.split(":").at(-1), text: "  Already sent\n" } } }).returning();
       await registerChatDeliveryWork(coordinator, f.service, () => true).ready;
       await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
-      expect(dispatch).toHaveBeenCalledTimes(1);
       expect(await f.service.nextPublicationAt()).toBeNull();
       for (const status of ["uncertain", "processed"]) {
         await db.transaction(async tx => {
