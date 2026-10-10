@@ -50,7 +50,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
-import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -1288,7 +1288,7 @@ const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseRe
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   /** Validate intent without allocating files or changing a task binding. */
-  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null }, reader: Db | DbTransaction = db) {
+  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null }, reader: Db | DbTransaction = db) {
     const selection = taskWorkspaceSelectionSchema.parse(input.selection);
     if (selection.kind === "existing") {
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
@@ -1297,18 +1297,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         await executionWorkspaceReadSqlCondition(reader, input.actor),
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
-      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId, parentIssueId: input.parentIssueId });
+      await assertTaskWorkspaceAccess(reader, input.actor, input.companyId, workspace.id, { write: true, issueId: input.issueId, parentIssueId: input.parentIssueId, assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId });
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
     if (selection.kind === "configured_source") {
-      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
         .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(
           eq(projectWorkspaces.id, selection.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId),
           await projectReadSqlCondition(reader, input.actor),
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
-      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, { write: selection.mode === "shared", issueId: input.issueId, parentIssueId: input.parentIssueId });
+      const mode = selection.mode === "shared" ? "shared_workspace" : "isolated_workspace";
+      const sourceConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {},
+        projectPolicy: parseProjectExecutionWorkspacePolicy(source.executionWorkspacePolicy),
+        issueSettings: { mode }, mode, legacyUseProjectWorkspace: null });
+      await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, {
+        write: resolveEffectiveWorkspaceStrategyType(mode, sourceConfig) !== "git_worktree",
+        issueId: input.issueId, parentIssueId: input.parentIssueId,
+        assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId,
+      });
       return { executionWorkspaceId: null, projectWorkspaceId: source.id, executionWorkspacePreference: null,
         executionWorkspaceSettings: { mode: selection.mode === "shared" ? "shared_workspace" : "isolated_workspace" } };
     }

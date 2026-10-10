@@ -122,6 +122,8 @@ import {
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
 import {
+  buildExecutionWorkspaceAdapterConfig,
+  resolveEffectiveWorkspaceStrategyType,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -10166,7 +10168,8 @@ export function issueService(db: Db) {
         if (workspaceSelection && (workspaceSelectionSource === "explicit" || !inheritedWorkspaceSelection)) {
           const projection = await executionWorkspaceService(db).validateSelection({ companyId,
             actor: workspaceActor,
-            selection: workspaceSelection, parentIssueId: issueData.parentId }, tx);
+            selection: workspaceSelection, parentIssueId: issueData.parentId,
+            assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId }, tx);
           projectWorkspaceId = projection.projectWorkspaceId;
           executionWorkspaceId = projection.executionWorkspaceId;
           executionWorkspacePreference = projection.executionWorkspacePreference;
@@ -10265,20 +10268,21 @@ export function issueService(db: Db) {
             .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
+          const sourcePolicy = gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(readableSource.executionWorkspacePolicy), isolatedWorkspacesEnabled);
+          const sourceSettings = parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings);
+          const sourceMode = resolveExecutionWorkspaceMode({ projectPolicy: sourcePolicy, issueSettings: sourceSettings, legacyUseProjectWorkspace: null });
+          const sourceConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy: sourcePolicy,
+            issueSettings: sourceSettings, mode: sourceMode, legacyUseProjectWorkspace: null });
           await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId, {
-            parentIssueId: issueData.parentId,
-            write: !executionWorkspaceId && resolveExecutionWorkspaceMode({
-              projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(readableSource.executionWorkspacePolicy), isolatedWorkspacesEnabled),
-              issueSettings: parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings),
-              legacyUseProjectWorkspace: null,
-            }) === "shared_workspace",
+            parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId,
+            write: !executionWorkspaceId && resolveEffectiveWorkspaceStrategyType(sourceMode, sourceConfig) !== "git_worktree",
           });
         }
         if (executionWorkspaceId && workspaceSelectionActor) {
           const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
           if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
-          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true, parentIssueId: issueData.parentId });
+          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true, parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId });
         }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(

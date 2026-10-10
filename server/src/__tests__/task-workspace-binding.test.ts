@@ -243,8 +243,23 @@ const support = await getEmbeddedPostgresTestSupport();
     app.use((req, _res, next) => { req.actor = actor; next(); });
     app.use("/api", taskWorkspaceRoutes(db));
     app.use(errorHandler);
-    const selection = { selection: { kind: "task_directory" as const }, expectedBindingRevision: 1, requestKey: "member-selection" };
+    const [assignee] = await db.insert(agents).values({ companyId: f.companyId, name: "Assigned worker", status: "idle" }).returning();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected files",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+      name: "Source", cwd: `/tmp/task-${f.issueId}` }).returning();
+    await db.update(issues).set({ assigneeAgentId: assignee.id }).where(eq(issues.id, f.issueId));
+    await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: source.id }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const selection = { selection: { kind: "existing" as const, workspaceId: f.workspaceId }, expectedBindingRevision: 1, requestKey: "member-selection" };
     const repository = { repository: { kind: "url" as const, url: "https://github.com/public/example" }, requestKey: "member-repository" };
+    expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection)).status).toBe(403);
+    expect((await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(repository)).status).toBe(403);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId,
+      permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: assignee.id } });
+    expect(await issueService(db).create(f.companyId, { title: "Board-assigned shared work", createdByUserId: userId,
+      assigneeAgentId: assignee.id, workspaceSelectionActor: actor,
+      workspaceSelection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" } }))
+      .toMatchObject({ assigneeAgentId: assignee.id, projectWorkspaceId: source.id });
     const selected = await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection);
     expect(selected.status, JSON.stringify(selected.body)).toBe(200);
     expect(selected.body).toMatchObject({ kind: "scheduled" });
@@ -301,6 +316,16 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(tasks.create(f.companyId, { title: "Denied legacy binding", createdByAgentId: agent.id,
         executionWorkspaceId: shared.id, workspaceSelectionActor: actor })).rejects.toThrow(/protected/);
 
+      await db.update(executionWorkspaces).set({ mode: "isolated_workspace" }).where(eq(executionWorkspaces.id, shared.id));
+      await expect(svc.validateSelection({ ...f, actor, selection: { kind: "existing", workspaceId: shared.id } })).rejects.toThrow(/protected/);
+      await expect(tasks.create(f.companyId, { title: "Mislabelled isolated source", createdByAgentId: agent.id,
+        projectWorkspaceId: source.id, workspaceSelectionActor: actor,
+        executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "project_primary" } } })).rejects.toThrow(/protected/);
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace",
+        workspaceStrategy: { type: "project_primary" }, authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).where(eq(projects.id, project.id));
+      await expect(svc.validateSelection({ ...f, actor, selection: isolatedSelection })).rejects.toThrow(/protected/);
+      await db.update(projects).set({ executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).where(eq(projects.id, project.id));
+
       const [organization] = await db.insert(projects).values({ companyId: f.companyId, name: "Task organization" }).returning();
       await db.update(issues).set({ projectId: organization.id }).where(eq(issues.id, f.issueId));
       const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
@@ -308,6 +333,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const selectionRequest = { ...f, actor, selection: sharedSelection, expectedBindingRevision: 0, requestKey: "authorized-shared" };
       // Task lineage and organizational-project authority cannot grant writes
       // to an independently protected source project's folder.
+      await expect(svc.selectTaskWorkspace(selectionRequest)).rejects.toThrow(/protected/);
+      const [otherAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Another assignee", status: "idle" }).returning();
+      await db.update(issues).set({ assigneeAgentId: otherAgent.id }).where(eq(issues.id, f.issueId));
+      await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: otherAgent.id } })
+        .where(eq(principalPermissionGrants.id, grant.id));
       await expect(svc.selectTaskWorkspace(selectionRequest)).rejects.toThrow(/protected/);
       await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: agent.id } })
         .where(eq(principalPermissionGrants.id, grant.id));

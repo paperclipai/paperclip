@@ -3200,6 +3200,19 @@ export function heartbeatService(
         workspaceReuseRequest.existingExecutionWorkspaceAvailable
           ? existingExecutionWorkspace
           : null;
+      const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+        agentConfig: config,
+        projectPolicy: projectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+        mode: requestedExecutionWorkspaceMode,
+        legacyUseProjectWorkspace:
+          issueAssigneeOverrides?.useProjectWorkspace ?? null,
+      });
+      const sourceWorkspaceConfig = {
+        ...workspaceManagedConfig,
+        ...Object.fromEntries(Object.entries(issueAssigneeOverrides?.adapterConfig ?? {}).filter(([key]) => requestedAiBinding?.mode !== "router" || !["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"].includes(key))),
+        ...(requestedAiBinding?.mode === "router" ? parseObject(parseObject(context.aiRouterSelection).runtimeConfig) : {}),
+      };
       const workspaceAuthorizationActor = { type: "agent" as const, agentId: agent.id, companyId: agent.companyId,
         source: "agent_jwt" as const, runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
       if (!persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
@@ -3208,7 +3221,7 @@ export function heartbeatService(
           await assertTaskWorkspaceAccess(db, workspaceAuthorizationActor, agent.companyId, workspaceRequiringAccess.id, { write: true, issueId });
         } else if (!isDotRun && executionProjectId && (selectedWorkspaceSource || projectContext?.hasWorkspace)) {
           // Check source authority before resolution can clone or expose files.
-          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: requestedExecutionWorkspaceMode === "shared_workspace", issueId });
+          await assertTaskWorkspaceSourceProjectAccess(db, workspaceAuthorizationActor, agent.companyId, executionProjectId, { write: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, sourceWorkspaceConfig) !== "git_worktree", issueId });
         }
       }
       const requestedReusableExecutionWorkspaceConfig =
@@ -3499,18 +3512,8 @@ export function heartbeatService(
           issueExecutionWorkspaceSettings?.workspaceStrategy,
         ],
       });
-      const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
-        agentConfig: config,
-        projectPolicy: projectExecutionWorkspacePolicy,
-        issueSettings: issueExecutionWorkspaceSettings,
-        mode: requestedExecutionWorkspaceMode,
-        legacyUseProjectWorkspace:
-          issueAssigneeOverrides?.useProjectWorkspace ?? null,
-      });
       const mergedConfig = {
-        ...workspaceManagedConfig,
-        ...Object.fromEntries(Object.entries(issueAssigneeOverrides?.adapterConfig ?? {}).filter(([key]) => requestedAiBinding?.mode !== "router" || !["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"].includes(key))),
-        ...(requestedAiBinding?.mode === "router" ? parseObject(parseObject(context.aiRouterSelection).runtimeConfig) : {}),
+        ...sourceWorkspaceConfig,
         // The base below is already task-owned. Keep directory transport while
         // preserving isolated mode and the mandatory sandbox preflight.
         ...((useIsolatedTaskDirectory || explicitTaskDirectory) ? { workspaceStrategy: { type: "project_primary" } } : {}),

@@ -223,7 +223,7 @@ suite("task project repository provisioning", () => {
     }
   }, 40_000);
 
-  it("blocks shared source adapter admission after its project assignment grant is revoked while read access remains", async () => {
+  it.each(["shared_workspace", "isolated_workspace"] as const)("blocks shared source adapter admission after grant revocation with retained mode %s", async (retainedMode) => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const cwd = path.join(root, companyId, "protected-shared-source");
     await mkdir(cwd, { recursive: true });
@@ -256,6 +256,11 @@ suite("task project repository provisioning", () => {
     const [bound] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(bound.projectId).toBeNull();
     expect(bound.executionWorkspaceId).not.toBeNull();
+    if (retainedMode === "isolated_workspace") {
+      // Legacy or malformed metadata can label the shared physical root isolated.
+      await db.update(executionWorkspaces).set({ mode: retainedMode }).where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
+      await db.update(issues).set({ executionWorkspaceSettings: { mode: retainedMode, workspaceStrategy: { type: "project_primary" } } }).where(eq(issues.id, issueId));
+    }
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
     const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
     expect(await accessService(db).decide({ actor, action: "project:read", resource: { type: "project", companyId, projectId } })).toMatchObject({ allowed: true });
@@ -270,6 +275,50 @@ suite("task project repository provisioning", () => {
     expect(retained.executionWorkspaceId).toBe(bound.executionWorkspaceId);
     expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Protected project files");
   }, 40_000);
+
+  it.each(["project_primary", "adapter_managed", "cloud_sandbox", "git_worktree"] as const)("authorizes isolated source admission by its actual strategy: %s", async (strategy) => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "protected-source");
+    await mkdir(cwd, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    git("init", "-b", "main");
+    await writeFile(path.join(cwd, "work.txt"), "Protected source content");
+    git("add", ".");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed");
+    await db.insert(companies).values({ id: companyId, name: "Strategy authorization", issuePrefix: `S${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Protected source", executionWorkspacePolicy: {
+      authorizationPolicy: { assignmentPolicy: { mode: "protected" } },
+    } });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Source", sourceType: "local_path", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reader", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Use an isolated source", status: "todo", assigneeAgentId: agentId,
+      projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: strategy } },
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "managed_isolated" } } });
+    const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
+    expect(await accessService(db).decide({ actor, action: "project:read", resource: { type: "project", companyId, projectId } })).toMatchObject({ allowed: true });
+    expect(await accessService(db).decide({ actor, action: "tasks:assign", resource: { type: "issue", companyId, projectId, assigneeAgentId: agentId },
+      scope: { projectId, assigneeAgentId: agentId } })).toMatchObject({ allowed: false });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const result = await heartbeat.getRun(run!.id);
+    const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
+    if (strategy !== "git_worktree") {
+      expect(result?.status).toBe("failed");
+      expect(result?.error).toContain("Target project is protected and requires an explicit assignment grant");
+      expect(calls).toHaveLength(0);
+    } else {
+      expect(result).toMatchObject({ status: "succeeded", error: null });
+      expect(calls).toHaveLength(1);
+      const workspace = calls[0]![0].context.paperclipWorkspace;
+      expect(workspace.strategy).toBe("git_worktree");
+      expect(await realpath(workspace.cwd)).not.toBe(await realpath(cwd));
+      expect(await readFile(path.join(workspace.cwd, "work.txt"), "utf8")).toBe("Protected source content");
+    }
+    expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Protected source content");
+  }, 30_000);
 
   it.each([true, false])("handles a deleted configured source with a retained workspace: %s", async (bound) => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
