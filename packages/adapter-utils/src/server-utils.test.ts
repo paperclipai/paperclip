@@ -418,6 +418,71 @@ describe("adapter skill snapshots", () => {
     ]);
   });
 
+  it("names the real key when a desired skill only differs in namespace", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "codex_local",
+      availableEntries: [
+        {
+          key: "local/1994fe4d0a/normativa-rag",
+          runtimeName: "normativa-rag",
+          source: "/paperclip/skills/example/normativa-rag",
+        },
+      ],
+      desiredSkills: ["company/example/normativa-rag"],
+      configuredDetail: "Mounted on next run.",
+    });
+
+    expect(snapshot.warnings).toEqual([
+      'Desired skill "company/example/normativa-rag" is not available from the Paperclip skills directory. Did you mean "local/1994fe4d0a/normativa-rag"?',
+    ]);
+  });
+
+  it("leaves ambiguous slug matches unsuggested", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "codex_local",
+      availableEntries: [
+        {
+          key: "local/aaaaaaaaaa/normativa-rag",
+          runtimeName: "normativa-rag",
+          source: "/paperclip/skills/example/normativa-rag",
+        },
+        {
+          key: "local/bbbbbbbbbb/normativa-rag",
+          runtimeName: "normativa-rag",
+          source: "/projects/other/normativa-rag",
+        },
+      ],
+      desiredSkills: ["company/example/normativa-rag"],
+      configuredDetail: "Mounted on next run.",
+    });
+
+    expect(snapshot.warnings).toEqual([
+      'Desired skill "company/example/normativa-rag" is not available from the Paperclip skills directory.',
+    ]);
+  });
+
+  it("does not suggest a slug match whose source is missing", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "codex_local",
+      availableEntries: [
+        {
+          key: "local/1994fe4d0a/normativa-rag",
+          runtimeName: "normativa-rag",
+          source: "/paperclip/skills/example/normativa-rag",
+          sourceStatus: "missing",
+          missingDetail: "Skill directory is missing.",
+        },
+      ],
+      desiredSkills: ["company/example/normativa-rag"],
+      configuredDetail: "Mounted on next run.",
+    });
+
+    expect(snapshot.warnings).toContain(
+      'Desired skill "company/example/normativa-rag" is not available from the Paperclip skills directory.',
+    );
+    expect(snapshot.warnings.join("\n")).not.toContain("Did you mean");
+  });
+
   it("reports source-missing company runtime skills without orphan warnings", () => {
     const snapshot = buildRuntimeMountedSkillSnapshot({
       adapterType: "codex_local",
