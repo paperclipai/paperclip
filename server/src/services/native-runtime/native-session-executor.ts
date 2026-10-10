@@ -11797,6 +11797,9 @@ async function createRunnerdBackendWithinSessionClaim(
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {
           ...sourceRuntimeContext,
+          ...(remoteTarget?.transport === "computer" ? {
+            persistentAgentHome: { rootPath: remoteTarget.fileAuthority.agentHome },
+          } : {}),
           instructions: {
             ...sourceRuntimeContext.instructions,
             bundle: {

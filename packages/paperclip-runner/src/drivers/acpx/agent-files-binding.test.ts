@@ -18,6 +18,19 @@ function fixture() {
 }
 
 describe("registered ACP agent files", () => {
+  it("binds a persistent computer home without inventing an instruction copy", () => {
+    const { root, parent, context } = fixture();
+    delete context.instructions.workingCopy;
+    context.persistentAgentHome = { rootPath: root };
+    const nestedRuntime = join(root, ".paperclip-runtime"); mkdirSync(nestedRuntime);
+    const binding = bindAcpxAgentFiles(context, [nestedRuntime])!;
+    expect(binding.root.endsWith("registered-run-copy")).toBe(true);
+    for (const protectedRoot of [parent, root]) {
+      expect(() => bindAcpxAgentFiles(context, [protectedRoot])).toThrow("overlaps");
+    }
+    renameSync(root, `${root}-old`); mkdirSync(root);
+    expect(() => binding.assertHeld()).toThrow("changed");
+  });
   it("does not grant absent or legacy instruction copies", () => {
     expect(bindAcpxAgentFiles(null, [])).toBeNull();
     const { context } = fixture();
