@@ -245,11 +245,14 @@ while another agent's active admission kept the shared machine available.
 A subsequent ordinary turn exposed an overly restrictive prior-owner recovery
 check; exact retirement evidence is being integrated before repeating that path.
 
-Native computer screenshot and app launch work, but keyboard navigation still
-needs a passing visible result. Qualification found IBus listening on a
-persistent-home socket whose filesystem node refused connections. Rebinding
-the official daemon to a private runtime socket restored its health; actual
-computer input and durable resume handling are being verified.
+Native computer keyboard navigation passed locally on controller source
+`e4294560ed`: run `3043f2c2-8366-4f5b-81dd-9281bfdf8844` sent the keyboard
+sequence and loaded Example Domain, visible in the embedded Computer panel.
+The task saved a screenshot artifact and the original persistent proof file
+remained intact. Evidence: [embedded desktop](assets/2026-10-10-boat/native-desktop-keyboard.jpg).
+Qualification found IBus listening on a persistent-home socket whose filesystem
+node refused connections. The bounded readiness check uses the desktop user's
+home and repairs the official daemon onto a private runtime socket when needed.
 
 Native Claude's first provider-pack upload exceeded the existing 15-minute
 bootstrap budget. The qualified pack includes all supported providers; measured
@@ -261,6 +264,6 @@ uploads with remote file writes and hash verification support eight concurrent
 still needs to pass with that change.
 
 Required remaining evidence includes native Claude completion and warm turns,
-native desktop keyboard control, exact last-owner process retirement, and the
+post-idle task continuation, exact last-owner process retirement, and the
 same matrix on the final source revision at the designated staging instance.
 Provider-only smoke checks do not substitute for these product journeys.
