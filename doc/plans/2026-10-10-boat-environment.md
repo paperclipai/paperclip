@@ -112,7 +112,10 @@ bundles use immutable per-attempt snapshots so read-only files from a prior
 attempt cannot block preparation. Prior generated snapshots remain on disk in
 this experimental version; automatic snapshot garbage collection is deferred.
 
-The instruction editor reads and conditionally writes live remote bytes. Path
+The instruction editor reads and conditionally writes live remote bytes. It
+limits traversal to 1,000 metadata entries and the existing content budget,
+reads the configured entry independently, and reports partial results in both
+the editor and exports. Path
 confinement and atomic writes run on the remote host. Persistent placements
 cannot enter the controller copy-back or working-copy deletion path. Moving an
 agent to a different computer creates a separate placement; migration is outside
@@ -120,7 +123,9 @@ v1.
 
 Realize project checkouts and task worktrees on Boat, before any host Git work.
 Persist and validate repository, branch, and remote cwd there. Shared checkout
-mode keeps ordinary Git contention; task worktrees remain independent. Native
+mode keeps ordinary Git contention; task worktrees remain independent. Initial
+clone and worktree setup use a project-scoped remote lock so another agent cannot
+mistake a partially created directory for a ready checkout. Native
 recovery descriptors explicitly record remote authority. Both legacy adapters
 use in-place workspace staging. Remote file browsing uses the same placement
 authorization rather than interpreting remote paths on the controller.
@@ -291,3 +296,18 @@ while the provider conversation and isolated home persisted. Evidence: [Claude w
 Required remaining evidence includes post-idle task continuation,
 exact last-owner process retirement, and the same matrix on the final source revision at the designated staging instance.
 Provider-only smoke checks do not substitute for these product journeys.
+
+On controller `85746677ff`, both legacy providers read their original files
+on a fourth compute node with unchanged hashes. Native Codex's first turn
+`a537ef8a-9215-4db8-ae38-e7ca0c55b39f` also performed real keyboard navigation
+and saved its desktop proof. At its warm deadline, observation captured the
+remote checkpoint changing from ready to suspended at 17:14:03 UTC, followed
+by runner PID 34752 disappearing and its exact retirement receipt. The ordinary
+follow-up passed checkpoint restoration and authenticated a new runner.
+It completed successfully as run `1101ca20-f32e-4d03-8e26-62828ff404c7`.
+Evidence: [connected desktop](assets/2026-10-10-boat/native-desktop-final-local.jpg).
+
+That first turn's Vite launch used `nohup` without detaching from the provider
+shell's process group; its listener disappeared before the warm deadline.
+This attempt does not count as a successful warm preview. The earlier proven
+two-turn development result remains separate from final-source qualification.
