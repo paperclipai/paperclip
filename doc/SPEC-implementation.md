@@ -2022,7 +2022,16 @@ unavailable. Preserve current ownership and newer-work fences. See
   and declared `compatibility` requirements with source entries. Preview reads reauthorize
   the current caller and audit the requested package at the scanned immutable commit;
   discovery and source metadata contain no file contents. Reference checks are advisory,
-  do not establish complete runtime dependencies, and never expand package boundaries.
+  do not establish complete runtime dependencies. The preview rechecks draft reference
+  choices and shows included files, rewritten Markdown, and further references before
+  saving. Saved choices remain removable when the upstream link disappears.
+  Detected repository-local references
+  offer opt-in checkboxes to include the containing skill or support folder (loose
+  repository-root files include only that file). The server derives each scope from
+  the pinned tree, audits all added files, preserves bytes/modes, and rewrites detected
+  Markdown resource paths to the bundled layout. Choices persist in entry inspection
+  metadata for manual refresh. Missing or out-of-repository paths cannot be selected;
+  missing selected dependencies keep the previous installed version with an error.
 - Stage and audit complete packages before publishing. Scripts are allowed through
   the existing content audit and never run on import. Persist binary bytes and executable
   flags in immutable version inventories (legacy entries default to UTF-8/non-executable).

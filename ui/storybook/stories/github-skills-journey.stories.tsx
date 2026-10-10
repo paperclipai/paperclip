@@ -36,7 +36,7 @@ function OutsideJourney() {
   </div>;
 }
 
-function GitHubSkillsJourney({ step = "start" }: { step?: Step }) {
+export function GitHubSkillsJourney({ step = "start" }: { step?: Step }) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const initialNavigate = useRef(navigate);

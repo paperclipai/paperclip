@@ -110,6 +110,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const [discovery, setDiscovery] = useState<SkillSourceDiscovery | null>(draft.discovery ?? null);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(draft.selectedPaths ?? (source ? source.entries.filter(entry => entry.selection !== 'excluded').map(entry => entry.path) : [])));
   const [excludedFolders, setExcludedFolders] = useState<string[]>(draft.excludedFolders ?? source?.excludedFolders ?? []);
+  const [includedReferences, setIncludedReferences] = useState<Record<string, string[]>>(draft.includedReferences ?? Object.fromEntries((source?.entries ?? []).map(entry => [entry.path, entry.inspection?.includedReferences ?? []])));
   const repositories = useQuery({ queryKey: queryKeys.skillSources.repositories(companyId), queryFn: () => skillSourcesApi.repositories(companyId), refetchOnMount: 'always', retry: false });
   const availableRepositories = repositories.data?.repositories ?? [];
   const parsedRepository = parseGitHubSkillRepositoryUrl(repositoryUrl);
@@ -122,7 +123,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const connectHref = appSourceConnectHref('github');
   const rememberReturn = () => rememberSkillSourceReturn(companyId, source?.id ?? 'new');
   useEffect(() => { consumeSkillSourceReturn(companyId); }, [companyId]);
-  useEffect(() => { sessionStorage.setItem(draftKey, JSON.stringify({ revision: selectionRevision, repositoryUrl, showRepositoryUrl, connectionId, discovery, selectedPaths: [...selected], excludedFolders })); }, [draftKey, selectionRevision, repositoryUrl, showRepositoryUrl, connectionId, discovery, selected, excludedFolders]);
+  useEffect(() => { sessionStorage.setItem(draftKey, JSON.stringify({ revision: selectionRevision, repositoryUrl, showRepositoryUrl, connectionId, discovery, selectedPaths: [...selected], excludedFolders, includedReferences })); }, [draftKey, selectionRevision, repositoryUrl, showRepositoryUrl, connectionId, discovery, selected, excludedFolders, includedReferences]);
   const scanController = useRef<AbortController | null>(null);
   const [progress, setProgress] = useState<SkillSourceScanProgress | null>(null);
   const [found, setFound] = useState<FoundSkill[]>([]);
@@ -140,11 +141,11 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
     return { discovery: result, connectionId: result.connectionId === undefined ? availableConnectionId : result.connectionId, controller };
   }, onSuccess: result => {
     if (result.controller.signal.aborted || scanController.current !== result.controller) return;
-    setDiscovery(result.discovery); setConnectionId(result.connectionId); setSelected(new Set(result.discovery.candidates.map(candidate => candidate.path))); setExcludedFolders([]);
+    setDiscovery(result.discovery); setConnectionId(result.connectionId); setSelected(new Set(result.discovery.candidates.map(candidate => candidate.path))); setExcludedFolders([]); setIncludedReferences({});
   } });
   const save = useMutation({ mutationFn: () => source
-    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId })
-    : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, connectionId, selectedPaths: [...selected], excludedFolders }),
+    ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, selectedPaths: [...selected], excludedFolders, includedReferences, connectionId: sourceConnectionId })
+    : skillSourcesApi.create(companyId, { repositoryUrl: discovery!.repositoryUrl, trackingRef: discovery!.trackingRef, commitSha: discovery!.commitSha, connectionId, selectedPaths: [...selected], excludedFolders, includedReferences }),
     onSuccess: async result => { sessionStorage.removeItem(draftKey); await onSaved(result); },
   });
   const candidates: SkillTreeCandidate[] = source ? source.entries.map(entry => ({ ...entry,
@@ -156,7 +157,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   const busy = scan.isPending || save.isPending;
   const error = (scan.error?.name === 'AbortError' ? null : scan.error) ?? save.error;
   function stopScan() { scanController.current?.abort(); scanController.current = null; scan.reset(); setProgress(null); setFound([]); }
-  function clearScan() { setDiscovery(null); scan.reset(); save.reset(); }
+  function clearScan() { setDiscovery(null); setIncludedReferences({}); scan.reset(); save.reset(); }
   function dismiss() { stopScan(); sessionStorage.removeItem(draftKey); onClose(); }
   return <Dialog open onOpenChange={open => { if (!open && !save.isPending) dismiss(); }}><DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-y-auto p-4 sm:max-w-2xl sm:p-6" aria-describedby={source ? 'source-description' : undefined}>
     <DialogHeader><DialogTitle>{source ? source.fullName : 'Import from GitHub'}</DialogTitle>{source && <DialogDescription id="source-description">Choose the skills to keep synced. Unchecked skills stay installed.</DialogDescription>}</DialogHeader>
@@ -205,8 +206,11 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
         <a href={source?.repositoryUrl ?? discovery?.repositoryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-foreground">View on GitHub<ExternalLink className="size-3" /></a>
       </div>}
       {source?.lastError && <p role="alert" className="text-sm text-destructive">{source.lastError}{' '}<Link onClick={rememberReturn} to={source.connectionId ? `/apps/${source.connectionId}/permissions` : connectHref} className="underline">Manage GitHub connection</Link></p>}
-      {ready && !save.isPending && <SkillSourceTree onPreview={(skill, filePath) => setPreview({ skill, filePath })} candidates={candidates} selected={selected} excludedFolders={excludedFolders} onChange={(paths, folders) => { setSelected(paths); setExcludedFolders(folders); }} disabled={busy} />}
-      {discovery?.warnings.map(warning => <p key={warning} className="text-xs text-muted-foreground">{warning}</p>)}
+      {ready && !save.isPending && <SkillSourceTree onPreview={(skill, filePath) => setPreview({ skill, filePath })} candidates={candidates} selected={selected} excludedFolders={excludedFolders} includedReferences={includedReferences} onChange={(paths, folders) => { setSelected(paths); setExcludedFolders(folders); }} disabled={busy} />}
+      {Boolean(discovery?.warnings.length) && <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Skipped repository paths · {discovery!.warnings.length}</summary>
+        <ul className="mt-2 max-h-48 space-y-1 overflow-auto">{discovery!.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
+      </details>}
       {skippedCount > 0 && <p className="text-sm text-muted-foreground">{skippedCount} selected {skippedCount === 1 ? 'skill has' : 'skills have'} validation errors and will be skipped.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error.message}{' '}<Link onClick={rememberReturn} to={connectHref} className="underline">Connect a GitHub account</Link></p>}
       {scan.isPending && <SkillImportProgress repository={parsedRepository?.fullName ?? repositoryUrl} progress={progress} found={found} />}
@@ -219,6 +223,8 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
       </footer>
     {preview && <SkillPackagePreview key={`${preview.skill.path}:${preview.filePath ?? ''}`} companyId={companyId}
       repository={{ repositoryUrl: source?.repositoryUrl ?? discovery!.repositoryUrl, connectionId: source ? sourceConnectionId : connectionId }}
+      includedReferences={includedReferences[preview.skill.path] ?? []}
+      onReferencesChange={paths => { setIncludedReferences(previous => ({ ...previous, [preview.skill.path]: paths })); if (paths.length) setSelected(previous => new Set(previous).add(preview.skill.path)); }}
       commitSha={preview.skill.inspection?.commitSha ?? source?.lastScanCommit ?? discovery?.commitSha ?? null} skill={preview.skill} initialFile={preview.filePath} onClose={() => setPreview(null)} />}
   </DialogContent></Dialog>;
 }

@@ -4,18 +4,19 @@ import { unprocessable } from '../errors.js';
 import { skillFileBytes } from './skill-snapshot.js';
 
 /** Inspect explicit Markdown links and inline-code resource paths, not project filenames, prose, or shell commands. */
-function referencesIn(markdown: string) {
-  const text = markdown.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm, '');
-  const references: { target: string; rootRelative: boolean }[] = [];
+export function referencesIn(markdown: string) {
+  const text = markdown.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm, match => ' '.repeat(match.length));
+  const references: { target: string; rootRelative: boolean; offset: number }[] = [];
   // Link/image destinations and reference definitions; optional titles are not part of the path.
   for (const match of text.matchAll(/(?:!?\[[^\]\n]*\]\(|^\s*\[[^\]\n]+\]:\s*)(?:<([^>\n]+)>|([^\s)]+))/gm)) {
-    references.push({ target: match[1] ?? match[2]!, rootRelative: false });
+    const target = match[1] ?? match[2]!;
+    references.push({ target, rootRelative: false, offset: match.index! + match[0].lastIndexOf(target) });
   }
   for (const match of text.matchAll(/(?<!`)`([^`\n]+)`(?!`)/g)) {
     const target = match[1]!;
     if (/^(?:\.\.?\/|references\/|scripts\/|assets\/)[\w.\-/]+\.[a-z][a-z0-9]{0,11}$/i.test(target)) {
       // Explicit dot paths belong to the containing document; conventional resource paths start at the package root.
-      references.push({ target, rootRelative: !target.startsWith('.') });
+      references.push({ target, rootRelative: !target.startsWith('.'), offset: match.index! + 1 });
     }
   }
   return references;
@@ -46,9 +47,11 @@ export function inspectSkillPackage(
   repositoryPaths: ReadonlySet<string>,
   frontmatter: Record<string, unknown>,
   findings: CompanySkillAuditFinding[],
+  origins?: ReadonlyMap<string, string>,
 ): SkillPackageInspection {
   const root = path.posix.dirname(skillPath);
-  const inPackage = indexSkillPackagePaths(files.map(file => file.path === 'SKILL.md' ? skillPath : path.posix.join(root, file.path)));
+  const originRoots = new Set([...(origins?.values() ?? [])].filter(value => /(^|\/)skill\.md$/i.test(value)).map(value => path.posix.dirname(value)));
+  const inPackage = indexSkillPackagePaths(files.map(file => origins?.get(file.path) ?? (file.path === 'SKILL.md' ? skillPath : path.posix.join(root, file.path))));
   const references = new Map<string, SkillPackageReference>();
   const contains = (paths: ReadonlySet<string>, target: string) => paths.has(target);
   for (const file of files) {
@@ -58,7 +61,14 @@ export function inspectSkillPackage(
       let decoded: string;
       try { decoded = decodeURIComponent(target.split(/[?#]/)[0]!); } catch { continue; }
       if (!decoded) continue;
-      const resolvedPath = path.posix.normalize(path.posix.join(root, rootRelative ? '' : path.posix.dirname(file.path), decoded)).replace(/\/+$/, '');
+      const origin = origins?.get(file.path);
+      const documentDir = origin ? path.posix.dirname(origin) : path.posix.join(root, path.posix.dirname(file.path));
+      let packageRoot = root;
+      if (origin && rootRelative) {
+        packageRoot = documentDir;
+        while (packageRoot !== '.' && !originRoots.has(packageRoot)) packageRoot = path.posix.dirname(packageRoot);
+      }
+      const resolvedPath = path.posix.normalize(path.posix.join(rootRelative ? packageRoot : documentDir, decoded)).replace(/\/+$/, '');
       if (!decoded.startsWith('/') && contains(inPackage, resolvedPath)) continue;
       const outsideRoot = decoded.startsWith('/') || resolvedPath === '..' || resolvedPath.startsWith('../')
         || (root !== '.' && !resolvedPath.startsWith(`${root}/`) && resolvedPath !== root);

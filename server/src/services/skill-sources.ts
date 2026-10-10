@@ -44,9 +44,9 @@ export function skillSourceService(db: Db) {
     const { skills: _files, defaultBranch: _defaultBranch, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
     return result;
   }
-  async function preview(input: SkillSourcePreviewRequest, context: SkillSourceContext) {
+  async function preview(input: SkillSourcePreviewRequest, context: SkillSourceContext, options?: SkillScanOptions) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
-    return previewGitHubSkillFile(input, context.read(input.connectionId ?? null));
+    return previewGitHubSkillFile(input, context.read(input.connectionId ?? null), options);
   }
   async function authorizeScan(source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
     const previous = await db.select().from(entries).where(and(eq(entries.companyId, source.companyId), eq(entries.sourceId, source.id)));
@@ -178,9 +178,11 @@ export function skillSourceService(db: Db) {
     source = leased;
     try {
       const connectionId = selection?.connectionId !== undefined ? selection.connectionId : source.connectionId;
-      const scan = staged ?? await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef }, context.read(connectionId));
-      if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
       const current = await detail(companyId, id);
+      const includedReferences = selection?.includedReferences ?? Object.fromEntries(current.entries.map(entry => [entry.path, entry.inspection?.includedReferences ?? []]));
+      const scan = staged && !Object.values(includedReferences).some(paths => paths.length) ? staged
+        : await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, ...(staged ? { commitSha: staged.commitSha } : {}), includedReferences }, context.read(connectionId));
+      if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
       const selectedPaths = selection?.selectedPaths ?? current.entries.filter(entry => entry.selection === 'selected').map(entry => entry.path);
       await authorizeScan(source, scan, selectedPaths, context);
       return await db.transaction(async tx => {

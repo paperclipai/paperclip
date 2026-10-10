@@ -84,6 +84,32 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(await skills.getById(companyId, skill.id)).not.toBeNull();
     await expect(sources.detail(randomUUID(), result.source.id)).rejects.toThrow(/not found/);
   });
+  it('persists reference selections, refreshes included resources and keeps the last version on missing dependencies', async () => {
+    const service = skillSourceService(db), skills = companySkillService(db);
+    files = { 'architect/SKILL.md': md('architect') + '[Runtime](../runtime/SKILL.md)', 'runtime/SKILL.md': md('runtime'), 'runtime/scripts/run.py': 'print("first")' }; commit = sha;
+    const created = await service.create(companyId, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'references', commitSha: sha, selectedPaths: ['architect/SKILL.md'], includedReferences: { 'architect/SKILL.md': ['runtime/SKILL.md'] } }, context);
+    const skill = created.imported[0]!;
+    expect(created.source.entries.find(entry => entry.path === 'architect/SKILL.md')!.inspection!.includedReferences).toEqual(['runtime/SKILL.md']);
+    expect((await skills.readFile(companyId, skill.id, 'repository/runtime/scripts/run.py'))?.content).toBe('print("first")');
+    expect((await skills.readFile(companyId, skill.id, 'SKILL.md'))?.content).toContain('[Runtime](./repository/runtime/SKILL.md)');
+    files['runtime/scripts/run.py'] = 'print("second")'; commit = 'b'.repeat(40);
+    const refreshed = await service.refresh(companyId, created.source.id, context);
+    expect(refreshed.updated).toHaveLength(1);
+    expect((await skills.readFile(companyId, skill.id, 'repository/runtime/scripts/run.py'))?.content).toBe('print("second")');
+    const lastVersion = (await skills.getById(companyId, skill.id))!.currentVersionId;
+    delete files['runtime/SKILL.md'];
+    const failed = await service.refresh(companyId, created.source.id, context);
+    expect(failed.warnings.join()).toMatch(/no longer available/);
+    expect((await skills.getById(companyId, skill.id))!.currentVersionId).toBe(lastVersion);
+    expect(failed.source.entries.find(entry => entry.path === 'architect/SKILL.md')!.inspection!.includedReferences).toEqual(['runtime/SKILL.md']);
+    files['architect/SKILL.md'] = md('architect');
+    const obsolete = await service.refresh(companyId, created.source.id, context);
+    expect(obsolete.source.entries.find(entry => entry.path === 'architect/SKILL.md')!.inspection!.references).toEqual([]);
+    expect(obsolete.source.entries.find(entry => entry.path === 'architect/SKILL.md')!.inspection!.includedReferences).toEqual(['runtime/SKILL.md']);
+    const removed = await service.refresh(companyId, created.source.id, context, { revision: obsolete.source.revision, selectedPaths: ['architect/SKILL.md'], excludedFolders: [], includedReferences: { 'architect/SKILL.md': [] } });
+    expect(removed.updated).toHaveLength(1);
+    await expect(skills.readFile(companyId, skill.id, 'repository/runtime/scripts/run.py')).rejects.toThrow('Skill file not found');
+  });
   it('rolls back source, skills and versions if required activity persistence fails', async () => {
     files = { 'SKILL.md': md('rollback') }; commit = sha;
     const before = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));

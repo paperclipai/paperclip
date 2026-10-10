@@ -52,10 +52,11 @@ export function buildSkillPackageTree(candidates: SkillTreeCandidate[]) {
   return { nodes: transform(buildFileTree(Object.fromEntries(candidates.map(skill => [skill.path, null])))), included };
 }
 
-export function SkillSourceTree({ candidates, selected, excludedFolders, onChange, onPreview, disabled = false }: {
+export function SkillSourceTree({ candidates, selected, excludedFolders, includedReferences, onChange, onPreview, disabled = false }: {
   candidates: SkillTreeCandidate[]; selected: Set<string>; excludedFolders: string[];
   onChange: (selected: Set<string>, excludedFolders: string[]) => void;
   onPreview?: (skill: SkillTreeCandidate, filePath?: string) => void; disabled?: boolean;
+  includedReferences?: Record<string, string[]>;
 }) {
   const [search, setSearch] = useState('');
   const [expansion, setExpansion] = useState(new Map<string, boolean>());
@@ -137,12 +138,15 @@ export function SkillSourceTree({ candidates, selected, excludedFolders, onChang
         renderNodeExtra={node => {
           const skill = skillsByPath.get(node.path);
           if (!skill) return node.kind === 'file' ? <span className="text-xs text-muted-foreground">Included</span> : null;
-          const label = skill.error ? 'Invalid' : skill.inspection?.references.length ? 'Check references' : skill.note === 'New skill' ? 'New' : skill.note === 'Already imported' ? 'Installed' : skill.note?.startsWith('Removed from source') ? 'Removed' : skill.note;
+          const references = skill.inspection?.references ?? [];
+          const included = includedReferences?.[skill.path] ?? skill.inspection?.includedReferences ?? [];
+          const unresolved = references.some(reference => !included.includes(reference.resolvedPath));
+          const label = skill.error ? 'Invalid' : unresolved ? 'Check references' : included.length ? 'References included' : skill.note === 'New skill' ? 'New' : skill.note === 'Already imported' ? 'Installed' : skill.note?.startsWith('Removed from source') ? 'Removed' : skill.note;
           const count = skill.inspection?.files.length ?? skill.fileCount;
           return <>
             {label && <Badge variant="outline" className={skill.error ? 'font-normal text-destructive' : 'hidden font-normal text-muted-foreground sm:inline-flex'} title={skill.error ?? skill.note}>{label}</Badge>}
             {count !== undefined && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{count} {count === 1 ? 'file' : 'files'}</span>}
-            {onPreview && <Button type="button" size="icon-xs" variant="ghost" disabled={disabled} aria-label={`Inspect ${skill.name}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onPreview(skill); }}>{skill.inspection?.references.length ? <AlertTriangle className="size-3.5" /> : <Info className="size-3.5" />}</Button>}
+            {onPreview && <Button type="button" size="icon-xs" variant="ghost" disabled={disabled} aria-label={`Inspect ${skill.name}`} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onPreview(skill); }}>{unresolved ? <AlertTriangle className="size-3.5" /> : <Info className="size-3.5" />}</Button>}
           </>;
         }}
       />

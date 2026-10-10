@@ -23,7 +23,7 @@ function inspection(skillPath: string): SkillPackageInspection {
     files: Object.entries(packageContents[skillPath]!).map(([path, content]) => ({ path, kind: path === 'SKILL.md' ? 'skill' : path.startsWith('scripts/') ? 'script' : path.startsWith('assets/') ? 'asset' : 'reference', encoding: content === null ? 'base64' : 'utf8', sizeBytes: content === null ? 2048 : new TextEncoder().encode(content).length, executable: path.startsWith('scripts/') })),
     requirements: skillPath.includes('/security/') ? 'Requires Python 3.11.' : skillPath.includes('/review/') ? 'Requires Python 3.11 and git.' : null,
     references: skillPath.includes('/security/') ? [
-      { fromPath: 'SKILL.md', target: '../../shared/policy.md', resolvedPath: '.agents/skills/shared/policy.md', kind: 'outside_package' },
+      { fromPath: 'SKILL.md', target: '../../shared/policy.md', resolvedPath: '.agents/skills/shared/policy.md', kind: 'outside_package', import: { kind: 'folder', path: '.agents/skills/shared', fileCount: 3 } },
       { fromPath: 'SKILL.md', target: 'references/threat-model.md', resolvedPath: '.agents/skills/review/security/references/threat-model.md', kind: 'missing' },
     ] : [],
     warnings: skillPath.includes('/review/') ? ['Skill includes a script file.'] : [],
@@ -141,13 +141,14 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     };
   }
   if (needsConnection && sources[0]) sources[0].lastError = "GitHub access is no longer available. Reconnect GitHub or choose another connection.";
-  function save(source: SkillSource, selectedPaths: string[], excludedFolders: string[]): SkillSourceRefreshResult {
+  function save(source: SkillSource, selectedPaths: string[], excludedFolders: string[], includedReferences?: Record<string, string[]>): SkillSourceRefreshResult {
     const imported: CompanySkill[] = [];
     const warnings: string[] = [];
     let unchanged = 0;
     source.entries = source.entries.map(entry => {
       const selected = selectedPaths.includes(entry.path);
       const next: SkillSourceEntry = { ...entry, selection: selected ? "selected" : "excluded" };
+      if (includedReferences && next.inspection) next.inspection = { ...next.inspection, includedReferences: includedReferences[entry.path] ?? [] };
       if (selected && entry.error) warnings.push(`${entry.path}: ${entry.error}`);
       else if (selected && !entry.skillId) {
         next.skillId = fixtureSkillId(entry.id);
@@ -241,12 +242,12 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     Object.assign(source, { id: `source-${sources.length + 1}`, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
     source.entries = source.entries.filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map(entry => ({ ...entry, sourceId: source.id, skillId: null }));
     sources.push(source);
-    return save(source, input.selectedPaths, input.excludedFolders ?? []);
+    return save(source, input.selectedPaths, input.excludedFolders ?? [], input.includedReferences);
   };
   skillSourcesApi.select = async (_companyId, id, input) => {
     const source = sources.find(item => item.id === id)!;
     source.connectionId = input.connectionId ?? null;
-    return save(source, input.selectedPaths, input.excludedFolders);
+    return save(source, input.selectedPaths, input.excludedFolders, input.includedReferences);
   };
   skillSourcesApi.refresh = async (_companyId, id) => {
     const source = sources.find(item => item.id === id)!;

@@ -37,7 +37,7 @@ export const skillSourcesApi = {
       reader.releaseLock();
     }
   },
-  preview: (companyId: string, input: SkillSourcePreviewRequest) => api.post<SkillSourceFilePreview>(`${base(companyId)}/preview`, input),
+  preview: (companyId: string, input: SkillSourcePreviewRequest, signal?: AbortSignal) => api.post<SkillSourceFilePreview>(`${base(companyId)}/preview`, input, { signal }),
   create: (companyId: string, input: SkillSourceCreateRequest) => api.post<SkillSourceRefreshResult>(base(companyId), input),
   select: (companyId: string, id: string, input: SkillSourceSelectionRequest) => api.patch<SkillSourceRefreshResult>(`${base(companyId)}/${id}`, input),
   refresh: (companyId: string, id: string) => api.post<SkillSourceRefreshResult>(`${base(companyId)}/${id}/refresh`, {}),

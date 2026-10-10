@@ -371,7 +371,15 @@ export function companySkillRoutes(db: Db) {
   });
   router.post("/companies/:companyId/skill-sources/preview", validate(skillSourcePreviewSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(req.body, context)));
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    res.on("close", stop);
+    try {
+      const result = await sourceOperation(req, companyId, context => sourceSvc.preview(req.body, context, { signal: controller.signal }));
+      if (!controller.signal.aborted) res.json(result);
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    } finally { res.off("close", stop); }
   });
   router.post("/companies/:companyId/skill-sources", validate(skillSourceCreateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

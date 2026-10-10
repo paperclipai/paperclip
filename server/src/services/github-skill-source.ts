@@ -5,6 +5,7 @@ import { notFound, unprocessable } from '../errors.js';
 import { assertSkillSnapshotPath, snapshotFile, skillFileBytes } from './skill-snapshot.js';
 import { indexSkillPackagePaths, inspectSkillPackage } from './skill-package-inspection.js';
 import { auditSkillSnapshot, classifyInventoryKind } from './company-skills.js';
+import { skillReferenceScopes, relocateSkillFiles } from './skill-reference-import.js';
 
 import type { GitSkillSnapshot, GitSkillSnapshotOptions, GitSkillTreeEntry as TreeEntry } from './skill-source-git-snapshot.js';
 
@@ -34,7 +35,7 @@ export interface SkillScanOptions {
   retainFiles?: boolean;
 }
 
-type SkillScanInput = { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
+type SkillScanInput = { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string; includedReferences?: Record<string, string[]> };
 
 export function scanGitHubSkills(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
   const scan = () => scanRepository(input, providerRead, options);
@@ -84,6 +85,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
     }
     const repositoryPaths = indexSkillPackagePaths(entries.map(entry => entry.path));
     const roots = entries.filter(e => e.type === 'blob' && /(^|\/)skill\.md$/i.test(e.path) && ['100644', '100755'].includes(e.mode));
+    const referenceScope = skillReferenceScopes(entries, roots);
     const rootsByDirectory = new Map<string, TreeEntry[]>();
     for (const root of roots) {
       const dir = path.posix.dirname(root.path);
@@ -170,10 +172,69 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       if (markdown?.encoding === 'base64') error = 'SKILL.md must contain UTF-8 text.';
       const name = typeof frontmatter.name === 'string' && frontmatter.name.trim() ? frontmatter.name.trim() : path.posix.basename(dir) || repo.full_name;
       const description = typeof frontmatter.description === 'string' ? frontmatter.description : null;
-      const findings = !error ? await auditSkillSnapshot(files) : [];
+      let findings = !error ? await auditSkillSnapshot(files) : [];
       error ??= findings.filter(f => f.severity === 'error').map(f => `${f.path ?? root.path}: ${f.message}`).join(' ') || null;
-      const inspection = { ...inspectSkillPackage(root.path, files, repositoryPaths, frontmatter, findings), commitSha: commit.sha };
-      skills.push({ path: root.path, name, description, fileCount: inventory.length, error, warnings: inspection.warnings, inspection, files: options.retainFiles === false ? [] : files });
+      const baseInspection = inspectSkillPackage(root.path, files, repositoryPaths, frontmatter, findings);
+      for (const reference of baseInspection.references) {
+        const scope = referenceScope(reference);
+        if (scope) reference.import = { path: scope.path, kind: scope.kind, fileCount: scope.files.length };
+      }
+      const includedReferences = [...new Set(input.includedReferences?.[root.path] ?? [])];
+      let packageFiles = files;
+      let inspection = { ...baseInspection, commitSha: commit.sha, includedReferences };
+      if (includedReferences.length && !error) {
+        const sourceFiles = new Map(files.map(file => [file.path === 'SKILL.md' ? root.path : path.posix.join(dir, file.path), file]));
+        const knownReferences = new Map(baseInspection.references.map(reference => [reference.resolvedPath, reference]));
+        const pending = new Set(includedReferences);
+        while (pending.size && !error) {
+          const additions = new Map<string, TreeEntry>();
+          let resolved = false;
+          for (const target of pending) {
+            // A scope selected earlier can already contain this target on refresh.
+            const alreadyIncluded = sourceFiles.has(target) || [...sourceFiles.keys()].some(file => file.startsWith(`${target}/`));
+            const reference = knownReferences.get(target);
+            const scope = reference && referenceScope(reference);
+            if (!scope && !alreadyIncluded) continue;
+            pending.delete(target); resolved = true;
+            if (scope) for (const entry of scope.files) if (!sourceFiles.has(entry.path)) additions.set(entry.path, entry);
+          }
+          if (!resolved) { error = `Referenced path is no longer available for import: ${[...pending][0]}`; break; }
+          expandedFiles += additions.size;
+          if (expandedFiles > MAX_SCAN_FILES) throw unprocessable('Skill packages exceed the 10,000 file scan limit.');
+          for (const entry of additions.values()) {
+            if (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) { error = `Unsupported symlink or submodule: ${entry.path}`; break; }
+            const bytes = await readBlob(entry);
+            if (!bytes) { error = `File exceeds the 1 MB limit: ${entry.path}`; break; }
+            const kind = entry.mode === '100755' || bytes.subarray(0, 2).toString() === '#!' ? 'script' : classifyInventoryKind(entry.path);
+            sourceFiles.set(entry.path, snapshotFile(entry.path, kind, bytes, entry.mode === '100755'));
+          }
+          const originalFiles = [...sourceFiles].map(([origin, file]) => ({ ...file, path: origin }));
+          const originalPaths = new Map([...sourceFiles.keys()].map(origin => [origin, origin]));
+          for (const reference of inspectSkillPackage(root.path, originalFiles, repositoryPaths, frontmatter, [], originalPaths).references) {
+            if (!knownReferences.has(reference.resolvedPath)) knownReferences.set(reference.resolvedPath, reference);
+          }
+        }
+        if (!error) {
+          const relocated = relocateSkillFiles(root.path, sourceFiles, files);
+          // Inspect original paths, then audit the exact bytes that will be installed.
+          packageFiles = relocated.rewritten;
+          expandedFiles += packageFiles.length - sourceFiles.size;
+          totalBytes += Math.max(0, packageFiles.reduce((sum, file) => sum + skillFileBytes(file).length, 0) - [...sourceFiles.values()].reduce((sum, file) => sum + skillFileBytes(file).length, 0));
+          if (expandedFiles > MAX_SCAN_FILES) throw unprocessable('Skill packages exceed the 10,000 file scan limit.');
+          if (totalBytes > MAX_SCAN_BYTES) throw unprocessable('Skill packages exceed the 100 MB scan limit.');
+          findings = await auditSkillSnapshot(packageFiles);
+          error = findings.filter(finding => finding.severity === 'error').map(finding => `${finding.path}: ${finding.message}`).join(' ') || null;
+          const manifest = inspectSkillPackage(root.path, packageFiles, repositoryPaths, frontmatter, findings);
+          for (const reference of knownReferences.values()) {
+            const scope = referenceScope(reference);
+            if (scope) reference.import = { path: scope.path, kind: scope.kind, fileCount: scope.files.length };
+          }
+          inspection = { ...manifest, commitSha: commit.sha, includedReferences,
+            files: manifest.files.map(file => ({ ...file, repositoryPath: relocated.origins.get(file.path) })),
+            references: [...knownReferences.values()] };
+        }
+      }
+      skills.push({ path: root.path, name, description, fileCount: packageFiles.length, error, warnings: inspection.warnings, inspection, files: options.retainFiles === false ? [] : packageFiles });
       options.signal?.throwIfAborted();
       await options.onProgress?.({ type: 'candidate', candidate: { path: root.path, name, description, fileCount: inventory.length, error } });
       progress.checkedSkills++;
@@ -185,8 +246,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
 }
 
 /** Reauthorize the caller and re-audit the selected package; never trust a client-supplied manifest. */
-export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead): Promise<SkillSourceFilePreview> {
-  const scan = await scanGitHubSkills({ ...input, onlySkillPath: input.skillPath }, read);
+export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead, options?: SkillScanOptions): Promise<SkillSourceFilePreview> {
+  const scan = await scanGitHubSkills({ ...input, onlySkillPath: input.skillPath, includedReferences: { [input.skillPath]: input.includedReferences ?? [] } }, read, options);
   if (scan.commitSha.toLowerCase() !== input.commitSha.toLowerCase()) throw unprocessable('The preview commit did not match the requested snapshot.');
   const skill = scan.skills.find(candidate => candidate.path === input.skillPath);
   if (!skill) throw notFound('Skill package not found at this commit.');
@@ -196,6 +257,6 @@ export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, r
   if (!file || !manifest) throw notFound('File is not included in this skill package.');
   const bytes = skillFileBytes(file);
   const limit = 64 * 1024;
-  return { file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
+  return { inspection: skill.inspection ?? undefined, file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
     truncated: manifest.encoding !== 'base64' && bytes.length > limit, commitSha: scan.commitSha };
 }

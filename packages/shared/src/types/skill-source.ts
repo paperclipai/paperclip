@@ -2,6 +2,8 @@ import type { CompanySkill } from './company-skill.js';
 
 /** Metadata from an audited, immutable repository scan; file contents are fetched on demand. */
 export interface SkillPackageInspection {
+  /** Explicit reference choices, retained for manual refreshes. */
+  includedReferences?: string[];
   /** Commit of this manifest, retained when a package disappears on a later refresh. */
   commitSha?: string;
   files: SkillPackageFile[];
@@ -10,6 +12,7 @@ export interface SkillPackageInspection {
   warnings: string[];
 }
 export interface SkillPackageFile {
+  repositoryPath?: string;
   path: string;
   kind: string;
   sizeBytes: number;
@@ -21,13 +24,17 @@ export interface SkillPackageReference {
   target: string;
   resolvedPath: string;
   kind: 'missing' | 'outside_package';
+  /** Server-derived scope; absent for missing or unsafe repository paths. */
+  import?: { path: string; kind: 'skill' | 'folder' | 'file'; fileCount: number };
 }
 export interface SkillSourcePreviewRequest extends SkillSourceDiscoveryRequest {
+  includedReferences?: string[];
   commitSha: string;
   skillPath: string;
   filePath: string;
 }
 export interface SkillSourceFilePreview {
+  inspection?: SkillPackageInspection;
   file: SkillPackageFile;
   content: string | null;
   truncated: boolean;
@@ -108,11 +115,13 @@ export type SkillSourceDiscoveryEvent = SkillSourceScanUpdate
   | { type: 'error'; error: string; status: number };
 
 export interface SkillSourceCreateRequest extends SkillSourceDiscoveryRequest {
+  includedReferences?: Record<string, string[]>;
   commitSha: string;
   selectedPaths: string[];
   excludedFolders?: string[];
 }
 export interface SkillSourceSelectionRequest {
+  includedReferences?: Record<string, string[]>;
   revision: number;
   selectedPaths: string[];
   excludedFolders: string[];
