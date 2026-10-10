@@ -4428,7 +4428,7 @@ export function heartbeatService(
           adapterConfig: parseObject(agent.adapterConfig),
           executionConfigurationKey: createHash("sha256").update(JSON.stringify([
             config, agent.runtimeConfig, agent.permissions, managedAiRuntime?.sessionIdentity,
-            managedAiRuntime?.identity, githubSelection.configured, useHostGitHub,
+            managedAiRuntime?.identity, githubSelection.configured, useHostGitHub, issueContext?.workMode,
             context.refreshTools === true ? run.id : null,
           ])).digest("hex"),
           admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
