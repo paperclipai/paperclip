@@ -1,3 +1,4 @@
+import { environmentService } from "../environments.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
@@ -106,9 +107,23 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     const policy = task?.executionPolicy?.authorizationPolicy as {trustPreset?: string; trustBoundary?: {mode?: string; companyId?: string; rootIssueId?: string; issueIds?: string[]; allowedAgentIds?: string[]; allowedToolClasses?: string[]; allowedSecretBindingIds?: string[]}} | undefined;
     const boundary = policy?.trustBoundary;
     if (!call || !line || !endpoint.allowDirectMessages || session.mode !== "inbound_phone" || session.callerId !== `guest:${call.id}` || call.providerSessionId !== session.providerSessionId || call.generation !== context.generation || call.credentialFingerprint !== context.fingerprint || call.toolTokenHash !== session.toolTokenHash || !["guest_intake", "ended"].includes(call.state)
-      || !task || (line.lowTrustEnvironmentId ?? null) !== (task.executionWorkspaceSettings?.environmentId ?? null) || task.hiddenAt || task.status === "cancelled" || task.originKind !== "chat_channel" || task.originId !== endpoint.id || task.assigneeAgentId !== session.assignedAgentId || session.assignedAgentId !== endpoint.assignedAgentId
+      || !task || task.hiddenAt || task.status === "cancelled" || task.originKind !== "chat_channel" || task.originId !== endpoint.id || task.assigneeAgentId !== session.assignedAgentId || session.assignedAgentId !== endpoint.assignedAgentId
       || task.sourceTrust?.preset !== LOW_TRUST_REVIEW_PRESET || task.sourceTrust.disposition !== "quarantined" || policy?.trustPreset !== LOW_TRUST_REVIEW_PRESET || boundary?.mode !== LOW_TRUST_REVIEW_PRESET || boundary.companyId !== endpoint.companyId || boundary.rootIssueId !== task.id
       || boundary.issueIds?.length !== 1 || boundary.issueIds[0] !== task.id || boundary.allowedAgentIds?.length !== 1 || boundary.allowedAgentIds[0] !== session.assignedAgentId || boundary.allowedToolClasses?.length !== 0 || boundary.allowedSecretBindingIds?.length !== 0) throw forbidden("The low-trust phone task boundary is no longer available");
+    // The line selects environments for future calls. Accepted work keeps its
+    // task's saved sandbox, subject to current availability and company scope.
+    const savedSettings = task.executionWorkspaceSettings;
+    const savedEnvironmentId = typeof savedSettings?.environmentId === "string" ? savedSettings.environmentId : null;
+    const strategy = savedSettings?.workspaceStrategy as {type?: string} | undefined;
+    if (task.executionWorkspaceSettings?.mode !== "isolated_workspace"
+      || strategy?.type !== "cloud_sandbox") throw forbidden("The phone task sandbox boundary changed");
+    if (savedEnvironmentId) {
+      const environments = environmentService(tx as unknown as Db);
+      const environment = await environments.getById(savedEnvironmentId);
+      const owners = await environments.listBoundCompanyIds(savedEnvironmentId);
+      if (!environment || environment.status !== "active" || environment.driver !== "sandbox"
+        || environment.config?.provider === "fake" || owners.length && !owners.includes(endpoint.companyId)) throw forbidden("The saved phone task sandbox is unavailable");
+    }
     // Honor managed credential/install revocation without impersonating a user.
     const grants = await tx.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, endpoint.companyId), eq(connectionGrants.connectionId, context.connection.id)));
     if (grants.length && !grants.some(g => g.status === "active" && g.kind === "organization" && voiceCredentialFingerprint(g.credentialSecretRefs) === voiceCredentialFingerprint(context.connection.credentialSecretRefs))) throw forbidden("The company phone credential grant is unavailable");
@@ -212,7 +227,11 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     return delivery.id;
   }
   function priorCallDeliveryBarrier(session: VoiceSessionRow, publicationId: string | SQL) {
-    return sql<boolean>`exists (select 1 from chat_voice_replies r join chat_voice_sessions s
+    return sql<boolean>`not exists (select 1 from chat_publications p join issue_thread_interactions i
+      on i.id::text = p.payload->>'interactionId' and i.company_id = p.company_id and i.issue_id = p.issue_id
+      where p.id = ${publicationId} and p.company_id = ${session.companyId}
+        and i.kind = 'ask_user_questions' and i.status = 'pending')
+      and exists (select 1 from chat_voice_replies r join chat_voice_sessions s
       on s.id = r.session_id and s.company_id = r.company_id
       where r.company_id = ${session.companyId} and r.publication_id = ${publicationId}
         and s.id <> ${session.id} and s.caller_id = ${session.callerId}
