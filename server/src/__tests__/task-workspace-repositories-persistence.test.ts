@@ -47,12 +47,14 @@ const support = await getEmbeddedPostgresTestSupport();
       await git("add", ".");
       await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "source");
       const pin = await git("rev-parse", "HEAD");
+      const cloneStarted = path.join(root, "clone-started"), cloneReleased = path.join(root, "clone-released");
       // Exercise actual Git and atomic publication without external networking.
       // Only this fixture's exact remote is redirected; persist the real API origin.
       await writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
-        `const { spawnSync } = require('node:child_process'); const args = process.argv.slice(2);\n` +
+        `const { spawnSync } = require('node:child_process'); const fs = require('node:fs'); const args = process.argv.slice(2);\n` +
         `const remote = args.includes('clone') ? args.at(-2) : null;\n` +
         `if (remote && remote !== 'https://github.com/team/source') process.exit(97);\n` +
+        `if (remote) { fs.writeFileSync(${JSON.stringify(cloneStarted)}, 'started'); const deadline = Date.now() + 10000; while (!fs.existsSync(${JSON.stringify(cloneReleased)})) { if (Date.now() > deadline) process.exit(96); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n` +
         `if (remote) args[args.length - 2] = ${JSON.stringify(source)};\n` +
         `const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\n` +
         `if (result.status) process.exit(result.status);\n` +
@@ -68,9 +70,34 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await lstat(checkout).catch(() => null)).toBeNull();
       const admission = { companyId, issueId: task.id, workspaceId: workspace.id, cwd: taskRoot,
         agentId, runId: randomUUID(), responsibleUserId: "local-board" };
+      const [readyWorkspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Shared physical root", cwd: taskRoot,
+        mode: "shared_workspace", strategyType: "operator_directory" }).returning();
+      const [readyTask] = await db.insert(issues).values({ companyId, title: "Reuse another repository", executionWorkspaceId: readyWorkspace.id }).returning();
+      const readyIntent = await executionWorkspaceRepositoryService(db).request({ companyId, issueId: readyTask.id, actor,
+        request: { repository: { kind: "url", url: "https://github.com/team/ready" }, requestKey: "ready-repository" } });
+      const readyCheckout = path.join(taskRoot, readyIntent.repository.relativePath);
+      await mkdir(path.dirname(readyCheckout), { recursive: true });
+      await exec(realGit, ["clone", "--no-hardlinks", source, readyCheckout]);
+      await exec(realGit, ["-C", readyCheckout, "remote", "set-url", "origin", readyIntent.repository.repoUrl]);
+      await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: pin })
+        .where(eq(executionWorkspaceRepositories.id, readyIntent.operationId));
       // New service instances emulate the controller restart between request
       // and admission; concurrent admissions must publish one owned checkout.
-      const results = await Promise.all([1, 2].map(() => executionWorkspaceRepositoryService(db).prepareForAdmission(admission)));
+      const pending = Promise.all([1, 2].map(() => executionWorkspaceRepositoryService(db).prepareForAdmission(admission)));
+      let results: Awaited<typeof pending>;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await vi.waitFor(async () => expect(await lstat(cloneStarted).catch(() => null)).not.toBeNull());
+        const ready = await Promise.race([
+          executionWorkspaceRepositoryService(db).prepareForAdmission({ ...admission, workspaceId: readyWorkspace.id, issueId: readyTask.id }),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Unrelated repository reuse waited for a blocked clone")), 2000); }),
+        ]);
+        expect(ready[0]).toMatchObject({ id: readyIntent.operationId, pinnedCommit: pin });
+      } finally {
+        clearTimeout(timeout);
+        await writeFile(cloneReleased, "released");
+        results = await pending;
+      }
       for (const prepared of results) expect(prepared).toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
       expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("original source\n");
       expect(JSON.parse(await readFile(path.join(checkout, ".git", "paperclip-workspace-owner.json"), "utf8")))

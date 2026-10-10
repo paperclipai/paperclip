@@ -504,6 +504,42 @@ export async function withDirectoryMergeLock<T>(
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs);
+}
+
+/** Lock an atomic directory publication before its target exists. The parent
+ * must already exist; existing leaf symlinks and non-directories are refused. */
+export async function withDirectoryPublicationLock<T>(
+  targetDir: string,
+  fn: (canonicalTargetDir: string) => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  const absoluteTarget = path.resolve(targetDir);
+  const parent = await fs.realpath(path.dirname(absoluteTarget));
+  const canonicalTargetDir = path.join(parent, path.basename(absoluteTarget));
+  const assertSafeLeaf = async () => {
+    const leaf = await fs.lstat(canonicalTargetDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (leaf && (!leaf.isDirectory() || leaf.isSymbolicLink())) {
+      throw new Error(`Directory publication target at ${canonicalTargetDir} is not a plain directory.`);
+    }
+  };
+  await assertSafeLeaf();
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, async () => {
+    await assertSafeLeaf();
+    return fn(canonicalTargetDir);
+  }, env);
+}
+
+async function withCanonicalDirectoryMergeLock<T>(
+  canonicalTargetDir: string,
+  fn: (canonicalTargetDir: string) => Promise<T>,
+  env: NodeJS.ProcessEnv,
+  diagnosticOperation?: DirectoryMergeLockOperation,
+  waitMs: number = LOCK_WAIT_MS,
+): Promise<T> {
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
   const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);

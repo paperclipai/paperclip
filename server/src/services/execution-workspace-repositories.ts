@@ -7,7 +7,7 @@ import path from "node:path";
 import { and, eq, or, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaceRepositories, executionWorkspaces, issues, type Db } from "@paperclipai/db";
 import { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository, type ProjectRepository } from "@paperclipai/shared";
-import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { accessService } from "./access.js";
 import { assertTaskWorkspaceAccess } from "./task-workspace-source-access.js";
@@ -135,9 +135,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       const source = resolveTaskRepository(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId } : { kind: "url", url: row.repoUrl }, available);
       if (source.repositoryIdentity !== row.repositoryIdentity || row.relativePath !== taskRepositoryRelativePath(row.repositoryIdentity)) throw conflict("Repository preparation receipt does not match its source");
       const cwd = path.join(root, row.relativePath);
-      // A new checkout does not exist yet. Lock its validated, existing parent
-      // so publication and reuse serialize without creating an unowned target.
-      await withDirectoryMergeLock(repositoryRoot, async () => {
+      await withDirectoryPublicationLock(cwd, async () => {
         const existing = await fs.lstat(cwd).catch(() => null);
         if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || await fs.realpath(cwd) !== cwd)) throw conflict("Repository checkout path is not a contained directory");
         if (existing) {
