@@ -9521,6 +9521,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       verifiedCurrentIdentity = storedIdentity;
     }
 
+    const previousSpekoSigningSecret = endpoint.provider === "speko"
+      ? (await resolveCredentials(endpoint).catch(() => ({} as Record<string, string>))).signingSecret : undefined;
     let credentials =
       input.credentials && Object.keys(input.credentials).length > 0
         ? await normalizedCredentials(endpoint, input.credentials)
@@ -9754,7 +9756,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (next.endpoint.provider === "speko") {
         const webhookPublicBaseUrl = getWebhookPublicBaseUrl();
         if (!webhookPublicBaseUrl?.startsWith("https://")) throw unprocessable("Speko needs an explicitly configured public HTTPS callback origin");
-        await configureSpekoSessionTools(db, { companyId: endpoint.companyId, endpointId: endpoint.id, agentId: credentials.agentId, callbackUrl: `${webhookPublicBaseUrl}/api/voice-webhooks/${endpoint.publicId}/tools`, signingSecret: credentials.signingSecret, client: createSpekoProvider(credentials.apiKey, fetchImpl), assertOwned: () => credentialLease.assertOwned() });
+        await configureSpekoSessionTools(db, { companyId: endpoint.companyId, endpointId: endpoint.id, agentId: credentials.agentId, callbackUrl: `${webhookPublicBaseUrl}/api/voice-webhooks/${endpoint.publicId}/tools`, signingSecret: credentials.signingSecret, previousSigningSecret: previousSpekoSigningSecret, client: createSpekoProvider(credentials.apiKey, fetchImpl), assertOwned: () => credentialLease.assertOwned() });
       }
       if (next.endpoint.provider === "discord")
         await reconcileDiscordCommands(endpoint.id, credentialLease, true);
