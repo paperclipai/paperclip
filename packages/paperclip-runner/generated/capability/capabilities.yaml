@@ -1399,16 +1399,52 @@
     {
       "id": "skill:skills/paperclip/references/routines.md:212",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/routines.md#L212:updating-a-routine",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L212:operator-rules-manual-run-vs-scheduled-fire",
+      "heading": "Operator Rules: Manual Run vs Scheduled Fire",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:218",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L218:pass-the-pending-schedule-trigger-s-triggerid-on-a-manual-run",
+      "heading": "Pass the pending schedule trigger's `triggerId` on a manual run",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:232",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L232:coalesce-if-active-needs-an-open-issue-with-a-live-heartbeat-run",
+      "heading": "`coalesce_if_active` needs an OPEN issue with a LIVE heartbeat run",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:245",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L245:consolidate-transition-boundary-duplicates",
+      "heading": "Consolidate transition-boundary duplicates",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:258",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L258:updating-a-routine",
       "heading": "Updating a Routine",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
       "expectedMockState": "operation_result"
     },
     {
-      "id": "skill:skills/paperclip/references/routines.md:223",
+      "id": "skill:skills/paperclip/references/routines.md:269",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/routines.md#L223:reading-routines-and-runs",
+      "sourceAnchor": "skills/paperclip/references/routines.md#L269:reading-routines-and-runs",
       "heading": "Reading Routines and Runs",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",

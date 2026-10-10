@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 162
+- Skill/reference headings: 166
 - Eval cases: 106 across 16 groups
-- Total normative rows: 268
+- Total normative rows: 272
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -195,8 +195,12 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/references/routines.md:api-manual-only:167 | optional_agent_tool | skills/paperclip/references/routines.md:167 |
 | skill:skills/paperclip/references/routines.md:updating-and-deleting-triggers:179 | optional_agent_tool | skills/paperclip/references/routines.md:179 |
 | skill:skills/paperclip/references/routines.md:manual-run:196 | optional_agent_tool | skills/paperclip/references/routines.md:196 |
-| skill:skills/paperclip/references/routines.md:updating-a-routine:212 | optional_agent_tool | skills/paperclip/references/routines.md:212 |
-| skill:skills/paperclip/references/routines.md:reading-routines-and-runs:223 | optional_agent_tool | skills/paperclip/references/routines.md:223 |
+| skill:skills/paperclip/references/routines.md:operator-rules-manual-run-vs-scheduled-fire:212 | optional_agent_tool | skills/paperclip/references/routines.md:212 |
+| skill:skills/paperclip/references/routines.md:pass-the-pending-schedule-trigger-s-triggerid-on-a-manual-run:218 | optional_agent_tool | skills/paperclip/references/routines.md:218 |
+| skill:skills/paperclip/references/routines.md:coalesceifactive-needs-an-open-issue-with-a-live-heartbeat-run:232 | optional_agent_tool | skills/paperclip/references/routines.md:232 |
+| skill:skills/paperclip/references/routines.md:consolidate-transition-boundary-duplicates:245 | optional_agent_tool | skills/paperclip/references/routines.md:245 |
+| skill:skills/paperclip/references/routines.md:updating-a-routine:258 | optional_agent_tool | skills/paperclip/references/routines.md:258 |
+| skill:skills/paperclip/references/routines.md:reading-routines-and-runs:269 | optional_agent_tool | skills/paperclip/references/routines.md:269 |
 | skill:skills/paperclip/references/workflows.md:paperclip-workflow-playbooks:1 | optional_agent_tool | skills/paperclip/references/workflows.md:1 |
 | skill:skills/paperclip/references/workflows.md:project-setup-ceo-manager:7 | optional_agent_tool | skills/paperclip/references/workflows.md:7 |
 | skill:skills/paperclip/references/workflows.md:openclaw-invite-ceo:22 | optional_agent_tool | skills/paperclip/references/workflows.md:22 |
