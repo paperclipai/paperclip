@@ -104,10 +104,11 @@ export function qualificationCadence(evidence) {
   const gaps = times.slice(1).map((at, index) => at - times[index]);
   const missing = contacts.filter(bucket => bucket.incomplete || bucket.contacts !== bucket.timestamps?.length).length;
   const boundaryGap = times.length ? Math.max(0, times[0] - start, expiry - times.at(-1)) : Infinity;
+  const largestGap = gaps.reduce((maximum, gap) => Math.max(maximum, gap), boundaryGap);
   return { from: times.length ? new Date(times[0]).toISOString() : null,
     to: times.length ? new Date(times.at(-1)).toISOString() : null,
     observedIntervals: gaps.length, withinSevenSeconds: gaps.filter(gap => gap <= 7000).length,
     missingIntervals: missing + (evidence.cadenceEvidenceComplete === true ? 0 : 1),
-    maxUnobservedGapMs: Number.isFinite(boundaryGap) ? boundaryGap : null,
+    maxUnobservedGapMs: Number.isFinite(largestGap) ? largestGap : null,
     complete: evidence.cadenceEvidenceComplete === true && missing === 0 && times.length > 1 };
 }
