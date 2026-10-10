@@ -81,6 +81,11 @@ unverified checks explicitly; do not treat skipped integration tests as passes.
 - Current size: 39,155 lines / 1,509,090 bytes before extraction; 38,633 lines /
   1,491,422 bytes after. Net reduction: 522 lines / 17,668 bytes. Destination:
   552 lines / 19,028 bytes, including imports and the shared text-limit constant.
+- On the rebased source, the service spans 36,175 lines: 287 direct nested
+  function declarations occupy 35,324 lines; 51 other statements occupy 504
+  lines of state, wiring, registration callbacks and the public API. The rest
+  is comments, whitespace and delimiters. Those counts remain unchanged by
+  this slice; they make the remaining orchestration work explicit.
 - The module takes only the Teams parser method and the two delivery fields it
   reads, rather than requiring an entire runtime or database row. These are
   type-only changes. It imports sibling implementations directly, never the
@@ -88,8 +93,9 @@ unverified checks explicitly; do not treat skipped integration tests as passes.
 - Initial full-test/typecheck runs were interrupted to rebase and are not
   passes. Rebased integration selection: 48 passed (the other 1,185 cases were
   excluded by the test-name filter). Module-boundary and whitespace checks pass.
-  Workspace `pnpm -r typecheck` and `pnpm build`: passed. Full `pnpm test:run`:
-  pending.
+  Workspace `pnpm -r typecheck` and `pnpm build`: passed. The full suite and
+  remote checks were still running at PR opening; final results belong in the
+  PR's Verification section below.
 
 Reproduce the focused service-path check with the repository-pinned pnpm:
 
@@ -101,3 +107,5 @@ pnpm exec vitest run server/src/__tests__/chat-channels.integration.test.ts \
 Branch: `codex/chat-channel-provider-messages`. The user authorized publishing
 this slice to `paperclipai/paperclip`; subsequent extractions are not part of
 this PR.
+
+Review and final verification: [PR #15823](https://github.com/paperclipai/paperclip/pull/15823).
