@@ -11,14 +11,17 @@ export interface SpekoProviderSetupProps {
   callbackUrl?: string | null;
   pending?: boolean;
   repairing?: boolean;
+  /** Presence only; existing callback secrets never reach the browser. */
+  signingSecretConfigured?: boolean;
 }
-export function SpekoProviderSetup({ agentName, onSaveExit, credentials, onChange, onConnect, callbackUrl, pending = false, repairing = false }: SpekoProviderSetupProps) {
-  const ready = repairing || Boolean(credentials.apiKey?.trim() && credentials.agentId?.trim());
+export function SpekoProviderSetup({ agentName, onSaveExit, credentials, onChange, onConnect, callbackUrl, pending = false, repairing = false, signingSecretConfigured }: SpekoProviderSetupProps) {
+  const hasSavedSecret = signingSecretConfigured ?? repairing;
+  const ready = repairing && hasSavedSecret || Boolean(credentials.apiKey?.trim() && credentials.agentId?.trim());
   const reachable = callbackUrl?.startsWith("https://") === true;
   function connect() {
     if (!ready || !reachable || pending) return;
     const values = Object.fromEntries(Object.entries(credentials).filter(([, value]) => value.trim()));
-    if (!repairing && !values.signingSecret) {
+    if (!hasSavedSecret && !values.signingSecret) {
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       values.signingSecret = `whsec_${btoa(String.fromCharCode(...bytes))}`;
       onChange(values);
