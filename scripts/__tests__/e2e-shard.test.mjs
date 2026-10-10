@@ -242,7 +242,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server\]$/m,
   );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
@@ -259,6 +259,9 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
   assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
   assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
+  assert.match(verify, /SERIALIZED_SERVER_RESULT: \$\{\{ needs\.verify_serialized_server\.result \}\}/);
+  assert.match(verify, /test "\$SERIALIZED_SERVER_RESULT" = "success"/);
+  assert.match(verify, /test "\$SERIALIZED_SERVER_RESULT" = "skipped"/);
 
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
