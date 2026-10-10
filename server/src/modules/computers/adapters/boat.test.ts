@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -13,7 +14,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { boatBackend } from "./boat.js";
+import { boatBackend, processProgram } from "./boat.js";
 import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
 const record: ComputerRecord = {
@@ -304,5 +305,82 @@ process.stdout.write(result.stdout||"");process.stderr.write(result.stderr||"");
     expect(
       Buffer.from(f.call({ action: "read", path: "binary" }).base64, "base64"),
     ).toEqual(bytes);
+  });
+});
+
+
+describe("retired owner spool cleanup after provider resume", () => {
+  function cleanupFixture(state = "inactive") {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "computer-retired-")));
+    roots.push(temp);
+    const owners = join(temp, "owners");
+    const bin = join(temp, "bin");
+    const calls = join(temp, "systemctl-calls");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "systemctl"), `#!/bin/sh
+printf '%s\\n' "$*" >> '${calls}'
+case "$*" in *show*) printf '%s\\n' '${state}';; esac
+`, { mode: 0o700 });
+    const owner = (id: string, generation = 7) => {
+      const root = join(owners, id);
+      mkdirSync(join(root, "command-one"), { recursive: true });
+      writeFileSync(join(root, "generation"), String(generation));
+      writeFileSync(join(root, "command-one", "stdin"), "private command input", { mode: 0o600 });
+      writeFileSync(join(root, "preserve"), "ownership metadata");
+      return root;
+    };
+    const cleanup = (input = [{ id: "retired-owner", generation: 7 }]) => spawnSync(
+      "python3", ["-c", processProgram.replaceAll("/home/user/.paperclip-owners", owners)],
+      { input: JSON.stringify({ action: "cleanup-retired", owners: input }), encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } },
+    );
+    return { temp, owners, calls, owner, cleanup };
+  }
+
+  it("reaps only recorded retired command spools and is idempotent", () => {
+    const f = cleanupFixture();
+    const retired = f.owner("retired-owner");
+    const active = f.owner("active-owner");
+    const outside = join(f.temp, "user-files");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "preserve"), "user data");
+    symlinkSync(outside, join(retired, "command-symlink"));
+    expect(f.cleanup().status).toBe(0);
+    expect(existsSync(join(retired, "command-one"))).toBe(false);
+    expect(existsSync(join(retired, "retired"))).toBe(true);
+    expect(readFileSync(join(retired, "preserve"), "utf8")).toBe("ownership metadata");
+    expect(readFileSync(join(active, "command-one", "stdin"), "utf8")).toBe("private command input");
+    expect(readFileSync(join(outside, "preserve"), "utf8")).toBe("user data");
+    const calls = readFileSync(f.calls, "utf8");
+    expect(calls).toContain("--user stop paperclip-retired-owner.slice paperclip-retired-owner.service");
+    expect(calls).not.toContain("active-owner");
+    expect(f.cleanup().status).toBe(0);
+    expect(readFileSync(f.calls, "utf8")).toBe(calls);
+  });
+
+  it("preserves spools when retirement cannot be confirmed", () => {
+    const f = cleanupFixture("active");
+    const retired = f.owner("retired-owner");
+    const result = f.cleanup();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("process retirement unconfirmed");
+    expect(existsSync(join(retired, "command-one", "stdin"))).toBe(true);
+  });
+
+  it("rejects a stale generation without stopping its current process", () => {
+    const f = cleanupFixture();
+    const retired = f.owner("retired-owner", 8);
+    expect(JSON.parse(f.cleanup().stdout)).toEqual({ error: "conflict" });
+    expect(existsSync(join(retired, "command-one", "stdin"))).toBe(true);
+    expect(existsSync(f.calls)).toBe(false);
+  });
+
+  it("rejects symlink owner roots and ignores missing retired roots", () => {
+    const f = cleanupFixture();
+    const active = f.owner("active-owner");
+    symlinkSync(active, join(f.owners, "retired-owner"));
+    expect(f.cleanup().stderr).toContain("invalid retired owner directory");
+    expect(existsSync(join(active, "command-one", "stdin"))).toBe(true);
+    expect(f.cleanup([{ id: "missing-owner", generation: 7 }]).status).toBe(0);
+    expect(existsSync(f.calls)).toBe(false);
   });
 });
