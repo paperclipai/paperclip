@@ -88,7 +88,7 @@ test("accepted fixtures satisfy the complete JSON Schemas", async () => {
   assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, unsupported, "required-v2", false));
 });
 
-test("PRP v3 external operations are closed and Dot has no native model or thread", async () => {
+test("PRP v3 external operations are closed and external providers have no native model or thread", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
   const validators = compileProtocolValidators(schemas);
   const happy = await fixture("replay/happy-path.json");
@@ -111,6 +111,11 @@ test("PRP v3 external operations are closed and Dot has no native model or threa
   assert.equal(validators.providerDescriptor(descriptor), true);
   assert.equal(validators.providerDescriptor({ ...descriptor, model: "invented" }), false);
   assert.equal(validators.providerDescriptor({ ...descriptor, providerSessionId: "invented-thread" }), false);
+  const museDescriptor = { ...descriptor, provider: "muse", driver: "muse_external", service: "muse" };
+  assert.equal(validators.providerDescriptor(museDescriptor), true);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, model: "invented" }), false);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, providerSessionId: "invented-thread" }), false);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, driver: "openai_dot_mcp" }), false);
 });
 
 test("provider descriptors require coherent provider, driver, and execution combinations", async () => {
