@@ -393,6 +393,29 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+interface ParsedIssueAssigneeAdapterOverrides {
+  adapterConfig: Record<string, unknown> | null;
+  useProjectWorkspace: boolean | null;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
+  raw: unknown,
+): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseObject(raw);
+  const parsedAdapterConfig = parseObject(parsed.adapterConfig);
+  const adapterConfig =
+    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const useProjectWorkspace =
+    typeof parsed.useProjectWorkspace === "boolean"
+      ? parsed.useProjectWorkspace
+      : null;
+  if (!adapterConfig && useProjectWorkspace === null) return null;
+  return {
+    adapterConfig,
+    useProjectWorkspace,
+  };
+}
+
 function parseSharedWorkspaceConcurrency(raw: unknown): SharedWorkspaceConcurrency | undefined {
   return raw === "auto" || raw === "serialize" || raw === "allow" ? raw : undefined;
 }
@@ -408,6 +431,7 @@ export function resolveSharedWorkspaceConcurrency(input: {
 
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
+  adapterConfigOverrides?: Record<string, unknown> | null;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
@@ -450,7 +474,7 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return nextConfig;
+  return { ...nextConfig, ...input.adapterConfigOverrides };
 }
 
 /** Persisted filesystem authority survives UI feature-flag changes. */

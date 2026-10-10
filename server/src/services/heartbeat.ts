@@ -538,6 +538,7 @@ import {
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
+  parseIssueAssigneeAdapterOverrides,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
@@ -755,31 +756,8 @@ export { resolveReusableSandboxLifecycle } from "./heartbeat/runtime-selection.j
 
 export { resolveNativeSandboxLifecycle } from "./heartbeat/runtime-selection.js";
 
-interface ParsedIssueAssigneeAdapterOverrides {
-  adapterConfig: Record<string, unknown> | null;
-  useProjectWorkspace: boolean | null;
-}
-
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function parseIssueAssigneeAdapterOverrides(
-  raw: unknown,
-): ParsedIssueAssigneeAdapterOverrides | null {
-  const parsed = parseObject(raw);
-  const parsedAdapterConfig = parseObject(parsed.adapterConfig);
-  const adapterConfig =
-    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
-  const useProjectWorkspace =
-    typeof parsed.useProjectWorkspace === "boolean"
-      ? parsed.useProjectWorkspace
-      : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
-  return {
-    adapterConfig,
-    useProjectWorkspace,
-  };
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -3142,19 +3120,18 @@ export function heartbeatService(
         workspaceReuseRequest.existingExecutionWorkspaceAvailable
           ? existingExecutionWorkspace
           : null;
-      const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      const sourceWorkspaceConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         mode: requestedExecutionWorkspaceMode,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        adapterConfigOverrides: {
+          ...Object.fromEntries(Object.entries(issueAssigneeOverrides?.adapterConfig ?? {}).filter(([key]) => requestedAiBinding?.mode !== "router" || !["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"].includes(key))),
+          ...(requestedAiBinding?.mode === "router" ? parseObject(parseObject(context.aiRouterSelection).runtimeConfig) : {}),
+        },
       });
-      const sourceWorkspaceConfig = {
-        ...workspaceManagedConfig,
-        ...Object.fromEntries(Object.entries(issueAssigneeOverrides?.adapterConfig ?? {}).filter(([key]) => requestedAiBinding?.mode !== "router" || !["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"].includes(key))),
-        ...(requestedAiBinding?.mode === "router" ? parseObject(parseObject(context.aiRouterSelection).runtimeConfig) : {}),
-      };
       const workspaceAuthorizationActor = { type: "agent" as const, agentId: agent.id, companyId: agent.companyId,
         source: "agent_jwt" as const, runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
       if (!persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {

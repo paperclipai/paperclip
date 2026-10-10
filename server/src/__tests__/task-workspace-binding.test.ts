@@ -334,6 +334,56 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 
+  it.each(["create", "patch", "selection"] as const)("uses the assigned agent's effective source strategy for %s authorization", async operation => {
+    const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true, enableIsolatedWorkspacesByDefault: false });
+    try {
+      await db.insert(authUsers).values({ id: userId, name: "Source reader", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+      const [isolatedAgent, sharedAgent] = await db.insert(agents).values(["git_worktree", "project_primary"].map(type => ({
+        companyId: f.companyId, name: type, status: "idle", adapterConfig: { workspaceStrategy: { type } },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+      }))).returning();
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Read-only source",
+        executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+      const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Source", cwd: `/tmp/source-${f.issueId}` }).returning();
+      const actor = { type: "board" as const, source: "session" as const, userId, companyIds: [f.companyId], isInstanceAdmin: false };
+      const sharedOverrides = { adapterConfig: { workspaceStrategy: { type: "project_primary" } } };
+      const tasks = issueService(db), workspaces = executionWorkspaceService(db);
+      if (operation === "create") {
+        const input = { title: "Read source in separate checkout", assigneeAgentId: isolatedAgent.id,
+          projectWorkspaceId: source.id, workspaceSelectionActor: actor, createdByUserId: userId };
+        await expect(tasks.create(f.companyId, { ...input, assigneeAdapterOverrides: sharedOverrides })).rejects.toThrow(/protected/);
+        await expect(tasks.create(f.companyId, input)).resolves.toMatchObject({ assigneeAgentId: isolatedAgent.id, projectWorkspaceId: source.id });
+        await expect(tasks.create(f.companyId, { ...input, workspaceSelection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "managed_isolated" },
+          assigneeAdapterOverrides: sharedOverrides })).rejects.toThrow(/protected/);
+      } else if (operation === "patch") {
+        await db.update(issues).set({ assigneeAgentId: sharedAgent.id }).where(eq(issues.id, f.issueId));
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => { req.actor = actor; next(); });
+        app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
+        const patch = { projectWorkspaceId: source.id, assigneeAgentId: isolatedAgent.id };
+        const denied = await request(app).patch(`/api/issues/${f.issueId}`).send({ ...patch, assigneeAdapterOverrides: sharedOverrides });
+        expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ assigneeAgentId: sharedAgent.id, projectWorkspaceId: null });
+        const allowed = await request(app).patch(`/api/issues/${f.issueId}`).send(patch);
+        expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ assigneeAgentId: isolatedAgent.id, projectWorkspaceId: source.id });
+      } else {
+        await db.update(issues).set({ assigneeAgentId: isolatedAgent.id, assigneeAdapterOverrides: sharedOverrides }).where(eq(issues.id, f.issueId));
+        const input = { companyId: f.companyId, issueId: f.issueId, actor,
+          selection: { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "managed_isolated" as const } };
+        await expect(workspaces.validateSelection(input)).rejects.toThrow(/protected/);
+        await db.update(issues).set({ assigneeAdapterOverrides: null }).where(eq(issues.id, f.issueId));
+        await expect(workspaces.validateSelection(input)).resolves.toMatchObject({ projectWorkspaceId: source.id });
+        await db.update(issues).set({ assigneeAgentId: sharedAgent.id }).where(eq(issues.id, f.issueId));
+        await expect(workspaces.validateSelection(input)).rejects.toThrow(/protected/);
+      }
+    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces, enableIsolatedWorkspacesByDefault: previous.enableIsolatedWorkspacesByDefault }); }
+  });
+
   it("requires source project assignment authority for shared files while preserving isolated reads", async () => {
     const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
     const settings = instanceSettingsService(db), previous = await settings.getExperimental();

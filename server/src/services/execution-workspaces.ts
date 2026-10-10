@@ -1,4 +1,7 @@
 import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
+import { parseObject } from "../adapters/utils.js";
+import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 import { executionWorkspaceRepositoryService } from "./execution-workspace-repositories.js";
 import { forbidden } from "../errors.js";
@@ -15,6 +18,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizz
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
+  agents,
   heartbeatRuns,
   nativeRunFinalizations,
   issueComments,
@@ -50,7 +54,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
-import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy, gateProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings, resolveExecutionWorkspaceMode } from "./execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType, parseProjectExecutionWorkspacePolicy, gateProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings, resolveExecutionWorkspaceMode, parseIssueAssigneeAdapterOverrides, applyDefaultIsolatedExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -1287,8 +1291,43 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
+  /** Resolve prospective source use from the same deterministic inputs as admission. */
+  async function resolveSourceWorkspaceStrategy(input: {
+    companyId: string; issueId?: string | null; assigneeAgentId?: string | null;
+    assigneeAdapterOverrides?: unknown; executionWorkspaceSettings?: unknown;
+    executionWorkspacePolicy: unknown; typedSelection?: boolean; projectId?: string | null; executionPolicy?: unknown;
+  }, reader: Db | DbTransaction = db) {
+    const [task] = input.issueId ? await reader.select().from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )) : [];
+    const assigneeAgentId = task ? task.assigneeAgentId : input.assigneeAgentId;
+    const [agent] = assigneeAgentId ? await reader.select({ adapterConfig: agents.adapterConfig, permissions: agents.permissions }).from(agents)
+      .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.companyId))) : [];
+    const overrides = assigneeAgentId ? parseIssueAssigneeAdapterOverrides(task ? task.assigneeAdapterOverrides : input.assigneeAdapterOverrides) : null;
+    const experimental = await instanceSettingsService(db).getExperimental();
+    const projectPolicy = applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(input.executionWorkspacePolicy), experimental.enableIsolatedWorkspaces),
+      defaultIsolatedWorkspacesEnabled: experimental.enableIsolatedWorkspaces && experimental.enableIsolatedWorkspacesByDefault,
+      hasProjectWorkspace: true,
+    });
+    const settingsEnabled = experimental.enableIsolatedWorkspaces || input.typedSelection || task?.workspaceSelection || task?.executionWorkspaceId;
+    const issueSettings = settingsEnabled ? parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings) : null;
+    const projectId = task ? task.projectId : input.projectId;
+    const [organization] = projectId ? await reader.select({ companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, input.companyId))) : [];
+    const trust = resolveCoreTrustPreset({ companyId: input.companyId, agent,
+      project: organization, workspaceSourceProject: { companyId: input.companyId, executionWorkspacePolicy: input.executionWorkspacePolicy },
+      issue: { companyId: input.companyId, executionPolicy: task ? task.executionPolicy : input.executionPolicy } });
+    if (trust.kind === "denied") throw forbidden(trust.detail);
+    const resolvedMode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null });
+    const mode = trust.kind === "low_trust_review" && resolvedMode === "shared_workspace" ? "isolated_workspace" : resolvedMode;
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: parseObject(agent?.adapterConfig), projectPolicy, issueSettings, mode,
+      legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null, adapterConfigOverrides: overrides?.adapterConfig });
+    return resolveEffectiveWorkspaceStrategyType(mode, config);
+  }
+
   /** Validate intent without allocating files or changing a task binding. */
-  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null }, reader: Db | DbTransaction = db) {
+  async function validateSelection(input: { companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; assigneeAdapterOverrides?: unknown; projectId?: string | null; executionPolicy?: unknown }, reader: Db | DbTransaction = db) {
     const selection = taskWorkspaceSelectionSchema.parse(input.selection);
     if (selection.kind === "existing") {
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
@@ -1309,11 +1348,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
       const mode = selection.mode === "shared" ? "shared_workspace" : "isolated_workspace";
-      const sourceConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {},
-        projectPolicy: parseProjectExecutionWorkspacePolicy(source.executionWorkspacePolicy),
-        issueSettings: { mode }, mode, legacyUseProjectWorkspace: null });
+      const strategy = await resolveSourceWorkspaceStrategy({ ...input, typedSelection: true,
+        executionWorkspaceSettings: { mode }, executionWorkspacePolicy: source.executionWorkspacePolicy }, reader);
       await assertTaskWorkspaceSourceProjectAccess(reader, input.actor, input.companyId, source.projectId, {
-        write: resolveEffectiveWorkspaceStrategyType(mode, sourceConfig) !== "git_worktree",
+        write: strategy !== "git_worktree",
         issueId: input.issueId, parentIssueId: input.parentIssueId,
         assigneeAgentId: input.assigneeAgentId, assigneeUserId: input.assigneeUserId,
       });
@@ -1420,7 +1458,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   /** Ordinary issue edits participate in the same binding revision transaction. */
   async function assertTaskWorkspaceUpdateAccess(input: {
-    task: typeof issues.$inferSelect; actor: AuthorizationActor; isolatedWorkspacesEnabled: boolean;
+    task: typeof issues.$inferSelect; actor: AuthorizationActor;
   }, tx: DbTransaction) {
     const { task, actor } = input;
     if (task.executionWorkspaceId) {
@@ -1433,12 +1471,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .where(and(eq(projectWorkspaces.id, task.projectWorkspaceId), eq(projectWorkspaces.companyId, task.companyId),
         await projectReadSqlCondition(tx, actor)));
     if (!source) throw notFound("Workspace source is unavailable or inaccessible");
-    const projectPolicy = gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(source.executionWorkspacePolicy), input.isolatedWorkspacesEnabled);
-    const issueSettings = parseIssueExecutionWorkspaceSettings(task.executionWorkspaceSettings);
-    const mode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: null });
-    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy, issueSettings, mode, legacyUseProjectWorkspace: null });
+    const strategy = await resolveSourceWorkspaceStrategy({ companyId: task.companyId, issueId: task.id,
+      executionWorkspaceSettings: task.executionWorkspaceSettings, executionWorkspacePolicy: source.executionWorkspacePolicy }, tx);
     await assertTaskWorkspaceSourceProjectAccess(tx, actor, task.companyId, source.projectId, {
-      issueId: task.id, write: resolveEffectiveWorkspaceStrategyType(mode, config) !== "git_worktree",
+      issueId: task.id, write: strategy !== "git_worktree",
     });
   }
 
@@ -2075,7 +2111,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     requestTaskRepository: executionWorkspaceRepositoryService(db).request,
     listTaskRepositories: executionWorkspaceRepositoryService(db).list,
     prepareTaskRepositoriesForAdmission: executionWorkspaceRepositoryService(db).prepareForAdmission,
-    validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
+    resolveSourceWorkspaceStrategy, validateSelection, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,

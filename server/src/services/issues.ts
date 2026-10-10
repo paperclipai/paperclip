@@ -123,8 +123,6 @@ import {
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
 import {
-  buildExecutionWorkspaceAdapterConfig,
-  resolveEffectiveWorkspaceStrategyType,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -132,7 +130,6 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolvePinnedIssueWorkspaceStrategyType,
-  resolveExecutionWorkspaceMode,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -10170,7 +10167,7 @@ export function issueService(db: Db) {
           const projection = await executionWorkspaceService(db).validateSelection({ companyId,
             actor: workspaceActor,
             selection: workspaceSelection, parentIssueId: issueData.parentId,
-            assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId }, tx);
+            assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides, projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
           projectWorkspaceId = projection.projectWorkspaceId;
           executionWorkspaceId = projection.executionWorkspaceId;
           executionWorkspacePreference = projection.executionWorkspacePreference;
@@ -10269,14 +10266,13 @@ export function issueService(db: Db) {
             .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
-          const sourcePolicy = gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(readableSource.executionWorkspacePolicy), isolatedWorkspacesEnabled);
-          const sourceSettings = parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings);
-          const sourceMode = resolveExecutionWorkspaceMode({ projectPolicy: sourcePolicy, issueSettings: sourceSettings, legacyUseProjectWorkspace: null });
-          const sourceConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy: sourcePolicy,
-            issueSettings: sourceSettings, mode: sourceMode, legacyUseProjectWorkspace: null });
+          const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
+            assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
+            executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy,
+            typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
           await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId, {
             parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId,
-            write: !executionWorkspaceId && resolveEffectiveWorkspaceStrategyType(sourceMode, sourceConfig) !== "git_worktree",
+            write: !executionWorkspaceId && sourceStrategy !== "git_worktree",
           });
         }
         if (executionWorkspaceId && workspaceSelectionActor) {
@@ -11288,7 +11284,7 @@ export function issueService(db: Db) {
           // assignment/workspace edit checks the actual new assignee. A denial
           // rolls back the binding, revision and retained-privacy trigger too.
           await executionWorkspaceService(db).assertTaskWorkspaceUpdateAccess({
-            task: updated, actor: workspaceSelectionActor, isolatedWorkspacesEnabled,
+            task: updated, actor: workspaceSelectionActor,
           }, tx);
         }
         if (issueData.description !== undefined) await attachOwnedDraftImages(tx, updated, updated.description,
