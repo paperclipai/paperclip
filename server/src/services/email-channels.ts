@@ -1326,11 +1326,13 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           }
           await assertChatExecutionDefaultsAccess(db, {
             companyId: endpoint.companyId,
+            assigneeAgentId: endpoint.assignedAgentId,
             actor: endpoint.sponsorUserId ? { type: "board", userId: endpoint.sponsorUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
             defaults,
           }, tx);
           await assertChatExecutionDefaultsAccess(db, {
             companyId: endpoint.companyId,
+            assigneeAgentId: endpoint.assignedAgentId,
             actor: { type: "agent", agentId: endpoint.assignedAgentId, companyId: endpoint.companyId, onBehalfOfUserId: endpoint.sponsorUserId, source: "agent_key" },
             defaults,
           }, tx);

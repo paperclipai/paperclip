@@ -18,7 +18,7 @@ export async function assertTaskWorkspaceSourceProjectAccess(
   if (!decision.allowed) throw forbidden(decision.explanation);
   if (options.write) {
     // Sharing a configured root gives the task write access to project files.
-    // Use the same project-scoped authority as assigning work to that project.
+    // Reuse project-scoped grants without reassigning this task or its agent.
     const [task] = actor.type === "board" && options.issueId
       ? await db.select({ assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
         .where(and(eq(issues.id, options.issueId), eq(issues.companyId, companyId)))
@@ -26,7 +26,7 @@ export async function assertTaskWorkspaceSourceProjectAccess(
     const assigneeAgentId = actor.type === "agent" ? actor.agentId ?? null : task?.assigneeAgentId ?? options.assigneeAgentId ?? null;
     const assigneeUserId = actor.type === "agent" ? null : task?.assigneeUserId ?? options.assigneeUserId ?? null;
     const assignment = await accessService(db as Db).decide({
-      actor, action: "tasks:assign",
+      actor, action: "project:write_workspace",
       resource: { type: "issue", companyId, projectId, assigneeAgentId, assigneeUserId,
         issueId: options.issueId, parentIssueId: options.parentIssueId },
       // Lineage proves low-trust containment; grants must still cover the source

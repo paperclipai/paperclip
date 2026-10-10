@@ -276,6 +276,35 @@ suite("task project repository provisioning", () => {
     expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Protected project files");
   }, 40_000);
 
+  it.each(["task", "agent"] as const)("admits existing assignments on an ordinary shared source despite protected %s assignment policy", async (protectedEntity) => {
+    const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, companyId, "ordinary-source");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, "work.txt"), "Existing assignment files");
+    const authorizationPolicy = { assignmentPolicy: { mode: "protected" } };
+    await db.insert(companies).values({ id: companyId, name: "Existing assignments", issuePrefix: `A${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Ordinary source" });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Shared source", sourceType: "local_path", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Already assigned", status: "idle", adapterType: "codex_local", adapterConfig: {},
+      permissions: protectedEntity === "agent" ? { authorizationPolicy } : {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continue authorized assignment", status: "todo", assigneeAgentId: agentId,
+      executionPolicy: protectedEntity === "task" ? { authorizationPolicy } : null,
+      projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "shared_workspace" },
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } } });
+    const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
+    expect(await accessService(db).decide({ actor, action: "tasks:assign", resource: { type: "issue", companyId, issueId, assigneeAgentId: agentId },
+      scope: { assigneeAgentId: agentId } })).toMatchObject({ allowed: false });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }), { timeout: 15_000 });
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
+    expect(calls).toHaveLength(1);
+    expect(await realpath(calls[0]![0].context.paperclipWorkspace.cwd)).toBe(await realpath(cwd));
+    expect(await readFile(path.join(cwd, "work.txt"), "utf8")).toBe("Existing assignment files");
+  }, 30_000);
+
   it.each(["project_primary", "adapter_managed", "cloud_sandbox", "git_worktree"] as const)("authorizes isolated source admission by its actual strategy: %s", async (strategy) => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const cwd = path.join(root, companyId, "protected-source");

@@ -10,7 +10,7 @@ type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 /** Configuration selects resources; it never grants their access to future senders. */
 export async function assertChatExecutionDefaultsAccess(
   db: Db,
-  input: { companyId: string; actor: AuthorizationActor; defaults: ChatExecutionDefaults | null | undefined },
+  input: { companyId: string; actor: AuthorizationActor; assigneeAgentId?: string | null; defaults: ChatExecutionDefaults | null | undefined },
   reader: Db | DbTransaction = db,
 ): Promise<void> {
   const defaults = chatExecutionDefaultsSchema.parse(input.defaults ?? {});
@@ -22,7 +22,7 @@ export async function assertChatExecutionDefaultsAccess(
     if (!project) throw notFound("Default project is unavailable or inaccessible");
   }
   if (defaults.workspace) await executionWorkspaceService(db).validateSelection({
-    companyId: input.companyId, actor: input.actor, selection: defaults.workspace,
+    companyId: input.companyId, actor: input.actor, selection: defaults.workspace, assigneeAgentId: input.assigneeAgentId,
   }, reader);
 }
 

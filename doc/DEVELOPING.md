@@ -1358,8 +1358,16 @@ Native selection retains the row lock that serializes it with cancellation and
 controller lease renewal. The executor receives an explicit selection result;
 lifecycle and ownership callbacks update its teardown state immediately, including
 when preparation later throws. Public sandbox lifecycle and model fallback helpers
-remain re-exported by `heartbeat.ts`. Provider dispatch and final cleanup stay in
-the executor.
+remain re-exported by `heartbeat.ts`.
+
+Runtime execution is in `server/src/services/heartbeat/runtime-execution.ts`.
+`executeHeartbeatRuntime` dispatches a prepared native session or legacy adapter,
+captures usage, finalizes workspace operations, and releases gateway tokens and
+instruction copies. The executor supplies the atomic dispatch gate and retains
+admission, terminal run status, retry handling, and outer lease cleanup. An explicit
+dispatch result preserves early cancellation returns; ownership callbacks update
+teardown state before errors propagate. Instruction getters retain updates made
+during provider execution. Keep policy changes separate from this extraction.
 
 ## Wake Context Delivery
 

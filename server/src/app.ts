@@ -9,6 +9,7 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
@@ -320,7 +321,7 @@ export function createChatReconciliationCoordinator(input: {
   processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
   projectRunMilestones: () => Promise<number>;
   flushPublications: () => Promise<unknown>;
-  processPendingSlackFileUploadReceipts: () => Promise<unknown>;
+  processPendingSlackFileUploadReceipts?: () => Promise<unknown>;
   processPendingSlackSessionSyncs: () => Promise<unknown>;
   onError: (lane: ChatReconciliationLane, error: unknown) => void;
 }) {
@@ -367,7 +368,7 @@ export function createChatReconciliationCoordinator(input: {
       }
       milestoneReconciliation.poll();
       publicationReconciliation.poll();
-      start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
+      if (input.processPendingSlackFileUploadReceipts) start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
       start("Slack session status", input.processPendingSlackSessionSyncs);
     },
     notifyPublications() {
@@ -1234,25 +1235,24 @@ export async function createApp(
       hasPending: () => opts.feedbackExportService!.hasPendingFeedbackTraces(),
     });
   }
+  registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   emailChannels.start();
-  const flushChatPublications = async () => {
-    await chatChannels.schedulePendingPublications();
+  const reconcileChatPublicationMaintenance = async () => {
+    await chatChannels.processPublicationMaintenance();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
     reconcileProviderRuntimes: async () => {
       await chatChannels.reconcileProviderRuntimes();
       await chatChannels.voice.reconcile();
     },
-    processPendingDeliveries: () => chatChannels.processPendingDeliveries(),
+    processPendingDeliveries: () => chatChannels.processPendingChatMaintenance(),
     processFailedGitHubWebhookDeliveries: () =>
       chatChannels.processFailedGitHubWebhookDeliveries(),
     projectRunMilestones: () =>
       enqueueChatRunMilestones(db, {
         publicBaseUrl: opts.authPublicBaseUrl,
       }),
-    flushPublications: () => flushChatPublications(),
-    processPendingSlackFileUploadReceipts: () =>
-      chatChannels.processPendingSlackFileUploadReceipts(),
+    flushPublications: () => reconcileChatPublicationMaintenance(),
     processPendingSlackSessionSyncs: () =>
       chatChannels.processPendingSlackSessionSyncs(),
     onError: (lane, err) => {
@@ -1265,6 +1265,8 @@ export async function createApp(
         chatReconciliation.notifyPublications();
     },
   );
+  // Provider/action maintenance and milestone projection still use this cadence.
+  // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
       if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();

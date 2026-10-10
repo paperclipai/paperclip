@@ -15,6 +15,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces, heartbeatRuns, issues, principalPermissionGrants, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { authorizationService, canActorReadExecutionWorkspace } from "../services/authorization.js";
+import { assertChatExecutionDefaultsAccess } from "../services/chat-execution-defaults.js";
 import { assertTaskWorkspaceAccess } from "../services/task-workspace-source-access.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { issueService } from "../services/issues.js";
@@ -254,8 +255,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const repository = { repository: { kind: "url" as const, url: "https://github.com/public/example" }, requestKey: "member-repository" };
     expect((await request(app).put(`/api/issues/${f.issueId}/workspace`).send(selection)).status).toBe(403);
     expect((await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`).send(repository)).status).toBe(403);
+    const channelDefaults = { companyId: f.companyId, actor, assigneeAgentId: assignee.id,
+      defaults: { workspace: { kind: "configured_source" as const, projectWorkspaceId: source.id, mode: "shared" as const } } };
+    await expect(assertChatExecutionDefaultsAccess(db, channelDefaults)).rejects.toThrow(/protected/);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId,
       permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: assignee.id } });
+    await expect(assertChatExecutionDefaultsAccess(db, channelDefaults)).resolves.toBeUndefined();
+    await expect(assertChatExecutionDefaultsAccess(db, { ...channelDefaults, assigneeAgentId: null })).rejects.toThrow(/protected/);
     expect(await issueService(db).create(f.companyId, { title: "Board-assigned shared work", createdByUserId: userId,
       assigneeAgentId: assignee.id, workspaceSelectionActor: actor,
       workspaceSelection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" } }))
@@ -342,6 +348,18 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.update(principalPermissionGrants).set({ scope: { projectId: project.id, assigneeAgentId: agent.id } })
         .where(eq(principalPermissionGrants.id, grant.id));
       await expect(svc.selectTaskWorkspace(selectionRequest)).resolves.toMatchObject({ kind: "scheduled" });
+      const responsibleUserId = randomUUID();
+      await db.insert(authUsers).values({ id: responsibleUserId, name: "Source owner", email: `${responsibleUserId}@example.test`,
+        createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: responsibleUserId,
+        status: "active", membershipRole: "member" });
+      const delegated = { ...actor, onBehalfOfUserId: responsibleUserId };
+      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).rejects.toThrow(/Responsible user.*not authorized/);
+      const [userGrant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user",
+        principalId: responsibleUserId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: agent.id } }).returning();
+      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).resolves.toMatchObject({ projectWorkspaceId: source.id });
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, userGrant.id));
+      await expect(svc.validateSelection({ ...f, actor: delegated, selection: sharedSelection })).rejects.toThrow(/Responsible user.*not authorized/);
       expect(await tasks.create(f.companyId, { title: "Authorized shared source", createdByAgentId: agent.id,
         workspaceSelection: sharedSelection, workspaceSelectionActor: actor })).toMatchObject({ projectId: null, projectWorkspaceId: source.id });
       await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));

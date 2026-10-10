@@ -2,6 +2,7 @@ import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectRea
 import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
+import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -13046,49 +13047,55 @@ export function issueService(db: Db) {
               );
         const publicationCreatedAt = new Date();
         for (const binding of bindings) {
-          await dbOrTx
-            .insert(chatPublications)
-            .values({
-              companyId: binding.companyId,
-              endpointId: binding.endpointId,
-              conversationId: binding.conversationId,
-              issueId,
-              commentId: comment.id,
-              idempotencyKey: `comment:${comment.id}:${binding.endpointId}`,
-              payload: projectSafeChatPublication({
-                classification: "external",
-                source: "agent_comment",
-                text: redactedBody,
-              }),
-              state: "pending",
-              createdAt: publicationCreatedAt,
-              updatedAt: publicationCreatedAt,
-            })
-            .onConflictDoNothing();
-          for (const [index, attachment] of boundAttachments.entries()) {
-            const attachmentCreatedAt = new Date(
-              publicationCreatedAt.getTime() + index + 1,
-            );
-            await dbOrTx
+          await dbOrTx.transaction(async (tx: DbTransaction) => {
+            await notifyChatPublicationWork(tx);
+            return tx
               .insert(chatPublications)
               .values({
                 companyId: binding.companyId,
                 endpointId: binding.endpointId,
                 conversationId: binding.conversationId,
                 issueId,
-                commentId: attachment.commentId,
-                idempotencyKey: `attachment:${attachment.id}:${binding.endpointId}`,
+                commentId: comment.id,
+                idempotencyKey: `comment:${comment.id}:${binding.endpointId}`,
                 payload: projectSafeChatPublication({
                   classification: "external",
                   source: "agent_comment",
-                  text: `Shared ${attachment.originalFilename ?? "a file"}.`,
-                  attachmentIds: [attachment.id],
+                  text: redactedBody,
                 }),
                 state: "pending",
-                createdAt: attachmentCreatedAt,
-                updatedAt: attachmentCreatedAt,
+                createdAt: publicationCreatedAt,
+                updatedAt: publicationCreatedAt,
               })
               .onConflictDoNothing();
+          });
+          for (const [index, attachment] of boundAttachments.entries()) {
+            const attachmentCreatedAt = new Date(
+              publicationCreatedAt.getTime() + index + 1,
+            );
+            await dbOrTx.transaction(async (tx: DbTransaction) => {
+              await notifyChatPublicationWork(tx);
+              return tx
+                .insert(chatPublications)
+                .values({
+                  companyId: binding.companyId,
+                  endpointId: binding.endpointId,
+                  conversationId: binding.conversationId,
+                  issueId,
+                  commentId: attachment.commentId,
+                  idempotencyKey: `attachment:${attachment.id}:${binding.endpointId}`,
+                  payload: projectSafeChatPublication({
+                    classification: "external",
+                    source: "agent_comment",
+                    text: `Shared ${attachment.originalFilename ?? "a file"}.`,
+                    attachmentIds: [attachment.id],
+                  }),
+                  state: "pending",
+                  createdAt: attachmentCreatedAt,
+                  updatedAt: attachmentCreatedAt,
+                })
+                .onConflictDoNothing();
+            });
           }
         }
       }
@@ -13332,6 +13339,7 @@ export function issueService(db: Db) {
             registeredRunId,
           );
           for (const binding of bindings) {
+            await notifyChatPublicationWork(tx);
             await tx
               .insert(chatPublications)
               .values({
