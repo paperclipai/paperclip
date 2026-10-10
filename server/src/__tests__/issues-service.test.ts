@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -4602,6 +4602,53 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       priority: "medium",
     }));
     expect(child.blockedBy).toEqual([]);
+  });
+
+  it("does not add a blocking child after a concurrent parent cancellation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Parent being cancelled",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const parentLocked = deferred<void>();
+    const allowCancellationCommit = deferred<void>();
+    const cancellation = db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, parentId)).for("update");
+      await tx.update(issues).set({ status: "cancelled" }).where(eq(issues.id, parentId));
+      parentLocked.resolve();
+      await allowCancellationCommit.promise;
+    });
+    await parentLocked.promise;
+
+    const childCreation = svc.createChild(parentId, {
+      title: "Late blocking child",
+      status: "todo",
+      priority: "medium",
+      blockParentUntilDone: true,
+    });
+    allowCancellationCommit.resolve();
+    await cancellation;
+
+    await expect(childCreation).rejects.toMatchObject({ status: 409 });
+    const children = await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, parentId));
+    const blockers = await db
+      .select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.relatedIssueId, parentId), eq(issueRelations.type, "blocks")));
+    expect(children).toEqual([]);
+    expect(blockers).toEqual([]);
   });
 
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
