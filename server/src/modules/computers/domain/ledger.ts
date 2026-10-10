@@ -87,12 +87,28 @@ export function exactOwner(record: ComputerRecord, ref: OwnerRef): Owner {
     throw new ComputerError("conflict", "Computer owner has been superseded");
   return owner;
 }
-export function nextPort(owners: Owner[]): number {
+export interface RunnerPortAvailability {
+  ephemeralStart: number;
+  ephemeralEnd: number;
+  occupied: number[];
+}
+// Keep fixed listeners below the usual Linux ephemeral range, and still check
+// the actual guest policy: custom images can configure a different range.
+export const RUNNER_PORT_START = 16127;
+export const RUNNER_PORT_END = 17127;
+export function isRunnerPort(port: number): boolean {
+  return (port >= RUNNER_PORT_START && port < RUNNER_PORT_END)
+    || (port >= 43127 && port < 44127); // Existing warm owners retain their port.
+}
+export function nextPort(owners: Owner[], availability?: RunnerPortAvailability): number {
   const occupied = new Set(
     owners.filter((o) => o.phase !== "retired").map((o) => o.port),
   );
-  for (let port = 43127; port < 44127; port++)
+  for (const port of availability?.occupied ?? []) occupied.add(port);
+  for (let port = RUNNER_PORT_START; port < RUNNER_PORT_END; port++) {
+    if (availability && port >= availability.ephemeralStart && port <= availability.ephemeralEnd) continue;
     if (!occupied.has(port)) return port;
+  }
   throw new ComputerError("conflict", "Computer has no available runner ports");
 }
 export function liveOwners(ledger: Ledger): Owner[] {

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { remoteProgram } from "./remote-program.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { boatBackend, createBoatTransportAdmission, desktopReadinessProgram, processProgram } from "./boat.js";
+import { boatBackend, createBoatTransportAdmission, desktopReadinessProgram, processProgram, runnerPortInventoryProgram } from "./boat.js";
 import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
 const sshFactory = vi.hoisted(() => vi.fn());
@@ -44,6 +44,22 @@ const json = (value: unknown, status = 200, headers?: Record<string, string>) =>
     headers: { "content-type": "application/json", ...headers },
   });
 describe("Boat transport validation", () => {
+  it("reads outgoing and listening TCP ports across IPv4 and IPv6", () => {
+    const root = mkdtempSync(join(tmpdir(), "boat-port-inventory-"));
+    try {
+      writeFileSync(join(root, "range"), "32768 60999\n");
+      writeFileSync(join(root, "tcp"), "header\n0: 00000000:3F00 00000000:0000 0A\n");
+      writeFileSync(join(root, "tcp6"), "header\n0: 00000000000000000000000000000000:A87A 00000000:01BB 08\n");
+      const program = runnerPortInventoryProgram
+        .replace("/proc/sys/net/ipv4/ip_local_port_range", join(root, "range"))
+        .replace("/proc/net/tcp6", join(root, "tcp6"))
+        .replace("/proc/net/tcp", join(root, "tcp"));
+      const result = spawnSync("python3", ["-c", program], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ ephemeralStart: 32768, ephemeralEnd: 60999, occupied: [16128, 43130] });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("recognizes idle as an already running computer", async () => {
     const fetcher = vi.fn(async () =>
       json({
