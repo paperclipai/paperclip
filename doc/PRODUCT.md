@@ -67,6 +67,8 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+The stock Summarizer selects the responsible user's managed provider default when it is provisioned. Built-in agents use the ordinary hire policy to inherit compatible manager connections, choose a compatible provider for another harness, and preserve explicit child authentication and saved connection choices.
+
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
