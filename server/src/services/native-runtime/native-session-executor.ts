@@ -6243,6 +6243,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
+    sourceFailureCode === "runner_remote_artifact_platform_mismatch" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === "native_current_wake_comments_unread" ||
     sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
@@ -6299,6 +6300,7 @@ export function nativeSessionFailureSourceCode(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_artifact_platform_mismatch"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -6338,6 +6340,9 @@ export function nativeSessionFailureSourceCode(
     return "native_provider_model_rejected";
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
     return "native_adopted_runner_authentication_timeout";
+  }
+  if (/^runner_remote_artifact_platform_mismatch(?::|$)/.test(message)) {
+    return "runner_remote_artifact_platform_mismatch";
   }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
@@ -6466,6 +6471,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
     "runner_remote_provider_artifact_incompatible",
+    "runner_remote_artifact_platform_mismatch",
     "provider_process_exited",
     "provider_stdout_closed",
     "provider_process_output_closed",

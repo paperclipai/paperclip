@@ -331,6 +331,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
+  nativeProviderRecoveryEvidence,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -9336,6 +9337,37 @@ describe("native session bounded recovery", () => {
         new Error("native_current_wake_comments_changed_after_read"),
       ),
     ).toBe("native_current_wake_comments_changed_after_read");
+  });
+
+  it.each([
+    [{}, [], "bootstrap_retry"],
+    [{ uncertain: true }, [], "ambiguous_state"],
+    [{}, [{ eventType: "turn.started" }], "ambiguous_state"],
+  ])("classifies a platform mismatch without weakening persisted recovery evidence", async (checkpoint, events, mode) => {
+    const code = nativeSessionFailureSourceCode(
+      new Error("runner_remote_artifact_platform_mismatch: configure the remote binary"),
+    );
+    expect(code).toBe("runner_remote_artifact_platform_mismatch");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({
+      phase: "terminal_failure",
+      failureCode: code,
+      nextAttemptAt: null,
+    });
+    let reads = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => ++reads === 1
+              ? [{ runnerProfileJson: { sessionCheckpoint: checkpoint } }]
+              : events,
+          }),
+        }),
+      }),
+    };
+    expect(await nativeProviderRecoveryEvidence({
+      db: db as never, runId: "run", sourceFailureCode: code,
+    })).toMatchObject({ recoveryMode: mode });
   });
 
   it("requires operator action without retrying an approval-required terminal", () => {
