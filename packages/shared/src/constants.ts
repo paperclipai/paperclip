@@ -1,9 +1,6 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
-export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
-
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
@@ -93,9 +90,6 @@ export const ADAPTER_AGNOSTIC_KEYS = [
   "paperclipSkillSync",
 ] as const;
 export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
-
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
-export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [
   "bot",
@@ -268,6 +262,7 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_confirmation",
   "request_checkbox_confirmation",
   "request_item_verdicts",
+  "connection_intent",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
@@ -363,11 +358,13 @@ export const ISSUE_ORIGIN_KINDS = [
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
+  // Historical origin only; automatic productivity reviews have been retired.
   "issue_productivity_review",
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  "chat_channel",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -651,7 +648,7 @@ export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[num
 export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
-export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
+export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "app_webhook", "hmac_sha256", "github_hmac", "fireflies_hmac", "none"] as const;
 export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
 export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select", "date"] as const;
@@ -836,7 +833,7 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+export const COST_STATUSES = ["reported", "estimated", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
@@ -948,6 +945,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "agent.session.goal.changed",
   "agent.status",
   "activity.logged",
   "external_object.updated",
@@ -1027,7 +1025,7 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
 
 export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
@@ -1117,7 +1115,14 @@ export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SC
 export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "heartbeat_run", "board_user", "agent"] as const;
 export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
 
-export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = [
+  "tools/list",
+  "tools/call",
+  "resources/list",
+  "resources/read",
+  "prompts/list",
+  "prompts/get",
+] as const;
 export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
 
 export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;
@@ -1315,6 +1320,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 export const PLUGIN_CAPABILITIES = [
+  "ai.connections.route",
   // Data Read
   "companies.read",
   "projects.read",
@@ -1334,6 +1340,7 @@ export const PLUGIN_CAPABILITIES = [
   "approvals.read",
   "issue.documents.read",
   "agents.read",
+  "agents.lifecycle.manage",
   "goals.read",
   "goals.create",
   "goals.update",
@@ -1477,6 +1484,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",
+  "appShellOverlay",
+  "organizationSwitcher",
   "toolbarButton",
   "contextMenuItem",
   "commentAnnotation",

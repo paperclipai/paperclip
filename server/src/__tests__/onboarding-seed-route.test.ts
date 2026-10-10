@@ -122,6 +122,27 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(record[0]?.issueId).toBe(companyIssues[0]?.id);
   });
 
+  it("keeps server-seeded onboarding on a legacy adapter when native runner is requested", async () => {
+    const previous = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+    process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = "paperclip_runner";
+    try {
+      const { companyId, app } = await seedCompany();
+
+      const response = await post(app, companyId, SEED);
+
+      expect(response.status).toBe(200);
+      const companyAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+      expect(companyAgents).toHaveLength(1);
+      expect(companyAgents[0]?.adapterType).toBe("claude_local");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+      } else {
+        process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = previous;
+      }
+    }
+  });
+
   it("is idempotent per revision — a replay creates no second agent or task", async () => {
     const { companyId, app } = await seedCompany();
 
@@ -187,7 +208,9 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(companyGoals[0]?.title).toBe("Make robotics boring");
     expect(companyGoals[0]?.description).toBe("Boring enough that hospitals buy it.");
     // No agent and no task were sent, so none were invented.
-    expect(await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    const committedAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(committedAgents).toHaveLength(0);
+    expect(await ctx.db.select().from(projects).where(eq(projects.companyId, companyId))).toHaveLength(0);
     expect(await ctx.db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
     expect(response.body.agentId).toBeNull();
     expect(response.body.issueId).toBeNull();
@@ -224,12 +247,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(entries).toHaveLength(1);
   });
 
-  it("rolls the whole seed back when the audit entry cannot be written", async () => {
-    // The audit entry shares the seed's transaction, so a failure to write it
-    // must leave nothing behind. The alternative — commit the seed and lose the
-    // entry — is unrecoverable: Cloud stops retrying on a 2xx, and a later
-    // replay reports `changed: false` and never logs, so the entry would be
-    // permanently absent.
+  it("reuses the committed hire after the content transaction fails", async () => {
     const { companyId, app } = await seedCompany();
 
     // Injected at the module boundary, not on `ctx.db`: the audit write goes
@@ -240,18 +258,20 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     const failed = await post(app, companyId, SEED);
     expect(failed.status).toBeGreaterThanOrEqual(500);
 
-    // Nothing committed: no seed record, so Cloud has no acknowledged revision
-    // and keeps retrying, and no orphaned agent from the rolled-back attempt.
+    // The failed content transaction must not acknowledge the revision.
     expect(
       await ctx.db
         .select()
         .from(companyOnboardingSeeds)
         .where(eq(companyOnboardingSeeds.companyId, companyId)),
     ).toHaveLength(0);
-    expect(await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    const committedAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(committedAgents).toHaveLength(1);
+    expect(await ctx.db.select().from(projects).where(eq(projects.companyId, companyId))).toHaveLength(0);
 
-    // And the retry recovers completely — seed applied, entry present.
     await post(app, companyId, SEED).expect(200);
+    expect((await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).map(agent => agent.id))
+      .toEqual(committedAgents.map(agent => agent.id));
     expect(
       await ctx.db
         .select()
@@ -278,7 +298,9 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     const response = await post(strangerApp, companyId, SEED);
 
     expect(response.status).toBe(403);
-    expect(await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    const committedAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(committedAgents).toHaveLength(0);
+    expect(await ctx.db.select().from(projects).where(eq(projects.companyId, companyId))).toHaveLength(0);
     expect(await ctx.db.select().from(companyOnboardingSeeds)).toHaveLength(0);
   });
 

@@ -118,6 +118,33 @@ describe("parseDeviceLoginPrompt", () => {
     expect(parseDeviceLoginPrompt(withFragment)).toBeNull();
   });
 
+  it("parse_returns_the_printed_url_with_a_bare_trailing_fragment_marker", () => {
+    // A printed URL that ends with a bare `#` carries an empty fragment. The
+    // platform `URL` parser keeps the marker in its normalized form. The parser
+    // returns that normalized form, not the fixed constant.
+    const preamble = "2. Enter this one-time code (expires in 15 minutes)";
+    const text = [`${EXACT_URL}#`, preamble, "ABCD-EFGHJ"].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://auth.openai.com/codex/device#");
+  });
+
+  it("parse_returns_the_normalized_url_for_an_explicit_default_port_or_an_uppercase_host", () => {
+    // The platform `URL` parser normalizes an explicit default port and an
+    // uppercase host. The parser returns that normalized form.
+    const preamble = "2. Enter this one-time code (expires in 15 minutes)";
+    const withPort = [`${EXACT_URL.replace("auth.openai.com", "auth.openai.com:443")}`, preamble, "ABCD-EFGHJ"].join(
+      "\n",
+    );
+    const withUppercaseHost = [
+      `${EXACT_URL.replace("auth.openai.com", "AUTH.OPENAI.COM")}`,
+      preamble,
+      "ABCD-EFGHJ",
+    ].join("\n");
+    expect(parseDeviceLoginPrompt(withPort)?.url).toBe(EXACT_URL);
+    expect(parseDeviceLoginPrompt(withUppercaseHost)?.url).toBe(EXACT_URL);
+  });
+
   it("parse_returns_null_for_wrong_origin_or_path", () => {
     const wrongOrigin = [
       "Open this link",

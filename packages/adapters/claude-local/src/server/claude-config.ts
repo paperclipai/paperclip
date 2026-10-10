@@ -269,6 +269,7 @@ function isNonEmptyString(value: unknown): value is string {
  * the function keeps it and skips the managed materialization.
  */
 export async function prepareSandboxClaudeProbeRuntime(input: {
+  managedAiConnection?: boolean;
   runId: string;
   target: AdapterExecutionTarget | null;
   cwd: string;
@@ -295,12 +296,12 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
   if (
     input.targetIsRemote &&
     adapterExecutionTargetUsesManagedHome(input.target) &&
-    !hasExplicitClaudeConfigDir
+    (!hasExplicitClaudeConfigDir || input.managedAiConnection)
   ) {
     let tempWorkspaceDir: string | null = null;
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
-      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
+      const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
       const managedRemoteCwd =
         input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
       tempWorkspaceDir = await fs.mkdtemp(

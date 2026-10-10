@@ -1,3 +1,5 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
+import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -479,10 +481,10 @@ export function createSecretProposalsService(db: Db) {
 
   async function enrich(proposal: Proposal) {
     const [proposer, target, originIssue, secret, secretProposal] = await Promise.all([
-      db.select({ id: agents.id, name: agents.name, icon: agents.icon }).from(agents)
+      db.select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance }).from(agents)
         .where(eq(agents.id, proposal.proposedByAgentId)).then((rows) => rows[0] ?? null),
       proposal.targetId
-        ? db.select({ id: agents.id, name: agents.name, icon: agents.icon }).from(agents)
+        ? db.select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance }).from(agents)
             .where(eq(agents.id, proposal.targetId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       proposal.originIssueId
@@ -510,8 +512,8 @@ export function createSecretProposalsService(db: Db) {
       ...safe,
       secretName: secret?.name ?? null,
       secretProposalName: secretProposal?.proposedName ?? null,
-      proposedBy: proposer,
-      target,
+      proposedBy: withAgentAppearance(proposer),
+      target: target ? withAgentAppearance(target) : null,
       originIssue,
     };
   }
@@ -698,7 +700,7 @@ export function createSecretProposalsService(db: Db) {
       }
       adapterConfig[proposal.configPath] = binding;
     }
-    const updated = await agentSvc.update(target.id, { adapterConfig }, {
+    const updated = await updateAgentConfigurationInTransaction(txDb, target.id, { adapterConfig }, {
       recordRevision: { createdByUserId: resolvedByUserId, source: "patch" },
     });
     if (!updated) throw notFound("Target agent not found");
@@ -719,18 +721,22 @@ export function createSecretProposalsService(db: Db) {
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
     assertCanResolve?: (proposal: Proposal, txDb: Db) => Promise<void>;
   }) {
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
+    const loadForApproval = async (txDb: Db) => {
       const proposal = await requirePending(companyId, proposalId, txDb, true);
       assertNotExpired(proposal);
       await input.assertCanResolve?.(proposal, txDb);
       await assertBindingSnapshotCurrent(proposal, txDb, true);
+      return proposal;
+    };
+    const saved = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const proposal = await loadForApproval(txDb);
       if (proposal.kind === "secret") {
         const created = await applySecretApproval(txDb, proposal, input);
-        return markApproved(txDb, proposal, {
+        return { kind: "secret" as const, proposal: await markApproved(txDb, proposal, {
           resolvedByUserId: input.resolvedByUserId,
           createdSecretId: created.id,
-        });
+        }) };
       }
 
       let secretId = proposal.secretId;
@@ -756,7 +762,15 @@ export function createSecretProposalsService(db: Db) {
         }
       }
       if (!secretId) throw conflict("Binding proposal has no approved secret");
-      const liveSecret = await secretService(txDb).getById(secretId);
+      return { kind: "binding" as const, secretId };
+    });
+    if (saved.kind === "secret") return saved.proposal;
+
+    // Keep the approved secret if applying its reference fails.
+    return db.transaction(async tx => {
+      const txDb = tx as unknown as Db;
+      const proposal = await loadForApproval(txDb);
+      const liveSecret = await secretService(txDb).getById(saved.secretId);
       if (!liveSecret || liveSecret.companyId !== companyId || liveSecret.status !== "active") {
         throw conflict("Binding proposal secret is not active");
       }

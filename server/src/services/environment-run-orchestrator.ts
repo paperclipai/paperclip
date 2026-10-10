@@ -25,12 +25,14 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
+import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
   type EnvironmentRuntimeLeaseRecord,
   type EnvironmentRuntimeService,
+  type ProviderResourceDisposition,
 } from "./environment-runtime.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import {
@@ -44,7 +46,6 @@ import {
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
-import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
@@ -156,14 +157,6 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
-    /**
-     * The process-owned aggregate byte ledger for the sandbox duplex channel.
-     * The server root creates one ledger per host process and injects the same
-     * object here. The orchestrator stamps it onto the sandbox execution target,
-     * so one shared gauge bounds the aggregate retained bytes across all live
-     * duplex routes. Absent keeps the bridge inert for this seam.
-     */
-    duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -273,21 +266,29 @@ export function environmentRunOrchestrator(
     selectedEnvironmentId: string;
     localEnvironmentId: string;
     adapterType: string;
+    adapterConfig?: Record<string, unknown>;
+    admittedLifecycleMode?: "warm" | "per_turn";
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
+    reattachRemoteLease?: { leaseId: string; providerLeaseId: string; remoteCwd: string };
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
-    const environment = await resolveEnvironment({
+    const selectedEnvironment = await resolveEnvironment({
       companyId: input.companyId,
       selectedEnvironmentId: input.selectedEnvironmentId,
       localEnvironmentId: input.localEnvironmentId,
     });
 
+    const environment = resolveRunnerEnvironmentForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
+
     // Step 2: Acquire lease
-    const leaseRecord = await acquireLease({
+    const acquisitionInput = {
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
@@ -296,7 +297,29 @@ export function environmentRunOrchestrator(
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
-    });
+    };
+    let leaseRecord: EnvironmentRuntimeLeaseRecord;
+    if (input.reattachRemoteLease) {
+      // Reattachment is inspection of an already running sandbox, never a new
+      // acquisition or a lifecycle resume. Those paths can create a replacement
+      // when the admitted per-turn policy deliberately disables reusable leases.
+      const expected = input.reattachRemoteLease;
+      const lease = await environmentsSvc.getLeaseById(expected.leaseId);
+      if (!lease || environment.driver !== "sandbox" ||
+          lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
+          lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
+          lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
+          lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
+          lease.releasedAt !== null || lease.cleanupStatus !== null ||
+          (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
+          lease.provider !== environment.config.provider || lease.providerLeaseId !== expected.providerLeaseId ||
+          lease.metadata?.remoteCwd !== expected.remoteCwd) {
+        throw new Error("native_remote_recovery_lease_mismatch");
+      }
+      leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
+    } else {
+      leaseRecord = await acquireLease(acquisitionInput);
+    }
 
     // Step 3: Log lease acquisition activity
     await logActivity(db, {
@@ -529,7 +552,6 @@ export function environmentRunOrchestrator(
         lease,
         environmentRuntime,
         duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
-        duplexAggregateByteLedger: options.duplexAggregateByteLedger ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =
@@ -593,6 +615,19 @@ export function environmentRunOrchestrator(
     agentId: string;
     status?: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
     failureReason?: string;
+    /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
+    cancelActiveWork?: boolean;
+    /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
+    providerResourceDisposition?: ProviderResourceDisposition;
+    nativeLifecycleTelemetry?: {
+      provider: string;
+      harness: string;
+      lifecycleMode: "per_turn" | "warm";
+      sandboxResource:
+        | "keep_running"
+        | "stop_and_reuse"
+        | "destroy_after_turn";
+    };
   }): Promise<EnvironmentReleaseResult> {
     const status = input.status ?? "released";
     const result: EnvironmentReleaseResult = { released: [], errors: [] };
@@ -603,6 +638,8 @@ export function environmentRunOrchestrator(
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
+        input.providerResourceDisposition,
+        ...(input.cancelActiveWork ? [true] as const : []),
       );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
@@ -631,6 +668,8 @@ export function environmentRunOrchestrator(
             status: released.lease.status,
             cleanupStatus: released.lease.cleanupStatus,
             failureReason: input.failureReason ?? released.lease.failureReason,
+            providerResourceDisposition:
+              input.providerResourceDisposition ?? "legacy_default",
           },
         });
       } catch {

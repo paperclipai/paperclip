@@ -236,6 +236,171 @@ export const capabilitiesSchema = {
   "additionalProperties": true
 } as const;
 
+export const capabilitiesV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json",
+  "title": "PRP v2 negotiated capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "sessionReusePolicy",
+    "driver",
+    "steer",
+    "interrupt",
+    "resume",
+    "runtimeRequests",
+    "structuredResult",
+    "typedEvents",
+    "sessionGoals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.capabilities.v2"
+    },
+    "sessionReusePolicy": {
+      "enum": [
+        "new_per_run",
+        "reuse_per_issue",
+        "reuse_per_workspace"
+      ]
+    },
+    "driver": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "additionalProperties": true
+    },
+    "steer": {
+      "type": "boolean"
+    },
+    "interrupt": {
+      "type": "boolean"
+    },
+    "resume": {
+      "type": "boolean"
+    },
+    "runtimeRequests": {
+      "type": "boolean"
+    },
+    "structuredResult": {
+      "type": "boolean"
+    },
+    "typedEvents": {
+      "type": "boolean"
+    },
+    "sessionGoals": {
+      "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+    },
+    "unsupported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": true
+} as const;
+
+export const capabilitiesV3Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/capabilities.schema.json",
+  "title": "PRP v3 negotiated capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "sessionReusePolicy",
+    "driver",
+    "steer",
+    "interrupt",
+    "resume",
+    "runtimeRequests",
+    "structuredResult",
+    "typedEvents",
+    "sessionGoals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.capabilities.v3"
+    },
+    "sessionReusePolicy": {
+      "enum": [
+        "new_per_run",
+        "reuse_per_issue",
+        "reuse_per_workspace"
+      ]
+    },
+    "driver": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "additionalProperties": true
+    },
+    "steer": {
+      "type": "boolean"
+    },
+    "interrupt": {
+      "type": "boolean"
+    },
+    "resume": {
+      "type": "boolean"
+    },
+    "runtimeRequests": {
+      "type": "boolean"
+    },
+    "structuredResult": {
+      "type": "boolean"
+    },
+    "typedEvents": {
+      "type": "boolean"
+    },
+    "sessionGoals": {
+      "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+    },
+    "unsupported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "externalProvider": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+} as const;
+
 export const commandSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/command.schema.json",
@@ -330,6 +495,534 @@ export const commandSchema = {
   "additionalProperties": true
 } as const;
 
+export const commandV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/command.schema.json",
+  "title": "PRP v2 runner command",
+  "type": "object",
+  "required": [
+    "schema",
+    "commandId",
+    "controllerSeq",
+    "type",
+    "issuedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.command.v2"
+    },
+    "commandId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "controllerSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "run.prepare",
+        "run.attach",
+        "session.open",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "turn.stop",
+        "request.resolve",
+        "interaction.receipt",
+        "semantic_tool.result",
+        "session.snapshot",
+        "session.close",
+        "session.budget.increase",
+        "session.destroy",
+        "run.cancel",
+        "runner.drain",
+        "runner.suspend",
+        "runner.shutdown",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear"
+      ]
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadlineAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "precondition": {
+      "type": "object",
+      "properties": {
+        "runnerState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessionState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "activeTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.goal.set"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "objective": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              "tokenBudget": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+} as const;
+
+export const commandV3Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/command.schema.json",
+  "title": "PRP v3 runner command",
+  "type": "object",
+  "required": [
+    "schema",
+    "commandId",
+    "controllerSeq",
+    "type",
+    "issuedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.command.v3"
+    },
+    "commandId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "controllerSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "run.prepare",
+        "run.attach",
+        "session.open",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "turn.stop",
+        "request.resolve",
+        "interaction.receipt",
+        "semantic_tool.result",
+        "session.snapshot",
+        "session.close",
+        "session.budget.increase",
+        "session.destroy",
+        "run.cancel",
+        "runner.drain",
+        "runner.suspend",
+        "runner.shutdown",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear",
+        "external_provider.operation"
+      ]
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadlineAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "precondition": {
+      "type": "object",
+      "properties": {
+        "runnerState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessionState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "activeTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.goal.set"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "objective": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              "tokenBudget": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "requestId",
+              "bindingId",
+              "runId",
+              "normalizedSessionId",
+              "turnId",
+              "bindingGeneration",
+              "assignmentRevision",
+              "digest",
+              "action",
+              "input"
+            ],
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "bindingId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "runId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "normalizedSessionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "bindingGeneration": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "assignmentRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "action": {
+                "enum": [
+                  "accept",
+                  "tool",
+                  "progress",
+                  "finish"
+                ]
+              },
+              "input": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "accept"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "tool"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "arguments": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "name",
+                  "arguments"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "progress"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 12000
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "finish"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "additionalProperties": true
+} as const;
+
 export const providerDescriptorSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
@@ -344,10 +1037,24 @@ export const providerDescriptorSchema = {
   ],
   "properties": {
     "provider": {
-      "const": "codex"
+      "enum": [
+        "codex",
+        "opencode",
+        "claude_managed",
+        "aws_agentcore",
+        "acpx",
+        "openai_dot"
+      ]
     },
     "driver": {
-      "const": "codex_app_server"
+      "enum": [
+        "codex_app_server",
+        "opencode_server",
+        "claude_managed_agents_api",
+        "aws_agentcore_harness_api",
+        "acpx_runtime",
+        "openai_dot_mcp"
+      ]
     },
     "model": {
       "type": [
@@ -357,12 +1064,22 @@ export const providerDescriptorSchema = {
       "maxLength": 240
     },
     "executionKind": {
-      "const": "local_process"
+      "enum": [
+        "local_process",
+        "remote_service"
+      ]
     },
     "providerVersion": {
       "type": "string",
       "minLength": 1,
       "maxLength": 120
+    },
+    "service": {
+      "enum": [
+        "anthropic_managed_agents",
+        "aws_bedrock_agentcore_harness",
+        "openai_dot"
+      ]
     },
     "providerSessionId": {
       "type": [
@@ -377,9 +1094,351 @@ export const providerDescriptorSchema = {
         "null"
       ],
       "minimum": 1
+    },
+    "agentProcessId": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "endpointArn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "endpointQualifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "memoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "eventExpiryDays": {
+      "const": 90
+    },
+    "agent": {
+      "enum": [
+        "pi",
+        "claude",
+        "codex",
+        "cursor",
+        "copilot"
+      ]
+    },
+    "requestedModel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "acpProtocolVersion": {
+      "const": 1
+    },
+    "agentServerPackage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "agentServerVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "agentRuntimePackage": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
+    },
+    "agentRuntimeVersion": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120
+    },
+    "acpxRecordId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
+    },
+    "turnControls": {
+      "$ref": "#/$defs/turnControls"
+    },
+    "piThinkingLevel": {
+      "enum": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ]
     }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "piThinkingLevel"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "provider": {
+              "const": "codex"
+            },
+            "driver": {
+              "const": "codex_app_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "opencode"
+            },
+            "driver": {
+              "const": "opencode_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "claude_managed"
+            },
+            "driver": {
+              "const": "claude_managed_agents_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "aws_agentcore"
+            },
+            "driver": {
+              "const": "aws_agentcore_harness_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "acpx"
+            },
+            "driver": {
+              "const": "acpx_runtime"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "openai_dot"
+            },
+            "driver": {
+              "const": "openai_dot_mcp"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "executionKind": {
+            "const": "remote_service"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "processId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "executionKind": {
+            "const": "local_process"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "service": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "claude_managed"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "properties": {
+          "service": {
+            "const": "anthropic_managed_agents"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "aws_agentcore"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "properties": {
+          "service": {
+            "const": "aws_bedrock_agentcore_harness"
+          }
+        },
+        "required": [
+          "service",
+          "endpointArn",
+          "endpointQualifier",
+          "memoryId",
+          "eventExpiryDays"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "agent",
+          "requestedModel",
+          "acpProtocolVersion",
+          "agentServerPackage",
+          "agentServerVersion",
+          "acpxRecordId",
+          "agentProcessId"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "openai_dot"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "service",
+          "providerSessionId"
+        ],
+        "properties": {
+          "service": {
+            "const": "openai_dot"
+          },
+          "model": {
+            "const": null
+          },
+          "providerSessionId": {
+            "const": null
+          },
+          "agentProcessId": {
+            "const": null
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "turnControls": {
+      "type": "object",
+      "required": [
+        "steering",
+        "queuedFollowUp"
+      ],
+      "properties": {
+        "steering": {
+          "type": "boolean"
+        },
+        "queuedFollowUp": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
 } as const;
 
 export const providerEventSchema = {
@@ -472,6 +1531,7 @@ export const providerEventSchema = {
     },
     "plan": {
       "type": "object",
+      "description": "A complete provider-authored within-turn checklist snapshot. Consumers replace the prior snapshot with the same planId in PRP sourceSeq order; this is not Paperclip's durable Plan document.",
       "required": [
         "schema",
         "planId",
@@ -527,6 +1587,7 @@ export const providerEventSchema = {
           "type": "boolean"
         },
         "syncStatus": {
+          "description": "Legacy compatibility field. Within-turn checklist snapshots use not_applicable.",
           "enum": [
             "streaming",
             "pending",
@@ -536,6 +1597,7 @@ export const providerEventSchema = {
           ]
         },
         "documentRevision": {
+          "description": "Legacy compatibility field. Within-turn checklist snapshots use null.",
           "type": [
             "integer",
             "null"
@@ -601,6 +1663,9 @@ export const providerEventSchema = {
             "boolean",
             "null"
           ]
+        },
+        "inputUpdated": {
+          "type": "boolean"
         },
         "status": {
           "enum": [
@@ -1325,6 +2390,65 @@ export const providerEventSchema = {
         },
         "summary": {
           "$ref": "#/$defs/shortText"
+        },
+        "provenance": {
+          "type": "object",
+          "required": [
+            "method",
+            "eventType",
+            "sessionId",
+            "turnId"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "eventType": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "sessionId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "agentId": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "timestamp": {
+              "type": "string",
+              "maxLength": 80
+            }
+          },
+          "additionalProperties": false
+        },
+        "details": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 4000
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -1596,7 +2720,8 @@ export const semanticToolSchema = {
     "phase": {
       "enum": [
         "input",
-        "result"
+        "result",
+        "reconciled"
       ]
     },
     "operationId": {
@@ -1732,9 +2857,15 @@ export const semanticToolSchema = {
       "if": {
         "properties": {
           "phase": {
-            "const": "result"
+            "enum": [
+              "result",
+              "reconciled"
+            ]
           }
-        }
+        },
+        "required": [
+          "phase"
+        ]
       },
       "then": {
         "required": [
@@ -1892,6 +3023,9 @@ export const usageSchema = {
     },
     "cumulative": {
       "$ref": "#/$defs/measurement"
+    },
+    "runDeltaAvailable": {
+      "type": "boolean"
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
@@ -2123,7 +3257,7 @@ export const questionSetSchema = {
     },
     "description": {
       "type": "string",
-      "maxLength": 4000
+      "maxLength": 100000
     },
     "submitLabel": {
       "type": "string",
@@ -2159,6 +3293,9 @@ export const questionSetSchema = {
         "description": {
           "type": "string",
           "maxLength": 4000
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -2253,6 +3390,11 @@ export const questionSetSchema = {
             "text"
           ]
         },
+        "initialText": {
+          "type": "string",
+          "maxLength": 100000,
+          "description": "Editable draft of at most 100000 Unicode code points. Never an implicit answer; submitted text still uses the existing response bounds."
+        },
         "options": {
           "type": "array",
           "maxItems": 128,
@@ -2311,6 +3453,11 @@ export const questionSetSchema = {
             "required": [
               "options"
             ],
+            "not": {
+              "required": [
+                "initialText"
+              ]
+            },
             "properties": {
               "options": {
                 "type": "array",
@@ -2421,6 +3568,181 @@ export const requestSchema = {
         "type",
         "status",
         "prompt",
+        "choices",
+        "origin",
+        "turnId"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.runtime_request.v2"
+        },
+        "requestKind": {
+          "const": "permission_approval"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "type": {
+          "const": "permission"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "resolved",
+            "expired",
+            "cancelled"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "label"
+            ],
+            "properties": {
+              "key": {
+                "enum": [
+                  "accept",
+                  "accept_for_session",
+                  "decline",
+                  "cancel"
+                ]
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "additionalProperties": false
+          },
+          "allOf": [
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "accept"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "accept_for_session"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "decline"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "const": "cancel"
+                  }
+                }
+              },
+              "minContains": 0,
+              "maxContains": 1
+            }
+          ]
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "origin": {
+          "type": "object",
+          "required": [
+            "adapter"
+          ],
+          "properties": {
+            "adapter": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "method": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          },
+          "additionalProperties": false
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "itemId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 240
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "schema",
+        "requestKind",
+        "requestId",
+        "type",
+        "status",
+        "prompt",
         "input"
       ],
       "properties": {
@@ -2481,12 +3803,12 @@ export const requestSchema = {
         "turnId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         },
         "itemId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         }
       },
       "additionalProperties": false
@@ -2772,6 +4094,24 @@ export const resultSchema = {
         },
         "owner": {
           "type": "object",
+          "required": [
+            "kind",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "agent",
+                "user",
+                "system",
+                "external"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "additionalProperties": true
         },
         "unblockAction": {
@@ -2957,12 +4297,12 @@ export const eventSchema = {
     "turnId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "itemId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "eventType": {
       "enum": [
@@ -2971,6 +4311,7 @@ export const eventSchema = {
         "runner.reconciled",
         "runner.disconnected",
         "runner.draining",
+        "runner.backpressure",
         "runner.suspending",
         "runner.suspended",
         "runner.stopped",
@@ -3032,6 +4373,7 @@ export const eventSchema = {
         "usage.reported",
         "semantic_tool.input",
         "semantic_tool.result",
+        "semantic_tool.reconciled",
         "mcp_app.discovered",
         "mcp_app.resource.resolved",
         "mcp_app.initializing",
@@ -3534,6 +4876,40 @@ export const eventSchema = {
       "if": {
         "properties": {
           "eventType": {
+            "const": "semantic_tool.reconciled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "phase": {
+                        "const": "reconciled"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
             "const": "run.terminal"
           }
         }
@@ -3566,6 +4942,1011 @@ export const eventSchema = {
   "additionalProperties": true
 } as const;
 
+export const eventV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
+  "title": "PRP v2 native event",
+  "type": "object",
+  "required": [
+    "schema",
+    "sourceEventId",
+    "sourceSeq",
+    "sourceInstanceId",
+    "sourceKind",
+    "runId",
+    "eventType",
+    "schemaVersion",
+    "priority",
+    "emittedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.event.v2"
+    },
+    "sourceEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sourceInstanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceKind": {
+      "enum": [
+        "runner",
+        "control_plane"
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "normalizedSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "itemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "eventType": {
+      "enum": [
+        "runner.connected",
+        "runner.reconnected",
+        "runner.reconciled",
+        "runner.disconnected",
+        "runner.draining",
+        "runner.suspending",
+        "runner.suspended",
+        "runner.stopped",
+        "runner.diagnostic",
+        "runtime.phase.changed",
+        "sandbox.metric",
+        "workspace.ready",
+        "workspace.change.updated",
+        "workspace.diff.recorded",
+        "workspace.file.referenced",
+        "harness.starting",
+        "harness.ready",
+        "harness.exited",
+        "harness.diagnostic",
+        "plan.updated",
+        "tool.execution.started",
+        "tool.execution.progressed",
+        "tool.execution.completed",
+        "research.started",
+        "research.progressed",
+        "research.completed",
+        "delegation.started",
+        "delegation.updated",
+        "delegation.completed",
+        "model.route.changed",
+        "model.verification.updated",
+        "context.compacted",
+        "artifact.viewed",
+        "artifact.generated",
+        "review.mode.changed",
+        "hook.started",
+        "hook.completed",
+        "memory.citation.referenced",
+        "safety.review.started",
+        "safety.review.completed",
+        "terminal.input.sent",
+        "wait.started",
+        "wait.completed",
+        "provider.notice.recorded",
+        "session.starting",
+        "session.started",
+        "session.resuming",
+        "session.resumed",
+        "session.reconciled",
+        "session.updated",
+        "session.closed",
+        "session.failed",
+        "session.capabilities.updated",
+        "session.goal.snapshot",
+        "session.goal.updated",
+        "session.goal.cleared",
+        "turn.submitted",
+        "turn.accepted",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.cancelled",
+        "item.started",
+        "item.delta",
+        "item.completed",
+        "item.failed",
+        "usage.reported",
+        "semantic_tool.input",
+        "semantic_tool.result",
+        "mcp_app.discovered",
+        "mcp_app.resource.resolved",
+        "mcp_app.initializing",
+        "mcp_app.ready",
+        "mcp_app.tool_input",
+        "mcp_app.tool_result",
+        "mcp_app.action.requested",
+        "mcp_app.action.resolved",
+        "mcp_app.host_context.changed",
+        "mcp_app.failed",
+        "mcp_app.teardown",
+        "runtime_request.created",
+        "runtime_request.resolved",
+        "runtime_request.expired",
+        "runtime_request.cancelled",
+        "interaction.request.proposed",
+        "interaction.request.materialized",
+        "interaction.request.rejected",
+        "interaction.response.progressed",
+        "interaction.response.resolved",
+        "interaction.response.delivered",
+        "run.attached",
+        "run.detached",
+        "run.result.proposed",
+        "run.result.accepted",
+        "run.result.rejected",
+        "attention.request.proposed",
+        "attention.request.routed",
+        "attention.request.resolved",
+        "attention.request.expired",
+        "attention.request.superseded",
+        "work.assessment.recorded",
+        "issue.status.decision.recorded",
+        "issue.status.decision.applied",
+        "issue.status.decision.rejected",
+        "issue.status.decision.superseded",
+        "run.terminal"
+      ]
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "priority": {
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    },
+    "emittedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "enum": [
+              "session.goal.snapshot",
+              "session.goal.updated"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "goal"
+            ],
+            "properties": {
+              "goal": {
+                "oneOf": [
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/snapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "session.capabilities.updated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "sessionGoals"
+            ],
+            "properties": {
+              "sessionGoals": {
+                "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+              },
+              "turnControls": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json#/$defs/turnControls"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+} as const;
+
+export const eventV3Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/event.schema.json",
+  "title": "PRP v3 native event",
+  "type": "object",
+  "required": [
+    "schema",
+    "sourceEventId",
+    "sourceSeq",
+    "sourceInstanceId",
+    "sourceKind",
+    "runId",
+    "eventType",
+    "schemaVersion",
+    "priority",
+    "emittedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.event.v3"
+    },
+    "sourceEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sourceInstanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceKind": {
+      "enum": [
+        "runner",
+        "control_plane"
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "normalizedSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "itemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "eventType": {
+      "enum": [
+        "runner.connected",
+        "runner.reconnected",
+        "runner.reconciled",
+        "runner.disconnected",
+        "runner.draining",
+        "runner.suspending",
+        "runner.suspended",
+        "runner.stopped",
+        "runner.diagnostic",
+        "runtime.phase.changed",
+        "sandbox.metric",
+        "workspace.ready",
+        "workspace.change.updated",
+        "workspace.diff.recorded",
+        "workspace.file.referenced",
+        "harness.starting",
+        "harness.ready",
+        "harness.exited",
+        "harness.diagnostic",
+        "plan.updated",
+        "tool.execution.started",
+        "tool.execution.progressed",
+        "tool.execution.completed",
+        "research.started",
+        "research.progressed",
+        "research.completed",
+        "delegation.started",
+        "delegation.updated",
+        "delegation.completed",
+        "model.route.changed",
+        "model.verification.updated",
+        "context.compacted",
+        "artifact.viewed",
+        "artifact.generated",
+        "review.mode.changed",
+        "hook.started",
+        "hook.completed",
+        "memory.citation.referenced",
+        "safety.review.started",
+        "safety.review.completed",
+        "terminal.input.sent",
+        "wait.started",
+        "wait.completed",
+        "provider.notice.recorded",
+        "session.starting",
+        "session.started",
+        "session.resuming",
+        "session.resumed",
+        "session.reconciled",
+        "session.updated",
+        "session.closed",
+        "session.failed",
+        "session.capabilities.updated",
+        "session.goal.snapshot",
+        "session.goal.updated",
+        "session.goal.cleared",
+        "turn.submitted",
+        "turn.accepted",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.cancelled",
+        "item.started",
+        "item.delta",
+        "item.completed",
+        "item.failed",
+        "usage.reported",
+        "semantic_tool.input",
+        "semantic_tool.result",
+        "mcp_app.discovered",
+        "mcp_app.resource.resolved",
+        "mcp_app.initializing",
+        "mcp_app.ready",
+        "mcp_app.tool_input",
+        "mcp_app.tool_result",
+        "mcp_app.action.requested",
+        "mcp_app.action.resolved",
+        "mcp_app.host_context.changed",
+        "mcp_app.failed",
+        "mcp_app.teardown",
+        "runtime_request.created",
+        "runtime_request.resolved",
+        "runtime_request.expired",
+        "runtime_request.cancelled",
+        "interaction.request.proposed",
+        "interaction.request.materialized",
+        "interaction.request.rejected",
+        "interaction.response.progressed",
+        "interaction.response.resolved",
+        "interaction.response.delivered",
+        "run.attached",
+        "run.detached",
+        "run.result.proposed",
+        "run.result.accepted",
+        "run.result.rejected",
+        "attention.request.proposed",
+        "attention.request.routed",
+        "attention.request.resolved",
+        "attention.request.expired",
+        "attention.request.superseded",
+        "work.assessment.recorded",
+        "issue.status.decision.recorded",
+        "issue.status.decision.applied",
+        "issue.status.decision.rejected",
+        "issue.status.decision.superseded",
+        "run.terminal",
+        "external_provider.dispatch_requested",
+        "external_provider.operation_settled"
+      ]
+    },
+    "schemaVersion": {
+      "const": 3
+    },
+    "priority": {
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    },
+    "emittedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "enum": [
+              "session.goal.snapshot",
+              "session.goal.updated"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "goal"
+            ],
+            "properties": {
+              "goal": {
+                "oneOf": [
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/snapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "session.capabilities.updated"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "sessionGoals"
+            ],
+            "properties": {
+              "sessionGoals": {
+                "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+              },
+              "turnControls": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json#/$defs/turnControls"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "external_provider.dispatch_requested"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "binding": {
+                    "type": "object",
+                    "properties": {
+                      "companyId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "agentId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "bindingId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "runId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "normalizedSessionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "turnId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "bindingGeneration": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "assignmentRevision": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "companyId",
+                      "agentId",
+                      "bindingId",
+                      "runId",
+                      "normalizedSessionId",
+                      "turnId",
+                      "bindingGeneration",
+                      "assignmentRevision"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1048576
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "maxLength": 1048576
+                  },
+                  "acceptByUnixMs": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "expiresAtUnixMs": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "completionContract": {
+                    "type": "object",
+                    "properties": {
+                      "revision": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "criterionIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 256,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "revision",
+                      "criterionIds"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    },
+                    "maxItems": 512
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "binding",
+                  "text",
+                  "instructions",
+                  "acceptByUnixMs",
+                  "expiresAtUnixMs",
+                  "completionContract",
+                  "tools"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "binding": {
+                    "type": "object",
+                    "properties": {
+                      "companyId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "agentId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "bindingId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "runId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "normalizedSessionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "turnId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "bindingGeneration": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "assignmentRevision": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "companyId",
+                      "agentId",
+                      "bindingId",
+                      "runId",
+                      "normalizedSessionId",
+                      "turnId",
+                      "bindingGeneration",
+                      "assignmentRevision"
+                    ]
+                  },
+                  "kind": {
+                    "const": "authority_revoked"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "externalStopConfirmed": {
+                    "const": false
+                  }
+                },
+                "required": [
+                  "binding",
+                  "kind",
+                  "externalStopConfirmed"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "external_provider.operation_settled"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "binding": {
+                "type": "object",
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "normalizedSessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingGeneration": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "assignmentRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "companyId",
+                  "agentId",
+                  "bindingId",
+                  "runId",
+                  "normalizedSessionId",
+                  "turnId",
+                  "bindingGeneration",
+                  "assignmentRevision"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "outcome": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "binding",
+              "requestId",
+              "outcome"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "additionalProperties": true
+} as const;
+
+export const sessionGoalSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json",
+  "title": "PRP v2 session goal capability and snapshot",
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": [
+        "availability",
+        "actions",
+        "autonomousUpdates",
+        "persistentAcrossResume",
+        "maxObjectiveChars",
+        "tokenBudgetControl",
+        "usageReporting"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "unsupported",
+            "policy_disabled"
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "set",
+              "pause",
+              "resume",
+              "clear"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "autonomousUpdates": {
+          "type": "boolean"
+        },
+        "persistentAcrossResume": {
+          "type": "boolean"
+        },
+        "maxObjectiveChars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000
+        },
+        "tokenBudgetControl": {
+          "type": "boolean"
+        },
+        "usageReporting": {
+          "type": "boolean"
+        },
+        "reasonCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "objective",
+        "status",
+        "tokenBudget",
+        "tokensUsed",
+        "elapsedSeconds",
+        "iterations",
+        "lastReason",
+        "createdAt",
+        "updatedAt",
+        "completedAt",
+        "workingNow"
+      ],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "limited",
+            "usage_limited",
+            "budget_limited",
+            "complete"
+          ]
+        },
+        "tokenBudget": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "tokensUsed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "elapsedSeconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "iterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "lastReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "workingNow": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+} as const;
+
 export const fixtureSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/fixture.schema.json",
@@ -3591,7 +5972,11 @@ export const fixtureSchema = {
       "const": 1
     },
     "protocolVersion": {
-      "const": 1
+      "enum": [
+        1,
+        2,
+        3
+      ]
     },
     "name": {
       "type": "string",
@@ -3607,19 +5992,49 @@ export const fixtureSchema = {
       "$ref": "https://paperclip.dev/schemas/prp/v1/identity.schema.json"
     },
     "capabilities": {
-      "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json"
+      "oneOf": [
+        {
+          "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json"
+        },
+        {
+          "$ref": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json"
+        },
+        {
+          "$ref": "https://paperclip.dev/schemas/prp/v3/capabilities.schema.json"
+        }
+      ]
     },
     "commands": {
       "type": "array",
       "items": {
-        "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json"
+        "oneOf": [
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v2/command.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v3/command.schema.json"
+          }
+        ]
       }
     },
     "events": {
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json"
+        "oneOf": [
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v2/event.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v3/event.schema.json"
+          }
+        ]
       }
     },
     "requests": {
@@ -3638,7 +6053,11 @@ export const fixtureSchema = {
 export const prpSchemaBundle = {
   "identity": identitySchema,
   "capabilities": capabilitiesSchema,
+  "capabilities-v2": capabilitiesV2Schema,
+  "capabilities-v3": capabilitiesV3Schema,
   "command": commandSchema,
+  "command-v2": commandV2Schema,
+  "command-v3": commandV3Schema,
   "provider-descriptor": providerDescriptorSchema,
   "provider-event": providerEventSchema,
   "workspace-diff": workspaceDiffSchema,
@@ -3653,5 +6072,8 @@ export const prpSchemaBundle = {
   "request": requestSchema,
   "result": resultSchema,
   "event": eventSchema,
+  "event-v2": eventV2Schema,
+  "event-v3": eventV3Schema,
+  "session-goal": sessionGoalSchema,
   "fixture": fixtureSchema,
 } as const;

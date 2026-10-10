@@ -2,18 +2,11 @@ import { z } from "zod";
 import {
   COMPANY_STATUSES,
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 const logoAssetIdSchema = z.string().guid().nullable().optional();
-const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
-const attachmentMaxBytesSchema = z
-  .number()
-  .int()
-  .min(1)
-  .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
 
 const interactionResolverKindGovernanceSchema = z.object({
   defaultPolicy: z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES).optional(),
@@ -32,7 +25,6 @@ export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
-  attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
 });
 
@@ -50,9 +42,7 @@ export const updateCompanySchema = objectWithoutDefaults(
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
       feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
       feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
-      brandColor: brandColorSchema,
       logoAssetId: logoAssetIdSchema,
-      attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
     }),
 );
 
@@ -62,7 +52,6 @@ export const updateCompanyBrandingSchema = z
   .object({
     name: z.string().min(1).optional(),
     description: z.string().nullable().optional(),
-    brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
   })
   .strict()
@@ -70,7 +59,6 @@ export const updateCompanyBrandingSchema = z
     (value) =>
       value.name !== undefined
       || value.description !== undefined
-      || value.brandColor !== undefined
       || value.logoAssetId !== undefined,
     "At least one branding field must be provided",
   );

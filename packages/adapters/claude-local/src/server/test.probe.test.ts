@@ -512,6 +512,16 @@ describe("claude auth mode hints", () => {
     ).toBe(false);
   });
 
+  it("reports an intentionally selected managed API account without a subscription warning", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "api_key" }, env: { ANTHROPIC_API_KEY: "api-test-key" } },
+      executionTarget: sandboxTarget, environmentName: "Daytona",
+    });
+    expect(result.checks.find(check => check.code === "claude_anthropic_api_key_overrides_subscription")).toMatchObject({ level: "info", message: "Using the selected Claude API connection." });
+    expect(JSON.stringify(result.checks)).not.toContain("Unset ANTHROPIC_API_KEY");
+  });
+
   it("keeps the API-key warning authoritative when both ANTHROPIC_API_KEY and the token are set", async () => {
     probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
 
@@ -627,6 +637,44 @@ describe("claude CLI local hello probe hardening", () => {
     // The trusted proxy reaches the child; the caller proxy never does.
     expect(spawnedEnv.HTTPS_PROXY).toBe("http://trusted-proxy:8443");
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
+  });
+
+  it.each([
+    ["claude-fable-5-1", "2.1.251"],
+    ["claude-opus-5-5", "2.1.280"],
+    ["claude-sonnet-5-5", "2.1.284"],
+  ])("warns without executing %s when runtime PATH selects a different executable", async (model, minimumVersion) => {
+    const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
+    const runtimeClaudePath = path.join(runtimeDir, "claude");
+    await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
+    await chmod(runtimeClaudePath, 0o755);
+
+    try {
+      probeResult.value = { exitCode: 0, stdout: `${minimumVersion} (Claude Code)\n`, stderr: "" };
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          engine: "cli",
+          command: "claude",
+          model,
+          env: { PATH: runtimeDir },
+        },
+        executionTarget: null,
+        environmentName: null,
+      });
+
+      expect(result.status).toBe("warn");
+      expect(result.checks).toContainEqual(expect.objectContaining({
+        code: "claude_cli_version_probe_mismatch",
+        hint: `Ensure the runtime-selected Claude Code is ${minimumVersion} or newer. Execution will verify that exact executable before launch.`,
+        level: "warn",
+      }));
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    } finally {
+      await rm(runtimeDir, { recursive: true, force: true });
+    }
   });
 
   it("names the local host target on every result", async () => {

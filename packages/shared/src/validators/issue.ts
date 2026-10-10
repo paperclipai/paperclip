@@ -32,13 +32,16 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
-  MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
-import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
+import {
+  lowTrustReviewPresetPolicySchema,
+  trustAuthorizationPolicySchema,
+} from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { questionSetToAskUserQuestionsPayload } from "../question-set.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -48,7 +51,12 @@ export const issueBlockedInboxStateSchema = z.enum([
   "missing_disposition",
 ]);
 
-export const issueBlockedInboxSeveritySchema = z.enum(["critical", "high", "medium", "low"]);
+export const issueBlockedInboxSeveritySchema = z.enum([
+  "critical",
+  "high",
+  "medium",
+  "low",
+]);
 
 export const issueBlockedInboxReasonSchema = z.enum([
   "blocked_by_unassigned_issue",
@@ -65,43 +73,53 @@ export const issueBlockedInboxReasonSchema = z.enum([
   "open_recovery_issue",
 ]);
 
-export const issueBlockedInboxIssueRefSchema = z.object({
-  id: z.string().guid(),
-  identifier: z.string().nullable(),
-  title: z.string(),
-  status: z.enum(ISSUE_STATUSES),
-  priority: z.enum(ISSUE_PRIORITIES),
-  assigneeAgentId: z.string().guid().nullable(),
-  assigneeUserId: z.string().nullable(),
-}).strict();
+export const issueBlockedInboxIssueRefSchema = z
+  .object({
+    id: z.string().guid(),
+    identifier: z.string().nullable(),
+    title: z.string(),
+    status: z.enum(ISSUE_STATUSES),
+    priority: z.enum(ISSUE_PRIORITIES),
+    assigneeAgentId: z.string().guid().nullable(),
+    assigneeUserId: z.string().nullable(),
+  })
+  .strict();
 
-export const issueBlockedInboxAttentionSchema = z.object({
-  kind: z.literal("blocked"),
-  state: issueBlockedInboxStateSchema,
-  reason: issueBlockedInboxReasonSchema,
-  severity: issueBlockedInboxSeveritySchema,
-  stoppedSinceAt: z.string().datetime().nullable(),
-  owner: z.object({
-    type: z.enum(["agent", "user", "board", "external", "unknown"]),
-    agentId: z.string().guid().nullable(),
-    userId: z.string().nullable(),
-    label: z.string().nullable(),
-  }).strict(),
-  action: z.object({
-    label: z.string().trim().min(1),
-    detail: z.string().nullable(),
-  }).strict(),
-  sourceIssue: issueBlockedInboxIssueRefSchema.nullable(),
-  leafIssue: issueBlockedInboxIssueRefSchema.nullable(),
-  recoveryIssue: issueBlockedInboxIssueRefSchema.nullable(),
-  approvalId: z.string().guid().nullable(),
-  interactionId: z.string().guid().nullable(),
-  sampleIssueIdentifier: z.string().nullable(),
-  redaction: z.object({
-    externalDetailsRedacted: z.boolean(),
-    secretFieldsOmitted: z.literal(true),
-  }).strict(),
-}).strict();
+export const issueBlockedInboxAttentionSchema = z
+  .object({
+    kind: z.literal("blocked"),
+    state: issueBlockedInboxStateSchema,
+    reason: issueBlockedInboxReasonSchema,
+    severity: issueBlockedInboxSeveritySchema,
+    stoppedSinceAt: z.string().datetime().nullable(),
+    owner: z
+      .object({
+        type: z.enum(["agent", "user", "board", "external", "unknown"]),
+        agentId: z.string().guid().nullable(),
+        userId: z.string().nullable(),
+        label: z.string().nullable(),
+      })
+      .strict(),
+    action: z
+      .object({
+        label: z.string().trim().min(1),
+        detail: z.string().nullable(),
+      })
+      .strict(),
+    sourceIssue: issueBlockedInboxIssueRefSchema.nullable(),
+    leafIssue: issueBlockedInboxIssueRefSchema.nullable(),
+    recoveryIssue: issueBlockedInboxIssueRefSchema.nullable(),
+    approvalId: z.string().guid().nullable(),
+    interactionId: z.string().guid().nullable(),
+    sampleIssueIdentifier: z.string().nullable(),
+    redaction: z
+      .object({
+        externalDetailsRedacted: z.boolean(),
+        secretFieldsOmitted: z.literal(true),
+      })
+      .strict(),
+  })
+  .strict();
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -117,9 +135,17 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
 // that could never be a branch (path escapes, option injection, ref syntax).
 export function isValidExistingBranchName(value: string): boolean {
   if (value.length === 0 || value.length > 255) return false;
-  if (value.startsWith("-") || value.startsWith("/") || value.startsWith(".")) return false;
-  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;
-  if (value.includes("..") || value.includes("//") || value.includes("@{") || value.includes("/.")) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.startsWith("."))
+    return false;
+  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock"))
+    return false;
+  if (
+    value.includes("..") ||
+    value.includes("//") ||
+    value.includes("@{") ||
+    value.includes("/.")
+  )
+    return false;
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x20\x7f~^:?*[\\]/.test(value)) return false;
   return true;
@@ -127,12 +153,24 @@ export function isValidExistingBranchName(value: string): boolean {
 
 const executionWorkspaceStrategySchema = z
   .object({
-    type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
+    type: z
+      .enum([
+        "project_primary",
+        "git_worktree",
+        "adapter_managed",
+        "cloud_sandbox",
+      ])
+      .optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
-    existingBranch: z.string().trim().refine(isValidExistingBranchName, {
-      message: "existingBranch must be a valid git branch name",
-    }).optional().nullable(),
+    existingBranch: z
+      .string()
+      .trim()
+      .refine(isValidExistingBranchName, {
+        message: "existingBranch must be a valid git branch name",
+      })
+      .optional()
+      .nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
     runtimeProvisionCommand: z.string().optional().nullable(),
@@ -145,7 +183,8 @@ const executionWorkspaceStrategySchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["existingBranch"],
-        message: "existingBranch requires workspaceStrategy.type \"git_worktree\"",
+        message:
+          'existingBranch requires workspaceStrategy.type "git_worktree"',
       });
     }
     if (strategy.branchTemplate) {
@@ -157,7 +196,8 @@ const executionWorkspaceStrategySchema = z
     }
   });
 
-const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
+const ipv4CidrPattern =
+  /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
 const protectedTaskEgressCidrs = [
   "0.0.0.0/8",
   "10.0.0.0/8",
@@ -172,7 +212,9 @@ const protectedTaskEgressCidrs = [
 function ipv4CidrRange(cidr: string): [number, number] | null {
   if (!ipv4CidrPattern.test(cidr)) return null;
   const [address, prefixText] = cidr.split("/");
-  const addressValue = address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
+  const addressValue = address
+    .split(".")
+    .reduce((value, octet) => value * 256 + Number(octet), 0);
   const prefix = Number(prefixText);
   const blockSize = 2 ** (32 - prefix);
   const start = Math.floor(addressValue / blockSize) * blockSize;
@@ -184,45 +226,76 @@ function isAllowedTaskEgressCidr(cidr: string): boolean {
   if (!range) return false;
   return protectedTaskEgressCidrs.every((protectedCidr) => {
     const protectedRange = ipv4CidrRange(protectedCidr);
-    return protectedRange !== null && (range[1] < protectedRange[0] || range[0] > protectedRange[1]);
+    return (
+      protectedRange !== null &&
+      (range[1] < protectedRange[0] || range[0] > protectedRange[1])
+    );
   });
 }
 
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
-    sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
+    sharedWorkspaceConcurrency: z
+      .enum(["auto", "serialize", "allow"])
+      .optional(),
     environmentId: z.string().guid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
-    networkEgress: z.object({
-      allowFqdns: z.array(z.string().trim().toLowerCase().regex(
-        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
-        "Network egress FQDNs must be hostnames without a URL scheme or path",
-      ).max(253)).max(100).optional(),
-      allowCidrs: z.array(z.string().trim().regex(
-        ipv4CidrPattern,
-        "Invalid IPv4 CIDR (must use octets 0-255 and prefix 0-32)",
-      ).max(64).refine(
-        isAllowedTaskEgressCidr,
-        "Task-scoped network egress CIDRs cannot overlap private, loopback, link-local, CGNAT, or multicast ranges",
-      )).max(100).optional(),
-    }).strict().optional().nullable(),
+    networkEgress: z
+      .object({
+        allowFqdns: z
+          .array(
+            z
+              .string()
+              .trim()
+              .toLowerCase()
+              .regex(
+                /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
+                "Network egress FQDNs must be hostnames without a URL scheme or path",
+              )
+              .max(253),
+          )
+          .max(100)
+          .optional(),
+        allowCidrs: z
+          .array(
+            z
+              .string()
+              .trim()
+              .regex(
+                ipv4CidrPattern,
+                "Invalid IPv4 CIDR (must use octets 0-255 and prefix 0-32)",
+              )
+              .max(64)
+              .refine(
+                isAllowedTaskEgressCidr,
+                "Task-scoped network egress CIDRs cannot overlap private, loopback, link-local, CGNAT, or multicast ranges",
+              ),
+          )
+          .max(100)
+          .optional(),
+      })
+      .strict()
+      .optional()
+      .nullable(),
   })
   .strict()
   .superRefine((settings, ctx) => {
-    if (settings.workspaceStrategy?.existingBranch && settings.mode !== "isolated_workspace") {
+    if (
+      settings.workspaceStrategy?.existingBranch &&
+      settings.mode !== "isolated_workspace"
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["workspaceStrategy", "existingBranch"],
-        message: "existingBranch requires mode \"isolated_workspace\"",
+        message: 'existingBranch requires mode "isolated_workspace"',
       });
     }
   });
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
-    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -234,44 +307,79 @@ const issueExecutionStagePrincipalBaseSchema = z.object({
   userId: z.string().optional().nullable(),
 });
 
-export const issueExecutionStagePrincipalSchema = issueExecutionStagePrincipalBaseSchema
-  .superRefine((value, ctx) => {
+export const issueExecutionStagePrincipalSchema =
+  issueExecutionStagePrincipalBaseSchema.superRefine((value, ctx) => {
     if (value.type === "agent") {
       if (!value.agentId) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants require agentId", path: ["agentId"] });
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Agent participants require agentId",
+          path: ["agentId"],
+        });
       }
       if (value.userId) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants cannot set userId", path: ["userId"] });
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Agent participants cannot set userId",
+          path: ["userId"],
+        });
       }
       return;
     }
     if (!value.userId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants require userId", path: ["userId"] });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "User participants require userId",
+        path: ["userId"],
+      });
     }
     if (value.agentId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants cannot set agentId", path: ["agentId"] });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "User participants cannot set agentId",
+        path: ["agentId"],
+      });
     }
   });
 
-export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipalBaseSchema.extend({
-  id: z.string().guid().optional(),
-}).superRefine((value, ctx) => {
-  if (value.type === "agent") {
-    if (!value.agentId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants require agentId", path: ["agentId"] });
-    }
-    if (value.userId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent participants cannot set userId", path: ["userId"] });
-    }
-    return;
-  }
-  if (!value.userId) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants require userId", path: ["userId"] });
-  }
-  if (value.agentId) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User participants cannot set agentId", path: ["agentId"] });
-  }
-});
+export const issueExecutionStageParticipantSchema =
+  issueExecutionStagePrincipalBaseSchema
+    .extend({
+      id: z.string().guid().optional(),
+    })
+    .superRefine((value, ctx) => {
+      if (value.type === "agent") {
+        if (!value.agentId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Agent participants require agentId",
+            path: ["agentId"],
+          });
+        }
+        if (value.userId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Agent participants cannot set userId",
+            path: ["userId"],
+          });
+        }
+        return;
+      }
+      if (!value.userId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "User participants require userId",
+          path: ["userId"],
+        });
+      }
+      if (value.agentId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "User participants cannot set agentId",
+          path: ["agentId"],
+        });
+      }
+    });
 
 export const issueExecutionStageSchema = z.object({
   id: z.string().guid().optional(),
@@ -283,13 +391,45 @@ export const issueExecutionStageSchema = z.object({
 export const issueExecutionMonitorPolicySchema = z.object({
   nextCheckAt: z.string().datetime(),
   notes: z.string().max(500).optional().nullable().default(null),
-  scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).optional().default("assignee"),
-  kind: z.enum(ISSUE_EXECUTION_MONITOR_KINDS).optional().nullable().default(null),
-  serviceName: z.string().trim().min(1).max(120).optional().nullable().default(null),
-  externalRef: z.string().trim().min(1).max(500).optional().nullable().default(null),
+  scheduledBy: z
+    .enum(ISSUE_MONITOR_SCHEDULED_BY)
+    .optional()
+    .default("assignee"),
+  kind: z
+    .enum(ISSUE_EXECUTION_MONITOR_KINDS)
+    .optional()
+    .nullable()
+    .default(null),
+  serviceName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .optional()
+    .nullable()
+    .default(null),
+  externalRef: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .optional()
+    .nullable()
+    .default(null),
   timeoutAt: z.string().datetime().optional().nullable().default(null),
-  maxAttempts: z.number().int().positive().max(100).optional().nullable().default(null),
-  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
+  maxAttempts: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .nullable()
+    .default(null),
+  recoveryPolicy: z
+    .enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)
+    .optional()
+    .nullable()
+    .default(null),
 });
 
 export const issueExecutionPolicySchema = z.object({
@@ -299,7 +439,14 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
-  maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),
+  maxReviewRounds: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .optional()
+    .nullable()
+    .default(null),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -309,19 +456,50 @@ export const issueExecutionMonitorStateSchema = z.object({
   attemptCount: z.number().int().nonnegative().default(0),
   notes: z.string().max(500).nullable(),
   scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).nullable(),
-  kind: z.enum(ISSUE_EXECUTION_MONITOR_KINDS).nullable().optional().default(null),
-  serviceName: z.string().trim().min(1).max(120).nullable().optional().default(null),
-  externalRef: z.string().trim().min(1).max(500).nullable().optional().default(null),
+  kind: z
+    .enum(ISSUE_EXECUTION_MONITOR_KINDS)
+    .nullable()
+    .optional()
+    .default(null),
+  serviceName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .nullable()
+    .optional()
+    .default(null),
+  externalRef: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .nullable()
+    .optional()
+    .default(null),
   timeoutAt: z.string().datetime().nullable().optional().default(null),
-  maxAttempts: z.number().int().positive().max(100).nullable().optional().default(null),
-  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).nullable().optional().default(null),
+  maxAttempts: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .nullable()
+    .optional()
+    .default(null),
+  recoveryPolicy: z
+    .enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)
+    .nullable()
+    .optional()
+    .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
 });
 
-export const issueReviewRequestSchema = z.object({
-  instructions: z.string().trim().min(1).max(20000),
-}).strict();
+export const issueReviewRequestSchema = z
+  .object({
+    instructions: z.string().trim().min(1).max(20000),
+  })
+  .strict();
 
 export const issueExecutionStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
@@ -367,7 +545,9 @@ export const issueRecoveryActionReadModelSchema = z.object({
   updatedAt: z.union([z.date(), z.string().datetime()]),
 });
 
-export type IssueRecoveryActionReadModel = z.infer<typeof issueRecoveryActionReadModelSchema>;
+export type IssueRecoveryActionReadModel = z.infer<
+  typeof issueRecoveryActionReadModelSchema
+>;
 
 const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
@@ -376,54 +556,88 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "cancelled",
 ] as const;
 
-export const resolveIssueRecoveryActionSchema = z.object({
-  actionId: z.string().guid().optional(),
-  outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-  sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
-  resolutionNote: multilineTextSchema.optional().nullable(),
-}).strict().superRefine((value, ctx) => {
-  if (value.outcome === "restored") {
-    if (
-      value.sourceIssueStatus !== "todo" &&
-      value.sourceIssueStatus !== "done" &&
-      value.sourceIssueStatus !== "in_review"
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Restored recovery actions must move the source issue to todo, done, or in_review",
-        path: ["sourceIssueStatus"],
-      });
-    }
-    return;
-  }
+export const retryWorkspaceExportSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  repairNote: z.string().trim().min(20).max(12000),
+}).strict();
 
-  if (value.outcome === "blocked") {
-    if (value.sourceIssueStatus !== "blocked") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Blocked recovery actions must move the source issue to blocked",
-        path: ["sourceIssueStatus"],
-      });
+export const resolveIssueRecoveryActionSchema = z
+  .object({
+    workspaceBaseRef: z.object({
+      requestedRef: z.string().trim().min(1).max(1024),
+      branch: z.string().trim().refine(isValidExistingBranchName, { message: "Choose a valid Git branch name" }),
+    }).strict().optional(),
+    executionReconciliation: z
+      .object({
+        runId: z.string().guid(),
+        providerStopped: z.literal(true),
+        actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
+        outcomeEvidence: z.string().trim().min(20).max(12000),
+        workspaceRepairEvidence: z.string().trim().min(20).max(12000).optional(),
+      })
+      .strict()
+      .optional(),
+    actionId: z.string().guid().optional(),
+    outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
+    sourceIssueStatus: z.enum(ISSUE_STATUSES),
+    resolutionNote: multilineTextSchema.optional().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }
-    return;
-  }
-
-  if (value.outcome === "false_positive" || value.outcome === "cancelled") {
-    if (
-      value.sourceIssueStatus !== "done" &&
-      value.sourceIssueStatus !== "in_review"
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "This recovery outcome requires sourceIssueStatus to be done or in_review",
-        path: ["sourceIssueStatus"],
-      });
+    if (value.outcome === "restored") {
+      // A retained-source repair records evidence without changing task state.
+      // The route verifies the exact server-owned source and unchanged status.
+      if (value.executionReconciliation?.workspaceRepairEvidence) return;
+      if (
+        value.sourceIssueStatus !== "todo" &&
+        value.sourceIssueStatus !== "done" &&
+        value.sourceIssueStatus !== "in_review"
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Restored recovery actions must move the source issue to todo, done, or in_review",
+          path: ["sourceIssueStatus"],
+        });
+      }
+      return;
     }
-    return;
-  }
-});
 
-export type ResolveIssueRecoveryAction = z.infer<typeof resolveIssueRecoveryActionSchema>;
+    if (value.outcome === "blocked") {
+      if (value.sourceIssueStatus !== "blocked") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Blocked recovery actions must move the source issue to blocked",
+          path: ["sourceIssueStatus"],
+        });
+      }
+      return;
+    }
+
+    if (value.outcome === "false_positive" || value.outcome === "cancelled") {
+      if (
+        value.sourceIssueStatus !== "done" &&
+        value.sourceIssueStatus !== "in_review"
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "This recovery outcome requires sourceIssueStatus to be done or in_review",
+          path: ["sourceIssueStatus"],
+        });
+      }
+      return;
+    }
+  });
+
+export type ResolveIssueRecoveryAction = z.infer<
+  typeof resolveIssueRecoveryActionSchema
+>;
 
 const issueRequestDepthInputSchema = z
   .number()
@@ -437,7 +651,9 @@ type IssueCreateStatusDefaultInput = {
   assigneeUserId?: unknown;
 };
 
-export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultInput): {
+export function resolveCreateIssueStatusDefault(
+  input: IssueCreateStatusDefaultInput,
+): {
   status: (typeof ISSUE_STATUSES)[number];
   defaulted: boolean;
   reason: "explicit" | "assigned_omitted_status" | "unassigned_omitted_status";
@@ -451,18 +667,25 @@ export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultI
   }
 
   const hasAssignee =
-    (typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0)
-    || (typeof input.assigneeUserId === "string" && input.assigneeUserId.length > 0);
+    (typeof input.assigneeAgentId === "string" &&
+      input.assigneeAgentId.length > 0) ||
+    (typeof input.assigneeUserId === "string" &&
+      input.assigneeUserId.length > 0);
   return {
     status: hasAssignee ? "todo" : "backlog",
     defaulted: true,
-    reason: hasAssignee ? "assigned_omitted_status" : "unassigned_omitted_status",
+    reason: hasAssignee
+      ? "assigned_omitted_status"
+      : "unassigned_omitted_status",
   };
 }
 
-function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
+  schema: z.ZodObject<T>,
+) {
   return z.preprocess((input) => {
-    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    if (!input || typeof input !== "object" || Array.isArray(input))
+      return input;
     const raw = input as Record<string, unknown>;
     if (raw.status !== undefined) return input;
     return {
@@ -476,16 +699,21 @@ const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
   goalId: z.string().guid().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
-  unblockDescriptor: z.object({
-    owner: z.union([
-      z.object({ agentId: z.string().guid() }).strict(),
-      z.object({ userId: z.string().trim().min(1) }).strict(),
-      z.literal("board"),
-    ]),
-    action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
-  }).strict().optional().nullable(),
+  unblockDescriptor: z
+    .object({
+      owner: z.union([
+        z.object({ agentId: z.string().guid() }).strict(),
+        z.object({ userId: z.string().trim().min(1) }).strict(),
+        z.literal("board"),
+      ]),
+      action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
+    })
+    .strict()
+    .optional()
+    .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
@@ -500,27 +728,46 @@ const createIssueBaseSchema = z.object({
   createdByUserId: z.string().optional().nullable(),
   responsibleUserId: z.string().optional().nullable(),
   billingCode: z.string().optional().nullable(),
-  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema
+    .optional()
+    .nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().guid().optional().nullable(),
-  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  executionWorkspacePreference: z
+    .enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES)
+    .optional()
+    .nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema
+    .optional()
+    .nullable(),
   labelIds: z.array(z.string().guid()).optional(),
-  watchdogDiscovery: z.object({
-    kind: z.enum(ISSUE_WATCHDOG_DISCOVERY_KINDS),
-    evidenceMarkdown: multilineTextSchema.optional().nullable(),
-  }).strict().optional().nullable(),
-  watchdog: z.object({
-    agentId: z.string().guid(),
-    instructions: multilineTextSchema.optional().nullable(),
-  }).strict().optional().nullable(),
+  watchdogDiscovery: z
+    .object({
+      kind: z.enum(ISSUE_WATCHDOG_DISCOVERY_KINDS),
+      evidenceMarkdown: multilineTextSchema.optional().nullable(),
+    })
+    .strict()
+    .optional()
+    .nullable(),
+  watchdog: z
+    .object({
+      agentId: z.string().guid(),
+      instructions: multilineTextSchema.optional().nullable(),
+    })
+    .strict()
+    .optional()
+    .nullable(),
 });
 
 function requireBlockedStatusForUnblockDescriptor(
   value: { status?: string; unblockDescriptor?: unknown },
   ctx: z.RefinementCtx,
 ) {
-  if (value.unblockDescriptor != null && value.status !== undefined && value.status !== "blocked") {
+  if (
+    value.unblockDescriptor != null &&
+    value.status !== undefined &&
+    value.status !== "blocked"
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "unblockDescriptor requires blocked status",
@@ -530,9 +777,13 @@ function requireBlockedStatusForUnblockDescriptor(
 }
 
 const createIssueDuplicateGuardSchema = {
+  initialPlan: z.string().min(1).max(200000).optional().nullable(),
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
-  allowDuplicate: z.boolean()
-    .describe("Bypasses recent-title duplicate detection; idempotency keys always replay their original issue")
+  allowDuplicate: z
+    .boolean()
+    .describe(
+      "Bypasses recent-title duplicate detection; idempotency keys always replay their original issue",
+    )
     .optional()
     .default(false),
 };
@@ -545,37 +796,64 @@ const onboardingFirstTaskMarkerSchema = {
 };
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
+  title: z.string().optional(),
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
 });
 
+function requireTitleOrDescription(
+  value: { title?: string; description?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (!value.title?.trim() && !value.description?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Provide a title or task description" });
+  }
+}
+
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend({
+    title: z.string().optional(),
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
   }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription);
+
+export const setIssueTitleSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  onlyIfProvisional: z.boolean().optional().default(false),
+  idempotencyKey: z.string().trim().min(1).max(240).optional(),
+}).strict();
+
+export type SetIssueTitle = z.input<typeof setIssueTitleSchema>;
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
-export const upsertIssueWatchdogSchema = z.object({
-  agentId: z.string().guid(),
-  instructions: multilineTextSchema.optional().nullable(),
-}).strict();
+export const upsertIssueWatchdogSchema = z
+  .object({
+    agentId: z.string().guid(),
+    instructions: multilineTextSchema.optional().nullable(),
+  })
+  .strict();
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
-  .omit({
-    parentId: true,
-    inheritExecutionWorkspaceFromIssueId: true,
-    watchdogDiscovery: true,
-  })
-  .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
-    blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+export const createChildIssueSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema
+    .omit({
+      parentId: true,
+      inheritExecutionWorkspaceFromIssueId: true,
+      watchdogDiscovery: true,
+    })
+    .extend({
+      title: z.string().optional(),
+      acceptanceCriteria: z
+        .array(z.string().trim().min(1).max(500))
+        .max(20)
+        .optional(),
+      blockParentUntilDone: z.boolean().optional().default(false),
+    }),
+).superRefine(requireBlockedStatusForUnblockDescriptor).superRefine(requireTitleOrDescription);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -584,14 +862,25 @@ export const createAcceptedPlanDecompositionSchema = z.object({
   children: z.array(createChildIssueSchema).min(1).max(25),
 });
 
-export type CreateAcceptedPlanDecomposition = z.infer<typeof createAcceptedPlanDecompositionSchema>;
+export type CreateAcceptedPlanDecomposition = z.infer<
+  typeof createAcceptedPlanDecompositionSchema
+>;
 
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
-  color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
+  color: z
+    .string()
+    .regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
 });
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
+
+const issueCommentAttachmentIdsSchema = z
+  .array(z.string().uuid())
+  .max(20)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "Attachment ids must be unique",
+  });
 
 export const updateIssueSchema = objectWithoutDefaults(
   createIssueBaseSchema.omit({
@@ -599,34 +888,48 @@ export const updateIssueSchema = objectWithoutDefaults(
     responsibleUserId: true,
     watchdog: true,
   }),
-).partial().extend({
-  requestDepth: issueRequestDepthInputSchema.optional(),
-  assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
-  onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
-  reviewInteractionId: z.string().guid().optional(),
-  reviewRequest: issueReviewRequestSchema.optional().nullable(),
-  reopen: z.boolean().optional(),
-  resume: z.boolean().optional(),
-  interrupt: z.boolean().optional(),
-  hiddenAt: z.string().datetime().nullable().optional(),
-});
+)
+  .partial()
+  .extend({
+    /** Reject a policy write if the policy changed after the caller read it. */
+    expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
+    requestDepth: issueRequestDepthInputSchema.optional(),
+    assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    commentClientRequestId: z.string().uuid().optional(),
+    /** Only valid with a comment; the route binds these in the update transaction. */
+    attachmentIds: issueCommentAttachmentIdsSchema.optional(),
+    onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
+    reviewInteractionId: z.string().guid().optional(),
+    reviewRequest: issueReviewRequestSchema.optional().nullable(),
+    reopen: z.boolean().optional(),
+    resume: z.boolean().optional(),
+    interrupt: z.boolean().optional(),
+    /** Assignment-only handoff; the following structured goal action owns the wake. */
+    deferWakeForGoal: z.boolean().optional(),
+    hiddenAt: z.string().datetime().nullable().optional(),
+  });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
-export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
+export type IssueExecutionWorkspaceSettings = z.infer<
+  typeof issueExecutionWorkspaceSettingsSchema
+>;
 
-export const stalledReviewDecisionSchema = z.object({
-  action: z.enum(["approve", "request_changes", "send_back"]),
-  note: multilineTextSchema.pipe(z.string().min(1)).optional(),
-}).strict().superRefine((value, ctx) => {
-  if (value.action === "request_changes" && !value.note?.trim()) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["note"],
-      message: "Request changes requires a note",
-    });
-  }
-});
+export const stalledReviewDecisionSchema = z
+  .object({
+    action: z.enum(["approve", "request_changes", "send_back"]),
+    note: multilineTextSchema.pipe(z.string().min(1)).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.action === "request_changes" && !value.note?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["note"],
+        message: "Request changes requires a note",
+      });
+    }
+  });
 
 export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 
@@ -642,91 +945,130 @@ const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 
 export const issueCommentAuthorTypeSchema = z.enum(ISSUE_COMMENT_AUTHOR_TYPES);
 
-export const issueCommentPresentationSchema = z.object({
-  kind: z.enum(ISSUE_COMMENT_PRESENTATION_KINDS).default("message"),
-  tone: z.enum(ISSUE_COMMENT_PRESENTATION_TONES).default("neutral"),
-  title: z.string().trim().min(1).max(160).nullable().optional(),
-  detailsDefaultOpen: z.boolean().optional().default(false),
-  density: z.enum(ISSUE_COMMENT_PRESENTATION_DENSITIES).optional(),
-}).strict();
+export const issueCommentPresentationSchema = z
+  .object({
+    kind: z.enum(ISSUE_COMMENT_PRESENTATION_KINDS).default("message"),
+    tone: z.enum(ISSUE_COMMENT_PRESENTATION_TONES).default("neutral"),
+    title: z.string().trim().min(1).max(160).nullable().optional(),
+    detailsDefaultOpen: z.boolean().optional().default(false),
+    density: z.enum(ISSUE_COMMENT_PRESENTATION_DENSITIES).optional(),
+  })
+  .strict();
 
-export type IssueCommentPresentation = z.infer<typeof issueCommentPresentationSchema>;
+export type IssueCommentPresentation = z.infer<
+  typeof issueCommentPresentationSchema
+>;
 
 const issueCommentMetadataBaseRowSchema = z.object({
   type: z.enum(ISSUE_COMMENT_METADATA_ROW_TYPES),
   label: commentMetadataLabelSchema.nullable().optional(),
 });
 
-const issueCommentMetadataTextRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("text"),
-  text: commentMetadataTextSchema,
-}).strict();
+const issueCommentMetadataTextRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("text"),
+    text: commentMetadataTextSchema,
+  })
+  .strict();
 
-const issueCommentMetadataCodeRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("code"),
-  code: z.string().min(1).max(4000),
-  language: z.string().trim().min(1).max(40).nullable().optional(),
-}).strict();
+const issueCommentMetadataCodeRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("code"),
+    code: z.string().min(1).max(4000),
+    language: z.string().trim().min(1).max(40).nullable().optional(),
+  })
+  .strict();
 
-const issueCommentMetadataKeyValueRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("key_value"),
-  label: commentMetadataLabelSchema,
-  value: commentMetadataTextSchema,
-}).strict();
+const issueCommentMetadataKeyValueRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("key_value"),
+    label: commentMetadataLabelSchema,
+    value: commentMetadataTextSchema,
+  })
+  .strict();
 
-const issueCommentMetadataIssueLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("issue_link"),
-  issueId: z.string().guid().nullable().optional(),
-  identifier: z.string().trim().min(1).max(80).nullable().optional(),
-  title: z.string().trim().min(1).max(240).nullable().optional(),
-}).strict();
+const issueCommentMetadataIssueLinkRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("issue_link"),
+    issueId: z.string().guid().nullable().optional(),
+    identifier: z.string().trim().min(1).max(80).nullable().optional(),
+    title: z.string().trim().min(1).max(240).nullable().optional(),
+  })
+  .strict();
 
-const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("agent_link"),
-  agentId: z.string().guid(),
-  name: z.string().trim().min(1).max(160).nullable().optional(),
-}).strict();
+const issueCommentMetadataAgentLinkRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("agent_link"),
+    agentId: z.string().guid(),
+    name: z.string().trim().min(1).max(160).nullable().optional(),
+  })
+  .strict();
 
-const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.extend({
-  type: z.literal("run_link"),
-  runId: z.string().guid(),
-  agentId: z.string().guid().nullable().optional(),
-  title: z.string().trim().min(1).max(160).nullable().optional(),
-}).strict();
+const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema
+  .extend({
+    type: z.literal("run_link"),
+    runId: z.string().guid(),
+    agentId: z.string().guid().nullable().optional(),
+    title: z.string().trim().min(1).max(160).nullable().optional(),
+  })
+  .strict();
 
-export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
-  issueCommentMetadataTextRowSchema,
-  issueCommentMetadataCodeRowSchema,
-  issueCommentMetadataKeyValueRowSchema,
-  issueCommentMetadataIssueLinkRowSchema,
-  issueCommentMetadataAgentLinkRowSchema,
-  issueCommentMetadataRunLinkRowSchema,
-]).superRefine((value, ctx) => {
-  if (value.type === "issue_link" && !value.issueId && !value.identifier) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Issue link rows require issueId or identifier",
-      path: ["issueId"],
-    });
-  }
-});
+export const issueCommentMetadataRowSchema = z
+  .discriminatedUnion("type", [
+    issueCommentMetadataTextRowSchema,
+    issueCommentMetadataCodeRowSchema,
+    issueCommentMetadataKeyValueRowSchema,
+    issueCommentMetadataIssueLinkRowSchema,
+    issueCommentMetadataAgentLinkRowSchema,
+    issueCommentMetadataRunLinkRowSchema,
+  ])
+  .superRefine((value, ctx) => {
+    if (value.type === "issue_link" && !value.issueId && !value.identifier) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Issue link rows require issueId or identifier",
+        path: ["issueId"],
+      });
+    }
+  });
 
-export const issueCommentMetadataSectionSchema = z.object({
-  title: z.string().trim().min(1).max(160).nullable().optional(),
-  rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
-}).strict();
+export const issueCommentMetadataSectionSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).nullable().optional(),
+    rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
+  })
+  .strict();
 
-export const issueCommentMetadataSchema = z.object({
-  version: z.literal(1),
-  sourceRunId: z.string().guid().nullable().optional(),
-  authorizationReason: z.string().trim().min(1).max(160).nullable().optional(),
-  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
-}).strict();
+export const issueCommentMetadataSchema = z
+  .object({
+    version: z.literal(1),
+    sourceChannel: z.literal("imessage-photon").optional(),
+    sourceRunId: z.string().guid().nullable().optional(),
+    authorizationReason: z
+      .string()
+      .trim()
+      .min(1)
+      .max(160)
+      .nullable()
+      .optional(),
+    recovery: z.object({
+      kind: z.literal("disposition_repair_escalated"),
+      actionId: z.string().guid(),
+      attemptCount: z.number().int().nonnegative(),
+      maxAttempts: z.number().int().positive(),
+      reason: z.string().trim().min(1).max(160),
+      assigneeAgentId: z.string().guid().nullable(),
+    }).strict().optional(),
+    sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+  })
+  .strict();
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
   body: multilineTextSchema.pipe(z.string().min(1)),
+  attachmentIds: issueCommentAttachmentIdsSchema.optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
@@ -738,8 +1080,12 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
-export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
-export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
+export const issueThreadInteractionStatusSchema = z.enum(
+  ISSUE_THREAD_INTERACTION_STATUSES,
+);
+export const issueThreadInteractionKindSchema = z.enum(
+  ISSUE_THREAD_INTERACTION_KINDS,
+);
 export const issueThreadInteractionCanonicalResolverPolicySchema = z
   .enum(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)
   .describe("Canonical resolver audience: anyone, not_creator, or human_only.");
@@ -748,64 +1094,146 @@ export const issueThreadInteractionResolverPolicySchema = z
   .describe(
     "Resolver audience. Use anyone, not_creator, or human_only; board_or_agents and board_only are deprecated compatibility aliases.",
   );
-export const issueThreadInteractionResolverPolicyProvenanceSchema = z
-  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES);
-export const issueThreadInteractionEffectiveResolverPolicySourceSchema = z
-  .enum(ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES);
+export const issueThreadInteractionResolverPolicyProvenanceSchema = z.enum(
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
+);
+export const issueThreadInteractionEffectiveResolverPolicySourceSchema = z.enum(
+  ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES,
+);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
+
+export const connectionIntentPhaseSchema = z.enum([
+  "requested",
+  "authorizing",
+  "needs_retry",
+]);
+const connectionIntentBrandAssetSchema = z
+  .string()
+  .max(2048)
+  .refine((value) => {
+    if (/^\/brands\/apps\/[a-z0-9][a-z0-9._-]*\.(?:svg|png)$/i.test(value))
+      return true;
+    try {
+      return new URL(value).protocol === "https:";
+    } catch {
+      return false;
+    }
+  }, "Connection intent brand assets must be HTTPS URLs or local app brand paths");
+
+export const connectionIntentPayloadSchema = z
+  .object({
+    accessRequest: z.object({
+      connectionId: z.string().guid(),
+      connectionName: z.string().trim().min(1).max(160),
+      tools: z.array(z.object({
+        catalogEntryId: z.string().guid(),
+        toolName: z.string().trim().min(1).max(160),
+        versionHash: z.string().min(1).max(256),
+        permission: z.enum(["allowed", "ask_first"]),
+      }).strict()).min(1).max(20).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
+    }).strict().optional(),
+    upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
+    purpose: z.enum(["ai", "channel"]).optional(),
+    version: z.literal(1),
+    serviceSlug: z.string().trim().min(1).max(120),
+    serviceName: z.string().trim().min(1).max(160),
+    serviceLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+    serviceDarkLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+    requestingAgentId: z.string().guid(),
+    requestingAgentName: z.string().trim().min(1).max(160),
+    phase: connectionIntentPhaseSchema,
+  })
+  .strict();
+
+export const connectionIntentResultSchema = z
+  .object({
+    version: z.literal(1),
+    instruction: z.string().max(4000).optional(),
+    outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+    connectionId: z.string().guid().nullable().optional(),
+    reason: z.string().trim().max(4000).nullable().optional(),
+    supersededByInteractionId: z.string().guid().nullable().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.outcome === "connected" && !value.connectionId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["connectionId"],
+        message: "Connected intents require a connection id",
+      });
+    }
+    if (value.outcome === "superseded" && !value.supersededByInteractionId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["supersededByInteractionId"],
+        message: "Superseded intents require the replacement interaction id",
+      });
+    }
+  });
 
 export const issueDocumentKeySchema = z
   .string()
   .trim()
   .min(1)
   .max(64)
-  .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
+  .regex(
+    /^[a-z0-9][a-z0-9_-]*$/,
+    "Document key must be lowercase letters, numbers, _ or -",
+  );
 
-export const suggestedTaskDraftSchema = z.object({
-  clientKey: z.string().trim().min(1).max(120),
-  parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
-  parentId: z.string().guid().nullable().optional(),
-  title: z.string().trim().min(1).max(240),
-  description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
-  priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
-  workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
-  assigneeAgentId: z.string().guid().nullable().optional(),
-  assigneeUserId: z.string().trim().min(1).nullable().optional(),
-  projectId: z.string().guid().nullable().optional(),
-  goalId: z.string().guid().nullable().optional(),
-  billingCode: z.string().trim().max(120).nullable().optional(),
-  labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
-  hiddenInPreview: z.boolean().optional(),
-}).superRefine((value, ctx) => {
-  if (value.assigneeAgentId && value.assigneeUserId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Suggested tasks can only target one assignee",
-      path: ["assigneeAgentId"],
-    });
-  }
-});
-
-export const suggestTasksPayloadSchema = z.object({
-  version: z.literal(1),
-  defaultParentId: z.string().guid().nullable().optional(),
-  tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
-}).superRefine((value, ctx) => {
-  const seenClientKeys = new Set<string>();
-  for (const [index, task] of value.tasks.entries()) {
-    if (seenClientKeys.has(task.clientKey)) {
+export const suggestedTaskDraftSchema = z
+  .object({
+    clientKey: z.string().trim().min(1).max(120),
+    parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
+    parentId: z.string().guid().nullable().optional(),
+    title: z.string().trim().min(1).max(240),
+    description: multilineTextSchema
+      .pipe(z.string().trim().max(20000))
+      .nullable()
+      .optional(),
+    priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+    workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
+    assigneeAgentId: z.string().guid().nullable().optional(),
+    assigneeUserId: z.string().trim().min(1).nullable().optional(),
+    projectId: z.string().guid().nullable().optional(),
+    goalId: z.string().guid().nullable().optional(),
+    billingCode: z.string().trim().max(120).nullable().optional(),
+    labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
+    hiddenInPreview: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.assigneeAgentId && value.assigneeUserId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "clientKey must be unique within one interaction",
-        path: ["tasks", index, "clientKey"],
+        message: "Suggested tasks can only target one assignee",
+        path: ["assigneeAgentId"],
       });
-      continue;
     }
-    seenClientKeys.add(task.clientKey);
-  }
-});
+  });
+
+export const suggestTasksPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    defaultParentId: z.string().guid().nullable().optional(),
+    tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
+  })
+  .superRefine((value, ctx) => {
+    const seenClientKeys = new Set<string>();
+    for (const [index, task] of value.tasks.entries()) {
+      if (seenClientKeys.has(task.clientKey)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "clientKey must be unique within one interaction",
+          path: ["tasks", index, "clientKey"],
+        });
+        continue;
+      }
+      seenClientKeys.add(task.clientKey);
+    }
+  });
 
 export const suggestTasksResultCreatedTaskSchema = z.object({
   clientKey: z.string().trim().min(1).max(120),
@@ -818,17 +1246,22 @@ export const suggestTasksResultCreatedTaskSchema = z.object({
 
 export const suggestTasksResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z
+    .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
+    .optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
-  skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
+  skippedClientKeys: z
+    .array(z.string().trim().min(1).max(120))
+    .max(50)
+    .optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
 });
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  label: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).nullable().optional(),
+  id: z.string().trim().min(1).max(160),
+  label: z.string().trim().min(1).max(1000),
+  description: z.string().trim().max(4000).nullable().optional(),
   freeText: z
     .boolean()
     .optional()
@@ -838,71 +1271,223 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  prompt: z.string().trim().min(1).max(500),
-  helpText: z.string().trim().max(1000).nullable().optional(),
+  id: z.string().trim().min(1).max(160),
+  prompt: z.string().trim().min(1).max(4000),
+  helpText: z.string().trim().max(4000).nullable().optional(),
   selectionMode: z.enum(["single", "multi"]),
   required: z.boolean().optional(),
-  options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
+  allowOther: z.boolean().optional(),
+  options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(129),
 });
 
-export const askUserQuestionsPayloadSchema = z.object({
+const paperclipQuestionOptionSchema = z.object({
+  id: z.string().min(1).max(160),
+  label: z.string().min(1).max(1000),
+  description: z.string().max(4000).optional(),
+  recommended: z.boolean().optional(),
+});
+
+const paperclipQuestionSchema = z
+  .object({
+    id: z.string().min(1).max(160),
+    header: z.string().max(1000).optional(),
+    prompt: z.string().min(1).max(4000),
+    helpText: z.string().max(4000).optional(),
+    required: z.boolean(),
+    answerMode: z.enum(["single_select", "multi_select", "text"]),
+    initialText: z.string().refine(value => value.length <= 200000 && Array.from(value).length <= 100000, "initial text exceeds 100000 Unicode code points").optional(),
+    options: z.array(paperclipQuestionOptionSchema).max(128).optional(),
+    customAnswer: z
+      .object({
+        enabled: z.literal(true),
+        label: z.string().max(1000).optional(),
+        placeholder: z.string().max(1000).optional(),
+      })
+      .optional(),
+    textValidation: z
+      .object({
+        minLength: z.number().int().min(0).max(100000).optional(),
+        maxLength: z.number().int().min(0).max(100000).optional(),
+        pattern: z.string().max(1000).optional(),
+        inputType: z.enum(["text", "number", "integer"]).optional(),
+        minimum: z.number().finite().optional(),
+        maximum: z.number().finite().optional(),
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.initialText !== undefined && value.answerMode !== "text") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "only text questions can define initial text", path: ["initialText"] });
+    }
+    if (
+      value.answerMode === "text" &&
+      value.options &&
+      value.options.length > 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "text questions cannot define options",
+        path: ["options"],
+      });
+    }
+    if (
+      value.answerMode !== "text" &&
+      (!value.options || value.options.length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "select questions require options",
+        path: ["options"],
+      });
+    }
+    if (value.answerMode === "text" && value.customAnswer) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "text questions cannot define customAnswer",
+        path: ["customAnswer"],
+      });
+    }
+    if (
+      value.textValidation?.minLength !== undefined &&
+      value.textValidation.maxLength !== undefined &&
+      value.textValidation.minLength > value.textValidation.maxLength
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "minLength cannot exceed maxLength",
+        path: ["textValidation"],
+      });
+    }
+    if (
+      value.textValidation?.minimum !== undefined &&
+      value.textValidation.maximum !== undefined &&
+      value.textValidation.minimum > value.textValidation.maximum
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "minimum cannot exceed maximum",
+        path: ["textValidation"],
+      });
+    }
+    if (value.textValidation?.pattern !== undefined) {
+      try {
+        new RegExp(value.textValidation.pattern);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "pattern must be a valid regular expression",
+          path: ["textValidation", "pattern"],
+        });
+      }
+    }
+    const optionIds = value.options?.map((option) => option.id) ?? [];
+    if (new Set(optionIds).size !== optionIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "option ids must be unique",
+        path: ["options"],
+      });
+    }
+  });
+
+export const paperclipQuestionSetPayloadSchema = z
+  .object({
+    schema: z.literal("paperclip.question_set.v1"),
+    title: z.string().max(1000).optional(),
+    description: z.string().max(100_000).optional(),
+    submitLabel: z.string().max(200).optional(),
+    questions: z.array(paperclipQuestionSchema).min(1).max(64),
+  })
+  .superRefine((value, ctx) => {
+    const questionIds = value.questions.map((question) => question.id);
+    if (new Set(questionIds).size !== questionIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "question ids must be unique",
+        path: ["questions"],
+      });
+    }
+  });
+
+const askUserQuestionsPayloadFields = {
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
-  questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
-}).superRefine((value, ctx) => {
-  const seenQuestionIds = new Set<string>();
-  for (const [questionIndex, question] of value.questions.entries()) {
-    if (seenQuestionIds.has(question.id)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Question ids must be unique within one interaction",
-        path: ["questions", questionIndex, "id"],
-      });
-    }
-    seenQuestionIds.add(question.id);
+  questions: z.array(askUserQuestionsQuestionSchema).min(1).max(64),
+  /** Exact canonical presentation retained for a recovered harness request. */
+  questionSet: paperclipQuestionSetPayloadSchema.optional(),
+  /** Stable correlation for draft handoff from a live runtime request. */
+  runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
+};
 
-    const seenOptionIds = new Set<string>();
-    let freeTextOptionCount = 0;
-    for (const [optionIndex, option] of question.options.entries()) {
-      if (seenOptionIds.has(option.id)) {
+export const askUserQuestionsPayloadSchema = z
+  .object(askUserQuestionsPayloadFields)
+  .superRefine((value, ctx) => {
+    const seenQuestionIds = new Set<string>();
+    for (const [questionIndex, question] of value.questions.entries()) {
+      if (seenQuestionIds.has(question.id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Option ids must be unique within one question",
-          path: ["questions", questionIndex, "options", optionIndex, "id"],
+          message: "Question ids must be unique within one interaction",
+          path: ["questions", questionIndex, "id"],
         });
       }
-      seenOptionIds.add(option.id);
-      if (option.freeText) {
-        freeTextOptionCount += 1;
-        if (freeTextOptionCount > 1) {
+      seenQuestionIds.add(question.id);
+
+      const seenOptionIds = new Set<string>();
+      let freeTextOptionCount = 0;
+      for (const [optionIndex, option] of question.options.entries()) {
+        if (seenOptionIds.has(option.id)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: "A question may declare at most one free-text option",
-            path: ["questions", questionIndex, "options", optionIndex, "freeText"],
+            message: "Option ids must be unique within one question",
+            path: ["questions", questionIndex, "options", optionIndex, "id"],
           });
+        }
+        seenOptionIds.add(option.id);
+        if (option.freeText) {
+          freeTextOptionCount += 1;
+          if (freeTextOptionCount > 1) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "A question may declare at most one free-text option",
+              path: [
+                "questions",
+                questionIndex,
+                "options",
+                optionIndex,
+                "freeText",
+              ],
+            });
+          }
         }
       }
     }
-  }
-});
+  });
 
 export const askUserQuestionsAnswerSchema = z.object({
-  questionId: z.string().trim().min(1).max(120),
-  optionIds: z.array(z.string().trim().min(1).max(120)).max(20),
-  otherText: multilineTextSchema.pipe(z.string().trim().max(4000)).nullable().optional(),
+  questionId: z.string().trim().min(1).max(160),
+  optionIds: z.array(z.string().trim().min(1).max(160)).max(129),
+  // The persisted question determines whether this is exact editor text or a
+  // legacy custom answer; normalize only after that trusted context is known.
+  otherText: z.string().max(100000)
+    .nullable()
+    .optional(),
 });
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z
+    .enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"])
+    .optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(64),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
-  expirationReason: z.enum(["superseded_by_comment", "superseded_by_newer_interaction"]).optional(),
+  expirationReason: z
+    .enum(["superseded_by_comment", "superseded_by_newer_interaction"])
+    .optional(),
   commentId: z.string().guid().nullable().optional(),
   // Set alongside expirationReason "superseded_by_newer_interaction": the id of
   // the newer sibling ask_user_questions that replaced this one (PAP-437).
@@ -910,32 +1495,39 @@ export const askUserQuestionsResultSchema = z.object({
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
-const requestConfirmationHrefSchema = z.string().trim().min(1).max(2000).refine((value) => {
-  if (value.startsWith("#")) return true;
-  if (value.startsWith("/")) return !value.startsWith("//");
-  return /^https?:\/\//i.test(value);
-}, "href must be a root-relative path, same-page fragment, or http(s) URL");
+const requestConfirmationHrefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2000)
+  .refine((value) => {
+    if (value.startsWith("#")) return true;
+    if (value.startsWith("/")) return !value.startsWith("//");
+    return /^https?:\/\//i.test(value);
+  }, "href must be a root-relative path, same-page fragment, or http(s) URL");
 
 const requestConfirmationTargetBaseSchema = z.object({
   label: z.string().trim().min(1).max(120).nullable().optional(),
   href: requestConfirmationHrefSchema.nullable().optional(),
 });
 
-export const requestConfirmationIssueDocumentTargetSchema = requestConfirmationTargetBaseSchema.extend({
-  type: z.literal("issue_document"),
-  issueId: z.string().guid().nullable().optional(),
-  documentId: z.string().guid().nullable().optional(),
-  key: issueDocumentKeySchema,
-  revisionId: z.string().guid(),
-  revisionNumber: z.number().int().positive().nullable().optional(),
-});
+export const requestConfirmationIssueDocumentTargetSchema =
+  requestConfirmationTargetBaseSchema.extend({
+    type: z.literal("issue_document"),
+    issueId: z.string().guid().nullable().optional(),
+    documentId: z.string().guid().nullable().optional(),
+    key: issueDocumentKeySchema,
+    revisionId: z.string().guid(),
+    revisionNumber: z.number().int().positive().nullable().optional(),
+  });
 
-export const requestConfirmationCustomTargetSchema = requestConfirmationTargetBaseSchema.extend({
-  type: z.literal("custom"),
-  key: z.string().trim().min(1).max(120),
-  revisionId: z.string().trim().min(1).max(255).nullable().optional(),
-  revisionNumber: z.number().int().positive().nullable().optional(),
-});
+export const requestConfirmationCustomTargetSchema =
+  requestConfirmationTargetBaseSchema.extend({
+    type: z.literal("custom"),
+    key: z.string().trim().min(1).max(120),
+    revisionId: z.string().trim().min(1).max(255).nullable().optional(),
+    revisionNumber: z.number().int().positive().nullable().optional(),
+  });
 
 export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationIssueDocumentTargetSchema,
@@ -951,7 +1543,8 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   connectionId: z.string().guid().nullable(),
   applicationId: z.string().guid().nullable(),
   appDisplayName: z.string().trim().min(1).max(500).nullable(),
-  risk: z.enum(["write", "destructive"]),
+  risk: z.enum(["read", "write", "destructive"]),
+  rememberActionScope: z.string().trim().min(1).max(1000).optional(),
   previewMarkdown: z.string().trim().min(1).max(20000),
   argumentsSummaryJson: z.string().max(20000),
   argumentsHash: z.string().trim().min(1).max(255),
@@ -977,7 +1570,13 @@ export const requestConfirmationPayloadSchema = z.object({
   rejectRequiresReason: z.boolean().optional(),
   rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
   allowDeclineReason: z.boolean().optional().default(true),
-  declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
+  declineReasonPlaceholder: z
+    .string()
+    .trim()
+    .min(1)
+    .max(240)
+    .nullable()
+    .optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
@@ -991,99 +1590,110 @@ export const requestCheckboxConfirmationOptionSchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
 });
 
-export const requestCheckboxConfirmationPayloadSchema = z.object({
-  version: z.literal(1),
-  prompt: z.string().trim().min(1).max(1000),
-  detailsMarkdown: z.string().max(20000).nullable().optional(),
-  options: z.array(requestCheckboxConfirmationOptionSchema)
-    .min(1)
-    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT),
-  defaultSelectedOptionIds: z.array(z.string().trim().min(1).max(120))
-    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
-    .optional()
-    .default([]),
-  minSelected: z.number().int().min(0).optional().default(0),
-  maxSelected: z.number().int().min(0).nullable().optional(),
-  acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
-  rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
-  rejectRequiresReason: z.boolean().optional(),
-  rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
-  allowDeclineReason: z.boolean().optional().default(true),
-  declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
-  supersedeOnUserComment: z.boolean().optional(),
-  target: requestConfirmationTargetSchema.nullable().optional(),
-}).superRefine((value, ctx) => {
-  const optionIds = new Set<string>();
-  for (const [index, option] of value.options.entries()) {
-    if (optionIds.has(option.id)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Option ids must be unique within one checkbox confirmation",
-        path: ["options", index, "id"],
-      });
+export const requestCheckboxConfirmationPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    prompt: z.string().trim().min(1).max(1000),
+    detailsMarkdown: z.string().max(20000).nullable().optional(),
+    options: z
+      .array(requestCheckboxConfirmationOptionSchema)
+      .min(1)
+      .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT),
+    defaultSelectedOptionIds: z
+      .array(z.string().trim().min(1).max(120))
+      .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
+      .optional()
+      .default([]),
+    minSelected: z.number().int().min(0).optional().default(0),
+    maxSelected: z.number().int().min(0).nullable().optional(),
+    acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
+    rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
+    rejectRequiresReason: z.boolean().optional(),
+    rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+    allowDeclineReason: z.boolean().optional().default(true),
+    declineReasonPlaceholder: z
+      .string()
+      .trim()
+      .min(1)
+      .max(240)
+      .nullable()
+      .optional(),
+    supersedeOnUserComment: z.boolean().optional(),
+    target: requestConfirmationTargetSchema.nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const optionIds = new Set<string>();
+    for (const [index, option] of value.options.entries()) {
+      if (optionIds.has(option.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Option ids must be unique within one checkbox confirmation",
+          path: ["options", index, "id"],
+        });
+      }
+      optionIds.add(option.id);
     }
-    optionIds.add(option.id);
-  }
 
-  const defaultSelectedOptionIds = new Set<string>();
-  for (const [index, optionId] of value.defaultSelectedOptionIds.entries()) {
-    if (defaultSelectedOptionIds.has(optionId)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "defaultSelectedOptionIds must be unique",
-        path: ["defaultSelectedOptionIds", index],
-      });
-      continue;
+    const defaultSelectedOptionIds = new Set<string>();
+    for (const [index, optionId] of value.defaultSelectedOptionIds.entries()) {
+      if (defaultSelectedOptionIds.has(optionId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "defaultSelectedOptionIds must be unique",
+          path: ["defaultSelectedOptionIds", index],
+        });
+        continue;
+      }
+      defaultSelectedOptionIds.add(optionId);
+      if (!optionIds.has(optionId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "defaultSelectedOptionIds must reference existing option ids",
+          path: ["defaultSelectedOptionIds", index],
+        });
+      }
     }
-    defaultSelectedOptionIds.add(optionId);
-    if (!optionIds.has(optionId)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "defaultSelectedOptionIds must reference existing option ids",
-        path: ["defaultSelectedOptionIds", index],
-      });
-    }
-  }
 
-  const maxSelected = value.maxSelected ?? null;
-  if (value.minSelected > value.options.length) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "minSelected cannot exceed the option count",
-      path: ["minSelected"],
-    });
-  }
-  if (value.defaultSelectedOptionIds.length < value.minSelected) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "defaultSelectedOptionIds must satisfy minSelected",
-      path: ["defaultSelectedOptionIds"],
-    });
-  }
-  if (maxSelected != null) {
-    if (maxSelected < value.minSelected) {
+    const maxSelected = value.maxSelected ?? null;
+    if (value.minSelected > value.options.length) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "maxSelected must be greater than or equal to minSelected",
-        path: ["maxSelected"],
+        message: "minSelected cannot exceed the option count",
+        path: ["minSelected"],
       });
     }
-    if (maxSelected > value.options.length) {
+    if (value.defaultSelectedOptionIds.length < value.minSelected) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "maxSelected cannot exceed the option count",
-        path: ["maxSelected"],
-      });
-    }
-    if (value.defaultSelectedOptionIds.length > maxSelected) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "defaultSelectedOptionIds cannot exceed maxSelected",
+        message: "defaultSelectedOptionIds must satisfy minSelected",
         path: ["defaultSelectedOptionIds"],
       });
     }
-  }
-});
+    if (maxSelected != null) {
+      if (maxSelected < value.minSelected) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "maxSelected must be greater than or equal to minSelected",
+          path: ["maxSelected"],
+        });
+      }
+      if (maxSelected > value.options.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "maxSelected cannot exceed the option count",
+          path: ["maxSelected"],
+        });
+      }
+      if (value.defaultSelectedOptionIds.length > maxSelected) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "defaultSelectedOptionIds cannot exceed maxSelected",
+          path: ["defaultSelectedOptionIds"],
+        });
+      }
+    }
+  });
 
 export const requestConfirmationResumeFailureSchema = z.object({
   status: z.enum(["retrying", "needs_attention"]),
@@ -1098,6 +1708,7 @@ export const requestConfirmationResumeFailureSchema = z.object({
 
 export const requestConfirmationToolActionResultSchema = z.object({
   version: z.literal(1),
+  rememberedAction: z.boolean().optional(),
   status: z.enum(["approved", "executing", "executed", "failed", "expired"]),
   errorCode: z.string().trim().min(1).max(120).nullable().optional(),
   errorMessage: z.string().trim().min(1).max(4000).nullable().optional(),
@@ -1124,6 +1735,7 @@ export const requestConfirmationResultSchema = z.object({
     "superseded_by_comment",
     "superseded_by_newer_request",
     "stale_target",
+    "skipped",
     "withdrawn",
     "issue_closed",
     "addressee_deleted",
@@ -1137,26 +1749,34 @@ export const requestConfirmationResultSchema = z.object({
   secretProposal: requestConfirmationSecretProposalResultSchema.optional(),
 });
 
-export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({
-  selectedOptionIds: z.array(z.string().trim().min(1).max(120))
-    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
-    .optional(),
-}).superRefine((value, ctx) => {
-  const selectedOptionIds = value.selectedOptionIds ?? [];
-  const seenOptionIds = new Set<string>();
-  for (const [index, optionId] of selectedOptionIds.entries()) {
-    if (seenOptionIds.has(optionId)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "selectedOptionIds must be unique",
-        path: ["selectedOptionIds", index],
-      });
-    }
-    seenOptionIds.add(optionId);
-  }
-});
+export const requestCheckboxConfirmationResultSchema =
+  requestConfirmationResultSchema
+    .extend({
+      selectedOptionIds: z
+        .array(z.string().trim().min(1).max(120))
+        .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
+        .optional(),
+    })
+    .superRefine((value, ctx) => {
+      const selectedOptionIds = value.selectedOptionIds ?? [];
+      const seenOptionIds = new Set<string>();
+      for (const [index, optionId] of selectedOptionIds.entries()) {
+        if (seenOptionIds.has(optionId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "selectedOptionIds must be unique",
+            path: ["selectedOptionIds", index],
+          });
+        }
+        seenOptionIds.add(optionId);
+      }
+    });
 
-export const requestItemVerdictValueSchema = z.enum(["approve", "reject", "defer"]);
+export const requestItemVerdictValueSchema = z.enum([
+  "approve",
+  "reject",
+  "defer",
+]);
 
 export const requestItemVerdictsItemSchema = z.object({
   id: z.string().trim().min(1).max(120),
@@ -1167,132 +1787,205 @@ export const requestItemVerdictsItemSchema = z.object({
   attachmentId: z.string().guid().nullable().optional(),
 });
 
-export const requestItemVerdictsPayloadSchema = z.object({
-  version: z.literal(1),
-  prompt: z.string().trim().min(1).max(1000),
-  detailsMarkdown: z.string().max(20000).nullable().optional(),
-  items: z.array(requestItemVerdictsItemSchema)
-    .min(1)
-    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
-  verdicts: z.array(requestItemVerdictValueSchema)
-    .min(2)
-    .max(3)
-    .optional()
-    .default(["approve", "reject"]),
-  requireReasonOn: z.array(requestItemVerdictValueSchema)
-    .max(3)
-    .optional()
-    .default(["reject"]),
-  reasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
-  allowBulkApprove: z.boolean().optional().default(true),
-  supersedeOnUserComment: z.boolean().optional(),
-  target: requestConfirmationTargetSchema.nullable().optional(),
-}).superRefine((value, ctx) => {
-  const itemIds = new Set<string>();
-  for (const [index, item] of value.items.entries()) {
-    if (itemIds.has(item.id)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Item ids must be unique within one item verdict request",
-        path: ["items", index, "id"],
-      });
+export const requestItemVerdictsPayloadSchema = z
+  .object({
+    version: z.literal(1),
+    prompt: z.string().trim().min(1).max(1000),
+    detailsMarkdown: z.string().max(20000).nullable().optional(),
+    items: z
+      .array(requestItemVerdictsItemSchema)
+      .min(1)
+      .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+    verdicts: z
+      .array(requestItemVerdictValueSchema)
+      .min(2)
+      .max(3)
+      .optional()
+      .default(["approve", "reject"]),
+    requireReasonOn: z
+      .array(requestItemVerdictValueSchema)
+      .max(3)
+      .optional()
+      .default(["reject"]),
+    reasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+    allowBulkApprove: z.boolean().optional().default(true),
+    supersedeOnUserComment: z.boolean().optional(),
+    target: requestConfirmationTargetSchema.nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const itemIds = new Set<string>();
+    for (const [index, item] of value.items.entries()) {
+      if (itemIds.has(item.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Item ids must be unique within one item verdict request",
+          path: ["items", index, "id"],
+        });
+      }
+      itemIds.add(item.id);
     }
-    itemIds.add(item.id);
-  }
 
-  const verdicts = new Set<string>();
-  for (const [index, verdict] of value.verdicts.entries()) {
-    if (verdicts.has(verdict)) {
+    const verdicts = new Set<string>();
+    for (const [index, verdict] of value.verdicts.entries()) {
+      if (verdicts.has(verdict)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "verdicts must be unique",
+          path: ["verdicts", index],
+        });
+      }
+      verdicts.add(verdict);
+    }
+    if (!verdicts.has("approve") || !verdicts.has("reject")) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "verdicts must be unique",
-        path: ["verdicts", index],
+        message: "verdicts must include approve and reject; defer is optional",
+        path: ["verdicts"],
       });
     }
-    verdicts.add(verdict);
-  }
-  if (!verdicts.has("approve") || !verdicts.has("reject")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "verdicts must include approve and reject; defer is optional",
-      path: ["verdicts"],
-    });
-  }
 
-  const reasonVerdicts = new Set<string>();
-  for (const [index, verdict] of value.requireReasonOn.entries()) {
-    if (reasonVerdicts.has(verdict)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "requireReasonOn must be unique",
-        path: ["requireReasonOn", index],
-      });
-      continue;
+    const reasonVerdicts = new Set<string>();
+    for (const [index, verdict] of value.requireReasonOn.entries()) {
+      if (reasonVerdicts.has(verdict)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "requireReasonOn must be unique",
+          path: ["requireReasonOn", index],
+        });
+        continue;
+      }
+      reasonVerdicts.add(verdict);
+      if (!verdicts.has(verdict)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "requireReasonOn must reference enabled verdicts",
+          path: ["requireReasonOn", index],
+        });
+      }
     }
-    reasonVerdicts.add(verdict);
-    if (!verdicts.has(verdict)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "requireReasonOn must reference enabled verdicts",
-        path: ["requireReasonOn", index],
-      });
-    }
-  }
-});
+  });
 
-export const requestItemVerdictsResultItemSchema = z.object({
-  id: z.string().trim().min(1).max(120),
-  verdict: requestItemVerdictValueSchema,
-  reason: z.string().trim().max(4000).nullable().optional(),
-  resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
-  resolvedByAgentId: z.string().guid().nullable().optional(),
-  resolvedByRunId: z.string().guid().nullable().optional(),
-  resolvedAt: z.union([z.string().datetime(), z.date()]),
-  commentId: z.string().guid().nullable().optional(),
-}).superRefine((value, ctx) => {
-  if (!value.resolvedByUserId && !value.resolvedByAgentId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "a user or agent resolver is required",
-      path: ["resolvedByUserId"],
-    });
-  }
-  if (value.resolvedByAgentId && !value.resolvedByRunId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "resolvedByRunId is required for an agent resolver",
-      path: ["resolvedByRunId"],
-    });
-  }
-});
-
-export const requestItemVerdictsResultSchema = z.object({
-  version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
-  reason: z.string().trim().max(4000).nullable().optional(),
-  complete: z.boolean(),
-  items: z.array(requestItemVerdictsResultItemSchema)
-    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
-  commentId: z.string().guid().nullable().optional(),
-  staleTarget: requestConfirmationTargetSchema.nullable().optional(),
-}).superRefine((value, ctx) => {
-  const itemIds = new Set<string>();
-  for (const [index, item] of value.items.entries()) {
-    if (itemIds.has(item.id)) {
+export const requestItemVerdictsResultItemSchema = z
+  .object({
+    id: z.string().trim().min(1).max(120),
+    verdict: requestItemVerdictValueSchema,
+    reason: z.string().trim().max(4000).nullable().optional(),
+    resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
+    resolvedByAgentId: z.string().guid().nullable().optional(),
+    resolvedByRunId: z.string().guid().nullable().optional(),
+    resolvedAt: z.union([z.string().datetime(), z.date()]),
+    commentId: z.string().guid().nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.resolvedByUserId && !value.resolvedByAgentId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "result item ids must be unique",
-        path: ["items", index, "id"],
+        message: "a user or agent resolver is required",
+        path: ["resolvedByUserId"],
       });
     }
-    itemIds.add(item.id);
-  }
-});
+    if (value.resolvedByAgentId && !value.resolvedByRunId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "resolvedByRunId is required for an agent resolver",
+        path: ["resolvedByRunId"],
+      });
+    }
+  });
+
+export const requestItemVerdictsResultSchema = z
+  .object({
+    version: z.literal(1),
+    outcome: z.enum([
+      "resolved",
+      "superseded_by_comment",
+      "stale_target",
+      "cancelled",
+      "skipped",
+      "withdrawn",
+      "issue_closed",
+      "addressee_deleted",
+    ]),
+    reason: z.string().trim().max(4000).nullable().optional(),
+    complete: z.boolean(),
+    items: z
+      .array(requestItemVerdictsResultItemSchema)
+      .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+    commentId: z.string().guid().nullable().optional(),
+    staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const itemIds = new Set<string>();
+    for (const [index, item] of value.items.entries()) {
+      if (itemIds.has(item.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "result item ids must be unique",
+          path: ["items", index, "id"],
+        });
+      }
+      itemIds.add(item.id);
+    }
+  });
 
 const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
+  addresseeUserId: z.string().trim().min(1).nullable().optional(),
 };
+
+// Validate dual representations on creation, not when reading historical rows.
+// Otherwise a partial canonical form can hide required storage questions.
+const createLegacyAskUserQuestionsPayloadSchema = askUserQuestionsPayloadSchema.superRefine((value, ctx) => {
+  if (!value.questionSet) return;
+  const shown = new Set(value.questionSet.questions.map((question) => question.id));
+  const stored = new Set(value.questions.map((question) => question.id));
+  if (shown.size !== stored.size || [...shown].some((id) => !stored.has(id))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["questionSet", "questions"],
+      message: "questionSet must present every questions entry with the same question IDs. Include choice questions as well as text questions; a partial form hides required answers.",
+    });
+  }
+  const storedById = new Map(value.questions.map((question) => [question.id, question]));
+  for (const [index, question] of value.questionSet.questions.entries()) {
+    const storage = storedById.get(question.id);
+    if (!storage) continue;
+    const mismatch = (field: string) => ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["questionSet", "questions", index, field],
+      message: `questionSet ${field} must match the corresponding questions entry.`,
+    });
+    if (question.prompt.trim() !== storage.prompt) mismatch("prompt");
+    // An omitted storage flag adds no constraint; an explicit flag must agree.
+    if (storage.required !== undefined && question.required !== storage.required) mismatch("required");
+    const mode = question.answerMode === "multi_select" ? "multi" : "single";
+    if (storage.selectionMode !== mode) mismatch("answerMode");
+    if (question.answerMode === "text") {
+      if (storage.options.length !== 1 || !storage.options[0].freeText) mismatch("answerMode");
+    } else {
+      // Text/custom-answer sentinels are storage compatibility, not visible choices.
+      const choices = storage.options.filter((option) => !option.freeText);
+      const canonical = new Map((question.options ?? []).map((option) => [option.id, option.label.trim()]));
+      if (choices.length !== canonical.size || choices.some((option) => canonical.get(option.id) !== option.label)) mismatch("options");
+      const allowsCustomAnswer = storage.allowOther === true || storage.options.some((option) => option.freeText);
+      if (Boolean(question.customAnswer?.enabled) !== allowsCustomAnswer) mismatch("customAnswer");
+    }
+  }
+});
+
+const createAskUserQuestionsPayloadSchema = z.union([
+  createLegacyAskUserQuestionsPayloadSchema,
+  z.object({
+    ...askUserQuestionsPayloadFields,
+    // Do not discard an explicitly supplied conflicting compatibility form.
+    questions: z.never().optional(),
+    questionSet: paperclipQuestionSetPayloadSchema,
+  }).transform(({ questions: _questions, ...value }): z.input<typeof createLegacyAskUserQuestionsPayloadSchema> => ({
+    ...questionSetToAskUserQuestionsPayload(value.questionSet),
+    ...value,
+  })).pipe(createLegacyAskUserQuestionsPayloadSchema),
+]);
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -1303,7 +1996,9 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema
+      .optional()
+      .default("wake_assignee"),
     payload: suggestTasksPayloadSchema,
   }),
   z.object({
@@ -1314,8 +2009,10 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
-    payload: askUserQuestionsPayloadSchema,
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema
+      .optional()
+      .default("wake_assignee"),
+    payload: createAskUserQuestionsPayloadSchema,
   }),
   z.object({
     ...createIssueThreadInteractionCommon,
@@ -1325,7 +2022,9 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema
+      .optional()
+      .default("none"),
     payload: requestConfirmationPayloadSchema,
   }),
   z.object({
@@ -1336,7 +2035,9 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema
+      .optional()
+      .default("wake_assignee"),
     payload: requestCheckboxConfirmationPayloadSchema,
   }),
   z.object({
@@ -1347,90 +2048,151 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().guid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema
+      .optional()
+      .default("wake_assignee"),
     payload: requestItemVerdictsPayloadSchema,
   }),
 ]);
 
-export type CreateIssueThreadInteraction = z.infer<typeof createIssueThreadInteractionSchema>;
+export type CreateIssueThreadInteraction = z.infer<
+  typeof createIssueThreadInteractionSchema
+>;
+export type CreateIssueThreadInteractionInput = z.input<
+  typeof createIssueThreadInteractionSchema
+>;
 
-export const acceptIssueThreadInteractionSchema = z.object({
-  selectedClientKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50).optional(),
+export const acceptIssueThreadInteractionSchema = z
+  .object({
+    rememberAction: z.boolean().optional(),
+    selectedClientKeys: z
+      .array(z.string().trim().min(1).max(120))
+      .min(1)
+      .max(50)
+      .optional(),
+    selectedOptionIds: z
+      .array(z.string().trim().min(1).max(120))
+      .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    const seenClientKeys = new Set<string>();
+    for (const [index, clientKey] of (
+      value.selectedClientKeys ?? []
+    ).entries()) {
+      if (seenClientKeys.has(clientKey)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "selectedClientKeys must be unique",
+          path: ["selectedClientKeys", index],
+        });
+        continue;
+      }
+      seenClientKeys.add(clientKey);
+    }
+
+    const seenOptionIds = new Set<string>();
+    for (const [index, optionId] of (value.selectedOptionIds ?? []).entries()) {
+      if (seenOptionIds.has(optionId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "selectedOptionIds must be unique",
+          path: ["selectedOptionIds", index],
+        });
+        continue;
+      }
+      seenOptionIds.add(optionId);
+    }
+  });
+export type AcceptIssueThreadInteraction = z.infer<
+  typeof acceptIssueThreadInteractionSchema
+>;
+
+/** Records an agent's interpretation of a real user reply without widening resolver permissions. */
+export const resolveConfirmationFromCommentSchema = z.object({
+  commentId: z.string().guid(),
+  decision: z.enum(["accept", "reject"]),
   selectedOptionIds: z.array(z.string().trim().min(1).max(120))
-    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
-    .optional(),
-}).superRefine((value, ctx) => {
-  const seenClientKeys = new Set<string>();
-  for (const [index, clientKey] of (value.selectedClientKeys ?? []).entries()) {
-    if (seenClientKeys.has(clientKey)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "selectedClientKeys must be unique",
-        path: ["selectedClientKeys", index],
-      });
-      continue;
-    }
-    seenClientKeys.add(clientKey);
+    .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT).optional(),
+  reason: z.string().trim().max(4000).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.decision === "reject" && value.selectedOptionIds !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionIds"], message: "Selections apply only to acceptance" });
   }
-
-  const seenOptionIds = new Set<string>();
-  for (const [index, optionId] of (value.selectedOptionIds ?? []).entries()) {
-    if (seenOptionIds.has(optionId)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "selectedOptionIds must be unique",
-        path: ["selectedOptionIds", index],
-      });
-      continue;
-    }
-    seenOptionIds.add(optionId);
+  if (value.selectedOptionIds && new Set(value.selectedOptionIds).size !== value.selectedOptionIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedOptionIds"], message: "Selections must be unique" });
   }
 });
-export type AcceptIssueThreadInteraction = z.infer<typeof acceptIssueThreadInteractionSchema>;
+export type ResolveConfirmationFromComment = z.infer<typeof resolveConfirmationFromCommentSchema>;
 
 export const rejectIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
-export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
+export type RejectIssueThreadInteraction = z.infer<
+  typeof rejectIssueThreadInteractionSchema
+>;
 
 export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
-export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+export type CancelIssueThreadInteraction = z.infer<
+  typeof cancelIssueThreadInteractionSchema
+>;
+
+export const skipIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type SkipIssueThreadInteraction = z.infer<
+  typeof skipIssueThreadInteractionSchema
+>;
 
 export const withdrawIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
-export type WithdrawIssueThreadInteraction = z.infer<typeof withdrawIssueThreadInteractionSchema>;
+export type WithdrawIssueThreadInteraction = z.infer<
+  typeof withdrawIssueThreadInteractionSchema
+>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
-  summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
+  summaryMarkdown: multilineTextSchema
+    .pipe(z.string().max(20000))
+    .nullable()
+    .optional(),
 });
-export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
+export type RespondIssueThreadInteraction = z.infer<
+  typeof respondIssueThreadInteractionSchema
+>;
 
-export const submitIssueThreadInteractionVerdictsSchema = z.object({
-  verdicts: z.array(z.object({
-    id: z.string().trim().min(1).max(120),
-    verdict: requestItemVerdictValueSchema,
-    reason: z.string().trim().max(4000).nullable().optional(),
-  }))
-    .min(1)
-    .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
-}).superRefine((value, ctx) => {
-  const itemIds = new Set<string>();
-  for (const [index, verdict] of value.verdicts.entries()) {
-    if (itemIds.has(verdict.id)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "verdict item ids must be unique",
-        path: ["verdicts", index, "id"],
-      });
+export const submitIssueThreadInteractionVerdictsSchema = z
+  .object({
+    verdicts: z
+      .array(
+        z.object({
+          id: z.string().trim().min(1).max(120),
+          verdict: requestItemVerdictValueSchema,
+          reason: z.string().trim().max(4000).nullable().optional(),
+        }),
+      )
+      .min(1)
+      .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
+  })
+  .superRefine((value, ctx) => {
+    const itemIds = new Set<string>();
+    for (const [index, verdict] of value.verdicts.entries()) {
+      if (itemIds.has(verdict.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "verdict item ids must be unique",
+          path: ["verdicts", index, "id"],
+        });
+      }
+      itemIds.add(verdict.id);
     }
-    itemIds.add(verdict.id);
-  }
-});
-export type SubmitIssueThreadInteractionVerdicts = z.infer<typeof submitIssueThreadInteractionVerdictsSchema>;
+  });
+export type SubmitIssueThreadInteractionVerdicts = z.infer<
+  typeof submitIssueThreadInteractionVerdictsSchema
+>;
 
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().guid(),
@@ -1442,7 +2204,9 @@ export const createIssueAttachmentMetadataSchema = z.object({
   issueCommentId: z.string().guid().optional().nullable(),
 });
 
-export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+export type CreateIssueAttachmentMetadata = z.infer<
+  typeof createIssueAttachmentMetadataSchema
+>;
 
 export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
 
@@ -1460,4 +2224,6 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
-export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+export type RestoreIssueDocumentRevision = z.infer<
+  typeof restoreIssueDocumentRevisionSchema
+>;

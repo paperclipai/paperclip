@@ -132,6 +132,34 @@ describe("ArtifactCard", () => {
     container.remove();
   });
 
+  it("seeks into clips and resets thumbnail state when the source changes", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const render = (contentPath: string) => flushSync(() => root.render(
+      <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath })} />,
+    ));
+    try {
+      render("/first.mp4");
+      const first = container.querySelector("video")!;
+      Object.defineProperty(first, "duration", { value: 8 });
+      flushSync(() => first.dispatchEvent(new Event("loadedmetadata")));
+      expect(first.currentTime).toBe(1);
+      flushSync(() => first.dispatchEvent(new Event("seeked")));
+      expect(first.dataset.frameReady).toBe("true");
+      render("/short.mp4");
+      const next = container.querySelector("video")!;
+      expect(next).not.toBe(first);
+      expect(next.dataset.frameReady).toBe("false");
+      Object.defineProperty(next, "duration", { value: 0.2 });
+      flushSync(() => next.dispatchEvent(new Event("loadedmetadata")));
+      expect(next.currentTime).toBe(0.05);
+      expect(next.autoplay).toBe(false);
+      expect(next.muted).toBe(true);
+    } finally {
+      flushSync(() => root.unmount());
+    }
+  });
+
   it("reveals video previews if the browser does not report seek completion", () => {
     vi.useFakeTimers();
     const container = document.createElement("div");

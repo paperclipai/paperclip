@@ -1,5 +1,8 @@
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +14,8 @@ import {
   stopSshEnvLabFixture,
 } from "@paperclipai/adapter-utils/ssh";
 import {
+  activityLog,
+  costEvents,
   agents,
   builtInManagedResources,
   companies,
@@ -21,6 +26,7 @@ import {
   environments,
   executionWorkspaces,
   heartbeatRuns,
+  issues,
   plugins,
   projects,
 } from "@paperclipai/db";
@@ -38,7 +44,9 @@ import {
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
+import { resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
 import { environmentService } from "../services/environments.ts";
+import { remoteExecutionHasStopped } from "../services/remote-execution-termination.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -49,6 +57,8 @@ import {
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { traceparentFromContextToken } from "../instrumentation.ts";
 import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
+import { buildNativeHarnessBackupManifest } from "../services/native-runtime/native-session-executor.ts";
+import { createNativeHarnessBackupStamp } from "../services/native-runtime/native-harness-backup-stamp.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -105,6 +115,35 @@ describe("findReusableSandboxLeaseId", () => {
             image: "template-b",
             timeoutMs: 300000,
             reuseLease: true,
+          },
+        },
+      ],
+    });
+
+    expect(selected).toBe("sandbox-template-b");
+  });
+
+  it("ignores host-only log streaming when matching a reusable plugin lease", () => {
+    const selected = findReusableSandboxLeaseId({
+      config: {
+        provider: "fake-plugin",
+        image: "template-b",
+        timeoutMs: 300000,
+        reuseLease: true,
+        streamRunLogs: true,
+        runnerLifecycleMode: "warm",
+        target: null,
+      },
+      leases: [
+        {
+          providerLeaseId: "sandbox-template-b",
+          metadata: {
+            provider: "fake-plugin",
+            image: "template-b",
+            timeoutMs: 300000,
+            reuseLease: true,
+            runnerLifecycleMode: "warm",
+            target: "us",
           },
         },
       ],
@@ -183,7 +222,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await stopSshEnvLabFixture(path.join(root, "state.json")).catch(() => undefined);
       await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
+    await db.delete(issues);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);
@@ -314,7 +356,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     };
   }
 
-  async function seedReusablePluginSandboxLease() {
+  async function seedReusablePluginSandboxLease(adapterType: string | null = null) {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -418,11 +460,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType: null,
+          adapterType,
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType: null,
+            adapterType,
             config: providerConfig,
           }),
         },
@@ -431,6 +473,705 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
+
+  it("acquires and resumes a reusable lease after a task changes from per-turn to warm", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const environment = { ...seeded.environment, config: { ...seeded.environment.config, reuseLease: false } };
+    await environmentService(db).update(environment.id, { config: environment.config });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Lifecycle switch", status: "in_progress", assigneeAgentId: seeded.agentId });
+    let acquisitions = 0;
+    let warmProviderLeaseId = "";
+    const call = vi.fn(async (_pluginId: string, method: string, input: any) => {
+      if (method === "environmentAcquireLease") return {
+        providerLeaseId: `lifecycle-${++acquisitions}`, metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentResumeLease") return {
+        providerLeaseId: warmProviderLeaseId, metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentDestroyLease" || method === "environmentStopLease" || method === "environmentReleaseLease") return {
+        providerLeaseId: input.providerLeaseId, state: method === "environmentDestroyLease" ? "destroyed" : "stopped",
+      };
+      throw new Error(`Unexpected lifecycle method: ${method}`);
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentStopLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const input = {
+      companyId: seeded.companyId, agentId: seeded.agentId, issueId,
+      adapterType: "paperclip_runner", persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const },
+    };
+    const cold = await runtime.acquireRunLease({ ...input, environment, heartbeatRunId: seeded.runId });
+    expect(cold.lease.leasePolicy).toBe("ephemeral");
+    await runtime.releaseRunLeases(seeded.runId, "released");
+    const warmEnvironment = resolveRunnerEnvironmentForRun(environment, "paperclip_runner", { lifecycleMode: "warm" });
+    const warmRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: warmRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    const warm = await runtime.acquireRunLease({ ...input, environment: warmEnvironment, heartbeatRunId: warmRunId });
+    warmProviderLeaseId = warm.lease.providerLeaseId!;
+    expect(warm.lease.leasePolicy).toBe("reuse_by_environment");
+    expect(warm.lease.executionWorkspaceId).toBe(seeded.executionWorkspaceId);
+    expect((await runtime.resolveCapabilities({ environment: warmEnvironment, lease: warm.lease })).reusableLeases).toBe(true);
+    await runtime.releaseRunLeases(warmRunId, "released", undefined, "stop_and_retain");
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    const next = await runtime.acquireRunLease({ ...input, environment: warmEnvironment, heartbeatRunId: nextRunId });
+    expect(next.lease.providerLeaseId).toBe(warmProviderLeaseId);
+    expect(acquisitions).toBe(2);
+    expect((await environmentService(db).getById(environment.id))?.config.reuseLease).toBe(false);
+  });
+
+  it.each(["stopped", "missing", "wrong-lease", "error"])(
+    "startup cancellation is run-scoped and needs a matching receipt: %s",
+    async (outcome) => {
+      const { pluginId, companyId, runId, reusableLease, environment } = await seedReusablePluginSandboxLease();
+      const other = await environmentService(db).acquireLease({
+        companyId, environmentId: environment.id, heartbeatRunId: null,
+        leasePolicy: "ephemeral", provider: "fake-plugin", providerLeaseId: "other-sandbox",
+      });
+      const call = vi.fn(async () => {
+        if (outcome === "error") throw new Error("provider unavailable");
+        if (outcome === "missing") return undefined;
+        return { providerLeaseId: outcome === "wrong-lease" ? "other-sandbox" : reusableLease.providerLeaseId, state: "stopped" };
+      });
+      const workerManager = {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentStopLease"] }),
+      } as unknown as PluginWorkerManager;
+      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      await runtimeWithPlugin.releaseRunLeases(runId, "released", undefined, "stop_and_retain", true);
+      expect(call).toHaveBeenCalledWith(pluginId, "environmentStopLease", expect.objectContaining({
+        companyId, providerLeaseId: reusableLease.providerLeaseId, cancelActiveWork: true,
+      }), expect.any(Number));
+      expect(call).toHaveBeenCalledOnce();
+      expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(outcome === "stopped");
+      await expect(environmentService(db).getLeaseById(other.id)).resolves.toMatchObject({ status: "active" });
+    },
+  );
+
+  it.each(["release_only", "stopped", "stop_failed", "unconfirmed", "restart", "competing_owner", "missing_pin", "late_receipt"])(
+    "never dispatches destructive release for an untagged stop-and-retain request: %s", async outcome => {
+      const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+      const lease = seeded.reusableLease;
+      await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: {
+        ...lease.metadata, reuseLease: false, ...(outcome === "missing_pin" ? { pluginId: undefined } : {}),
+      } }).where(eq(environmentLeases.id, lease.id));
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+      let supported = !["release_only", "restart"].includes(outcome);
+      let calls = 0;
+      const call = vi.fn(async (_id: string, method: string) => {
+        if (method !== "environmentStopLease") return { providerLeaseId: lease.providerLeaseId, state: "destroyed" };
+        if (++calls === 1 && outcome === "stop_failed") throw new Error("injected stop failure");
+        if (calls === 1 && outcome === "unconfirmed") return undefined;
+        if (outcome === "late_receipt") await db.update(environmentLeases).set({
+          status: "active", heartbeatRunId: null, cleanupStatus: null, metadata: { newOwner: true },
+        }).where(eq(environmentLeases.id, lease.id));
+        return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
+      });
+      const runtime = () => environmentRuntimeService(db, { pluginWorkerManager: {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease", ...(supported ? ["environmentStopLease"] : [])] }),
+      } as unknown as PluginWorkerManager });
+      if (outcome === "competing_owner") await environmentService(db).acquireLease({
+        companyId: seeded.companyId, environmentId: seeded.environment.id, heartbeatRunId: null,
+        leasePolicy: "ephemeral", provider: lease.provider, providerLeaseId: lease.providerLeaseId,
+      });
+      await runtime().releaseRunLeases(seeded.runId, "failed", undefined, "stop_and_retain");
+      expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
+      if (outcome === "late_receipt") {
+        expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "active", heartbeatRunId: null, metadata: { newOwner: true } });
+        return;
+      }
+      if (outcome === "missing_pin") {
+        expect(call).not.toHaveBeenCalled();
+        await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+        expect(call).not.toHaveBeenCalled();
+        expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup" });
+        return;
+      }
+      if (["release_only", "restart", "competing_owner"].includes(outcome)) {
+        expect(call).not.toHaveBeenCalled();
+        expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup", metadata: {
+          sandboxStopAndRetain: { pluginId: seeded.pluginId, runId: seeded.runId, providerLeaseId: lease.providerLeaseId },
+        } });
+        await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+        expect(call).not.toHaveBeenCalled();
+        if (outcome === "competing_owner") return;
+        supported = true;
+      }
+      if (["release_only", "stop_failed", "unconfirmed", "restart"].includes(outcome)) {
+        await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+      }
+      expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "released", cleanupStatus: "success", failureReason: null,
+        metadata: { remoteExecutionTermination: { state: "stopped", providerLeaseId: lease.providerLeaseId },
+          sandboxStopAndRetainReceipt: { method: "environmentStopLease", runId: seeded.runId, pluginId: seeded.pluginId } } });
+      expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
+    },
+  );
+
+  it("reports an unwired manager separately from a stopped sandbox worker", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const input = {
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    };
+    const runtimeWithoutManager = environmentRuntimeService(db);
+    await expect(runtimeWithoutManager.acquireRunLease(input))
+      .rejects.toThrow("sandbox plugin workers are unavailable in this server process");
+
+    const offlineManager = { isRunning: () => false, call: vi.fn() } as unknown as PluginWorkerManager;
+    const runtimeWithStoppedWorker = environmentRuntimeService(db, {
+      pluginWorkerManager: offlineManager,
+      pluginWorkerReadyTimeoutMs: 0,
+    });
+    await expect(runtimeWithStoppedWorker.acquireRunLease(input))
+      .rejects.toThrow("its worker is not running");
+    expect(offlineManager.call).not.toHaveBeenCalled();
+  });
+
+  it("retains a successful reusable sandbox lease without stopping the provider resource", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Unexpected plugin method while retaining warm lease: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "released",
+      undefined,
+      "keep_running",
+    );
+
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease).toMatchObject({
+      id: reusableLease.id,
+      status: "retained",
+      cleanupStatus: "success",
+    });
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "retained",
+      cleanupStatus: "success",
+    });
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("stops a reusable sandbox and keeps its lease resumable", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentStopLease") return { providerLeaseId: reusableLease.providerLeaseId, state: "stopped" };
+        throw new Error(`Unexpected plugin method while stopping lease: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentStopLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "failed",
+      undefined,
+      "stop_and_retain",
+    );
+
+    expect(released[0]?.lease).toMatchObject({
+      id: reusableLease.id,
+      status: "released",
+    });
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentStopLease",
+      expect.objectContaining({ providerLeaseId: reusableLease.providerLeaseId }),
+      expect.any(Number),
+    );
+  });
+
+  it.each(["same task", "different task", "different agent", "no task"])(
+    "scopes projectless reusable leases to their task and agent: %s", async (scenario) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values([issueId, otherIssueId].map(id => ({
+      id, companyId: seeded.companyId, title: "Projectless chat", status: "in_progress",
+      assigneeAgentId: seeded.agentId,
+    })));
+    const nextAgentId = scenario === "different agent" ? randomUUID() : seeded.agentId;
+    if (nextAgentId !== seeded.agentId) await db.insert(agents).values({
+      id: nextAgentId, companyId: seeded.companyId, name: "Other agent", adapterType: "paperclip_runner",
+    });
+    let acquisitions = 0;
+    const call = vi.fn(async (_pluginId: string, method: string) => {
+      if (method === "environmentAcquireLease") return {
+        providerLeaseId: `projectless-${++acquisitions}`, metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentResumeLease") return {
+        providerLeaseId: "projectless-1", metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentStopLease") return { providerLeaseId: "projectless-1", state: "stopped" };
+      throw new Error(`Unexpected projectless lease method: ${method}`);
+    });
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentStopLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, issueId,
+      agentId: seeded.agentId, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null,
+    });
+    expect(first.lease.metadata?.reusableSandboxLease).toMatchObject({
+      projectlessIssueId: issueId, executionWorkspaceId: null, agentId: seeded.agentId,
+    });
+    await runtimeWithPlugin.releaseRunLeases(seeded.runId, "released", undefined, "stop_and_retain");
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId, companyId: seeded.companyId, agentId: nextAgentId, status: "running",
+    });
+    if (scenario === "different task" || scenario === "different agent") {
+      await expect(environmentService(db).acquireLease({
+        companyId: seeded.companyId, environmentId: seeded.environment.id,
+        issueId: scenario === "different task" ? otherIssueId : issueId,
+        heartbeatRunId: nextRunId, executionWorkspaceId: null,
+        provider: "fake-plugin", providerLeaseId: first.lease.providerLeaseId,
+        leasePolicy: "reuse_by_environment", replacesReusableLeaseId: first.lease.id,
+        metadata: { agentId: nextAgentId },
+      })).rejects.toMatchObject({ status: 409 });
+    }
+    const next = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment,
+      issueId: scenario === "no task" ? null : scenario === "different task" ? otherIssueId : issueId,
+      agentId: nextAgentId, heartbeatRunId: nextRunId, persistedExecutionWorkspace: null,
+    });
+    const shouldResume = scenario === "same task";
+    expect(next.lease.providerLeaseId).toBe(shouldResume ? "projectless-1" : "projectless-2");
+    expect(acquisitions).toBe(shouldResume ? 1 : 2);
+    expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(shouldResume ? 1 : 0);
+  });
+
+  it.each(["pending", "inline", "foreign scope", "foreign environment", "foreign run", "malformed", "deleted environment", "forged error", "invalid diagnostic", "old worker"])("retains uncertain plugin creation for durable cleanup: %s", async (mode) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const attemptId = randomUUID();
+    const providerLeaseId = `paperclip-create-${attemptId}`;
+    const cleanup = {
+      providerLeaseId, attemptId, companyId: mode === "foreign scope" ? randomUUID() : seeded.companyId,
+      environmentId: mode === "foreign environment" ? randomUUID() : seeded.environment.id,
+      runId: mode === "foreign run" ? randomUUID() : seeded.runId,
+      accountFingerprint: mode === "malformed" ? "invalid" : "a".repeat(64), labels: { "paperclip-provider": "fake-plugin" },
+    };
+    const acquisitionDiagnostic = { phase: "shell", elapsedMs: 300_000, budgetMs: 300_000 };
+    const data = { schema: "paperclip/environment-creation-cleanup/v1", cleanup,
+      ...(mode === "old worker" ? {} : { acquisitionDiagnostic: mode === "invalid diagnostic"
+        ? { ...acquisitionDiagnostic, phase: "private-command" } : acquisitionDiagnostic }),
+    };
+    const failure = mode === "forged error"
+      ? Object.assign(new Error("Provider creation cleanup required"), { data })
+      : new JsonRpcCallError({ code: -32002, message: "Provider creation cleanup required", data });
+    let available = mode === "inline";
+    const call = vi.fn(async (_id: string, method: string, params: Record<string, unknown>) => {
+      if (method === "environmentAcquireLease") throw failure;
+      if (method === "environmentDestroyLease") {
+        const pending = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, providerLeaseId));
+        expect(pending).toHaveLength(1);
+        expect(pending[0].status).toBe("pending_cleanup");
+        expect(params).toMatchObject({ providerLeaseId, companyId: seeded.companyId, environmentId: seeded.environment.id, leaseMetadata: { failedCreateCleanup: cleanup } });
+        if (!available) throw new Error("provider not visible yet");
+        return { providerLeaseId, state: "destroyed" };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const candidate = environmentRuntimeService(db, { pluginWorkerManager: worker });
+    const acquisition = candidate.acquireRunLease({ companyId: seeded.companyId, environment: seeded.environment,
+      issueId: null, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null });
+    const caught = await acquisition.catch(error => error);
+    const execution = collectRunFailureDiagnostics({ id: seeded.runId, companyId: seeded.companyId,
+      errorCode: "setup_failed", resultJson: null,
+    } as typeof heartbeatRuns.$inferSelect, { error: caught, phase: "setup" }).execution;
+    if (["pending", "inline", "deleted environment"].includes(mode)) {
+      expect(execution).toMatchObject({ environmentAcquisitionPhase: "shell",
+        environmentAcquisitionElapsedMs: 300_000, environmentAcquisitionBudgetMs: 300_000 });
+    } else expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
+    if (mode === "inline") {
+      await expect(acquisition).rejects.toMatchObject({
+        message: "Sandbox creation failed; allocated sandbox cleanup was confirmed.", cause: failure,
+      });
+    } else {
+      await expect(acquisition).rejects.toBe(failure);
+    }
+    const rows = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, providerLeaseId));
+    if (["foreign scope", "foreign environment", "foreign run", "malformed"].includes(mode)) {
+      expect(rows).toHaveLength(0);
+      expect(call.mock.calls.filter((c) => c[1] === "environmentDestroyLease")).toHaveLength(0);
+      return;
+    }
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: mode === "inline" ? "expired" : "pending_cleanup",
+      cleanupStatus: mode === "inline" ? "success" : "failed", companyId: seeded.companyId,
+      metadata: { pluginId: seeded.pluginId, sandboxProviderPlugin: true, failedCreateCleanup: cleanup } });
+    if (mode === "pending" || mode === "deleted environment") {
+      available = true;
+      if (mode === "deleted environment") {
+        await db.update(environmentLeases).set({ environmentId: null }).where(eq(environmentLeases.id, rows[0].id));
+      }
+      const restarted = environmentRuntimeService(db, { pluginWorkerManager: worker });
+      const persisted = await environmentService(db).getLeaseById(rows[0].id);
+      await expect(restarted.retryPendingSandboxTeardown({ environment: null, lease: persisted! })).resolves.toEqual({ providerLeaseId, state: "destroyed" });
+    }
+  });
+
+  it.each(["deleted receipt lost", "observation response lost", "journal write failed", "foreign observation"])(
+    "journals observed creation identity before deletion and recovers: %s", async (fault) => {
+      const seeded = await seedReusablePluginSandboxLease();
+      await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+      const cleanup = {
+        providerLeaseId: `paperclip-create-${randomUUID()}`, attemptId: randomUUID(),
+        companyId: seeded.companyId, environmentId: seeded.environment.id, runId: seeded.runId,
+        accountFingerprint: "a".repeat(64), labels: { "paperclip-provider": "fake-plugin" },
+      };
+      const observed = { ...cleanup, observedProviderLeaseId: "verified-provider-id" };
+      const failure = Object.assign(new Error("Creation uncertain"), {
+        data: { schema: "paperclip/environment-creation-cleanup/v1", cleanup },
+      });
+      let injected = false;
+      let deleted = false;
+      const call = vi.fn(async (_id: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") throw failure;
+        if (method !== "environmentDestroyLease") throw new Error(`Unexpected ${method}`);
+        const evidence = (params.leaseMetadata as { failedCreateCleanup: typeof observed }).failedCreateCleanup;
+        if (!evidence.observedProviderLeaseId) {
+          expect(deleted).toBe(false);
+          if (!injected && fault === "observation response lost") {
+            injected = true;
+            throw new Error("Lost observation response");
+          }
+          if (!injected && fault === "foreign observation") {
+            injected = true;
+            throw Object.assign(new Error("Foreign observation"), {
+              data: { schema: "paperclip/environment-creation-cleanup/v1", cleanup: { ...observed, companyId: "another-company" } },
+            });
+          }
+          if (!injected && fault === "journal write failed") {
+            injected = true;
+            vi.spyOn(db, "update").mockImplementationOnce(() => { throw new Error("Database unavailable"); });
+          }
+          throw Object.assign(new Error("Persist observed sandbox identity before cleanup"), {
+            data: { schema: "paperclip/environment-creation-cleanup/v1", cleanup: observed },
+          });
+        }
+        const rows = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, cleanup.providerLeaseId));
+        expect(rows).toHaveLength(1);
+        expect(rows[0].metadata).toMatchObject({ failedCreateCleanup: observed });
+        if (!deleted) {
+          deleted = true;
+          if (fault === "deleted receipt lost") throw new Error("Deletion succeeded but reply lost");
+        }
+        return { providerLeaseId: cleanup.providerLeaseId, state: "destroyed" };
+      });
+      const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: worker });
+      await expect(runtime.acquireRunLease({ companyId: seeded.companyId, environment: seeded.environment,
+        issueId: null, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null })).rejects.toBe(failure);
+      const rows = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, cleanup.providerLeaseId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("pending_cleanup");
+      expect(deleted).toBe(fault === "deleted receipt lost");
+      const restarted = environmentRuntimeService(db, { pluginWorkerManager: worker });
+      await expect(restarted.retryPendingSandboxTeardown({ environment: null, lease: rows[0]! })).resolves.toEqual({ providerLeaseId: cleanup.providerLeaseId, state: "destroyed" });
+      expect(deleted).toBe(true);
+    },
+  );
+
+  it("resumes the same provider lease on the next per-turn run", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === seeded.pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-exact-resume",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentStopLease") return { providerLeaseId: "sandbox-exact-resume", state: "stopped" };
+        if (method === "environmentResumeLease") {
+          return {
+            providerLeaseId: "sandbox-exact-resume",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method during exact resume: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentStopLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: seeded.environment,
+      issueId: null,
+      agentId: seeded.agentId,
+      heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: {
+        id: seeded.executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+    const workspaceSyncStamp = {
+      schema: "paperclip.native-workspace-stamp/v1",
+      workspaceId: seeded.executionWorkspaceId,
+      providerLeaseId: "sandbox-exact-resume",
+      remoteCwd: "/workspace",
+      hostSha256: "a".repeat(64),
+      finalizedRunId: seeded.runId,
+    };
+    await environmentService(db).updateLeaseMetadata(first.lease.id, {
+      ...(first.lease.metadata ?? {}),
+      nativeWorkspaceSync: workspaceSyncStamp,
+    });
+    await runtimeWithPlugin.releaseRunLeases(
+      seeded.runId,
+      "released",
+      undefined,
+      "stop_and_retain",
+    );
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: seeded.environment,
+      issueId: null,
+      agentId: seeded.agentId,
+      heartbeatRunId: nextRunId,
+      persistedExecutionWorkspace: {
+        id: seeded.executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(first.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "created" });
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-exact-resume");
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({
+      outcome: "resumed",
+    });
+    expect(acquired.lease.metadata?.nativeWorkspaceSync).toEqual(
+      workspaceSyncStamp,
+    );
+    await expect(
+      environmentService(db).getLeaseById(first.lease.id),
+    ).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+    });
+    expect(
+      workerManager.call.mock.calls.filter(
+        (call) => call[1] === "environmentAcquireLease",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("reacquires one provider lease row idempotently during same-run recovery", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === seeded.pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentResumeLease") {
+          return {
+            providerLeaseId: seeded.reusableLease.providerLeaseId,
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(
+          `Unexpected plugin method during same-run reacquisition: ${method}`,
+        );
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+
+    const reacquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: seeded.environment,
+      issueId: null,
+      agentId: seeded.agentId,
+      heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: {
+        id: seeded.executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(reacquired.lease).toMatchObject({
+      id: seeded.reusableLease.id,
+      heartbeatRunId: seeded.runId,
+      providerLeaseId: seeded.reusableLease.providerLeaseId,
+      status: "active",
+      cleanupStatus: null,
+    });
+    const rows = await environmentService(db).listLeases(seeded.environment.id);
+    expect(
+      rows.filter(
+        (lease) =>
+          lease.heartbeatRunId === seeded.runId &&
+          lease.providerLeaseId === seeded.reusableLease.providerLeaseId,
+      ),
+    ).toHaveLength(1);
+    expect(workerManager.call).toHaveBeenCalledWith(
+      seeded.pluginId,
+      "environmentResumeLease",
+      expect.objectContaining({
+        providerLeaseId: seeded.reusableLease.providerLeaseId,
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it("destroys a disposable paperclip_runner sandbox after the turn", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentDestroyLease") return undefined;
+        throw new Error(`Unexpected plugin method while destroying lease: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "released",
+      undefined,
+      "destroy",
+    );
+
+    expect(released[0]?.lease).toMatchObject({
+      id: reusableLease.id,
+      status: "expired",
+    });
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.objectContaining({ providerLeaseId: reusableLease.providerLeaseId }),
+      expect.any(Number),
+    );
+  });
+
+  it("does not destroy native sandbox state when its verified backup is missing", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    await environmentService(db).updateLeaseMetadata(reusableLease.id, {
+      ...(reusableLease.metadata ?? {}),
+      reusableSandboxLease: {
+        ...((reusableLease.metadata?.reusableSandboxLease as Record<
+          string,
+          unknown
+        >) ?? {}),
+        adapterType: "paperclip_runner",
+      },
+      sandboxLeaseAcquisition: { outcome: "created" },
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Provider teardown must not run without a backup: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const errors: unknown[] = [];
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "released",
+      (_leaseId, error) => errors.push(error),
+      "destroy",
+    );
+
+    expect(released).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain("runner_harness_backup_unavailable");
+    expect(workerManager.call).not.toHaveBeenCalled();
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
 
   it("acquires and releases a local run lease through the runtime seam", async () => {
     const { companyId, environment, runId } = await seedEnvironment();
@@ -605,6 +1346,64 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released[0]?.lease.status).toBe("released");
   });
 
+  it.each([false, true])("confirms a built-in fake stop without release or destroy fallback: cancel=%s", async cancel => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox", config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const acquired = await runtime.acquireRunLease({ companyId, environment, issueId: null,
+      heartbeatRunId: runId, persistedExecutionWorkspace: null });
+    const provider = sandboxProviderRuntime.requireSandboxProvider("fake");
+    const release = vi.spyOn(provider, "releaseLease"), destroy = vi.spyOn(provider, "destroyLease");
+    const released = await runtime.releaseRunLeases(runId, "released", undefined, "stop_and_retain", cancel);
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease).toMatchObject({ status: "released", cleanupStatus: "success", failureReason: null,
+      metadata: { remoteExecutionTermination: { state: "stopped", providerLeaseId: acquired.lease.providerLeaseId },
+        sandboxStopAndRetainReceipt: { method: "builtin.stopLease", builtinProvider: "fake", runId } } });
+    expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(true);
+    expect(release).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it.each(["stop_failed", "wrong_receipt", "missing_capability", "changed_binding"])(
+    "preserves a built-in stop through restart without destructive fallback: %s", async outcome => {
+      const { companyId, environment, runId } = await seedEnvironment({
+        driver: "sandbox", config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+      });
+      const acquired = await runtime.acquireRunLease({ companyId, environment, issueId: null,
+        heartbeatRunId: runId, persistedExecutionWorkspace: null });
+      const provider = sandboxProviderRuntime.requireSandboxProvider("fake"), originalStop = provider.stopLease!;
+      const release = vi.spyOn(provider, "releaseLease"), destroy = vi.spyOn(provider, "destroyLease");
+      try {
+        provider.stopLease = outcome === "missing_capability" ? undefined : vi.fn(async () => {
+          if (outcome === "wrong_receipt") return { providerLeaseId: "sandbox://fake/other", state: "stopped" as const };
+          throw new Error("injected built-in stop failure");
+        });
+        await runtime.releaseRunLeases(runId, "released", undefined, "stop_and_retain", true);
+        expect(await environmentService(db).getLeaseById(acquired.lease.id)).toMatchObject({ status: "pending_cleanup" });
+        expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(false);
+        if (outcome === "missing_capability") {
+          await heartbeatService(db, { environmentRuntime: environmentRuntimeService(db) }).sweepPendingCleanupLeases({ backoffMs: 0 });
+          expect(await environmentService(db).getLeaseById(acquired.lease.id)).toMatchObject({ status: "pending_cleanup" });
+        }
+        const stop = vi.fn(originalStop.bind(provider));
+        provider.stopLease = stop;
+        if (outcome === "changed_binding") await db.update(environmentLeases).set({ providerLeaseId: "sandbox://fake/replacement" })
+          .where(eq(environmentLeases.id, acquired.lease.id));
+        await heartbeatService(db, { environmentRuntime: environmentRuntimeService(db) }).sweepPendingCleanupLeases({ backoffMs: 0 });
+        if (outcome === "changed_binding") {
+          expect(stop).not.toHaveBeenCalled();
+          expect(await environmentService(db).getLeaseById(acquired.lease.id)).toMatchObject({ status: "pending_cleanup" });
+        } else {
+          expect(stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ providerLeaseId: acquired.lease.providerLeaseId }));
+          expect(await environmentService(db).getLeaseById(acquired.lease.id)).toMatchObject({ status: "released", cleanupStatus: "success" });
+          expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(true);
+        }
+        expect(release).not.toHaveBeenCalled();
+        expect(destroy).not.toHaveBeenCalled();
+      } finally { provider.stopLease = originalStop; }
+    },
+  );
+
   it("releases the remote sandbox when the lease insert rejects a foreign-company binding", async () => {
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",
@@ -761,7 +1560,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           };
         }
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: "plugin-lease-1", state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -793,6 +1592,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(leaseRows).toHaveLength(1);
     expect(leaseRows[0]?.status).toBe("expired");
     expect(leaseRows[0]?.cleanupStatus).toBe("success");
+    expect(leaseRows[0]?.metadata?.remoteExecutionTermination).toMatchObject({
+      companyId, runId, leaseId: leaseRows[0]!.id, providerLeaseId: "plugin-lease-1", state: "destroyed",
+    });
 
     // The acquire provisioned the remote plugin sandbox, so it destroys the
     // sandbox on the rejection. Without this teardown the rejected insert leaks a
@@ -1588,6 +2390,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("buffers the orphan in-process when the durable spool write also fails", async () => {
+    const idleBefore = idleWorkSnapshot().active;
+    let releaseFlush!: () => void;
+    let enteredFlush!: () => void;
+    const flushGate = new Promise<void>(resolve => { releaseFlush = resolve; });
+    const flushEntered = new Promise<void>(resolve => { enteredFlush = resolve; });
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",
       name: "Foreign-bound Fake Sandbox Cleanup Spool Unwritable",
@@ -1629,7 +2436,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             if (databaseDown) {
               return Promise.reject(new Error("pending-cleanup write failed; database down"));
             }
-            return real.insertPendingCleanupLease(input);
+            enteredFlush();
+            return flushGate.then(() => real.insertPendingCleanupLease(input));
           },
         };
       });
@@ -1670,11 +2478,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           "sandbox_orphan_cleanup_write_failed",
       );
       expect(fallbackLog?.[0]).toMatchObject({ persisted: false, buffered: true });
+      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
 
       // The same runtime still keeps the orphan in-process, so a flush after the
       // database recovers lands the durable row.
       databaseDown = false;
-      const flushed = await runtime.flushDeferredOrphanCleanups();
+      const flushing = runtime.flushDeferredOrphanCleanups();
+      await flushEntered;
+      // The batch was spliced out of the queue, but the DB does not own it yet.
+      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
+      releaseFlush();
+      const flushed = await flushing;
+      expect(idleWorkSnapshot().active).toBe(idleBefore);
       expect(flushed).toEqual({ recovered: 1, pending: 0 });
       const rows = await db
         .select()
@@ -1683,6 +2498,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.status).toBe("pending_cleanup");
     } finally {
+      releaseFlush();
       logSpy.mockRestore();
       factorySpy.mockRestore();
       destroySpy.mockRestore();
@@ -2642,7 +3458,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
     const lease = await environmentService(db).getLeaseById(orphan.id);
-    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
+    vi.mocked(workerManager.call).mockImplementationOnce(async (_pluginId, _method, args: any) => {
+      destroyConfigs.push(args.config);
+      return { providerLeaseId: args.providerLeaseId, state: "destroyed" };
+    });
+    await expect(runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! }))
+      .resolves.toEqual({ providerLeaseId: orphan.providerLeaseId, state: "destroyed" });
     expect(destroyConfigs).toHaveLength(1);
     // The recorded secret ref resolved to the old credential, and the resolved
     // value reached the provider teardown instead of the secret ref.
@@ -4068,14 +4889,20 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(checks).toBe(readyAfterChecks);
   });
 
-  it("extends plugin-backed sandbox lease RPC timeouts from provider config", async () => {
+  it.each([
+    { label: "explicit provider and bridge budgets", config: { timeoutMs: 1_234, bridgeRequestTimeoutMs: 40_000 }, declared: 300_000, expected: 70_000 },
+    { label: "declared acquisition default", config: {}, declared: 300_000, expected: 330_000 },
+    { label: "explicit shorter provider budget", config: { timeoutMs: 5_000 }, declared: 300_000, expected: 35_000 },
+    { label: "bridge budget does not shorten acquisition default", config: { bridgeRequestTimeoutMs: 40_000 }, declared: 300_000, expected: 330_000 },
+    { label: "bridge extends the acquisition default", config: { bridgeRequestTimeoutMs: 400_000 }, declared: 300_000, expected: 430_000 },
+    { label: "undeclared provider retains worker default", config: {}, declared: undefined, expected: undefined },
+  ])("uses $label for plugin-backed sandbox acquisition", async ({ config, declared, expected }) => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
       provider: "fake-plugin",
       image: "fake:test",
-      timeoutMs: 1_234,
-      bridgeRequestTimeoutMs: 40_000,
+      ...config,
       reuseLease: false,
     };
     const environment = {
@@ -4111,7 +4938,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             driverKey: "fake-plugin",
             kind: "sandbox_provider",
             displayName: "Fake Plugin",
-            configSchema: { type: "object" },
+            defaultAcquireTimeoutMs: declared,
+            // A timeoutMs schema default can mean lease lifetime (for example
+            // E2B). Only the dedicated declaration sets the host RPC budget.
+            configSchema: { type: "object", properties: { timeoutMs: { type: "number", default: 3_600_000 } } },
           },
         ],
       },
@@ -4129,8 +4959,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             metadata: {
               provider: "fake-plugin",
               image: "fake:test",
-              timeoutMs: 1_234,
-              bridgeRequestTimeoutMs: 40_000,
+              ...config,
               reuseLease: false,
             },
           };
@@ -4157,16 +4986,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         driverKey: "fake-plugin",
         config: {
           image: "fake:test",
-          timeoutMs: 1_234,
-          bridgeRequestTimeoutMs: 40_000,
+          ...config,
           reuseLease: false,
         },
       }),
-      70_000,
+      expected,
     );
   });
 
-  it("falls back to acquire when plugin-backed sandbox lease resume throws", async () => {
+  it("preserves the exact lease when plugin-backed sandbox resume throws", async () => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -4308,7 +5136,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const acquired = await runtimeWithPlugin.acquireRunLease({
+    await expect(runtimeWithPlugin.acquireRunLease({
       companyId,
       environment,
       issueId: null,
@@ -4318,32 +5146,304 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         id: executionWorkspaceId,
         mode: "shared_workspace",
       },
-    });
+    })).rejects.toThrow("the lease was preserved and no replacement was created");
 
-    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
     }), 31234);
-    expect(workerManager.call).toHaveBeenNthCalledWith(2, pluginId, "environmentDestroyLease", expect.objectContaining({
-      driverKey: "fake-plugin",
-      providerLeaseId: "stale-plugin-lease",
-    }), 31234);
-    expect(workerManager.call).toHaveBeenNthCalledWith(3, pluginId, "environmentAcquireLease", expect.objectContaining({
-      driverKey: "fake-plugin",
-      config: {
-        image: "fake:test",
-        timeoutMs: 1234,
-        reuseLease: true,
-      },
-      agentId,
-      executionWorkspaceId,
-      runId,
-    }), 31234);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.anything(),
+      expect.anything(),
+    );
     await expect(environmentService(db).getLeaseById(staleLease.id)).resolves.toMatchObject({
-      status: "expired",
-      cleanupStatus: "success",
+      status: "active",
     });
+  });
+
+  it("resumes only the exact stopped sandbox lifecycle without acquiring or reseeding", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "released", { cleanupStatus: "success" });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentResumeLease") throw new Error("Only exact resume is permitted");
+      return { providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } };
+    });
+    const workerManager = { isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    await expect(runtime.resumeRunLease({ environment: seeded.environment, lease })).resolves.toMatchObject({ providerLeaseId: lease.providerLeaseId });
+    expect(call).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.objectContaining({
+      companyId: seeded.companyId, environmentId: seeded.environment.id, providerLeaseId: lease.providerLeaseId,
+      leaseMetadata: lease.metadata,
+    }), expect.any(Number));
+    expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("released");
+    expect(await db.select().from(environmentLeases)).toHaveLength(1);
+  });
+
+  it.each(["stopped", "unconfirmed", "foreign_marker", "competing_owner", "retained_owner", "no_stop_capability", "live_request", "late_receipt", "duplicate_key", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_intent", "foreign_plugin_pin", "v2_missing_pin"])("recovers a pending export resume with stop-only cleanup after restart: %s", async outcome => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = seeded.reusableLease;
+    const requestId = randomUUID();
+    if (["duplicate_key", "owner_stopped", "owner_driver_changed", "owner_missing", "legacy_intent"].includes(outcome)) {
+      const [owner] = await db.select().from(plugins).where(eq(plugins.id, seeded.pluginId));
+      await db.insert(plugins).values({ ...owner, id: randomUUID(), pluginKey: "other.same-driver", packageName: "@other/same-driver",
+        installOrder: -1, manifestJson: { ...owner.manifestJson, id: "other.same-driver" } });
+      if (outcome === "owner_driver_changed") await db.update(plugins).set({ manifestJson: { ...owner.manifestJson, environmentDrivers: [] } }).where(eq(plugins.id, seeded.pluginId));
+      if (outcome === "owner_missing") await db.delete(plugins).where(eq(plugins.id, seeded.pluginId));
+    }
+    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed", metadata: {
+      ...lease.metadata,
+      nativeWorkspaceExportResume: { schema: outcome === "v2_missing_pin" ? "paperclip.workspace-export-resume.v2" : "paperclip.workspace-export-resume.v1", requestId, companyId: seeded.companyId,
+        ...(["legacy_intent", "v2_missing_pin"].includes(outcome) ? {} : { pluginId: outcome === "foreign_plugin_pin" ? randomUUID() : seeded.pluginId }),
+        runId: outcome === "foreign_marker" ? randomUUID() : lease.heartbeatRunId, leaseId: lease.id,
+        provider: lease.provider, providerLeaseId: lease.providerLeaseId, resultId: randomUUID() },
+      pendingCleanupAttemptId: requestId, pendingCleanupInFlight: true,
+      pendingCleanupLeaseExpiresAtMs: Date.now() + (outcome === "live_request" ? 60_000 : -1),
+    } }).where(eq(environmentLeases.id, lease.id));
+    if (["competing_owner", "retained_owner"].includes(outcome)) await db.insert(environmentLeases).values({ companyId: seeded.companyId,
+      environmentId: seeded.environment.id, status: outcome === "retained_owner" ? "retained" : "active", provider: lease.provider, providerLeaseId: lease.providerLeaseId });
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentStopLease") throw new Error("Saved workspace must never be destroyed");
+      if (outcome === "late_receipt") await db.update(environmentLeases).set({ status: "active", heartbeatRunId: null,
+        cleanupStatus: null, metadata: { newOwner: true } }).where(eq(environmentLeases.id, lease.id));
+      return outcome === "unconfirmed" ? undefined : { providerLeaseId: lease.providerLeaseId, state: "stopped" };
+    });
+    const workerManager = { isRunning: (id: string) => !(outcome === "owner_stopped" && id === seeded.pluginId), call,
+      getWorker: () => ({ supportedMethods: outcome === "no_stop_capability" ? ["environmentReleaseLease", "environmentDestroyLease"] : ["environmentStopLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    const restarted = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    await heartbeatService(db, { environmentRuntime: restarted }).sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(call.mock.calls.some((entry) => entry[1] === "environmentDestroyLease")).toBe(false);
+    const persisted = (await environmentService(db).getLeaseById(lease.id))!;
+    if (["stopped", "duplicate_key", "legacy_intent"].includes(outcome)) {
+      expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentStopLease", expect.objectContaining({ providerLeaseId: lease.providerLeaseId, cancelActiveWork: true }), expect.any(Number));
+      expect(persisted).toMatchObject({ status: "released", cleanupStatus: "success", metadata: { remoteExecutionTermination: { state: "stopped", runId: lease.heartbeatRunId } } });
+      expect(persisted.metadata?.nativeWorkspaceExportResume).toBeUndefined();
+    } else if (outcome === "late_receipt") {
+      expect(persisted).toMatchObject({ status: "active", heartbeatRunId: null, cleanupStatus: null, metadata: { newOwner: true } });
+    } else {
+      expect(persisted).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+      expect(persisted.metadata?.remoteExecutionTermination).toBeUndefined();
+      if (["foreign_marker", "foreign_plugin_pin", "v2_missing_pin", "competing_owner", "retained_owner", "no_stop_capability", "live_request", "owner_stopped", "owner_driver_changed", "owner_missing"].includes(outcome)) expect(call).not.toHaveBeenCalled();
+      if (["owner_stopped", "owner_driver_changed", "owner_missing"].includes(outcome)) {
+        expect(persisted.metadata?.pendingCleanupAttemptId).toBe(requestId);
+      }
+    }
+  });
+
+  it.each(["stopped", "stop_failed", "unconfirmed", "restart", "committed_release", "inflight"])("preserves terminal ephemeral export work through release and restart: %s", async outcome => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const lease = seeded.reusableLease, requestId = randomUUID();
+    await db.update(heartbeatRuns).set({ status: outcome === "committed_release" ? "succeeded" : "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(environmentLeases).set({ status: outcome === "committed_release" ? "active" : "pending_cleanup", leasePolicy: "ephemeral", cleanupStatus: "failed", metadata: {
+      ...lease.metadata, reuseLease: false,
+      nativeWorkspaceExportResume: { schema: "paperclip.workspace-export-resume.v2", purpose: "terminal_export", requestId,
+        companyId: seeded.companyId, pluginId: seeded.pluginId, runId: seeded.runId, resultId: randomUUID(),
+        leaseId: lease.id, provider: lease.provider, providerLeaseId: lease.providerLeaseId },
+      pendingCleanupAttemptId: requestId, pendingCleanupInFlight: outcome === "inflight",
+      pendingCleanupLeaseExpiresAtMs: outcome === "inflight" ? Date.now() + 60_000 : 0,
+    } }).where(eq(environmentLeases.id, lease.id));
+    let calls = 0;
+    const call = vi.fn(async (_id: string, method: string, params: any) => {
+      expect(method).toBe("environmentStopLease");
+      expect(params).toMatchObject({ providerLeaseId: lease.providerLeaseId, resourceDisposition: "stop_and_retain", config: { reuseLease: false } });
+      if (++calls === 1 && outcome === "stop_failed") throw new Error("injected stop failure");
+      if (calls === 1 && outcome === "unconfirmed") return undefined;
+      return { providerLeaseId: lease.providerLeaseId, state: "stopped" };
+    });
+    const runtime = () => environmentRuntimeService(db, { pluginWorkerManager: { isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentStopLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    if (outcome === "restart") await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+    else await runtime().releaseRunLeases(seeded.runId, "failed", undefined, "stop_and_retain");
+    if (outcome === "inflight") { expect(call).not.toHaveBeenCalled(); return; }
+    if (["stop_failed", "unconfirmed"].includes(outcome)) {
+      expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup", metadata: { pendingCleanupInFlight: false } });
+      await heartbeatService(db, { environmentRuntime: runtime() }).sweepPendingCleanupLeases({ backoffMs: 0 });
+    }
+    expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "released", cleanupStatus: "success", metadata: { remoteExecutionTermination: { state: "stopped" } } });
+    expect(call.mock.calls.every(entry => entry[1] === "environmentStopLease")).toBe(true);
+  });
+
+  it("does not allocate a native-runner replacement without a verified backup", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === seeded.pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentResumeLease") {
+          return { providerLeaseId: null, metadata: { expired: true } };
+        }
+        if (method === "environmentDestroyLease") return undefined;
+        if (method === "environmentAcquireLease") {
+          throw new Error("replacement must not be allocated");
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    await expect(runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: seeded.environment,
+      issueId: null,
+      agentId: seeded.agentId,
+      adapterType: "paperclip_runner",
+      heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: {
+        id: seeded.executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    })).rejects.toThrow("runner_harness_backup_unavailable");
+
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      seeded.pluginId,
+      "environmentAcquireLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      seeded.pluginId,
+      "environmentDestroyLease",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("permits native-runner replacement only after verifying the stamped backup", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    const backupBase = await mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-replacement-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = backupBase;
+    try {
+      const normalizedSessionId = "native-replacement-session";
+      const runnerInstanceId = "native-replacement-runner";
+      const sessionScopeId = "native-replacement-session-scope-v2";
+      const sessionRoot = path.join(
+        backupBase,
+        createHash("sha256").update(sessionScopeId).digest("hex"),
+      );
+      const current = path.join(sessionRoot, "failover-backups", "current");
+      await mkdir(path.join(current, "runner"), { recursive: true });
+      await mkdir(path.join(current, "codex-home", "sessions"), { recursive: true });
+      await writeFile(path.join(current, "runner", "runner-state.json"), "runner-state");
+      await writeFile(path.join(current, "codex-home", "sessions", "thread.jsonl"), "thread-state");
+      const execution = {
+        provider: { kind: "codex", model: null, approvalPolicy: "never" },
+        binding: {
+          companyId: seeded.companyId,
+          runId: seeded.runId,
+          issueId: "issue",
+          agentId: seeded.agentId,
+          executionWorkspaceId: seeded.executionWorkspaceId,
+        },
+        workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+        session: {
+          normalizedSessionId,
+          driverKind: "codex_app_server",
+          protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+        },
+      } as never;
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: current,
+        execution,
+        runnerInstanceId,
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: seeded.reusableLease.providerLeaseId!,
+      });
+      const manifestPath = path.join(current, "manifest.json");
+      await writeFile(manifestPath, JSON.stringify(manifest));
+      const stamp = createNativeHarnessBackupStamp({
+        manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: seeded.reusableLease.providerLeaseId!,
+        normalizedSessionId,
+        runnerInstanceId,
+        completedAt: manifest.completedAt,
+      });
+      await environmentService(db).updateLeaseMetadata(seeded.reusableLease.id, {
+        ...(seeded.reusableLease.metadata ?? {}),
+        nativeHarnessBackup: stamp,
+      });
+
+      const workerManager = {
+        isRunning: vi.fn((id: string) => id === seeded.pluginId),
+        call: vi.fn(async (_pluginId: string, method: string) => {
+          if (method === "environmentResumeLease") {
+            return { providerLeaseId: null, metadata: { expired: true } };
+          }
+          if (method === "environmentDestroyLease") return undefined;
+          if (method === "environmentAcquireLease") {
+            return {
+              providerLeaseId: "replacement-plugin-lease",
+              metadata: {
+                provider: "fake-plugin",
+                image: "fake:test",
+                timeoutMs: 1234,
+                reuseLease: true,
+                remoteCwd: "/workspace",
+              },
+            };
+          }
+          throw new Error(`Unexpected plugin method: ${method}`);
+        }),
+        getWorker: vi.fn(() => ({
+          supportedMethods: [
+            "environmentResumeLease",
+            "environmentReleaseLease",
+            "environmentDestroyLease",
+          ],
+        })),
+      } as unknown as PluginWorkerManager;
+      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      const acquired = await runtimeWithPlugin.acquireRunLease({
+        companyId: seeded.companyId,
+        environment: seeded.environment,
+        issueId: null,
+        agentId: seeded.agentId,
+        adapterType: "paperclip_runner",
+        heartbeatRunId: seeded.runId,
+        persistedExecutionWorkspace: {
+          id: seeded.executionWorkspaceId,
+          mode: "shared_workspace",
+        },
+      });
+
+      expect(acquired.lease.providerLeaseId).toBe("replacement-plugin-lease");
+      expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({
+        outcome: "replacement",
+        reason: "not_found",
+      });
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(backupBase, { recursive: true, force: true });
+    }
   });
 
   it("fails closed and does not resume when a worker restart drops the resume method after the capability snapshot", async () => {
@@ -4505,7 +5605,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const acquired = await runtimeWithPlugin.acquireRunLease({
+    await expect(runtimeWithPlugin.acquireRunLease({
       companyId,
       environment,
       issueId: null,
@@ -4515,7 +5615,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         id: executionWorkspaceId,
         mode: "shared_workspace",
       },
-    });
+    })).rejects.toThrow("the lease was preserved and no replacement was created");
 
     // The runtime re-checks the live worker before the resume dispatch. The
     // restarted worker no longer advertises `environmentResumeLease`, so the
@@ -4526,23 +5626,21 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect.anything(),
       expect.anything(),
     );
-    // It destroys the stale reusable lease and acquires a fresh one.
-    expect(workerManager.call).toHaveBeenCalledWith(
+    // It preserves the stale reusable lease and does not allocate a replacement.
+    expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentDestroyLease",
-      expect.objectContaining({ driverKey: "fake-plugin", providerLeaseId: "stale-plugin-lease" }),
-      31234,
+      expect.anything(),
+      expect.anything(),
     );
-    expect(workerManager.call).toHaveBeenCalledWith(
+    expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentAcquireLease",
-      expect.objectContaining({ driverKey: "fake-plugin", agentId, executionWorkspaceId, runId }),
-      31234,
+      expect.anything(),
+      expect.anything(),
     );
-    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
     await expect(environmentService(db).getLeaseById(staleLease.id)).resolves.toMatchObject({
-      status: "expired",
-      cleanupStatus: "success",
+      status: "active",
     });
   });
 
@@ -4697,6 +5795,21 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "retained",
       cleanupStatus: "failed",
     });
+  });
+
+  it("destroys a failed retained lease when the agent stops", async () => {
+    const { lease, workerManager, runtimeWithPlugin, runId } = await seedStaleLifecycleReusableLease("retain_on_failure");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await runtimeWithPlugin.releaseRunLeases(runId, "failed");
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({ status: "retained", cleanupStatus: "failed" });
+    vi.mocked(workerManager.getWorker).mockReturnValue({ supportedMethods: ["environmentDestroyLease"] } as never);
+    vi.mocked(workerManager.call).mockResolvedValue({ providerLeaseId: lease.providerLeaseId, state: "destroyed" });
+    const { heartbeatService } = await import("../services/heartbeat.js");
+    const stopped = await heartbeatService(db, { pluginWorkerManager: workerManager })
+      .stopInvocationsForAgents([lease.metadata!.agentId as string], "Agent lifecycle stop requested");
+    expect(stopped).toBe(true);
+    expect(workerManager.call).toHaveBeenCalledWith(expect.any(String), "environmentDestroyLease", expect.objectContaining({ providerLeaseId: lease.providerLeaseId }), expect.any(Number));
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({ status: "expired", cleanupStatus: "success" });
   });
 
   it("fails closed on expiry destruction when the worker no longer advertises the destroy lifecycle method", async () => {
@@ -5598,9 +6711,24 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("destroys scoped reusable plugin-backed sandbox leases", async () => {
-    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+  it.each([
+    { status: "active", scope: "workspace" },
+    { status: "failed", scope: "workspace" },
+    { status: "failed", scope: "issue" },
+  ] as const)("destroys $status reusable plugin-backed sandbox leases scoped to an $scope", async ({ status, scope }) => {
+    const { pluginId, companyId, runId, executionWorkspaceId, reusableLease } =
       await seedReusablePluginSandboxLease();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: status === "failed" ? "failed" : "succeeded" })
+      .where(eq(heartbeatRuns.id, runId));
+    if (status === "failed") await environmentService(db).releaseLease(reusableLease.id, "failed");
+    const issueId = randomUUID();
+    if (scope === "issue") {
+      await db.insert(issues).values({ id: issueId, companyId, title: "Failed reusable lease cleanup", status: "done", priority: "medium" });
+      await db.update(environmentLeases).set({ issueId }).where(eq(environmentLeases.id, reusableLease.id));
+    }
+    const selection = scope === "issue" ? { issueId } : { executionWorkspaceId };
 
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
@@ -5614,9 +6742,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
+    // A known issue/workspace id does not authorize another company's teardown.
+    expect(await runtimeWithPlugin.destroyReusableSandboxLeases({ companyId: randomUUID(), ...selection })).toEqual([]);
+    expect(workerManager.call).not.toHaveBeenCalled();
     const destroyed = await runtimeWithPlugin.destroyReusableSandboxLeases({
       companyId,
-      executionWorkspaceId,
+      ...selection,
       failureReason: "execution_workspace_closed",
     });
 
@@ -5639,6 +6770,135 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it.each(["active", "failed"] as const)("does not destroy a %s scoped reusable lease while its run is active", async (status) => {
+    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease();
+    if (status === "failed") await environmentService(db).releaseLease(reusableLease.id, "failed");
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => undefined),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+
+    const destroyed = await runtimeWithPlugin.destroyReusableSandboxLeases({
+      companyId,
+      executionWorkspaceId,
+      failureReason: "issue_terminal_done",
+    });
+
+    expect(destroyed).toEqual([]);
+    expect(workerManager.call).not.toHaveBeenCalled();
+    await expect(
+      environmentService(db).getLeaseById(reusableLease.id),
+    ).resolves.toMatchObject({ status });
+  });
+
+  it.each(["issue", "workspace", "environment"] as const)(
+    "durably claims failed reusable cleanup before %s teardown and recovers a provider failure",
+    async (scope) => {
+      const seeded = await seedReusablePluginSandboxLease();
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+      await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
+      const issueId = randomUUID();
+      if (scope === "issue") {
+        await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Cleanup crash window", status: "done" });
+        await db.update(environmentLeases).set({ issueId }).where(eq(environmentLeases.id, seeded.reusableLease.id));
+      }
+      let enterProvider!: () => void;
+      let finishProvider!: () => void;
+      const entered = new Promise<void>((resolve) => { enterProvider = resolve; });
+      const finish = new Promise<void>((resolve) => { finishProvider = resolve; });
+      let unavailable = true;
+      const call = vi.fn(async (_id: string, method: string) => {
+        if (method !== "environmentDestroyLease") throw new Error(`Unexpected method ${method}`);
+        if (unavailable) {
+          enterProvider();
+          await finish;
+          throw new Error("Provider response lost");
+        }
+        return { providerLeaseId: seeded.reusableLease.providerLeaseId, state: "destroyed" };
+      });
+      const makeRuntime = () => environmentRuntimeService(db, { pluginWorkerManager: {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
+      } as unknown as PluginWorkerManager });
+      const runtime = makeRuntime();
+      const close = (service: ReturnType<typeof makeRuntime>) => scope === "environment"
+        ? service.destroyReusableSandboxLeasesForEnvironment({ environmentId: seeded.environment.id })
+        : service.destroyReusableSandboxLeases({ companyId: seeded.companyId,
+          ...(scope === "issue" ? { issueId } : { executionWorkspaceId: seeded.executionWorkspaceId }) });
+      const closing = close(runtime);
+      try {
+        await entered;
+        // This independently persisted row is what survives controller loss
+        // during the provider call. No provider receipt has arrived yet.
+        expect(await environmentService(db).getLeaseById(seeded.reusableLease.id)).toMatchObject({
+          status: "pending_cleanup", cleanupStatus: "failed", companyId: seeded.companyId,
+          providerLeaseId: seeded.reusableLease.providerLeaseId,
+          metadata: { pendingCleanupAttemptId: expect.any(String), pendingCleanupInFlight: true,
+            pendingCleanupLeaseExpiresAtMs: expect.any(Number) },
+        });
+        await close(makeRuntime());
+        expect(await heartbeatService(db, { environmentRuntime: makeRuntime() }).sweepPendingCleanupLeases({ backoffMs: 0 }))
+          .toEqual({ swept: 0, destroyed: 0, capped: 0 });
+        expect(call).toHaveBeenCalledOnce();
+      } finally {
+        finishProvider();
+        await closing;
+      }
+      expect(await environmentService(db).getLeaseById(seeded.reusableLease.id)).toMatchObject({
+        status: "pending_cleanup", metadata: { pendingCleanupInFlight: false },
+      });
+      unavailable = false;
+      expect(await heartbeatService(db, { environmentRuntime: makeRuntime() }).sweepPendingCleanupLeases({ backoffMs: 0 }))
+        .toEqual({ swept: 1, destroyed: 1, capped: 0 });
+      expect(call).toHaveBeenCalledTimes(2);
+      expect(await environmentService(db).getLeaseById(seeded.reusableLease.id)).toMatchObject({
+        status: "expired", cleanupStatus: "success", metadata: { remoteExecutionTermination: { state: "destroyed" } },
+      });
+    },
+  );
+
+  it.each(["queued", "scheduled_retry", "running"] as const)(
+    "fences scoped cleanup when its holding run becomes %s after selection", async (status) => {
+      const seeded = await seedReusablePluginSandboxLease();
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
+      await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
+      const originalService = environmentsModule.environmentService;
+      const serviceSpy = vi.spyOn(environmentsModule, "environmentService").mockImplementation((client) => {
+        const service = originalService(client);
+        return { ...service, getById: async (id: string) => {
+          const environment = await service.getById(id);
+          if (id === seeded.environment.id) {
+            await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, seeded.runId));
+          }
+          return environment;
+        } };
+      });
+      const call = vi.fn(async () => undefined);
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+        isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
+      } as unknown as PluginWorkerManager });
+      try {
+        expect(await runtime.destroyReusableSandboxLeases({ companyId: seeded.companyId,
+          executionWorkspaceId: seeded.executionWorkspaceId })).toEqual([]);
+        expect(call).not.toHaveBeenCalled();
+        expect(await originalService(db).getLeaseById(seeded.reusableLease.id)).toMatchObject({ status: "failed" });
+      } finally {
+        serviceSpy.mockRestore();
+      }
+    },
+  );
+
   it("destroys reusable plugin-backed sandbox leases scoped to an environment", async () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
     // The holding run is finished, so the reservation is stale and destroyable.
@@ -5648,7 +6908,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -5675,12 +6935,56 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "expired",
       failureReason: "environment_deleted",
       cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+        leaseId: reusableLease.id, runId, providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" } },
     });
   });
 
-  it("keeps a reusable lease held by an in-flight run out of the environment-scoped destroy", async () => {
+  it("destroys a failed reusable sandbox after successful release before deleting its environment", async () => {
+    const { pluginId, companyId, runId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentReleaseLease") {
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "stopped" };
+        }
+        if (method === "environmentDestroyLease") {
+          // The provider call must already have a durable cleanup reference.
+          expect(await environmentService(db).getLeaseById(reusableLease.id)).toMatchObject({
+            status: "pending_cleanup", environmentId: environment.id,
+          });
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+
+    const released = await runtimeWithPlugin.releaseRunLeases(runId, "failed", undefined, undefined, true);
+    expect(released[0]?.lease).toMatchObject({
+      id: reusableLease.id, status: "failed", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { state: "stopped" } },
+    });
+    const result = await runtimeWithPlugin.destroyReusableSandboxLeasesForEnvironment({
+      environmentId: environment.id, failureReason: "environment_deleted",
+    });
+    expect(result).toEqual({ destroyed: 1, failed: 0, skippedLiveRun: 0 });
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease",
+      expect.objectContaining({ companyId, environmentId: environment.id, providerLeaseId: reusableLease.providerLeaseId }),
+      31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "expired", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { state: "destroyed" } },
+    });
+    expect((await environmentService(db).removeIfDeletable(environment.id))?.id).toBe(environment.id);
+  });
+
+  it.each(["active", "failed"] as const)("keeps a %s reusable lease held by an in-flight run out of the environment-scoped destroy", async (status) => {
     const { pluginId, reusableLease } = await seedReusablePluginSandboxLease();
     // seedEnvironment leaves the holding run in `running` status.
+    if (status === "failed") await environmentService(db).releaseLease(reusableLease.id, "failed");
 
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
@@ -5698,7 +7002,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).not.toHaveBeenCalled();
     // The lease keeps its reusable status, so the delete guard still blocks.
     await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
-      status: "active",
+      status,
       leasePolicy: "reuse_by_environment",
     });
   });
@@ -5769,8 +7073,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("retries reusable plugin-backed sandbox destroy when the worker is unavailable", async () => {
-    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+    const { pluginId, companyId, executionWorkspaceId, runId, reusableLease } =
       await seedReusablePluginSandboxLease();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
 
     const offlineWorkerManager = {
       isRunning: vi.fn(() => false),
@@ -6247,7 +7555,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }));
   });
 
-  it("delegates plugin environment leases through the plugin worker manager", async () => {
+  it.each([undefined, 300_000])("delegates plugin environment leases with acquisition budget %s", async (defaultAcquireTimeoutMs) => {
     const pluginId = randomUUID();
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const workerManager = {
@@ -6308,6 +7616,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           {
             driverKey: "fake-plugin",
             displayName: "Fake plugin",
+            defaultAcquireTimeoutMs,
             configSchema: { type: "object" },
           },
         ],
@@ -6337,7 +7646,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       adapterType: undefined,
       runId,
       workspaceMode: undefined,
-    });
+    }, ...(defaultAcquireTimeoutMs === undefined ? [] : [330_000]));
     expect(acquired.lease.providerLeaseId).toBe("plugin-lease-1");
     expect(acquired.lease.expiresAt?.toISOString()).toBe(expiresAt);
     expect(acquired.lease.metadata).toMatchObject({

@@ -1,14 +1,21 @@
 import { createHash } from "node:crypto";
 import type { IssueReviewAttention } from "@paperclipai/shared";
-import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { boundExternalChatProvider } from "../native-runtime/external-chat-provider.js";
+import { extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
+import { withRecoveryContext } from "./status-only-context.js";
 
 export const ISSUE_REVIEW_PATH_LOST_WAKE_REASON = "issue_review_path_lost";
 export const REVIEW_PATH_RECOVERY_INSTRUCTION =
-  "This issue is still in review but its last maintained review path was consumed. Restore a reviewer, interaction, approval, monitor, or other durable waiting path, or choose an explicit disposition. This is the only automatic review-path recovery wake for this fingerprint.";
+  "This issue is still in review but its last maintained review path was consumed. Restore a reviewer, interaction, approval, monitor, or other durable waiting path, or choose an explicit disposition. If an async check is still pending, persist a one-shot issue monitor before ending this run and report its scheduled check time. A promise to check later or a background watcher is not a maintained review path. This is the only automatic review-path recovery wake for this fingerprint; ending without a maintained path will require a board decision.";
 const REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX = "agent_wakeup_requests_review_path_recovery_idempotency_uq";
 
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function isIssueReviewPathRecoveryRun(contextSnapshot: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(contextSnapshot?.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
+    || contextSnapshot?.reviewPathRecoveryAttempt === 1;
 }
 
 export function reviewPathConsumedRefFromRun(input: {
@@ -66,6 +73,7 @@ export type IssueReviewPathRecoveryDecision =
       payload: Record<string, unknown>;
       contextSnapshot: Record<string, unknown>;
     }
+  | { kind: "exhausted" }
   | { kind: "skip"; reason: string };
 
 export function decideIssueReviewPathRecovery(input: {
@@ -82,11 +90,8 @@ export function decideIssueReviewPathRecovery(input: {
   }
 
   const context = input.contextSnapshot ?? {};
-  if (
-    readNonEmptyString(context.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
-    || context.reviewPathRecoveryAttempt === 1
-  ) {
-    return { kind: "skip", reason: "bounded review-path recovery already ran" };
+  if (isIssueReviewPathRecoveryRun(context)) {
+    return { kind: "exhausted" };
   }
 
   const consumedPathRef = reviewPathConsumedRefFromRun({
@@ -100,7 +105,10 @@ export function decideIssueReviewPathRecovery(input: {
   });
   if (input.existingWake) return { kind: "skip", reason: "review-path recovery wake already exists" };
 
-  const payload = withRecoveryModelProfileHint({
+  const source = readNonEmptyString(context.source) ?? "heartbeat.review_path_disposition";
+  const chatCommentIds = boundExternalChatProvider(source) ? extractWakeCommentIds(context) : [];
+
+  const payload = withRecoveryContext({
     issueId: input.issueId,
     taskId: input.issueId,
     sourceIssueId: input.issueId,
@@ -116,10 +124,18 @@ export function decideIssueReviewPathRecovery(input: {
     kind: "enqueue",
     idempotencyKey,
     payload,
-    contextSnapshot: withRecoveryModelProfileHint({
+    contextSnapshot: withRecoveryContext({
       ...payload,
       wakeReason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
-      source: readNonEmptyString(context.source) ?? "heartbeat.review_path_disposition",
+      source,
+      // Keep the admitted message references, not the source run's authority.
+      // Dispatch must prove the new run owns this task and recheck current
+      // endpoint, conversation, and principal access for the entire batch.
+      ...(chatCommentIds.length > 0 ? {
+        wakeCommentIds: chatCommentIds,
+        wakeCommentId: chatCommentIds.at(-1),
+        commentId: chatCommentIds.at(-1),
+      } : {}),
     }, "normal_model"),
   };
 }

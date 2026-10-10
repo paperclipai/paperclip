@@ -1,3 +1,7 @@
+import { SkillBinaryFile } from "../components/SkillBinaryFile";
+import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
+import { AgentIdentity } from "@/components/AgentIdentity";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,15 +33,16 @@ import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useCopyAction } from "../lib/use-copy-action";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import {
   SkillPolicyDenialNotice,
   useSkillPolicyDenial,
@@ -75,6 +80,10 @@ import {
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
+import {
+  resolveSkillsDiscoveryView,
+  withSkillsDiscoveryView,
+} from "./skills/skills-navigation";
 import {
   SKILL_CREATE_ACCENTS,
   buildBlankSkillDraft,
@@ -126,6 +135,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
+  Compass,
   Download,
   Eye,
   Filter,
@@ -321,7 +331,7 @@ type SourceFilter = "all" | "company" | "bundled" | "optional" | "external";
 
 const SOURCE_FILTER_LABELS: Record<SourceFilter, string> = {
   all: "All",
-  company: "Company",
+  company: "Organization",
   bundled: "Bundled",
   optional: "Optional",
   external: "External",
@@ -552,23 +562,14 @@ function formatBytes(bytes: number) {
 // Skills Store discovery grid (PAP-10879)
 // ---------------------------------------------------------------------------
 
-export type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
-
-const DISCOVERY_TABS: DiscoveryTab[] = ["all", "installed", "catalog", "bundled"];
+export type DiscoveryTab = "installed" | "discover";
 
 export function resolveDiscoveryTab(tabParam: string | null): DiscoveryTab {
-  return DISCOVERY_TABS.includes(tabParam as DiscoveryTab)
-    ? (tabParam as DiscoveryTab)
-    : "installed";
+  return resolveSkillsDiscoveryView(tabParam);
 }
 
 export function withDiscoveryTab(current: URLSearchParams, tab: DiscoveryTab): URLSearchParams {
-  const params = new URLSearchParams(current);
-  if (tab === "installed") params.delete("tab");
-  else params.set("tab", tab);
-  params.delete("category");
-  if (tab !== "installed") params.delete("folder");
-  return params;
+  return withSkillsDiscoveryView(current, tab);
 }
 
 export function skillDetailBreadcrumbs(
@@ -623,6 +624,7 @@ export type DiscoveryCard = {
   updatedAt: number;
   sourceBadge?: CompanySkillSourceBadge | null;
   sourceLabel?: string | null;
+  sourceKind?: "bundled" | "optional" | null;
 };
 
 export { SkillCardIcon } from "../components/SkillCardIcon";
@@ -654,7 +656,7 @@ function categorySetKey(categories: string[]) {
 }
 
 function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "sharingScope">) {
-  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
+  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: organization";
   const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
   return `${sharing} | ${categories}`;
 }
@@ -662,17 +664,36 @@ function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "
 // Merge installed company skills and the install catalog into one card model.
 // Installed skills win on dedup (they carry the richer social-proof metadata);
 // catalog-only skills fill in the rest of the discoverable surface.
-function buildDiscoveryCards(
+function discoveryCardIdentity(key: string): string {
+  return key.trim().toLowerCase();
+}
+
+export function buildDiscoveryCards(
   installed: CompanySkillListItem[],
   catalog: CatalogSkill[],
 ): DiscoveryCard[] {
-  const catalogByKey = new Map(catalog.map((entry) => [entry.key, entry]));
+  const installedByKey = new Map<string, CompanySkillListItem>();
+  for (const skill of installed) {
+    const identity = discoveryCardIdentity(skill.key);
+    const existing = installedByKey.get(identity);
+    if (!existing || new Date(skill.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
+      installedByKey.set(identity, skill);
+    }
+  }
+
+  const catalogByKey = new Map<string, CatalogSkill>();
+  for (const entry of catalog) {
+    const identity = discoveryCardIdentity(entry.key);
+    if (!catalogByKey.has(identity)) catalogByKey.set(identity, entry);
+  }
+
   const cards: DiscoveryCard[] = [];
   const installedKeys = new Set<string>();
 
-  for (const skill of installed) {
-    installedKeys.add(skill.key);
-    const catalogMatch = catalogByKey.get(skill.key) ?? null;
+  for (const skill of installedByKey.values()) {
+    const identity = discoveryCardIdentity(skill.key);
+    installedKeys.add(identity);
+    const catalogMatch = catalogByKey.get(identity) ?? null;
     const required = skill.catalogKind === "bundled" || catalogMatch?.kind === "bundled";
     cards.push({
       key: skill.key,
@@ -697,11 +718,12 @@ function buildDiscoveryCards(
       updatedAt: new Date(skill.updatedAt).getTime() || 0,
       sourceBadge: skill.sourceBadge,
       sourceLabel: skill.sourceLabel,
+      sourceKind: skill.catalogKind ?? catalogMatch?.kind ?? null,
     });
   }
 
-  for (const entry of catalog) {
-    if (installedKeys.has(entry.key)) continue;
+  for (const [identity, entry] of catalogByKey) {
+    if (installedKeys.has(identity)) continue;
     const required = entry.kind === "bundled";
     cards.push({
       key: entry.key,
@@ -726,6 +748,7 @@ function buildDiscoveryCards(
       updatedAt: 0,
       sourceBadge: "catalog",
       sourceLabel: entry.packageName ?? "Catalog",
+      sourceKind: entry.kind,
     });
   }
 
@@ -733,17 +756,7 @@ function buildDiscoveryCards(
 }
 
 function cardsForTab(cards: DiscoveryCard[], tab: DiscoveryTab): DiscoveryCard[] {
-  switch (tab) {
-    case "installed":
-      return cards.filter((card) => card.installed);
-    case "catalog":
-      return cards.filter((card) => card.catalogRef != null);
-    case "bundled":
-      return cards.filter((card) => card.required);
-    case "all":
-    default:
-      return cards;
-  }
+  return tab === "installed" ? cards.filter((card) => card.installed) : cards;
 }
 
 function sortDiscoveryCards(cards: DiscoveryCard[], sort: DiscoverySort, demoteRequired: boolean): DiscoveryCard[] {
@@ -823,6 +836,8 @@ function SkillCard({
   onCreateFolderAndMove?: (card: DiscoveryCard) => void;
   onOpenMove?: (card: DiscoveryCard) => void;
 }) {
+  const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
+  const SourceIcon = source.icon;
   const badgeFolder = showFolderBadge && card.installed
     ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
     : undefined;
@@ -873,16 +888,6 @@ function SkillCard({
             </div>
           ) : null}
         </div>
-        {/* Where the skill came from (PAP-10907 E); native title gives a hover hint. */}
-        {(() => {
-          const meta = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
-          const SourceIcon = meta.icon;
-          return (
-            <span className="shrink-0 text-muted-foreground" title={`From ${meta.label}`} aria-label={`From ${meta.label}`}>
-              <SourceIcon className="h-3.5 w-3.5" aria-hidden="true" />
-            </span>
-          );
-        })()}
         {canMove && folders && onMove && onCreateFolderAndMove ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -935,9 +940,15 @@ function SkillCard({
       </p>
 
       <div className="mt-auto pt-3">
-        {/* Stats: installed agents · stars · forks — stars/forks only when > 0. */}
+        {/* Installation and agent enablement are separate states. */}
         <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-          <span>{card.agentCount} {card.agentCount === 1 ? "agent" : "agents"}</span>
+          <span>
+            {card.installed
+              ? card.agentCount > 0
+                ? `Enabled for ${card.agentCount} ${card.agentCount === 1 ? "agent" : "agents"}`
+                : "Not enabled for any agents"
+              : "Available to install"}
+          </span>
           {card.starCount > 0 ? (
             <>
               <span aria-hidden="true">·</span>
@@ -953,10 +964,14 @@ function SkillCard({
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {card.installed ? (
-            <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-(length:--text-nano) text-emerald-700 dark:text-emerald-300">
+            <Badge variant="secondary" className="text-(length:--text-nano)">
               Installed
             </Badge>
           ) : null}
+          <Badge variant="outline" className="max-w-full text-(length:--text-nano) text-muted-foreground">
+            <SourceIcon className="h-3 w-3" aria-hidden="true" />
+            <span className="truncate">{source.label}</span>
+          </Badge>
           {card.categories.slice(0, 2).map((category) => (
             <SkillCategoryChip key={category} label={category} />
           ))}
@@ -964,6 +979,10 @@ function SkillCard({
             <Badge variant="outline" className="ml-auto border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
               <Lock className="h-3 w-3" aria-hidden="true" />
               Bundled
+            </Badge>
+          ) : card.sourceKind === "optional" ? (
+            <Badge variant="outline" className="ml-auto text-(length:--text-nano) text-muted-foreground">
+              Optional
             </Badge>
           ) : null}
         </div>
@@ -1018,8 +1037,6 @@ function CategoryNav({
 
 export function DiscoveryGrid({
   tab,
-  tabCounts,
-  onTabChange,
   categories,
   categoryTotal,
   activeCategory,
@@ -1036,7 +1053,7 @@ export function DiscoveryGrid({
   onCreate,
   onImport,
   onImportFromProject,
-  onBrowseCatalog,
+  onBrowseDiscover,
   onScan,
   scanPending,
   scanStatus,
@@ -1063,10 +1080,9 @@ export function DiscoveryGrid({
   onEnsureMyFolder,
   onOpenMoveCard,
   folderNudgeStorageKey,
+  showBrowseRails = true,
 }: {
   tab: DiscoveryTab;
-  tabCounts: Record<DiscoveryTab, number>;
-  onTabChange: (tab: DiscoveryTab) => void;
   categories: DiscoveryCategory[];
   categoryTotal: number;
   activeCategory: string | null;
@@ -1083,7 +1099,7 @@ export function DiscoveryGrid({
   onCreate: () => void;
   onImport: () => void;
   onImportFromProject: () => void;
-  onBrowseCatalog: () => void;
+  onBrowseDiscover: () => void;
   onScan: (projectId?: string) => void;
   scanPending: boolean;
   scanStatus: string | null;
@@ -1114,22 +1130,43 @@ export function DiscoveryGrid({
   onOpenMoveCard?: (card: DiscoveryCard) => void;
   /** When set and no folders exist yet, show the dismissible all-unfiled nudge (ux-spec §6.3). */
   folderNudgeStorageKey?: string;
+  /** Category/folder navigation stays available in production, but the Streamlined UI relies on search and scrolling. */
+  showBrowseRails?: boolean;
 }) {
+  const installedView = tab === "installed";
+  const viewTitle = installedView ? "Installed skills" : "Discover skills";
+  const viewDescription = installedView
+    ? "Skills available to this organization."
+    : "Browse skills from every available source.";
+  const searchLabel = installedView ? "Search installed skills" : "Search discoverable skills";
   // Source filter (github / skills.sh / local / …) lives in the grid so it
   // narrows whatever the parent already filtered by tab/category/search (PAP-10907 E).
   const [sourceBadgeFilter, setSourceBadgeFilter] = useState<string>("all");
   const availableSources = useMemo(() => {
-    const set = new Set<string>();
-    for (const card of cards) if (card.sourceBadge) set.add(card.sourceBadge);
-    return Array.from(set).sort();
+    const facets = new Map<string, string>();
+    for (const card of cards) {
+      if (card.sourceKind) {
+        facets.set(`kind:${card.sourceKind}`, card.sourceKind === "bundled" ? "Bundled" : "Optional");
+      }
+      if (card.sourceBadge) {
+        facets.set(`badge:${card.sourceBadge}`, sourceMeta(card.sourceBadge, null).label);
+      }
+    }
+    return Array.from(facets, ([value, label]) => ({ value, label }))
+      .sort((left, right) => left.label.localeCompare(right.label));
   }, [cards]);
   useEffect(() => {
-    if (sourceBadgeFilter !== "all" && !availableSources.includes(sourceBadgeFilter)) {
+    if (sourceBadgeFilter !== "all" && !availableSources.some((source) => source.value === sourceBadgeFilter)) {
       setSourceBadgeFilter("all");
     }
   }, [availableSources, sourceBadgeFilter]);
   const sourceFilteredCards = useMemo(
-    () => (sourceBadgeFilter === "all" ? cards : cards.filter((card) => card.sourceBadge === sourceBadgeFilter)),
+    () => sourceBadgeFilter === "all"
+      ? cards
+      : cards.filter((card) => {
+          const [facet, value] = sourceBadgeFilter.split(":", 2);
+          return facet === "kind" ? card.sourceKind === value : card.sourceBadge === value;
+        }),
     [cards, sourceBadgeFilter],
   );
   const sourceFilterActive = sourceBadgeFilter !== "all";
@@ -1139,7 +1176,7 @@ export function DiscoveryGrid({
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
   const showFolderRail = Boolean(
-    folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady,
+    showBrowseRails && folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady,
   );
   const activeProjectFolder = useMemo(() => {
     if (!folderResult || folderSelection === "all" || folderSelection === "unfiled") return null;
@@ -1172,35 +1209,42 @@ export function DiscoveryGrid({
           />
         </div>
       ) : null}
-      {/* Secondary category sidebar — the main app nav collapses to a rail while
-          this is present (handled in Layout). */}
-      <aside className={cn("hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex", showFolderRail && "md:hidden")}>
-        <div className="border-b border-border px-4 py-4">
-          <h2 className="text-sm font-semibold text-foreground">Skills Store</h2>
-          <p className="text-xs text-muted-foreground">Discover, install, fork, share</p>
-        </div>
-        <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-          Categories
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-          <CategoryNav
-            categories={categories}
-            total={categoryTotal}
-            active={activeCategory}
-            onSelect={onCategoryChange}
-          />
-        </div>
-      </aside>
+      {showBrowseRails ? (
+        <aside className={cn("hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex", showFolderRail && "md:hidden")}>
+          <div className="border-b border-border px-4 py-4">
+            <h2 className="text-sm font-semibold text-foreground">Browse by category</h2>
+            <p className="text-xs text-muted-foreground">
+              Filter {installedView ? "installed" : "discoverable"} skills.
+            </p>
+          </div>
+          <div className="px-4 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+            Categories
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+            <CategoryNav
+              categories={categories}
+              total={categoryTotal}
+              active={activeCategory}
+              onSelect={onCategoryChange}
+            />
+          </div>
+        </aside>
+      ) : null}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search + sort + actions */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+          <div className="w-full">
+            <h1 className="text-lg font-semibold text-foreground">{viewTitle}</h1>
+            <p className="text-xs text-muted-foreground">{viewDescription}</p>
+          </div>
           <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Search skills, authors, categories…"
+              aria-label={searchLabel}
+              placeholder={`${searchLabel}…`}
               className="h-full w-full bg-transparent text-base outline-none placeholder:text-muted-foreground sm:text-sm"
             />
           </div>
@@ -1227,8 +1271,10 @@ export function DiscoveryGrid({
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm">
                   <span className="text-muted-foreground">Source</span>
-                  <span className="ml-1.5 capitalize">
-                    {sourceBadgeFilter === "all" ? "All" : sourceMeta(sourceBadgeFilter as CompanySkillSourceBadge, null).label}
+                  <span className="ml-1.5">
+                    {sourceBadgeFilter === "all"
+                      ? "All"
+                      : availableSources.find((source) => source.value === sourceBadgeFilter)?.label ?? "All"}
                   </span>
                   <ChevronDown className="ml-1 h-3.5 w-3.5" />
                 </Button>
@@ -1236,9 +1282,9 @@ export function DiscoveryGrid({
               <DropdownMenuContent align="end">
                 <DropdownMenuRadioGroup value={sourceBadgeFilter} onValueChange={setSourceBadgeFilter}>
                   <DropdownMenuRadioItem value="all">All sources</DropdownMenuRadioItem>
-                  {availableSources.map((badge) => (
-                    <DropdownMenuRadioItem key={badge} value={badge}>
-                      {sourceMeta(badge as CompanySkillSourceBadge, null).label}
+                  {availableSources.map((source) => (
+                    <DropdownMenuRadioItem key={source.value} value={source.value}>
+                      {source.label}
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
@@ -1255,12 +1301,6 @@ export function DiscoveryGrid({
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
           </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/skills/studio">
-              <FlaskConical className="h-3.5 w-3.5" />
-              Studio
-            </Link>
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" variant="default">
@@ -1274,10 +1314,12 @@ export function DiscoveryGrid({
                 <Pencil className="mr-2 h-4 w-4" />
                 Create new skill
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onBrowseCatalog}>
-                <Boxes className="mr-2 h-4 w-4" />
-                Browse catalog
+              <DropdownMenuItem onSelect={onBrowseDiscover}>
+                <Compass className="mr-2 h-4 w-4" />
+                Discover skills
               </DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/skills/sources/new"><GithubIcon className="mr-2 h-4 w-4" />Import from GitHub</Link></DropdownMenuItem>
+              <DropdownMenuItem asChild><Link to="/skills/sources">Manage sources</Link></DropdownMenuItem>
               <DropdownMenuItem onSelect={onImport}>
                 <Globe className="mr-2 h-4 w-4" />
                 Import from path or URL
@@ -1288,7 +1330,7 @@ export function DiscoveryGrid({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {folderResult && onFolderSelect ? (
+          {showBrowseRails && folderResult && onFolderSelect ? (
             <div className="w-full md:hidden">
               <FolderChip
                 result={folderResult}
@@ -1312,7 +1354,7 @@ export function DiscoveryGrid({
         </div>
 
         {/* Mobile category selector (sidebar is hidden below md) */}
-        {categories.length > 0 ? (
+        {showBrowseRails && categories.length > 0 ? (
           <div className="border-b border-border px-4 py-2 md:hidden">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1337,30 +1379,6 @@ export function DiscoveryGrid({
             </DropdownMenu>
           </div>
         ) : null}
-
-        {/* Tab strip — Bundled/required lives at the end */}
-        <div className="border-b border-border px-4">
-          <Tabs value={tab} onValueChange={(value) => onTabChange(value as DiscoveryTab)}>
-            <TabsList variant="line" className="p-0">
-              <TabsTrigger value="all" className="px-3">
-                <span>All</span>
-                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.all}</span>
-              </TabsTrigger>
-              <TabsTrigger value="installed" className="px-3">
-                <span>Installed</span>
-                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.installed}</span>
-              </TabsTrigger>
-              <TabsTrigger value="catalog" className="px-3">
-                <span>Catalog</span>
-                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.catalog}</span>
-              </TabsTrigger>
-              <TabsTrigger value="bundled" className="px-3">
-                <span>Bundled</span>
-                <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.bundled}</span>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
 
         {/* Grid body */}
         <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -1412,17 +1430,22 @@ export function DiscoveryGrid({
                 icon={LayoutGrid}
                 message={
                   totalCount === 0
-                    ? "No skills yet. Create one or install from the catalog."
+                    ? installedView
+                      ? "No installed skills yet. Discover a skill or create one."
+                      : "No skills are available to discover yet."
                     : search || activeCategory || sourceFilterActive
                       ? "No skills match your filters."
-                      : "No skills in this tab yet."
+                      : "No skills in this view yet."
                 }
               />
               {totalCount === 0 ? (
                 <div className="mt-3 flex flex-col items-center gap-2">
-                  <Button size="sm" onClick={onBrowseCatalog}>
-                    <Boxes className="mr-1.5 h-3.5 w-3.5" /> Browse catalog
-                  </Button>
+                  {installedView ? (
+                    <Button size="sm" onClick={onBrowseDiscover}>
+                      <Compass className="mr-1.5 h-3.5 w-3.5" /> Discover skills
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="outline" asChild><Link to="/skills/sources/new">Import from GitHub</Link></Button>
                   <Button size="sm" variant="ghost" onClick={onCreate}>
                     Create a skill
                   </Button>
@@ -1644,7 +1667,7 @@ function NewSkillWizard({
             <span className="text-muted-foreground">Slug</span>
             <span className="font-mono">{effectiveSlug || "skill"}</span>
             <span className="text-muted-foreground">Scope</span>
-            <span>{draft.sharingScope === "private" ? "Private" : "Company"}</span>
+            <span>{draft.sharingScope === "private" ? "Private" : "Organization"}</span>
             <span className="text-muted-foreground">Categories</span>
             <span>{draft.categories.length ? draft.categories.join(", ") : "none"}</span>
           </div>
@@ -1661,9 +1684,9 @@ function NewSkillWizard({
                     draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
                   )}
                 >
-                  <span className="block font-medium">{scope === "company" ? "Company" : "Private"}</span>
+                  <span className="block font-medium">{scope === "company" ? "Organization" : "Private"}</span>
                   <span className="mt-1 block text-xs text-muted-foreground">
-                    {scope === "company" ? "Visible inside this company." : "Only visible in your library."}
+                    {scope === "company" ? "Visible inside this organization." : "Only visible in your library."}
                   </span>
                 </button>
               ))}
@@ -2175,7 +2198,7 @@ export function InstallPreviewDialog({
             <div className="rounded-md border border-border p-3">
               <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
               <p className="mb-2 text-xs text-muted-foreground">
-                Installing adds the skill to the company library. Agents can only use it once it is enabled for them.
+                Installing adds the skill to the organization library. Agents can only use it once it is enabled for them.
               </p>
               <AgentMultiSelect
                 agents={agents}
@@ -2185,7 +2208,7 @@ export function InstallPreviewDialog({
                   setSelectedAgentIds(next);
                 }}
                 showSelectionPreview={false}
-                emptyMessage="No agents in this company support skills yet."
+                emptyMessage="No agents in this organization support skills yet."
                 isAgentDisabled={(agent) => {
                   const option = agent as AttachAgentOption;
                   return option.required || !option.supportsSkills;
@@ -2315,7 +2338,7 @@ function AttachAgentsPopover({
           </select>
         </div>
       ) : null}
-      emptyMessage={eligible.length === 0 ? "No agents in this company support skills yet." : "No agents yet."}
+      emptyMessage={eligible.length === 0 ? "No agents in this organization support skills yet." : "No agents yet."}
       isAgentDisabled={(agent) => {
         const option = agent as AttachAgentOption;
         return option.required || !option.supportsSkills;
@@ -2735,7 +2758,7 @@ function SkillLocationCard({
   folderPath: string | null | undefined;
   onMove?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, failed, copy } = useCopyAction();
   const canonical = folderPath && folderPath.length > 0 ? folderPath : "Unfiled";
   return (
     <section>
@@ -2749,16 +2772,11 @@ function SkillLocationCard({
           size="sm"
           variant="outline"
           onClick={() => {
-            void copyTextToClipboard(canonical)
-              .then(() => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              })
-              .catch(() => {});
+            void copy(canonical);
           }}
         >
           <Copy className="mr-1.5 h-3.5 w-3.5" />
-          {copied ? "Copied" : "Copy path"}
+          {copied ? "Copied" : failed ? "Copy failed" : "Copy path"}
         </Button>
         {onMove ? (
           <Button size="sm" variant="outline" onClick={onMove}>
@@ -3079,7 +3097,7 @@ export function SkillDetailPage({
                   title={skill.editableReason ?? "Fork this skill to edit it."}
                 >
                   <GitFork className="mr-1.5 h-3.5 w-3.5" />
-                  Fork
+                  {skill.sourceType === "github" ? "Make a copy" : "Fork"}
                 </Button>
               ) : null}
             </div>
@@ -3088,7 +3106,7 @@ export function SkillDetailPage({
             <PageSkeleton variant="detail" />
           ) : !file ? (
             <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
-          ) : editMode && file.editable ? (
+          ) : file.encoding === "base64" ? <SkillBinaryFile file={file} /> : editMode && file.editable ? (
             file.markdown ? (
               <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-(--sz-520px)" />
             ) : (
@@ -3146,7 +3164,7 @@ export function SkillDetailPage({
                   <span>Read only</span>
                   <Button type="button" variant="outline" size="xs" onClick={onFork}>
                     <GitFork className="mr-1 h-3 w-3" />
-                    Fork
+                    {skill.sourceType === "github" ? "Make a copy" : "Fork"}
                   </Button>
                 </>
               )}
@@ -3243,7 +3261,7 @@ export function SkillDetailPage({
               const meta = attachAgentMetaById.get(agent.id);
               return (
                 <div key={agent.id} className="flex items-center gap-3 border-b border-border py-3 text-sm last:border-b-0">
-                  <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <AgentAvatar agent={meta} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate font-medium">{agent.name}</span>
@@ -3367,7 +3385,7 @@ export function SkillDetailPage({
                     <span className="hidden sm:inline">{detail.attachedAgentCount === 1 ? "install" : "installs"}</span>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>Agents in this company that currently have this skill installed.</TooltipContent>
+                <TooltipContent>Agents in this organization that currently have this skill installed.</TooltipContent>
               </Tooltip>
               <button
                 type="button"
@@ -3387,7 +3405,7 @@ export function SkillDetailPage({
                 title="Fork this skill"
               >
                 <GitFork className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Fork</span>
+                <span className="hidden sm:inline">{skill.sourceType === "github" ? "Make a copy" : "Fork"}</span>
                 <span className="font-medium text-foreground">{detail.forkCount}</span>
               </button>
             </div>
@@ -3416,6 +3434,7 @@ export function SkillDetailPage({
         </main>
 
         <aside className="min-w-0 space-y-6 border-t border-border pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+          <SkillSourceProvenance skill={detail} />
           <SkillLocationCard
             folderPath={folderDisplayPath ?? skillFolderPathDisplayFallback(detail.folderPath)}
             onMove={onMoveToFolder}
@@ -3451,7 +3470,7 @@ export function SkillDetailPage({
                         to={`/agents/${agent.urlKey}/skills`}
                         className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm no-underline hover:bg-accent/40"
                       >
-                        <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={meta} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
                         <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
                         {meta?.paused ? (
                           <Pause className="h-3 w-3 shrink-0 text-amber-500" aria-label="Paused" />
@@ -3624,7 +3643,7 @@ export function SkillDetailPage({
                 disabled={updateSettingsPending}
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
-                <option value="company">Company — visible inside this company</option>
+                <option value="company">Organization — visible inside this organization</option>
                 <option value="private">Private — only visible in your library</option>
               </select>
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
@@ -3656,7 +3675,7 @@ export function SkillDetailPage({
               <div className="rounded-md border border-destructive/40 p-3">
                 <div className="text-xs font-semibold uppercase tracking-wide text-destructive">Danger zone</div>
                 <div className="mt-2 flex items-center justify-between gap-3">
-                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the company library.</p>
+                  <p className="min-w-0 text-xs text-muted-foreground">Remove this skill from the organization library.</p>
                   <Button
                     variant="destructive"
                     size="sm"
@@ -3912,7 +3931,7 @@ function SkillPane({
                     to={`/agents/${agent.urlKey}/skills`}
                     className="group rounded-md border border-transparent p-2 no-underline hover:border-border hover:bg-accent/40"
                   >
-                    <Identity name={agent.name} size="sm" />
+                    <AgentIdentity agent={agent} size="sm" />
                   </Link>
                 ))}
               </div>
@@ -4005,6 +4024,7 @@ export function CompanySkills() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const adapterCaps = useAdapterCapabilities();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const policyDenial = useSkillPolicyDenial();
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
@@ -4076,7 +4096,17 @@ export function CompanySkills() {
     : "all";
   const selectedCatalogRef = searchParams.get("catalog");
   const tabParam = searchParams.get("tab");
-  const discoveryTab = resolveDiscoveryTab(tabParam);
+  const discoveryTab = resolveDiscoveryTab(tabParam ?? (viewParam === "catalog" ? "catalog" : null));
+  const legacyDiscoveryTab = (["all", "installed", "catalog", "bundled"] as const).includes(
+    tabParam as "all" | "installed" | "catalog" | "bundled",
+  )
+    ? (tabParam as "all" | "installed" | "catalog" | "bundled")
+    : "installed";
+  const effectiveDiscoveryTab: DiscoveryTab = streamlinedUiEnabled
+    ? discoveryTab
+    : legacyDiscoveryTab === "installed"
+      ? "installed"
+      : "discover";
   const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
     ? (tabParam as SkillDetailTab)
     : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
@@ -4089,9 +4119,23 @@ export function CompanySkills() {
   // selected; selecting either drops into the existing master/detail surfaces.
   const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
+  const browseRailsEnabled = !streamlinedUiEnabled;
+  const visibleDiscoveryCategory = browseRailsEnabled ? discoveryCategory : null;
+  const visibleFolderSelection: FolderSelection = browseRailsEnabled ? folderSelection : "all";
 
   function setDiscoveryTab(tab: DiscoveryTab) {
     setSearchParams((current) => withDiscoveryTab(current, tab));
+  }
+
+  function setLegacyDiscoveryTab(tab: "all" | "installed" | "catalog" | "bundled") {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (tab === "installed") params.delete("tab");
+      else params.set("tab", tab);
+      params.delete("category");
+      if (tab !== "installed") params.delete("folder");
+      return params;
+    });
   }
 
   function setFolderSelection(selection: FolderSelection) {
@@ -4155,20 +4199,36 @@ export function CompanySkills() {
     setCreateError(null);
   }, [isStudioNew, studioForkFromId]);
 
-  // The old split catalog view no longer exists — catalog/bundled skills now open
-  // as a regular full page keyed by `?catalog=<ref>`. Strip the legacy `view`
-  // param so stale `?view=catalog` deep links land on the new surface (PAP-10907).
+  // Canonicalize the old split-view and multi-tab URLs into the single Discover
+  // destination while keeping every stale deep link useful.
   useEffect(() => {
-    if (!searchParams.has("view")) return;
+    if (!streamlinedUiEnabled) return;
+    const legacyTab = searchParams.get("tab");
+    const hasLegacyDiscoveryTab = isDiscovery && ["all", "catalog", "bundled"].includes(legacyTab ?? "");
+    const hasRetiredBrowseFilter = isDiscovery && (searchParams.has("category") || searchParams.has("folder"));
+    if (!searchParams.has("view") && !hasLegacyDiscoveryTab && !hasRetiredBrowseFilter) return;
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
+        if (hasLegacyDiscoveryTab || (next.get("view") === "catalog" && !next.has("tab"))) {
+          next.set("tab", "discover");
+        }
         next.delete("view");
+        if (isDiscovery) {
+          next.delete("category");
+          next.delete("folder");
+        }
         return next;
       },
       { replace: true },
     );
-  }, [searchParams, setSearchParams]);
+  }, [isDiscovery, searchParams, setSearchParams, streamlinedUiEnabled]);
+
+  useEffect(() => {
+    if (!streamlinedUiEnabled) return;
+    setSelectMode(false);
+    setSelectedSkillIds([]);
+  }, [streamlinedUiEnabled]);
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
@@ -4178,7 +4238,7 @@ export function CompanySkills() {
   const skillFoldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId ?? "", "skill"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "skill"),
-    enabled: Boolean(selectedCompanyId && ((isDiscovery && discoveryTab === "installed") || routeSkillToken)),
+    enabled: Boolean(selectedCompanyId && ((isDiscovery && effectiveDiscoveryTab === "installed") || routeSkillToken)),
   });
 
   const installedSkills = skillsQuery.data ?? [];
@@ -4227,15 +4287,15 @@ export function CompanySkills() {
 
   // The writable folder to seed a new skill into when creating from the browser.
   const defaultNewSkillFolderId = useMemo(() => {
-    if (folderSelection === "all" || folderSelection === "unfiled") return null;
+    if (visibleFolderSelection === "all" || visibleFolderSelection === "unfiled") return null;
     const model = treeFromResult(skillFoldersQuery.data);
-    const folder = model.byId.get(folderSelection);
+    const folder = model.byId.get(visibleFolderSelection);
     if (!folder) return null;
     // Never seed into read-only reserved subtrees (Bundled / Projects).
     if (folder.path === "bundled" || folder.path.startsWith("bundled/")) return null;
     if (folder.path === "projects" || folder.path.startsWith("projects/")) return null;
     return folder.id;
-  }, [folderSelection, skillFoldersQuery.data]);
+  }, [skillFoldersQuery.data, visibleFolderSelection]);
 
   const updateStatusQuery = useQuery({
     queryKey: queryKeys.companySkills.updateStatus(selectedCompanyId ?? "", selectedSkillId ?? ""),
@@ -4569,15 +4629,15 @@ export function CompanySkills() {
     () => buildDiscoveryCards(installedSkills, catalogListQuery.data ?? []),
     [installedSkills, catalogListQuery.data],
   );
-  const discoveryTabCounts = useMemo(() => ({
-    all: discoveryCards.length,
-    installed: discoveryCards.filter((card) => card.installed).length,
-    catalog: discoveryCards.filter((card) => card.catalogRef != null).length,
-    bundled: discoveryCards.filter((card) => card.required).length,
-  }), [discoveryCards]);
   const discoveryTabCards = useMemo(
-    () => cardsForTab(discoveryCards, discoveryTab),
-    [discoveryCards, discoveryTab],
+    () => {
+      if (streamlinedUiEnabled) return cardsForTab(discoveryCards, discoveryTab);
+      if (legacyDiscoveryTab === "installed") return discoveryCards.filter((card) => card.installed);
+      if (legacyDiscoveryTab === "catalog") return discoveryCards.filter((card) => card.catalogRef != null);
+      if (legacyDiscoveryTab === "bundled") return discoveryCards.filter((card) => card.required);
+      return discoveryCards;
+    },
+    [discoveryCards, discoveryTab, legacyDiscoveryTab, streamlinedUiEnabled],
   );
   const discoveryCategoryCounts = useMemo<DiscoveryCategory[]>(() => {
     const counts = new Map<string, number>();
@@ -4594,24 +4654,24 @@ export function CompanySkills() {
   // Selecting a folder shows its whole subtree (folder + descendants), matching
   // the folder-browser model. `null` means no subtree constraint (All/Unfiled).
   const folderSubtreeIds = useMemo(() => {
-    if (folderSelection === "all" || folderSelection === "unfiled") return null;
+    if (visibleFolderSelection === "all" || visibleFolderSelection === "unfiled") return null;
     const model = treeFromResult(skillFoldersQuery.data);
-    if (!model.byId.has(folderSelection)) return null;
-    return subtreeFolderIds(model, folderSelection);
-  }, [folderSelection, skillFoldersQuery.data]);
+    if (!model.byId.has(visibleFolderSelection)) return null;
+    return subtreeFolderIds(model, visibleFolderSelection);
+  }, [skillFoldersQuery.data, visibleFolderSelection]);
   const visibleDiscoveryCards = useMemo(() => {
     const filtered = discoveryTabCards.filter((card) => {
-      if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
+      if (visibleDiscoveryCategory && !card.categories.includes(visibleDiscoveryCategory)) return false;
       // Search spans all folders (user story 5): the folder filter only
       // narrows when the user is browsing, never when searching.
-      if (discoveryTab === "installed" && !discoverySearchActive) {
-        if (folderSelection === "unfiled" && card.folderId) return false;
+      if (effectiveDiscoveryTab === "installed" && !discoverySearchActive) {
+        if (visibleFolderSelection === "unfiled" && card.folderId) return false;
         if (folderSubtreeIds && (!card.folderId || !folderSubtreeIds.has(card.folderId))) return false;
       }
       return discoveryMatchesSearch(card, discoverySearch.trim());
     });
-    return sortDiscoveryCards(filtered, discoverySort, discoveryTab !== "bundled");
-  }, [discoveryTabCards, discoveryCategory, discoverySearch, discoverySearchActive, discoverySort, discoveryTab, folderSelection, folderSubtreeIds]);
+    return sortDiscoveryCards(filtered, discoverySort, effectiveDiscoveryTab === "discover");
+  }, [discoverySearch, discoverySearchActive, discoverySort, discoveryTabCards, effectiveDiscoveryTab, folderSubtreeIds, visibleDiscoveryCategory, visibleFolderSelection]);
 
   const selectedCatalogSkill = catalogDetailQuery.data
     ?? (catalogListQuery.data ?? []).find((entry) => entry.id === selectedCatalogRef || entry.key === selectedCatalogRef)
@@ -4858,9 +4918,9 @@ export function CompanySkills() {
 
   async function openNewSkill() {
     const model = treeFromResult(skillFoldersQuery.data);
-    const selectedFolder = folderSelection === "all" || folderSelection === "unfiled"
+    const selectedFolder = visibleFolderSelection === "all" || visibleFolderSelection === "unfiled"
       ? null
-      : model.byId.get(folderSelection) ?? null;
+      : model.byId.get(visibleFolderSelection) ?? null;
     if (selectedFolder?.systemKey === "my") {
       try {
         const personalFolder = await ensureMyFolder.mutateAsync();
@@ -5063,7 +5123,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill removed",
-        body: `${skill.name} was removed from the company skill library.`,
+        body: `${skill.name} was removed from the organization skill library.`,
       });
     },
     onError: (error) => {
@@ -5072,13 +5132,14 @@ export function CompanySkills() {
   });
 
   const skillFolderResult = skillFoldersQuery.data ?? null;
-  const showInstalledFolders = isDiscovery && discoveryTab === "installed";
+  const showInstalledFolders = isDiscovery && effectiveDiscoveryTab === "installed";
+  const showInstalledBulkSelection = showInstalledFolders && !streamlinedUiEnabled;
   // Rail counts reflect the current category/search scope, never the folder
   // filter itself (ux-spec §5.3).
   const railSkillFolderResult = useMemo(() => {
-    if (!skillFolderResult || discoveryTab !== "installed") return skillFolderResult;
+    if (!skillFolderResult || effectiveDiscoveryTab !== "installed") return skillFolderResult;
     const scoped = discoveryTabCards.filter((card) => {
-      if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
+      if (visibleDiscoveryCategory && !card.categories.includes(visibleDiscoveryCategory)) return false;
       return discoveryMatchesSearch(card, discoverySearch.trim());
     });
     const direct = new Map<string, number>();
@@ -5100,14 +5161,14 @@ export function CompanySkills() {
         return { ...folder, itemCount };
       }),
     };
-  }, [skillFolderResult, discoveryTab, discoveryTabCards, discoveryCategory, discoverySearch]);
+  }, [discoverySearch, discoveryTabCards, effectiveDiscoveryTab, skillFolderResult, visibleDiscoveryCategory]);
   const activeSkillFolderDisplayPath = useMemo(
     () => skillFolderDisplayPath(treeFromResult(skillFolderResult), activeDetail?.folderId),
     [skillFolderResult, activeDetail?.folderId],
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return <EmptyState icon={Boxes} message="Select an organization to manage skills." />;
   }
 
   function handleAddSkillSource() {
@@ -5147,8 +5208,8 @@ export function CompanySkills() {
   const studioBackHref = studioForkDetailQuery.data ? routeForSkill(studioForkDetailQuery.data) : "/skills";
   const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
   const studioDescription = studioForkFromId
-    ? "Review the fork metadata and create an editable company copy."
-    : "Create an editable company skill in the Paperclip workspace.";
+    ? "Review the fork metadata and create an editable organization copy."
+    : "Create an editable organization skill in the Paperclip workspace.";
   return (
     <>
       {policyDenial.denial ? (
@@ -5161,7 +5222,7 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Remove skill</DialogTitle>
             <DialogDescription>
-              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
+              Remove this skill from the organization library. If any agents still use it, removal will be blocked until it is detached.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -5275,7 +5336,7 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Import a skill</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this company.
+              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this organization.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -5410,13 +5471,24 @@ export function CompanySkills() {
           </div>
         </div>
       ) : isDiscovery ? (
+        <>
+        {!streamlinedUiEnabled ? (
+          <div className="px-4 pt-4">
+            <Tabs value={legacyDiscoveryTab} onValueChange={(value) => setLegacyDiscoveryTab(value as "all" | "installed" | "catalog" | "bundled")}>
+              <TabsList variant="line" aria-label="Skills view">
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="installed">Installed</TabsTrigger>
+                <TabsTrigger value="catalog">Catalog</TabsTrigger>
+                <TabsTrigger value="bundled">Bundled</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        ) : null}
         <DiscoveryGrid
-          tab={discoveryTab}
-          tabCounts={discoveryTabCounts}
-          onTabChange={setDiscoveryTab}
+          tab={effectiveDiscoveryTab}
           categories={discoveryCategoryCounts}
           categoryTotal={discoveryTabCards.length}
-          activeCategory={discoveryCategory}
+          activeCategory={visibleDiscoveryCategory}
           onCategoryChange={setDiscoveryCategory}
           search={discoverySearch}
           onSearchChange={setDiscoverySearch}
@@ -5426,19 +5498,19 @@ export function CompanySkills() {
           onOpenCard={openDiscoveryCard}
           loading={skillsQuery.isLoading || catalogListQuery.isLoading}
           error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
-          totalCount={discoveryCards.length}
+          totalCount={discoveryTabCards.length}
           onCreate={() => void openNewSkill()}
           onImport={() => setImportDialogOpen(true)}
           onImportFromProject={() => setImportFromProjectOpen(true)}
-          onBrowseCatalog={() => setDiscoveryTab("catalog")}
+          onBrowseDiscover={() => streamlinedUiEnabled ? setDiscoveryTab("discover") : setLegacyDiscoveryTab("catalog")}
           onScan={(projectId) => scanProjects.mutate(projectId)}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
           folderResult={showInstalledFolders ? railSkillFolderResult : null}
-          folderSelection={folderSelection}
+          folderSelection={visibleFolderSelection}
           foldersLoading={skillFoldersQuery.isLoading}
-          selectMode={showInstalledFolders && selectMode}
-          selectedSkillIds={selectedSkillIds}
+          selectMode={showInstalledBulkSelection && selectMode}
+          selectedSkillIds={showInstalledBulkSelection ? selectedSkillIds : []}
           onFolderSelect={showInstalledFolders ? setFolderSelection : undefined}
           onOpenMobileFolders={showInstalledFolders ? () => setMobileFoldersOpen(true) : undefined}
           onCreateFolder={showInstalledFolders ? () => openCreateFolder() : undefined}
@@ -5460,11 +5532,11 @@ export function CompanySkills() {
           } : undefined}
           onMoveFolder={showInstalledFolders ? (folder, destination) => void moveFolderBetweenScopes(folder, destination) : undefined}
           onDeleteFolder={showInstalledFolders ? setDeleteFolderTarget : undefined}
-          onToggleSelectMode={showInstalledFolders ? () => {
+          onToggleSelectMode={showInstalledBulkSelection ? () => {
             setSelectMode((current) => !current);
             if (selectMode) setSelectedSkillIds([]);
           } : undefined}
-          onSelectCard={showInstalledFolders ? (card, selected) => {
+          onSelectCard={showInstalledBulkSelection ? (card, selected) => {
             if (!card.skillId) return;
             setSelectedSkillIds((current) =>
               selected
@@ -5492,11 +5564,13 @@ export function CompanySkills() {
           onCreateFolderAndMoveCard={showInstalledFolders ? (card) => {
             if (card.skillId) openCreateFolder([card.skillId]);
           } : undefined}
-          onMoveSelected={showInstalledFolders ? (folderId) => void moveSelectedSkills(folderId) : undefined}
-          onCreateFolderAndMoveSelected={showInstalledFolders ? () => openCreateFolder(selectedSkillIds) : undefined}
-          onClearSelected={showInstalledFolders ? () => setSelectedSkillIds([]) : undefined}
+          onMoveSelected={showInstalledBulkSelection ? (folderId) => void moveSelectedSkills(folderId) : undefined}
+          onCreateFolderAndMoveSelected={showInstalledBulkSelection ? () => openCreateFolder(selectedSkillIds) : undefined}
+          onClearSelected={showInstalledBulkSelection ? () => setSelectedSkillIds([]) : undefined}
           folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
+          showBrowseRails={browseRailsEnabled}
         />
+        </>
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
           detail={activeDetail}

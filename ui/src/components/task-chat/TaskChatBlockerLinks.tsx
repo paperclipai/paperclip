@@ -10,6 +10,7 @@ import {
   type WaitingBlockerStep,
 } from "@/lib/issue-blockers";
 import { Link } from "@/lib/router";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 
 function isUnresolved(blocker: IssueRelationIssueSummary): boolean {
   return blocker.status !== "done" && blocker.status !== "cancelled";
@@ -100,9 +101,20 @@ function BlockerRow({
   label: string;
   blocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
 }) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const issuePathId = blocker.identifier ?? blocker.id;
 
-  return (
+  return streamlined ? (
+    <Link
+      to={createIssueDetailPath(issuePathId)}
+      className="flex min-w-0 items-baseline gap-1.5 rounded px-1 py-0.5 text-amber-800 underline-offset-2 transition-colors hover:bg-accent/50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-200"
+      title={`${blocker.identifier ?? blocker.id.slice(0, 8)} — ${blocker.title}`}
+    >
+      <span className="shrink-0 font-medium">{label}</span>
+      <span className="shrink-0 font-mono">{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+      <span className="truncate text-amber-700/80 dark:text-amber-300/80">{blocker.title}</span>
+    </Link>
+  ) : (
     <div className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap">
       <span className="shrink-0 font-medium">{label}</span>
       <Link
@@ -146,16 +158,25 @@ function LiveWorkGlyph({ status }: { status: WaitingBlockerStatus }) {
 
 function LiveWorkLink({
   blocker,
+  status,
+  label,
 }: {
   blocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
+  status: WaitingBlockerStatus;
+  label?: string;
 }) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const issuePathId = blocker.identifier ?? blocker.id;
   return (
     <Link
       to={createIssueDetailPath(issuePathId)}
-      className="flex min-w-0 items-baseline gap-1 text-blue-800 underline-offset-2 hover:underline dark:text-blue-200"
+      className={streamlined
+        ? "flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-blue-800 underline-offset-2 transition-colors hover:bg-accent/50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-200"
+        : "flex min-w-0 items-baseline gap-1 text-blue-800 underline-offset-2 hover:underline dark:text-blue-200"}
       title={`${blocker.identifier ?? blocker.id.slice(0, 8)} — ${blocker.title}`}
     >
+      {streamlined && label ? <span className="shrink-0 font-medium">{label}</span> : null}
+      {streamlined ? <LiveWorkGlyph status={status} /> : null}
       <span className="shrink-0 font-mono">{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
       <span className="truncate text-blue-700/80 dark:text-blue-300/80">{blocker.title}</span>
     </Link>
@@ -171,6 +192,11 @@ export function TaskChatBlockerLinks({
   ultimateBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary | null;
   placement: "top" | "bottom";
 }) {
+  const streamlined = useStreamlinedTaskChatPresentation();
+  const directLabel = streamlined && placement === "bottom" ? "Still blocked by" : "Blocked by";
+  const rootLabel = streamlined
+    ? placement === "bottom" ? "Root blocker remains" : "Root blocker"
+    : "Ultimately blocked by";
   return (
     <div
       aria-label="Task blockers"
@@ -178,9 +204,9 @@ export function TaskChatBlockerLinks({
       data-testid="task-chat-blocker-links"
       className="flex min-w-0 flex-col gap-1 overflow-hidden text-(length:--text-micro) leading-4 text-amber-700 dark:text-amber-300"
     >
-      <BlockerRow label="Blocked by" blocker={directBlocker} />
+      <BlockerRow label={directLabel} blocker={directBlocker} />
       {ultimateBlocker ? (
-        <BlockerRow label="Ultimately blocked by" blocker={ultimateBlocker} />
+        <BlockerRow label={rootLabel} blocker={ultimateBlocker} />
       ) : null}
     </div>
   );
@@ -193,6 +219,8 @@ export function TaskChatLiveWorkLinks({
   liveWork: ResolvedTaskChatLiveWork;
   placement: "top" | "bottom";
 }) {
+  const streamlined = useStreamlinedTaskChatPresentation();
+  const heading = streamlined && placement === "bottom" ? "Still waiting on live work" : "Waiting on live work";
   return (
     <div
       aria-label="Tasks waiting on live work"
@@ -204,27 +232,33 @@ export function TaskChatLiveWorkLinks({
         <span className="flex h-3.5 w-3.5 items-center justify-center" aria-hidden>
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
         </span>
-        Waiting on live work
+        {heading}
       </div>
       <ol className="flex min-w-0 flex-col gap-1">
         {liveWork.steps.map(({ blocker, status }, index) => (
           <li
             key={blocker.id}
             data-testid="task-chat-live-work-step"
-            className="flex min-w-0 items-center gap-1.5 whitespace-nowrap"
+            className={streamlined ? "min-w-0 whitespace-nowrap" : "flex min-w-0 items-center gap-1.5 whitespace-nowrap"}
           >
-            <span className="w-4 shrink-0 text-right font-mono text-blue-500/80" aria-hidden>
-              {index + 1}.
-            </span>
-            <LiveWorkGlyph status={status} />
-            <LiveWorkLink blocker={blocker} />
+            {!streamlined ? (
+              <>
+                <span className="w-4 shrink-0 text-right font-mono text-blue-500/80" aria-hidden>
+                  {index + 1}.
+                </span>
+                <LiveWorkGlyph status={status} />
+              </>
+            ) : null}
+            <LiveWorkLink blocker={blocker} status={status} />
           </li>
         ))}
       </ol>
-      {liveWork.nowRunning.map((blocker) => (
+      {liveWork.nowRunning.map((blocker) => streamlined ? (
+        <LiveWorkLink key={blocker.id} blocker={blocker} status="running" label="Now running" />
+      ) : (
         <div key={blocker.id} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
           <span className="shrink-0 font-medium">Now running</span>
-          <LiveWorkLink blocker={blocker} />
+          <LiveWorkLink blocker={blocker} status="running" />
         </div>
       ))}
     </div>

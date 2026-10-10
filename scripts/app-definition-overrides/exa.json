@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "slug": "exa",
+  "name": "Exa",
+  "description": "Search the public web and read source pages with Exa.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/exa.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.exa.ai/*"
+  ],
+  "docsUrl": "https://exa.ai/docs/get-started/exa-mcp",
+  "methods": [
+    {
+      "key": "public-search",
+      "label": "Use public Exa search",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Exa’s public, keyless search MCP.",
+      "defaults": {
+        "serverUrl": "https://mcp.exa.ai/mcp"
+      },
+      "guidanceMd": "The public MCP route provides web search and page fetching. Keep citations with results. Account-authenticated Agent and advanced tools are not included in this method.",
+      "riskTier": "S2"
+    }
+  ]
+}

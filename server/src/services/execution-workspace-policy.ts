@@ -38,17 +38,17 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   }
   return {
     type,
-    ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
-    ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
+    ...(typeof parsed.baseRef === "string" || parsed.baseRef === null ? { baseRef: parsed.baseRef } : {}),
+    ...(typeof parsed.branchTemplate === "string" || parsed.branchTemplate === null ? { branchTemplate: parsed.branchTemplate } : {}),
     ...(typeof parsed.existingBranch === "string" && parsed.existingBranch.trim().length > 0
       ? { existingBranch: parsed.existingBranch.trim() }
       : {}),
-    ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
-    ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
-    ...(typeof parsed.runtimeProvisionCommand === "string"
+    ...(typeof parsed.worktreeParentDir === "string" || parsed.worktreeParentDir === null ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
+    ...(typeof parsed.provisionCommand === "string" || parsed.provisionCommand === null ? { provisionCommand: parsed.provisionCommand } : {}),
+    ...(typeof parsed.runtimeProvisionCommand === "string" || parsed.runtimeProvisionCommand === null
       ? { runtimeProvisionCommand: parsed.runtimeProvisionCommand }
       : {}),
-    ...(typeof parsed.teardownCommand === "string" ? { teardownCommand: parsed.teardownCommand } : {}),
+    ...(typeof parsed.teardownCommand === "string" || parsed.teardownCommand === null ? { teardownCommand: parsed.teardownCommand } : {}),
   };
 }
 
@@ -164,6 +164,45 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
+/**
+ * Operator default: a project with a configured workspace and no policy of its
+ * own runs its tasks in an isolated per-task worktree.
+ *
+ * This substitutes a policy rather than moving the terminal fallback in
+ * `resolveExecutionWorkspaceMode`, and the distinction is load-bearing:
+ *
+ * - A task with no project must keep its existing behavior. Isolation needs a
+ *   repository to cut a worktree from, and `isUnrunnableWorktreeCombo` blocks
+ *   an isolated + `git_worktree` task that has neither `projectId` nor
+ *   `projectWorkspaceId`. Moving the terminal fallback would resolve isolated
+ *   for project-less tasks (agent chat, for example) and strand them before
+ *   dispatch. A project without a configured workspace also uses a plain
+ *   managed directory, not a Git checkout. `hasProjectWorkspace` keeps both
+ *   cases on their existing path; configured checkouts are still validated
+ *   before a worktree is created.
+ * - `buildExecutionWorkspaceAdapterConfig` only supplies the default
+ *   `git_worktree` strategy when some layer actually asserts workspace
+ *   control. A moved fallback would leave `hasWorkspaceControl` false and
+ *   produce isolated mode carrying a `project_primary` strategy — a
+ *   combination no caller expects. Substituting a real policy makes
+ *   `projectHasPolicy` true, so mode and strategy stay coherent.
+ *
+ * A stored project policy always wins, including one that is explicitly
+ * disabled: `parseProjectExecutionWorkspacePolicy` returns `enabled: false`
+ * for a blob that never opted in, and that is a tenant decision to stay on the
+ * shared checkout, not an absent one to fill in.
+ */
+export function applyDefaultIsolatedExecutionWorkspacePolicy(input: {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  defaultIsolatedWorkspacesEnabled: boolean;
+  hasProjectWorkspace: boolean;
+}): ProjectExecutionWorkspacePolicy | null {
+  if (!input.defaultIsolatedWorkspacesEnabled) return input.projectPolicy;
+  if (!input.hasProjectWorkspace) return input.projectPolicy;
+  if (input.projectPolicy) return input.projectPolicy;
+  return { enabled: true, defaultMode: "isolated_workspace" };
+}
+
 type ParseIssueExecutionWorkspaceSettingsOptions = {
   includeEnvironmentId?: boolean;
 };
@@ -233,6 +272,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
   | "agent"
   | "instance"
   | "default"
@@ -255,6 +295,8 @@ export class ManagedSandboxUnavailableError extends Error {
 }
 
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
+  lowTrustIssueEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -270,6 +312,9 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.lowTrustIssueEnvironmentId) {
+      return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
+    }
     if (input.agentDefaultEnvironmentId) {
       return {
         environmentId: input.agentDefaultEnvironmentId,
@@ -379,11 +424,18 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
-        input.issueSettings?.workspaceStrategy ??
-        input.projectPolicy?.workspaceStrategy ??
+      const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
+      const issueStrategy = input.issueSettings?.workspaceStrategy;
+      // An issue that changes its branch still needs the project's setup hooks.
+      // Do not carry those defaults into a different execution strategy.
+      const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
+        ? { ...projectStrategy, ...issueStrategy }
+        : issueStrategy ?? projectStrategy ??
         parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
         ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+      if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
+        delete strategy.branchTemplate;
+      }
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;

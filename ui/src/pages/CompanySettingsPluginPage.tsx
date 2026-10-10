@@ -50,7 +50,7 @@ export function CompanySettingsPluginPage() {
     if (hasInvalidCompanyPrefix) {
       return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
     }
-    return <div className="text-sm text-muted-foreground">Select a company to view this page.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to view this page.</div>;
   }
 
   if (!settingsRoutePath || isLoading) {

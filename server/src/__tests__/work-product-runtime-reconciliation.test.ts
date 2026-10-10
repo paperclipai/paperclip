@@ -39,23 +39,26 @@ describe("reconcileRuntimeServiceWorkProducts", () => {
     expect(reconciled!.healthStatus).toBe("healthy");
   });
 
-  it("marks a stopped or unhealthy runtime unhealthy instead of advertising it", () => {
+  it("closes a stopped runtime but keeps a running unhealthy runtime active", () => {
     const [stopped] = reconcileRuntimeServiceWorkProducts(
       [workProduct()],
       [{ id: "runtime-1", url: "https://workspace.example.ts.net:42013/", status: "stopped", healthStatus: "healthy" }],
     );
+    expect(stopped!.status).toBe("closed");
     expect(stopped!.healthStatus).toBe("unhealthy");
 
     const [unhealthy] = reconcileRuntimeServiceWorkProducts(
       [workProduct()],
       [{ id: "runtime-1", url: "https://workspace.example.ts.net:42013/", status: "running", healthStatus: "unhealthy" }],
     );
+    expect(unhealthy!.status).toBe("open");
     expect(unhealthy!.healthStatus).toBe("unhealthy");
   });
 
-  it("keeps the recorded URL when the runtime row is gone, but stops calling it healthy", () => {
+  it("keeps the recorded URL when the runtime row is gone and closes the work product", () => {
     const [reconciled] = reconcileRuntimeServiceWorkProducts([workProduct()], []);
     expect(reconciled!.url).toBe("https://workspace.example.ts.net:42013/");
+    expect(reconciled!.status).toBe("closed");
     expect(reconciled!.healthStatus).toBe("unhealthy");
   });
 

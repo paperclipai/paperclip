@@ -72,6 +72,7 @@ export interface WorkspaceCommandDefinition {
   kind: WorkspaceCommandKind;
   command: string | null;
   cwd: string | null;
+  port: number | null;
   lifecycle: "shared" | "ephemeral" | null;
   serviceIndex: number | null;
   disabledReason: string | null;

@@ -6,7 +6,8 @@ import { INSTANCE_FEATURE_KEYS, type InstanceFeatureKey } from "./feature-catalo
  * A hosting operator (a managed cloud, an internal shared server) can hide
  * settings surfaces that do not apply to their deployment by setting the
  * `PAPERCLIP_HIDDEN_SETTINGS` environment variable to a comma-separated
- * list of keys from this registry. Hiding a surface removes it from the UI
+ * list of keys from this registry. An experimental wildcard with named
+ * exceptions can also hide future controls automatically. Hiding a surface removes it from the UI
  * (nav, routes, page sections). Surfaces backed by instance-level mutation
  * routes are also floored with a 403 carrying
  * `SETTINGS_OPERATOR_MANAGED_ERROR_CODE`: the Access, Plugins, and Adapters
@@ -34,7 +35,6 @@ export const HIDEABLE_INSTANCE_PAGES = [
   "instance.profile",
   "instance.environments",
   "instance.access",
-  "instance.heartbeats",
   "instance.experimental",
   "instance.plugins",
   "instance.adapters",
@@ -59,6 +59,19 @@ export const HIDEABLE_COMPANY_PAGES = [
 export type HideableCompanyPage = (typeof HIDEABLE_COMPANY_PAGES)[number];
 
 /**
+ * Sub-surfaces of company settings pages that can be hidden individually.
+ * UI-visibility keys only: the backing APIs stay live for agents and
+ * integrations. Hiding the whole page (`company.secrets`) already removes
+ * everything inside it; these keys hide one tab while the page stays up.
+ */
+export const HIDEABLE_COMPANY_SECTIONS = [
+  "company.secrets.vaults",
+  "company.secrets.proposals",
+] as const;
+
+export type HideableCompanySection = (typeof HIDEABLE_COMPANY_SECTIONS)[number];
+
+/**
  * Sections of Instance → General that can be hidden. Field-backed sections
  * (their suffix names a general-settings field) also floor writes to that
  * field; `deploymentStatus` and `signOut` are read-only UI with no field.
@@ -66,7 +79,6 @@ export type HideableCompanyPage = (typeof HIDEABLE_COMPANY_PAGES)[number];
 export const HIDEABLE_GENERAL_SECTIONS = [
   "instance.general.deploymentStatus",
   "instance.general.censorUsernameInLogs",
-  "instance.general.keyboardShortcuts",
   "instance.general.backupRetention",
   "instance.general.feedbackDataSharingPreference",
   "instance.general.signOut",
@@ -87,16 +99,24 @@ export function experimentalSettingKey(key: InstanceFeatureKey): HideableExperim
   return `instance.experimental.${key}`;
 }
 
+/** Workspace policy editors and selectors. UI-only; execution and APIs stay active. */
+export const HIDEABLE_WORKSPACE_SECTIONS = ["workspaces.isolation"] as const;
+export type HideableWorkspaceSection = (typeof HIDEABLE_WORKSPACE_SECTIONS)[number];
+
 export type HideableSettingKey =
+  | HideableWorkspaceSection
   | HideableInstancePage
   | HideableCompanyPage
+  | HideableCompanySection
   | HideableGeneralSection
   | HideableExperimentalSetting;
 
-/** Every key `PAPERCLIP_HIDDEN_SETTINGS` accepts. */
+/** Concrete setting keys; the parser also accepts the experimental wildcard and exceptions. */
 export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
+  ...HIDEABLE_WORKSPACE_SECTIONS,
   ...HIDEABLE_INSTANCE_PAGES,
   ...HIDEABLE_COMPANY_PAGES,
+  ...HIDEABLE_COMPANY_SECTIONS,
   ...HIDEABLE_GENERAL_SECTIONS,
   ...INSTANCE_FEATURE_KEYS.map(experimentalSettingKey),
 ];
@@ -104,28 +124,48 @@ export const HIDEABLE_SETTING_KEYS: readonly HideableSettingKey[] = [
 /** Stable 403 code for writes to operator-hidden settings. */
 export const SETTINGS_OPERATOR_MANAGED_ERROR_CODE = "settings_operator_managed";
 
+/** Hide current and future experimental controls, with optional !key exceptions. */
+export const EXPERIMENTAL_SETTINGS_WILDCARD = "instance.experimental.*";
+
 export interface ParsedHiddenSettings {
-  /** Recognized keys, deduplicated, in input order. */
+  /** Concrete keys, deduplicated; wildcard-derived keys follow in catalog order. */
   hidden: HideableSettingKey[];
   /** Unrecognized entries, for the caller to warn about. */
   unknown: string[];
 }
 
-/** Parse a `PAPERCLIP_HIDDEN_SETTINGS`-style comma-separated list. */
+/**
+ * Parse operator settings into concrete keys for both the UI and API.
+ * `instance.experimental.*` hides every catalog control except entries such as
+ * `!instance.experimental.enableEnvironments`. Exceptions only affect the
+ * wildcard; an explicit hidden key or hidden parent page always wins.
+ */
 export function parseHiddenSettingsList(raw: string | undefined): ParsedHiddenSettings {
   const hidden: HideableSettingKey[] = [];
   const unknown: string[] = [];
   if (!raw) return { hidden, unknown };
   const known = new Set<string>(HIDEABLE_SETTING_KEYS);
   const seen = new Set<string>();
+  const exceptions = new Set<string>();
+  let hideExperimental = false;
   for (const part of raw.split(",")) {
     const key = part.trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    if (known.has(key)) {
+    if (key === EXPERIMENTAL_SETTINGS_WILDCARD) {
+      hideExperimental = true;
+    } else if (key.startsWith("!instance.experimental.") && known.has(key.slice(1))) {
+      exceptions.add(key.slice(1));
+    } else if (known.has(key)) {
       hidden.push(key as HideableSettingKey);
     } else {
       unknown.push(key);
+    }
+  }
+  if (hideExperimental) {
+    for (const feature of INSTANCE_FEATURE_KEYS) {
+      const key = experimentalSettingKey(feature);
+      if (!exceptions.has(key) && !seen.has(key)) hidden.push(key);
     }
   }
   return { hidden, unknown };
@@ -143,6 +183,13 @@ export function hidesCompanyPage(
   page: HideableCompanyPage,
 ): boolean {
   return hidden.has(page);
+}
+
+export function hidesCompanySection(
+  hidden: ReadonlySet<string>,
+  section: HideableCompanySection,
+): boolean {
+  return hidden.has(section);
 }
 
 export function hidesGeneralSection(

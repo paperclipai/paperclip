@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -15,6 +16,7 @@ import {
   companySecrets,
   createDb,
   environments,
+  principalPermissionGrants,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -27,6 +29,7 @@ import {
   assertClaudeOAuthBindingInvariant,
   CLAUDE_OAUTH_CLAIM_REJECTED,
   CLAUDE_OAUTH_CREDENTIAL_CONFLICT,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   isFixedClaudeOAuthBinding,
   secretService,
@@ -188,6 +191,22 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     expect(error.status).toBe(409);
     expect(error.message).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
   });
+
+  it("matches two fixed bindings only when their version selectors are exactly equal", () => {
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, FIXED_BINDING)).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 5 }),
+    ).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 2 }),
+    ).toBe(false);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: "latest" }),
+    ).toBe(false);
+    // Neither side needs the exact fixed shape only; both sides do.
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, { type: "plain", value: "x" })).toBe(false);
+    expect(claudeOAuthBindingsMatchExactly(null, FIXED_BINDING)).toBe(false);
+  });
 });
 
 // --- The stored-session claim on the create and hire paths (Postgres) --------
@@ -228,6 +247,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await db.delete(userSecretDeclarations);
     await db.delete(userSecretDefinitions);
     await db.delete(adapterAuthSessions);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(companies);
@@ -343,7 +363,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
 
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -357,7 +377,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     // A replay of the same claim inserts no second agent.
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -367,7 +387,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("rejects a missing claim and inserts no binding", async () => {
     const scope = await seedScope();
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: undefined, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -378,7 +398,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: "intruder" },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -390,7 +410,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() - 1_000);
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -401,7 +421,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000, "awaiting_code");
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -413,8 +433,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // Missing claim.
     const missingScope = await seedScope();
     messages.push(
-      await agentService(db)
-        .create(missingScope.companyId, createInput(missingScope), {
+      await createAgentLifecycle(db).requestHire(missingScope.companyId, createInput(missingScope), {
           claudeLogin: { storedSessionId: undefined, ownerUserId: missingScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -424,8 +443,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const foreignScope = await seedScope();
     const foreignSession = await seedStoredClaim(foreignScope, Date.now() + 60_000);
     messages.push(
-      await agentService(db)
-        .create(foreignScope.companyId, createInput(foreignScope), {
+      await createAgentLifecycle(db).requestHire(foreignScope.companyId, createInput(foreignScope), {
           claudeLogin: { storedSessionId: foreignSession, ownerUserId: "intruder" },
         })
         .then(() => "no-error")
@@ -435,8 +453,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const expiredScope = await seedScope();
     const expiredSession = await seedStoredClaim(expiredScope, Date.now() - 1_000);
     messages.push(
-      await agentService(db)
-        .create(expiredScope.companyId, createInput(expiredScope), {
+      await createAgentLifecycle(db).requestHire(expiredScope.companyId, createInput(expiredScope), {
           claudeLogin: { storedSessionId: expiredSession, ownerUserId: expiredScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -446,8 +463,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const nonStoredScope = await seedScope();
     const nonStoredSession = await seedStoredClaim(nonStoredScope, Date.now() + 60_000, "submitting");
     messages.push(
-      await agentService(db)
-        .create(nonStoredScope.companyId, createInput(nonStoredScope), {
+      await createAgentLifecycle(db).requestHire(nonStoredScope.companyId, createInput(nonStoredScope), {
           claudeLogin: { storedSessionId: nonStoredSession, ownerUserId: nonStoredScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -456,12 +472,11 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // Already consumed.
     const consumedScope = await seedScope();
     const consumedSession = await seedStoredClaim(consumedScope, Date.now() + 60_000);
-    await agentService(db).create(consumedScope.companyId, createInput(consumedScope), {
+    await createAgentLifecycle(db).requestHire(consumedScope.companyId, createInput(consumedScope), {
       claudeLogin: { storedSessionId: consumedSession, ownerUserId: consumedScope.ownerUserId },
     });
     messages.push(
-      await agentService(db)
-        .create(consumedScope.companyId, createInput(consumedScope), {
+      await createAgentLifecycle(db).requestHire(consumedScope.companyId, createInput(consumedScope), {
           claudeLogin: { storedSessionId: consumedSession, ownerUserId: consumedScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -476,10 +491,10 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
 
     const results = await Promise.allSettled([
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ]);
@@ -517,8 +532,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
 
     await locked;
-    const createPromise = agentService(db)
-      .create(scope.companyId, createInput(scope), {
+    const createPromise = createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       })
       .then(() => "created")
@@ -536,7 +550,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("removes the fixed binding on a normal update", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -549,7 +563,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("re-points the binding to a plain value on a normal update", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -564,7 +578,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("removes the binding by a move to another adapter type on a normal update", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -584,7 +598,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("keeps an existing binding when the update changes another field", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -597,7 +611,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
   it("rejects a newly introduced binding on update, because it carries no claim", async () => {
     const scope = await seedScope();
-    const created = await agentService(db).create(scope.companyId, {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, {
       name: "Api Key Agent",
       role: "engineer",
       status: "idle",
@@ -626,7 +640,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     await seedStoredOwnerValue(scope);
 
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
     });
 
@@ -647,9 +661,9 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     await seedStoredOwnerValue(scope);
 
-    const created = await agentService(
+    const created = await createAgentLifecycle(
       db,
-    ).create(scope.companyId, { ...createInput(scope), status: "pending_approval" }, {
+    ).requestHire(scope.companyId, { ...createInput(scope), status: "pending_approval" }, {
       claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
     });
 
@@ -661,7 +675,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("binds the fixed reference on an update from a stored owner value with no claim", async () => {
     const scope = await seedScope();
     await seedStoredOwnerValue(scope);
-    const created = await agentService(db).create(scope.companyId, {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, {
       name: "Claude Agent",
       role: "engineer",
       status: "idle",
@@ -687,7 +701,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
 
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -704,7 +718,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // The route sets no owner for an agent actor. The gate rejects the no-claim
     // bind, so an agent actor never binds the fixed reference.
     await expect(
-      agentService(db).create(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
         claudeLogin: { ownerUserId: null, applyExistingWithoutClaim: true },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -720,7 +734,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     foreignScope.ownerUserId = ownerScope.ownerUserId;
 
     await expect(
-      agentService(db).create(foreignScope.companyId, createInput(foreignScope), {
+      createAgentLifecycle(db).requestHire(foreignScope.companyId, createInput(foreignScope), {
         claudeLogin: { ownerUserId: foreignScope.ownerUserId, applyExistingWithoutClaim: true },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -734,7 +748,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // The apply-existing flag is set, but the config carries no fixed binding. The
     // gate mints the fixed reference only when the client presents the exact fixed
     // binding, so the flag alone binds nothing and creates no fixed definition.
-    const created = await agentService(db).create(
+    const created = await createAgentLifecycle(db).requestHire(
       scope.companyId,
       {
         name: "Plain Agent",
@@ -762,7 +776,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // A client adds a secret id and a foreign owner to the binding. The persist
     // normalization keeps only the fixed reference fields, so the extra selectors
     // never reach the stored binding. The runtime derives the owner from context.
-    const created = await agentService(db).create(
+    const created = await createAgentLifecycle(db).requestHire(
       scope.companyId,
       createInput(scope, {
         CLAUDE_CODE_OAUTH_TOKEN: {
@@ -785,7 +799,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   it("resolves the bound reference to the stored value without leaking it in a log", async () => {
     const scope = await seedScope();
     await seedStoredOwnerValue(scope, "sk-secret-resolve");
-    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
       claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
     });
 
@@ -795,6 +809,199 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(await countDeclarationsForAgent(created.id)).toBe(1);
     const definitions = await db.select().from(userSecretDefinitions);
     expect(JSON.stringify(definitions)).not.toContain("sk-secret-resolve");
+  });
+
+  // --- The hire-inheritance path (no login round trip, no stored owner value) -
+
+  async function seedParentAgent(
+    parentScope: Scope,
+    options: { adapterType?: string; holdsFixedBinding?: boolean; version?: number } = {},
+  ) {
+    const [row] = await db
+      .insert(agents)
+      .values({
+        companyId: parentScope.companyId,
+        name: `Parent ${randomUUID().slice(0, 8)}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: options.adapterType ?? "claude_local",
+        adapterConfig: {
+          env:
+            options.holdsFixedBinding === false
+              ? {}
+              // A binding written through the normal persistence path always
+              // carries a resolved version, "latest" by default. Match that
+              // shape here, so only `options.version` simulates a pinned
+              // version, or a version change since the child copied it.
+              : { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: options.version ?? "latest" } },
+        },
+        runtimeConfig: {},
+      })
+      .returning();
+    return row!;
+  }
+
+  async function countDeclarationsForCompany(companyId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.companyId, companyId));
+    return rows.length;
+  }
+
+  it("binds the inherited fixed reference from a named claude_local parent with no claim and no stored owner value", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope);
+
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      claudeLogin: { inheritedFromAgentId: parent.id },
+    });
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("binds the inherited reference when the child's copied version still matches the parent's current version", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const created = await createAgentLifecycle(db).requestHire(
+      scope.companyId,
+      createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+      { claudeLogin: { inheritedFromAgentId: parent.id } },
+    );
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject({ ...FIXED_BINDING, version: 5 });
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("rejects an inherited claim when the parent's version moved after the route copied the child's reference", async () => {
+    const scope = await seedScope();
+    // The parent now holds version 5. The child's reference, copied before this
+    // transaction, still names version 2 — a concurrent parent rotation moved
+    // the parent's version between the copy and this write.
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    await expect(
+      createAgentLifecycle(db).requestHire(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 2 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      ),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim when the named parent holds no fixed binding", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { holdsFixedBinding: false });
+
+    await expect(
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a parent in another company", async () => {
+    const scope = await seedScope();
+    const foreignScope = await seedScope();
+    const parent = await seedParentAgent(foreignScope);
+
+    await expect(
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+    expect(await countUserSecretDefinitions(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming an unknown or deleted parent", async () => {
+    const scope = await seedScope();
+
+    await expect(
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: randomUUID() },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a non-claude_local parent that still holds the fixed binding shape", async () => {
+    const scope = await seedScope();
+    // The parent's stored env happens to carry the exact fixed-binding shape
+    // under a non-claude_local adapter type. Complete mediation requires the
+    // gate to check the adapter type itself, not only the binding shape.
+    const parent = await seedParentAgent(scope, { adapterType: "codex_local" });
+
+    await expect(
+      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim when a concurrent parent rotation commits while this create waits on the parent row lock", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const lockDb = createDb(connectionString);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    // Simulate a credential rotation on the parent: it takes the row lock
+    // first, moves the bound version to 6, then holds the open transaction
+    // until the gate releases.
+    const rotationHeld = lockDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM agents WHERE id = ${parent.id} FOR UPDATE`);
+      await tx.execute(
+        sql`UPDATE agents SET adapter_config = jsonb_set(adapter_config, '{env,CLAUDE_CODE_OAUTH_TOKEN,version}', '6') WHERE id = ${parent.id}`,
+      );
+      signalLocked();
+      await gate;
+    });
+
+    await locked;
+    // The child's copied reference still names version 5, the version the
+    // route read before the rotation started. The create call must wait for
+    // the parent row lock, so it can only proceed once the rotation commits.
+    const createPromise = createAgentLifecycle(db).requestHire(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      )
+      .then(() => "created")
+      .catch((error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    releaseGate();
+    await rotationHeld;
+
+    // The create call reads the parent's committed post-rotation version, so
+    // it detects the mismatch against the child's stale copy and rejects the
+    // claim. Without the row lock, the create call could read the parent's
+    // pre-rotation version and bind the child to a reference the parent no
+    // longer holds.
+    expect(await createPromise).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
+    expect(await countAgents(scope.companyId)).toBe(1);
+    await lockDb.$client.end();
   });
 
   // --- The atomic credential-claim writer (item 2) ---------------------------

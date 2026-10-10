@@ -34,6 +34,9 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 
+import { activityRoutes } from "../routes/activity.js";
+import { issueRoutes } from "../routes/issues.js";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -52,10 +55,6 @@ function agentActor(companyId: string, agentId: string): Express.Request["actor"
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
-  const [{ activityRoutes }, { issueRoutes }] = await Promise.all([
-    import("../routes/activity.js"),
-    import("../routes/issues.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

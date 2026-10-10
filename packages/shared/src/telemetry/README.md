@@ -17,18 +17,18 @@ types as the final authority for emitted first-party telemetry shapes.
 
 Use these files when reviewing or changing telemetry code:
 
-| Contract item | Public source |
-| --- | --- |
-| First-party event names | `PaperclipEventName` in `generated/paperclip-telemetry.ts` |
-| Per-event dimensions and optionality | `EventDimensionsMap` in `generated/paperclip-telemetry.ts` |
-| Enum descriptions for telemetry dimensions | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts` |
-| Schema version and event envelope helpers | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
-| Runtime-safe event names and dimensions | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts` |
-| Allowed primitive dimension values | `TelemetryDimensionValue` in `types.ts` |
-| Shared reusable enum domains | Named exports in `constants.ts` |
-| First-party typed emit helpers | `events.ts` |
-| Generic client behavior | `client.ts` |
-| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts` |
+| Contract item                                 | Public source                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| First-party event names                       | `PaperclipEventName` in `generated/paperclip-telemetry.ts`                               |
+| Per-event dimensions and optionality          | `EventDimensionsMap` in `generated/paperclip-telemetry.ts`                               |
+| Enum descriptions for telemetry dimensions    | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts`                      |
+| Schema version and event envelope helpers     | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
+| Runtime-safe event names and dimensions       | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts`                        |
+| Allowed primitive dimension values            | `TelemetryDimensionValue` in `types.ts`                                                  |
+| Shared reusable enum domains                  | Named exports in `constants.ts`                                                          |
+| First-party typed emit helpers                | `events.ts`                                                                              |
+| Generic client behavior                       | `client.ts`                                                                              |
+| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts`                           |
 
 Do not copy generated event lists or dimension tables into this README. They
 will drift as the generated contract changes.
@@ -57,6 +57,14 @@ If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
 
+Credential-bearing chat setup failures replace provider-controlled error names,
+messages, and stacks with a fresh generic error before the HTTP error handler
+reports the crash. The existing `error.handler_crash` event still uses its
+generated `error_code: string` contract; this path emits only `Error`, never a
+provider-supplied error name that may contain a credential. This is a privacy
+boundary, not enum canonicalization. Test the value reaching the telemetry
+helper as well as the separate crash-reporting and local logging sinks.
+
 ## Interaction Resolver Events
 
 `interaction.created` records the interaction kind and whether the create
@@ -70,9 +78,29 @@ in the generated contract. Its `legacy_inherited_restriction` dimension is
 restriction. It is `false` for canonical new writes. This dimension describes
 policy provenance. It does not contain user content or an identifier.
 
+Emit `interaction.resolved` only after the complete decision transaction commits.
+Conversational answers include the card outcome, source-message reference, and
+activity audit in that transaction. A rollback or matching retry must not emit
+a resolution event. This changes emission timing only: message text, comment IDs,
+and user IDs remain in the instance database and are not added to telemetry.
+
 Use `trackInteractionCreated()` and `trackInteractionResolved()` from
 `events.ts` to emit these events. The generated contract remains the authority
 for their exact dimensions and optionality.
+
+## Agent Task Run Events
+
+`agent.task_run` records one terminal state for one agent run: `succeeded`,
+`interrupted`, `failed`, `cancelled`, or `timed_out`. Emit it once per run, at
+the run's terminal transition. Do not emit it for a run that is still active.
+
+The event's `task_id` dimension is optional and privacy-protected. Never emit
+the raw task id. Pass the raw id to `trackAgentTaskRun()` in `events.ts`. The
+helper calls `hashPrivateRef()` on `client.ts`, which derives the emitted
+value with a salted hash of the per-installation secret.
+
+Use `trackAgentTaskRun()` to emit this event. The generated contract remains
+the authority for its exact dimensions and optionality.
 
 ### Other Data Paths
 
@@ -166,11 +194,21 @@ concern — updating a retention window does not require a schema version bump.
 
 Current classes:
 
-| Class | Window | Description |
-| --- | --- | --- |
+| Class                    | Window  | Description                                                  |
+| ------------------------ | ------- | ------------------------------------------------------------ |
 | `operational_enum_count` | 90 days | Enum/boolean/count/bucket events. No token material, no PII. |
 
 When a new event carries only enums, booleans, counts, or coarse buckets and
 no token material or PII, assign it to `operational_enum_count` in
 `EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
 `RETENTION_DAYS` and document it here.
+
+## GitHub-synced skills
+
+The legacy import endpoint retains `skill.imported` with its existing `source_type`.
+For source-managed GitHub skills, `skill_ref` is omitted, including public sources:
+the saved repository may be private and its key contains user-authored names.
+Source discovery, selection, and refresh add no first-party telemetry events.
+Repository URLs, paths, commits, connection IDs, names, and file contents stay out
+of these telemetry dimensions. Review this suppression in privacy review alongside
+changes to the legacy import caller; the event schema and envelope are unchanged.

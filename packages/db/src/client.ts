@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
-import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import { installDatabaseWorkSignals } from "./work-signals.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -12,6 +12,81 @@ const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journa
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
+}
+
+type RegisteredPostgresClient = ReturnType<typeof postgres>;
+
+/**
+ * Derives a registry key from a connection URL's host and port only. We must
+ * not retain or log the full URL, because it carries credentials.
+ */
+function hostPortKey(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.hostname}:${parsed.port || "5432"}`;
+}
+
+/**
+ * Same as `hostPortKey`, but returns `null` instead of throwing when the URL
+ * does not parse. `postgres(url)` tolerates a value `new URL()` rejects (an
+ * empty string falls back to the `PG*` environment variables), so `createDb`
+ * must tolerate it too: skip the registry entry and let the driver decide
+ * the outcome, instead of throwing an error the driver itself would not.
+ */
+function hostPortKeyOrNull(url: string): string | null {
+  try {
+    return hostPortKey(url);
+  } catch (error) {
+    if (error instanceof TypeError && (error as NodeJS.ErrnoException).code === "ERR_INVALID_URL") return null;
+    throw error;
+  }
+}
+
+// Tracks every client `createDb` hands out, keyed by host and port, so a test
+// fixture can end them before it stops the Postgres cluster they point at. A
+// `WeakRef` plus `FinalizationRegistry` means a long-lived process (a real
+// server) retains nothing extra: an unreferenced client is pruned on its own.
+const clientsByHostPort = new Map<string, Set<WeakRef<RegisteredPostgresClient>>>();
+const clientFinalizer = new FinalizationRegistry<{ hostPortKey: string; ref: WeakRef<RegisteredPostgresClient> }>(
+  ({ hostPortKey, ref }) => {
+    const refs = clientsByHostPort.get(hostPortKey);
+    if (!refs) return;
+    refs.delete(ref);
+    if (refs.size === 0) clientsByHostPort.delete(hostPortKey);
+  },
+);
+
+function registerClient(key: string, client: RegisteredPostgresClient): void {
+  const ref = new WeakRef(client);
+  let refs = clientsByHostPort.get(key);
+  if (!refs) {
+    refs = new Set();
+    clientsByHostPort.set(key, refs);
+  }
+  refs.add(ref);
+  clientFinalizer.register(client, { hostPortKey: key, ref }, ref);
+}
+
+/**
+ * Ends every live client `createDb` handed out for the given URL's host and
+ * port, then forgets them. Call this before stopping a Postgres cluster: a
+ * client that outlives the cluster it points at can crash the process (a
+ * reserved connection's deferred write firing after the socket is gone).
+ * Swallows individual `end()` errors so one bad client cannot block the rest.
+ */
+export async function closeRegisteredClients(url: string): Promise<void> {
+  const key = hostPortKey(url);
+  const refs = clientsByHostPort.get(key);
+  if (!refs) return;
+
+  clientsByHostPort.delete(key);
+  const clients: RegisteredPostgresClient[] = [];
+  for (const ref of refs) {
+    clientFinalizer.unregister(ref);
+    const client = ref.deref();
+    if (client) clients.push(client);
+  }
+
+  await Promise.all(clients.map((client) => client.end({ timeout: 1 }).catch(() => {})));
 }
 
 function isSafeIdentifier(value: string): boolean {
@@ -67,7 +142,31 @@ export interface DatabaseClientOptions {
   idleTimeoutSeconds?: number;
   /** postgres.js `connect_timeout` in seconds (driver default: 30). */
   connectTimeoutSeconds?: number;
+  /**
+   * postgres.js `max_lifetime` in seconds. Bounds how long one pooled
+   * connection is reused before the client replaces it (driver default: a
+   * random value between 30 and 60 minutes).
+   */
+  maxLifetimeSeconds?: number;
+  /**
+   * postgres.js `connection.application_name`, shown in
+   * `pg_stat_activity.application_name`. Lets an operator tell Paperclip's
+   * pool apart from other clients of the same database (driver default:
+   * `postgres.js`).
+   */
+  applicationName?: string;
 }
+
+/**
+ * Idle pooled connections close after this many seconds unless
+ * `DATABASE_IDLE_TIMEOUT_SECONDS` says otherwise. The driver default keeps an
+ * idle connection open forever, so a process that stops issuing queries still
+ * holds every backend it ever opened. Set `DATABASE_IDLE_TIMEOUT_SECONDS=0`
+ * to restore the driver default.
+ */
+export const DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS = 60;
+/** `application_name` reported to PostgreSQL unless `DATABASE_APPLICATION_NAME` overrides it. */
+export const DEFAULT_DATABASE_APPLICATION_NAME = "paperclip";
 
 function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   const value = env[name]?.trim().toLowerCase();
@@ -86,12 +185,28 @@ function envPositiveInteger(env: NodeJS.ProcessEnv, name: string): number | unde
   return Number.parseInt(value, 10);
 }
 
+function envNonNegativeInteger(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") return undefined;
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`);
+  }
+  return Number.parseInt(value, 10);
+}
+
+function envNonEmptyString(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") return undefined;
+  return value;
+}
+
 /**
  * Database client tuning from the environment, so hosted deployments can
  * adapt to their connection topology (pooled endpoints, network latency)
- * without editing source. Every variable is optional; when unset the
- * driver defaults apply and behavior is identical to a bare
- * `postgres(url)` — self-hosted setups need none of these.
+ * without editing source. Every variable is optional. This function returns
+ * only the values the environment sets; `resolveDatabaseClientOptions` adds
+ * Paperclip's own defaults on top, and the driver defaults apply to the rest
+ * — self-hosted setups need none of these.
  */
 export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): DatabaseClientOptions {
   const options: DatabaseClientOptions = {};
@@ -99,11 +214,31 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (prepare !== undefined) options.prepare = prepare;
   const maxConnections = envPositiveInteger(env, "DATABASE_POOL_MAX");
   if (maxConnections !== undefined) options.maxConnections = maxConnections;
-  const idleTimeoutSeconds = envPositiveInteger(env, "DATABASE_IDLE_TIMEOUT_SECONDS");
+  // `0` is allowed here: it disables idle reaping (the driver default).
+  const idleTimeoutSeconds = envNonNegativeInteger(env, "DATABASE_IDLE_TIMEOUT_SECONDS");
   if (idleTimeoutSeconds !== undefined) options.idleTimeoutSeconds = idleTimeoutSeconds;
   const connectTimeoutSeconds = envPositiveInteger(env, "DATABASE_CONNECT_TIMEOUT_SECONDS");
   if (connectTimeoutSeconds !== undefined) options.connectTimeoutSeconds = connectTimeoutSeconds;
+  const maxLifetimeSeconds = envPositiveInteger(env, "DATABASE_MAX_LIFETIME_SECONDS");
+  if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
+  const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
+  if (applicationName !== undefined) options.applicationName = applicationName;
   return options;
+}
+
+/**
+ * Fills in Paperclip's defaults for the options the caller left unset: idle
+ * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, and the
+ * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`. Everything
+ * else stays at the driver default. An explicit value (including
+ * `idleTimeoutSeconds: 0`) always wins over the default.
+ */
+export function resolveDatabaseClientOptions(options: DatabaseClientOptions): DatabaseClientOptions {
+  return {
+    ...options,
+    idleTimeoutSeconds: options.idleTimeoutSeconds ?? DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
+    applicationName: options.applicationName ?? DEFAULT_DATABASE_APPLICATION_NAME,
+  };
 }
 
 export function postgresJsOptions(options: DatabaseClientOptions): Record<string, unknown> {
@@ -112,13 +247,44 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.maxConnections !== undefined) driverOptions.max = options.maxConnections;
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
+  if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
+  if (options.applicationName !== undefined) {
+    driverOptions.connection = { application_name: options.applicationName };
+  }
   return driverOptions;
 }
 
+// A long advisory-lock transaction must not borrow the normal pool that its
+// work needs for progress writes. Keep connection configuration private to the
+// originating Db lifetime; callers receive neither URLs nor credentials.
+const dedicatedDbFactories = new WeakMap<object, () => Db>();
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
+  const factory = dedicatedDbFactories.get(db);
+  if (!factory) throw new Error("dedicated_connection_requires_create_db");
+  const dedicated = factory();
+  try { return await action(dedicated); }
+  finally { await dedicated.$client.end({ timeout: 1 }); }
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
-  const resolved = options ?? databaseClientOptionsFromEnv();
+  const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
+  return createDbClient(url, resolved);
+}
+
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
   const sql = postgres(url, postgresJsOptions(resolved));
-  return drizzlePg(sql, { schema });
+  const key = hostPortKeyOrNull(url);
+  if (key) registerClient(key, sql);
+  // A disconnect can lose the response after a statement has committed.
+  // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
+  // message cannot establish that replay is safe. Leave retries to callers
+  // that know the complete operation is idempotent.
+  const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  dedicatedDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }, db));
+  return db;
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
@@ -301,6 +467,14 @@ async function recordMigrationHistoryEntry(
   );
 }
 
+// These idempotent privacy migrations commit keyset batches inside their DO
+// blocks. Execute each statement at top level so DDL locks and completed batches
+// are released before the next batch. History is recorded only after completion.
+const MIGRATIONS_WITH_BATCH_COMMITS = new Set([
+  "0313_private_task_access.sql",
+  "0314_private_task_draft_assets.sql",
+]);
+
 async function applyPendingMigrationsManually(
   url: string,
   pendingMigrations: string[],
@@ -313,40 +487,81 @@ async function applyPendingMigrationsManually(
     journalEntries.map((entry) => [entry.fileName, normalizeFolderMillis(entry.folderMillis)]),
   );
 
-  const sql = createUtilitySql(url);
+  const pool = createUtilitySql(url);
   try {
-    const { migrationTableSchema, columnNames } = await ensureMigrationJournalTable(sql);
-    const qualifiedTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
+    const sql = await pool.reserve();
+    try {
+      // A session lock survives each batch COMMIT. Reserve the connection so
+      // pool rotation cannot release it while another migrator is waiting.
+      await sql`SELECT pg_advisory_lock(hashtextextended('paperclip:migrations', 0))`;
+      const { migrationTableSchema, columnNames } = await ensureMigrationJournalTable(sql);
+      const qualifiedTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
 
-    for (const migrationFile of orderedPendingMigrations) {
-      const migrationContent = await readMigrationFileContent(migrationFile);
-      const hash = createHash("sha256").update(migrationContent).digest("hex");
-      const existingEntry = await migrationHistoryEntryExists(
-        sql,
-        qualifiedTable,
-        columnNames,
-        migrationFile,
-        hash,
-      );
-      if (existingEntry) continue;
-
-      await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
-        }
-
-        await recordMigrationHistoryEntry(
+      for (const migrationFile of orderedPendingMigrations) {
+        const migrationContent = await readMigrationFileContent(migrationFile);
+        const hash = createHash("sha256").update(migrationContent).digest("hex");
+        const existingEntry = await migrationHistoryEntryExists(
           sql,
           qualifiedTable,
           columnNames,
           migrationFile,
           hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
         );
-      });
+        if (existingEntry) continue;
+
+        const applyMigration = async () => {
+          for (const statement of splitMigrationStatements(migrationContent)) {
+            if (MIGRATIONS_WITH_BATCH_COMMITS.has(migrationFile)) {
+              // A cancelled concurrent build leaves an invalid index. IF NOT
+              // EXISTS alone would skip it on retry and journal an incomplete index.
+              const index = statement.replace(/^\s*--.*$/gm, "").trim()
+                .match(/^CREATE (?:UNIQUE )?INDEX CONCURRENTLY IF NOT EXISTS "([A-Za-z_][A-Za-z0-9_]*)"/i);
+              if (index) {
+                const invalid = await sql<{ invalid: boolean }[]>`
+                  SELECT NOT i.indisvalid AS invalid FROM pg_index i
+                  JOIN pg_class c ON c.oid = i.indexrelid
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'public' AND c.relname = ${index[1]}`;
+                if (invalid[0]?.invalid) {
+                  await sql.unsafe(`DROP INDEX CONCURRENTLY ${quoteIdentifier("public")}.${quoteIdentifier(index[1])}`);
+                }
+              }
+            }
+            // Older dev schemas can lack a replaced constraint. Preserve the
+            // published SQL/hash while allowing the harmless drop to proceed.
+            const executable = statement.replace(
+              /^(\s*ALTER TABLE "[^"]+" DROP CONSTRAINT) (?!IF EXISTS\b)/i,
+              "$1 IF EXISTS ",
+            );
+            await sql.unsafe(executable);
+          }
+
+          await recordMigrationHistoryEntry(
+            sql,
+            qualifiedTable,
+            columnNames,
+            migrationFile,
+            hash,
+            folderMillisByFileName.get(migrationFile) ?? Date.now(),
+          );
+        };
+        if (MIGRATIONS_WITH_BATCH_COMMITS.has(migrationFile)) {
+          await applyMigration();
+        } else {
+          await runInTransaction(sql, applyMigration);
+        }
+      }
+    } finally {
+      try {
+        await sql`SELECT pg_advisory_unlock(hashtextextended('paperclip:migrations', 0))`;
+      } catch {
+        // Preserve the migration error if the session died; PostgreSQL releases
+        // its lock on disconnect, and pool.end() closes any remaining connection.
+      }
+      sql.release();
     }
   } finally {
-    await sql.end();
+    await pool.end();
   }
 }
 
@@ -497,6 +712,20 @@ async function triggerExists(
   return rows[0]?.exists ?? false;
 }
 
+async function heartbeatEventSequencesAreUnique(
+  sql: ReturnType<typeof postgres>,
+): Promise<boolean> {
+  const rows = await sql<{ unique: boolean }[]>`
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM heartbeat_run_events
+      GROUP BY run_id, seq
+      HAVING count(*) > 1
+    ) AS unique
+  `;
+  return rows[0]?.unique ?? false;
+}
+
 async function heartbeatNextEventSequencesAreCurrent(
   sql: ReturnType<typeof postgres>,
 ): Promise<boolean> {
@@ -571,9 +800,15 @@ async function migrationStatementAlreadyApplied(
     return triggerExists(sql, createTriggerMatch[1]);
   }
 
-  // This native-runner cursor backfill has a persistent postcondition. Verify it
-  // instead of replaying it when a restored database is missing only the
+  // These native-runner repairs have persistent postconditions. Verify them
+  // instead of replaying them when a restored database is missing only the
   // migration-history row.
+  if (
+    normalized.startsWith("WITH ranked AS (")
+    && normalized.includes('UPDATE "heartbeat_run_events" AS event')
+  ) {
+    return heartbeatEventSequencesAreUnique(sql);
+  }
   if (
     normalized.startsWith('UPDATE "heartbeat_runs" AS run')
     && normalized.includes('SET "next_event_seq" = COALESCE')
@@ -851,26 +1086,10 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   if (initialState.status === "upToDate") return;
 
   if (initialState.reason === "no-migration-journal-empty-db") {
-    const sql = createUtilitySql(url);
-    try {
-      const db = drizzlePg(sql);
-      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    } finally {
-      await sql.end();
-    }
-
-    let bootstrappedState = await inspectMigrations(url);
-    if (bootstrappedState.status === "upToDate") return;
-    if (bootstrappedState.reason === "pending-migrations") {
-      const repair = await reconcilePendingMigrationHistory(url);
-      if (repair.repairedMigrations.length > 0) {
-        bootstrappedState = await inspectMigrations(url);
-      }
-      if (bootstrappedState.status === "needsMigrations" && bootstrappedState.reason === "pending-migrations") {
-        await applyPendingMigrationsManually(url, bootstrappedState.pendingMigrations);
-        bootstrappedState = await inspectMigrations(url);
-      }
-    }
+    // Use the same per-file executor for bootstrap and upgrades: Drizzle wraps
+    // the whole journal in one transaction and cannot run committing backfills.
+    await applyPendingMigrationsManually(url, initialState.pendingMigrations);
+    const bootstrappedState = await inspectMigrations(url);
     if (bootstrappedState.status === "upToDate") return;
     throw new Error(
       `Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`,
@@ -934,8 +1153,7 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
       return { migrated: false, reason: "not-empty-no-migration-journal", tableCount };
     }
 
-    const db = drizzlePg(sql);
-    await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    await applyPendingMigrationsManually(url, await listMigrationFiles());
 
     return { migrated: true, reason: "migrated-empty-db", tableCount: 0 };
   } finally {

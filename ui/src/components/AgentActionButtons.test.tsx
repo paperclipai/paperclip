@@ -134,6 +134,29 @@ describe("AgentActionButtons", () => {
     );
   }
 
+  it.each(["preparing", "verifying", "resuming"] as const)("offers pause rather than resume during %s", async lifecycleState => {
+    render(makeAgent({ status: "paused", lifecycleState }));
+    await flushReact();
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.some(button => button.textContent === "Resume")).toBe(false);
+    const pause = buttons.find(button => button.textContent === "Pause")!;
+    expect(pause.disabled).toBe(false);
+    await act(async () => pause.click());
+    await flushReact();
+    expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
+  });
+
+  it.each(["pausing", "terminating", "cleaning_up", "terminated", "rejected"] as const)("disables pause and resume during %s", async lifecycleState => {
+    render(makeAgent({ status: lifecycleState === "pausing" ? "paused" : "terminated", lifecycleState }));
+    await flushReact();
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.find(button => button.textContent === "Pause")!.disabled).toBe(true);
+    if (lifecycleState !== "pausing") {
+      expect(buttons.find(button => button.textContent === "Run Heartbeat")!.disabled).toBe(true);
+      expect(buttons.find(button => button.textContent === "Assign Task")!.disabled).toBe(true);
+    }
+  });
+
   it("replaces the pause slot with Clear error for error agents", async () => {
     render(makeAgent({ status: "error" }));
     await flushReact();
@@ -175,6 +198,40 @@ describe("AgentActionButtons", () => {
 
     expect(container.textContent).toContain("Pause");
     expect(container.textContent).not.toContain("Clear error");
+  });
+
+  it("starts an administrator-selected run with raw provider tracing", async () => {
+    render(makeAgent(), { canRunWithProviderTrace: true });
+    await flushReact();
+
+    const traceButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Run with provider trace"),
+    );
+    expect(traceButton).toBeTruthy();
+
+    await act(async () => {
+      traceButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
+      debug: { providerTrace: "raw" },
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
+  });
+
+  it.each(["terminating", "cleaning_up"] as const)("keeps the detail page open during %s", async lifecycleState => {
+    mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated", lifecycleState }));
+    const onTerminateSuccess = vi.fn();
+    render(makeAgent(), { onTerminateSuccess });
+    await flushReact();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')!.click(); });
+    await flushReact();
+    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
+    await flushReact();
+    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(onTerminateSuccess).not.toHaveBeenCalled();
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
   });
 
   it("calls the terminate success handler after terminating an agent", async () => {

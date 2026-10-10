@@ -1,3 +1,5 @@
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
@@ -30,7 +32,7 @@ import type {
   IssueAssigneeAdapterOverrides,
   IssueAttachment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
@@ -53,6 +55,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  ResourceLifecycleEvent,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
@@ -614,6 +617,21 @@ export interface PluginEnvironmentLease {
   expiresAt?: string | null;
 }
 
+/** Serializable provider result. The host adds refresh/close lifecycle methods. */
+export interface PluginEnvironmentRunnerIngressEndpoint {
+  kind: "authenticated_websocket";
+  websocketUrl: string;
+  secretHeaders: Array<{ name: string; value: string }>;
+  generation: string;
+}
+
+export interface PluginEnvironmentRunnerIngressEndpointParams
+  extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  port: number;
+  path: string;
+}
+
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
   workspaceMode?: string;
@@ -647,8 +665,21 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Stop the exact allocation while preserving its files, regardless of its
+   * ordinary release policy. A failed stop must throw, never fall back to delete. */
+  resourceDisposition?: "stop_and_retain";
+  /** Explicit operator cancellation: terminate active work instead of waiting
+   * for command/sync activity to drain. Still requires a provider receipt. */
+  cancelActiveWork?: boolean;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
+}
+
+/** Returned only after the provider confirms that execution has ended. A queued
+ * stop request or successful local cleanup is not a termination receipt. */
+export interface PluginEnvironmentTerminationReceipt {
+  providerLeaseId: string;
+  state: "stopped" | "destroyed";
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
@@ -725,8 +756,17 @@ export interface PluginSyncFileMapping {
   kind: "file" | "directory";
   /**
    * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
-   * When set, providers MUST create the target with this mode with no
-   * world-readable window (create-with-mode or chmod-before-bytes, never after).
+   * The target MUST carry this mode when the transfer completes.
+   *
+   * For a transfer to a host target, providers MUST apply the mode with no
+   * world-readable window: create the target with the mode, or apply the mode
+   * before the bytes arrive at the target path. A host file sits outside the
+   * sandbox boundary, so an open window shows the bytes to other host
+   * processes.
+   *
+   * For a transfer to a sandbox target, providers MAY apply the mode after
+   * they write the bytes. The sandbox is the trust boundary, so a short window
+   * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
   /** Glob patterns to exclude when `kind` is `"directory"`. */
@@ -991,7 +1031,7 @@ export interface PluginRenderCloseEvent {
  * key to a compile-time command. The open request carries no command string, so a
  * caller cannot select or override the command.
  */
-export type PluginLoginCommandKey = "claude" | "codex";
+export type PluginLoginCommandKey = "claude" | "codex" | "grok";
 
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
@@ -1062,6 +1102,12 @@ export interface PluginLoginPtyCloseResult {
 
 /** The worker→host pseudo-terminal output notification parameters. Modeled on `execute.log`. */
 export interface PluginLoginPtyOutputParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and route each chunk to its own route.
+   */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw terminal output bytes. */
@@ -1070,6 +1116,12 @@ export interface PluginLoginPtyOutputParams {
 
 /** The worker→host pseudo-terminal exit notification parameters. */
 export interface PluginLoginPtyExitParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and resolve the exit against its own route.
+   */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
@@ -1279,6 +1331,8 @@ export interface HostToWorkerMethods {
   health: [params: Record<string, never>, result: PluginHealthDiagnostics];
   /** @see PLUGIN_SPEC.md §12.5 */
   shutdown: [params: Record<string, never>, result: void];
+  prepareIdleSleep: [params: { ownerId: string; expiresAt: number }, result: { ownerId: string; expiresAt: number; backgroundWork: "none" | "present" | "unknown" }];
+  releaseIdleSleep: [params: { ownerId: string }, result: void];
   /** @see PLUGIN_SPEC.md §13.3 */
   validateConfig: [params: ValidateConfigParams, result: PluginConfigValidationResult];
   /** @see PLUGIN_SPEC.md §13.4 */
@@ -1292,6 +1346,7 @@ export interface HostToWorkerMethods {
   /** Scoped plugin API route dispatch. */
   handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
+  agentLifecycle: [params: AgentLifecycleRequest, result: AgentLifecycleResult];
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
@@ -1301,6 +1356,7 @@ export interface HostToWorkerMethods {
     params: DetectExternalObjectsParams,
     result: DetectExternalObjectsResult,
   ];
+  routeAiConnection: [params: AiConnectionRouterRequest, result: AiConnectionRouterResult];
   resolveExternalObject: [
     params: ResolveExternalObjectParams,
     result: PluginExternalObjectResolveResult,
@@ -1327,11 +1383,15 @@ export interface HostToWorkerMethods {
   ];
   environmentReleaseLease: [
     params: PluginEnvironmentReleaseLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
+  ];
+  environmentStopLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: PluginEnvironmentTerminationReceipt,
   ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,
@@ -1340,6 +1400,10 @@ export interface HostToWorkerMethods {
   environmentExecute: [
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
+  ];
+  environmentRunnerIngressEndpoint: [
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+    result: PluginEnvironmentRunnerIngressEndpoint,
   ];
   environmentSyncIn: [
     params: PluginEnvironmentSyncInParams,
@@ -1411,16 +1475,20 @@ export const HOST_TO_WORKER_REQUIRED_METHODS: readonly HostToWorkerMethodName[] 
 
 /** Optional methods the worker MAY implement. */
 export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] = [
+  "prepareIdleSleep",
+  "releaseIdleSleep",
   "validateConfig",
   "configChanged",
   "onEvent",
   "runJob",
   "handleWebhook",
   "handleApiRequest",
+  "agentLifecycle",
   "getData",
   "performAction",
   "executeTool",
   "detectExternalObjects",
+  "routeAiConnection",
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
@@ -1428,9 +1496,11 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
+  "environmentStopLease",
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentRunnerIngressEndpoint",
   "environmentSyncIn",
   "environmentSyncOut",
   "environmentStartInteractiveSetup",
@@ -1580,6 +1650,8 @@ export interface WorkerToHostMethods {
   ];
 
   // Events
+  "events.listLifecycle": [params: { companyId: string; limit?: number; afterId?: string }, result: ResourceLifecycleEvent[]];
+  "events.acknowledgeLifecycle": [params: { companyId: string; eventId: string }, result: void];
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },
     result: void,
@@ -1944,7 +2016,7 @@ export interface WorkerToHostMethods {
     params: {
       issueId: string;
       companyId: string;
-      interaction: CreateIssueThreadInteraction;
+      interaction: CreateIssueThreadInteractionInput;
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,

@@ -7,7 +7,7 @@
   "properties": {
     "schema": { "const": "paperclip.question_set.v1" },
     "title": { "type": "string", "maxLength": 1000 },
-    "description": { "type": "string", "maxLength": 4000 },
+    "description": { "type": "string", "maxLength": 100000 },
     "submitLabel": { "type": "string", "maxLength": 200 },
     "questions": {
       "type": "array",
@@ -23,7 +23,8 @@
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 160 },
         "label": { "type": "string", "minLength": 1, "maxLength": 1000 },
-        "description": { "type": "string", "maxLength": 4000 }
+        "description": { "type": "string", "maxLength": 4000 },
+        "recommended": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -59,6 +60,7 @@
         "helpText": { "type": "string", "maxLength": 4000 },
         "required": { "type": "boolean" },
         "answerMode": { "enum": ["single_select", "multi_select", "text"] },
+        "initialText": { "type": "string", "maxLength": 100000, "description": "Editable draft of at most 100000 Unicode code points. Never an implicit answer; submitted text still uses the existing response bounds." },
         "options": {
           "type": "array",
           "maxItems": 128,
@@ -79,6 +81,7 @@
           "if": { "properties": { "answerMode": { "enum": ["single_select", "multi_select"] } }, "required": ["answerMode"] },
           "then": {
             "required": ["options"],
+            "not": { "required": ["initialText"] },
             "properties": { "options": { "type": "array", "minItems": 1 } }
           }
         }

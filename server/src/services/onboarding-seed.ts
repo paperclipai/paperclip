@@ -5,11 +5,13 @@ import type { ApplyOnboardingSeed } from "@paperclipai/shared";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
+import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
+import { withDedicatedDbConnection } from "@paperclipai/db";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
@@ -34,9 +36,14 @@ const SEEDED_AGENT_ROLE = "ceo";
 const FALLBACK_SEEDED_AGENT_ADAPTER_TYPE = "claude_local";
 
 function seededAgentAdapterType() {
-  return process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
+  const configured = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
     || process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim()
     || FALLBACK_SEEDED_AGENT_ADAPTER_TYPE;
+  // Server-seeded onboarding deliberately stays on a direct adapter. Native
+  // runner rollout is an explicit post-onboarding configuration choice.
+  return configured === "paperclip_runner"
+    ? FALLBACK_SEEDED_AGENT_ADAPTER_TYPE
+    : configured;
 }
 
 /**
@@ -174,18 +181,45 @@ export function onboardingSeedService(db: Db) {
     return created.id;
   }
 
-  /**
-   * The seed application proper, run inside the per-company transaction the
-   * public `apply` opens. Every read and write goes through `dbx` — the locked
-   * transaction — so it is serialized against a concurrent push for the same
-   * company. Services are reconstructed on `dbx` for the same reason.
-   */
+  async function prepareAgent(dbx: Db, companyId: string, seed: ApplyOnboardingSeed, audit?: OnboardingSeedAuditActor) {
+    const existing = await readRecord(dbx, companyId);
+    if (existing?.revision === seed.revision) return existing.agentId;
+    const agentSvc = agentService(dbx);
+    const agentName = seed.agent?.name.trim() || null;
+    const agentRole = seed.agent?.role?.trim() || null;
+    // 2. Agent → the customer's first hire, the lead the first task is
+    //    assigned to.
+    let agentId = await resolveTargetAgentId(dbx, companyId, existing?.agentId ?? null);
+    if (agentName) {
+      if (agentId) {
+        await agentSvc.update(agentId, { name: agentName, title: agentRole });
+      } else {
+        const adapterType = seededAgentAdapterType();
+        const created = await createAgentLifecycle(dbx).requestHire(companyId, {
+          name: agentName,
+          role: SEEDED_AGENT_ROLE,
+          title: agentRole,
+          adapterType,
+          adapterConfig: seededAgentAdapterConfig(adapterType),
+          runtimeConfig: {},
+          permissions: {},
+          status: "idle",
+          spentMonthlyCents: 0,
+          lastHeartbeatAt: null,
+        }, { createdByUserId: audit?.actorType === "user" ? audit.actorId : null });
+        agentId = created.id;
+      }
+    }
+
+    return agentId;
+  }
+
   async function applyWithin(
     dbx: Db,
     companyId: string,
     seed: ApplyOnboardingSeed,
+    preparedAgentId: string | null,
   ): Promise<OnboardingSeedApplication> {
-    const agentSvc = agentService(dbx);
     const goalSvc = goalService(dbx);
     const projectSvc = projectService(dbx);
     const issueSvc = issueService(dbx);
@@ -231,47 +265,9 @@ export function onboardingSeedService(db: Db) {
       }
     }
 
-    // 2. Agent → the customer's first hire, the lead the first task is
-    //    assigned to.
-    let agentId = await resolveTargetAgentId(dbx, companyId, existing?.agentId ?? null);
-    if (agentName) {
-      if (agentId) {
-        await agentSvc.update(agentId, { name: agentName, title: agentRole });
-      } else {
-        const created = await agentSvc.create(companyId, {
-          name: agentName,
-          role: SEEDED_AGENT_ROLE,
-          title: agentRole,
-          adapterType: seededAgentAdapterType(),
-          adapterConfig: seededAgentAdapterConfig(seededAgentAdapterType()),
-          runtimeConfig: {},
-          permissions: {},
-          status: "idle",
-          spentMonthlyCents: 0,
-          lastHeartbeatAt: null,
-        });
-        agentId = created.id;
-      }
-    }
+    const agentId = preparedAgentId;
 
-    // 3. First task → an issue in the Onboarding project, assigned to the
-    //    lead so the dashboard opens with work on it.
-    //
-    //    No-first-task contract (PAP-67 r17.4): on the Cloud walk this branch
-    //    never runs. The seed Cloud sends is mission-only — `agent` and
-    //    `firstTask` are unpopulated by the signup wizard and a paperclip-cloud
-    //    `node:test` in `src/onboarding/` pins that — so `firstTaskTitle` is
-    //    null here and the first task stays owned by the tenant's own
-    //    server-owned onboarding path (`POST /issues` with
-    //    `onboardingFirstTask: true`). That path is the only one that stamps
-    //    `ONBOARDING_FIRST_TASK_ORIGIN_KIND` and races safely on the partial
-    //    unique index `issues_onboarding_first_task_uq`. If this receiver ever
-    //    created the first task on the cloud walk it would produce a *second*,
-    //    unstamped one: no agent-authored greeting, the brief rendered as a
-    //    right-aligned user bubble, and two onboarding tasks — silently,
-    //    because the uq index only guards origin-stamped rows. The branch is
-    //    retained for the endpoint's documented body contract, but the
-    //    mission-only seed is what keeps it inert on the cloud path.
+    // A mission-only seed leaves the first task to the onboarding route.
     let issueId = existing?.issueId ?? null;
     if (firstTaskTitle) {
       if (await issueStillExists(dbx, companyId, issueId)) {
@@ -350,38 +346,8 @@ export function onboardingSeedService(db: Db) {
     return { revision: seed.revision, changed: true, goalId, agentId, issueId };
   }
 
-  /**
-   * Apply an onboarding seed to a company.
-   *
-   * Idempotent per `revision`: a replay of the revision already stored is a
-   * no-op that still reports success, because Cloud reads any 2xx as "the
-   * tenant holds this content" and retries otherwise. A *different* revision
-   * (the customer edited their answers in Cloud) updates the goal, agent and
-   * task this seed previously created rather than creating a second set.
-   *
-   * Every write happens before the caller responds — Cloud records the applied
-   * revision only on a 2xx, and the redirect into the tenant dashboard is
-   * gated on it, so a partially-applied seed must surface as a failure rather
-   * than as an acknowledged one.
-   *
-   * Concurrency: Cloud's reconcile runs off portfolio fetches, which can
-   * overlap, so two pushes for the same company can arrive at once. Both would
-   * otherwise pass the revision check before either wrote the seed record and
-   * each create a company goal, a lead agent and an Onboarding project. A
-   * per-company advisory lock held for the transaction serializes them — the
-   * same idiom `folders` and `decision-queues` use — so the second push sees
-   * the first push's writes (the record, the reused goal/agent/project) and
-   * updates in place instead of duplicating.
-   *
-   * Auditing: when `audit` is supplied and the push changed anything, the
-   * `company.onboarding_seed_applied` entry is written *inside* this same
-   * transaction. That is the only arrangement in which the entry cannot go
-   * permanently missing. Logging after the commit forces a choice between two
-   * broken outcomes — answer 500 and the retry returns `changed: false` and
-   * never logs, or answer 200 and Cloud stops retrying while the entry stays
-   * absent. Writing it transactionally removes the choice: either both land, or
-   * neither does and the retry re-applies from a clean slate.
-   */
+  // Hire first. If the content transaction fails, a retry reuses the committed agent.
+  // The dedicated transaction holds only the workflow lock, not the hire writes.
   async function apply(
     companyId: string,
     seed: ApplyOnboardingSeed,
@@ -393,42 +359,46 @@ export function onboardingSeedService(db: Db) {
     // late.
     const publications: ActivityPublication[] = [];
 
-    const result = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:onboarding-seed:${companyId}`}, 0))`,
-      );
-      const dbx = tx as unknown as Db;
-      const applied = await applyWithin(dbx, companyId, seed);
+    const database = db;
+    const lockKey = `paperclip:onboarding-seed:${companyId}`;
+    return withDedicatedDbConnection(db, lockDb => lockDb.transaction(async lock => {
+      await lock.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+      const preparedAgentId = await prepareAgent(database, companyId, seed, audit);
+      const result = await database.transaction(async (tx) => {
+        const dbx = tx as unknown as Db;
+        const applied = await applyWithin(dbx, companyId, seed, preparedAgentId);
 
-      if (applied.changed && audit) {
-        await logActivity(
-          dbx,
-          {
-            companyId,
-            actorType: audit.actorType,
-            actorId: audit.actorId,
-            agentId: audit.agentId,
-            runId: audit.runId,
-            agentApiKeyId: audit.agentApiKeyId,
-            action: "company.onboarding_seed_applied",
-            entityType: "company",
-            entityId: companyId,
-            details: {
-              revision: applied.revision,
-              goalId: applied.goalId,
-              agentId: applied.agentId,
-              issueId: applied.issueId,
+        if (applied.changed && audit) {
+          await logActivity(
+            dbx,
+            {
+              companyId,
+              actorType: audit.actorType,
+              actorId: audit.actorId,
+              agentId: audit.agentId,
+              runId: audit.runId,
+              agentApiKeyId: audit.agentApiKeyId,
+              action: "company.onboarding_seed_applied",
+              entityType: "company",
+              entityId: companyId,
+              details: {
+                revision: applied.revision,
+                goalId: applied.goalId,
+                agentId: applied.agentId,
+                issueId: applied.issueId,
+              },
             },
-          },
-          publications,
-        );
-      }
+            publications,
+          );
+        }
 
-      return applied;
-    });
+        return applied;
+      });
 
-    for (const publication of publications) publishActivity(publication);
-    return result;
+      for (const publication of publications) publishActivity(publication);
+      if (result.agentId) scheduleAgentLifecycle(db, result.agentId);
+      return result;
+    }));
   }
 
   return { apply, get: (companyId: string) => readRecord(db, companyId) };

@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import {
   SUPPORTED_FIXTURE_VERSION,
   SUPPORTED_PROTOCOL_VERSION,
+  assertAcpxQuestionFixture,
   assertCodexQuestionFixture,
   assertConformanceFixturePair,
+  assertQuestionAdapterFixture,
   assertReplayFixtureCompatibility,
   assertSchemaInstance,
   compileProtocolValidators,
@@ -22,8 +24,10 @@ const protocolRoot = resolve(packageRoot, "protocol");
 const schemaDirectory = resolve(protocolRoot, "schemas");
 const fixtureDirectory = resolve(protocolRoot, "fixtures");
 const outputPath = resolve(protocolRoot, "manifest.json");
-const expectedRejectedFixture =
-  "fixtures/replay/unsupported-required-version.json";
+const expectedRejectedFixtures = new Set([
+  "fixtures/replay/unsupported-required-version.json",
+  "fixtures/replay/semantic-tool-unsupported-required-version.json",
+]);
 
 export async function buildProtocolManifest() {
   const schemas = await loadSchemaCatalog(schemaDirectory);
@@ -42,7 +46,7 @@ export async function buildProtocolManifest() {
     if (relativePath.startsWith("fixtures/replay/golden/")) {
       compatibilityCase = "deterministic-replay-oracle";
     } else if (relativePath.startsWith("fixtures/replay/")) {
-      if (relativePath === expectedRejectedFixture) {
+      if (expectedRejectedFixtures.has(relativePath)) {
         expectation = "reject";
         compatibilityCase = "unknown-required-version";
         try {
@@ -62,14 +66,19 @@ export async function buildProtocolManifest() {
           compatibilityCase = "additive-optional-fields";
         }
       }
-    } else if (relativePath === "fixtures/questions/codex.json") {
-      assertCodexQuestionFixture(value);
+    } else if (relativePath.startsWith("fixtures/questions/")) {
       assertSchemaInstance(
         validators.questionAdapterFixture,
         value,
         relativePath,
       );
-      compatibilityCase = "codex-structured-input";
+      assertQuestionAdapterFixture(value);
+      if (relativePath === "fixtures/questions/codex.json") {
+        assertCodexQuestionFixture(value);
+      } else if (relativePath === "fixtures/questions/acpx.json") {
+        assertAcpxQuestionFixture(value);
+      }
+      compatibilityCase = `${value.adapter}-structured-input`;
     } else if (relativePath === "fixtures/conformance-minimal-run.json") {
       assertSchemaInstance(validators.conformanceFixture, value, relativePath);
       compatibilityCase = "cross-language-input";

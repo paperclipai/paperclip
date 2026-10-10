@@ -1,12 +1,15 @@
+import type { AgentAppearance, AgentLifecycleState, AgentLifecycleOperation } from "@paperclipai/shared";
 import {
   type AnyPgColumn,
   pgTable,
+  numeric,
   uuid,
   text,
   integer,
   timestamp,
   jsonb,
   index,
+  unique,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
@@ -20,7 +23,14 @@ export const agents = pgTable(
     role: text("role").notNull().default("general"),
     title: text("title"),
     icon: text("icon"),
+    appearance: jsonb("appearance").$type<AgentAppearance>(),
     status: text("status").notNull().default("idle"),
+    lifecycleState: text("lifecycle_state").$type<AgentLifecycleState>().notNull().default("ready"),
+    lifecycleRequiredPluginIds: jsonb("lifecycle_required_plugin_ids").$type<string[]>(),
+    lifecycleHolds: jsonb("lifecycle_holds").$type<string[]>().notNull().default([]),
+    lifecycleVersion: integer("lifecycle_version").notNull().default(0),
+    lifecycleError: text("lifecycle_error"),
+    lifecycleOperation: jsonb("lifecycle_operation").$type<AgentLifecycleOperation>(),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
@@ -28,7 +38,8 @@ export const agents = pgTable(
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
-    spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    spendMonthUtc: text("spend_month_utc"),
+    spentMonthlyCents: numeric("spent_monthly_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     errorReason: text("error_reason"),
@@ -39,6 +50,8 @@ export const agents = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    companyIdUq: unique("agents_company_id_uq").on(table.companyId, table.id),
+    lifecycleWorkIdx: index("agents_lifecycle_work_idx").on(table.lifecycleState, table.updatedAt, table.id),
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
     companyDefaultEnvironmentIdx: index("agents_company_default_environment_idx").on(table.companyId, table.defaultEnvironmentId),

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -67,6 +67,13 @@ import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { classifyGitCloneFailure } from "./git-connection-failure.js";
+import { readWorkspaceBaseRefDiagnostic, type WorkspaceBaseRefDiagnostic } from "./workspace-base-ref-diagnostics.js";
+import {
+  MANAGED_GIT_WORKTREE_REASON_CODES,
+  readManagedGitInspectionDiagnostic,
+  type ManagedGitInspectionDiagnostic,
+} from "./workspace-validation-diagnostics.js";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -681,6 +688,11 @@ export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
       delete env[key];
     }
   }
+  // These origin settings belong to the parent instance. Letting them leak into a
+  // managed worktree runtime can send auth cookies and OAuth callbacks to the wrong
+  // Paperclip instance. Runtime/service overrides are merged back after sanitizing.
+  delete env.BETTER_AUTH_URL;
+  delete env.BETTER_AUTH_BASE_URL;
   delete env.DATABASE_URL;
   delete env.npm_config_tailscale_auth;
   delete env.npm_config_authenticated_private;
@@ -904,13 +916,17 @@ async function executeProcess(input: {
   };
 }
 
-async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
+async function runGit(args: string[], cwd: string, opts?: {
+  env?: NodeJS.ProcessEnv;
+  observe?: (result: Awaited<ReturnType<typeof executeProcess>>) => void;
+}): Promise<string> {
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
     env: opts?.env,
   });
+  opts?.observe?.(proc);
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
   }
@@ -961,15 +977,32 @@ export async function refreshRemoteTrackingBaseRef(
   baseRef: string,
   resolveGitAuth?: GitRemoteAuthProvider | null,
 ): Promise<string[]> {
+  return (await refreshRemoteTrackingBaseRefWithDiagnostic(repoRoot, baseRef, resolveGitAuth)).warnings;
+}
+
+async function refreshRemoteTrackingBaseRefWithDiagnostic(
+  repoRoot: string,
+  baseRef: string,
+  resolveGitAuth?: GitRemoteAuthProvider | null,
+): Promise<{ warnings: string[]; diagnostic: WorkspaceBaseRefDiagnostic }> {
+  const diagnostic: WorkspaceBaseRefDiagnostic = {
+    schemaVersion: 1, remoteLookup: "not_attempted", authLookup: "not_requested", fetch: "not_attempted",
+  };
   const remoteTracking = parseRemoteTrackingRef(baseRef);
-  if (!remoteTracking) return [];
+  if (!remoteTracking) return { warnings: [], diagnostic };
 
   const remoteUrl = await runGit(["remote", "get-url", remoteTracking.remote], repoRoot)
-    .then((value) => value.trim() || null)
-    .catch(() => null);
-  if (!remoteUrl) return [];
+    .then((value) => {
+      diagnostic.remoteLookup = value.trim() ? "resolved" : "empty";
+      return value.trim() || null;
+    })
+    .catch(() => { diagnostic.remoteLookup = "failed"; return null; });
+  if (!remoteUrl) return { warnings: [], diagnostic };
 
-  const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl).catch(() => null) : null;
+  const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl).then((value) => {
+    diagnostic.authLookup = value ? "resolved" : "unavailable";
+    return value;
+  }).catch(() => { diagnostic.authLookup = "failed"; return null; }) : null;
   try {
     await runGit([
       ...(auth?.configArgs ?? []),
@@ -977,24 +1010,52 @@ export async function refreshRemoteTrackingBaseRef(
       "--prune",
       remoteTracking.remote,
       `+refs/heads/${remoteTracking.branch}:refs/remotes/${remoteTracking.remote}/${remoteTracking.branch}`,
-    ], repoRoot, auth ? { env: { ...process.env, ...auth.env } } : undefined);
-    return [];
+    ], repoRoot, {
+      ...(auth ? { env: { ...process.env, ...auth.env } } : {}),
+      observe: (proc) => {
+        diagnostic.fetch = proc.code === 0 ? "succeeded" : "failed";
+        if (proc.code !== null) diagnostic.fetchExitCode = proc.code;
+        if (proc.code === 0) return;
+        diagnostic.fetchFailureKind = "unknown";
+        // Diagnostic parsing must not add unbounded work to an already failed
+        // fetch. Keep the existing captured warning/output limits unchanged.
+        if (proc.stdoutTruncated || proc.stderrTruncated || proc.stderrBytes > 8192 || proc.stdoutBytes > 8192) return;
+        // Reuse only the closed transport diagnostic parser. This is not a
+        // clone failure marker and never changes reporting or ref validation.
+        const failure = Object.assign(new Error(), { code: proc.code, stderr: proc.stderr });
+        diagnostic.fetchFailureKind = classifyGitCloneFailure(remoteUrl, failure)?.reason ?? "unknown";
+        if (proc.code === 128 && !proc.stdout.trim() &&
+            proc.stderr.trim() === `fatal: couldn't find remote ref refs/heads/${remoteTracking.branch}`) {
+          diagnostic.fetchFailureKind = "remote_ref_not_found";
+        }
+      },
+    });
+    return { warnings: [], diagnostic };
   } catch (error) {
+    diagnostic.fetch = "failed";
+    diagnostic.fetchFailureKind ??= "unknown";
     const rawMessage = error instanceof Error ? error.message : String(error);
-    // Mask URL userinfo (any scheme) and whole URL query strings before the message rides
-    // warnings that reach run logs.
+    // Keep the existing warning contract; new diagnostics never retain this text.
     const message = rawMessage
       .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
       .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
     const authNote = auth
-      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
+      ? ` The fetch used ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}.`
       : "";
-    return [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`];
+    return { warnings: [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`], diagnostic };
   }
 }
 
-async function resolveBaseRefSha(repoRoot: string, baseRef: string): Promise<string | null> {
-  return await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], repoRoot).catch(() => null);
+async function resolveBaseRefSha(repoRoot: string, baseRef: string, diagnostic?: WorkspaceBaseRefDiagnostic): Promise<string | null> {
+  return await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], repoRoot, diagnostic ? {
+    observe: (proc) => {
+      diagnostic.refResolution = proc.code === 0 ? "succeeded" : "failed";
+      if (proc.code !== null) diagnostic.refExitCode = proc.code;
+    },
+  } : undefined).catch(() => {
+    if (diagnostic && !diagnostic.refResolution) diagnostic.refResolution = "spawn_failed";
+    return null;
+  });
 }
 
 function readRecordedBaseRefSha(metadata: Record<string, unknown> | null | undefined): string | null {
@@ -2373,7 +2434,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 }
 
 // A configured base ref that does not resolve to a commit, even after an
-// authenticated fetch of its `origin/<branch>` counterpart. The caller must
+// attempted fetch of its remote-tracking counterpart. The caller must
 // stop before `git worktree add` and raise a pre-dispatch configuration
 // failure. `requestedRef` keeps the operator spelling for the human notice.
 // `recoveryIdentityRef` is the canonical remote ref the resolver probed, so two
@@ -2385,22 +2446,33 @@ export class UnresolvedWorkspaceBaseRefError extends Error {
   recoveryIdentityRef: string;
   attemptedRefs: string[];
   fetchError: string | null;
+  defaultBranch: string | null;
 
   constructor(input: {
     requestedRef: string;
     recoveryIdentityRef: string;
     attemptedRefs: string[];
     fetchError?: string | null;
+    defaultBranch?: string | null;
   }) {
     super(
-      `Configured workspace base ref "${input.requestedRef}" did not resolve to a commit on origin after an authenticated fetch.`,
+      `Configured workspace base ref "${input.requestedRef}" could not be resolved to a commit ` +
+      `(tried: ${input.attemptedRefs.join(", ")}). Check that the ref exists and the repository is accessible before retrying.`,
     );
     this.name = "UnresolvedWorkspaceBaseRefError";
     this.requestedRef = input.requestedRef;
     this.recoveryIdentityRef = input.recoveryIdentityRef;
     this.attemptedRefs = input.attemptedRefs;
     this.fetchError = input.fetchError ?? null;
+    this.defaultBranch = input.defaultBranch ?? null;
   }
+}
+
+const unresolvedBaseRefDiagnostics = new WeakMap<Error, WorkspaceBaseRefDiagnostic>();
+
+/** Reads only the actual resolver's private receipt, not similarly named fields. */
+export function readUnresolvedWorkspaceBaseRefDiagnostic(error: unknown): WorkspaceBaseRefDiagnostic | null {
+  return error instanceof Error ? readWorkspaceBaseRefDiagnostic(unresolvedBaseRefDiagnostics.get(error)) : null;
 }
 
 export function isUnresolvedWorkspaceBaseRefError(error: unknown): error is UnresolvedWorkspaceBaseRefError {
@@ -2422,6 +2494,7 @@ type AuthoritativeBaseRefResolution =
       attemptedRefs: string[];
       warnings: string[];
       fetchError: string | null;
+      diagnostic: WorkspaceBaseRefDiagnostic;
     };
 
 // Resolve the authoritative base ref for a fresh worktree. A configured local
@@ -2464,9 +2537,9 @@ async function resolveAuthoritativeBaseRef(
     return { resolved: true, baseRef: configured, warnings, refreshed: false };
   }
   if (remoteTracking && await remoteExists(repoRoot, remoteTracking.remote)) {
-    const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, configured, resolveGitAuth);
+    const { warnings: fetchWarnings, diagnostic } = await refreshRemoteTrackingBaseRefWithDiagnostic(repoRoot, configured, resolveGitAuth);
     warnings.push(...fetchWarnings);
-    if (await resolveBaseRefSha(repoRoot, configured)) {
+    if (await resolveBaseRefSha(repoRoot, configured, diagnostic)) {
       return { resolved: true, baseRef: configured, warnings, refreshed: true };
     }
     // Build the recovery identity from the parsed remote and branch. The raw
@@ -2481,6 +2554,7 @@ async function resolveAuthoritativeBaseRef(
       attemptedRefs: [configured],
       warnings,
       fetchError: fetchWarnings[0] ?? null,
+      diagnostic,
     };
   }
 
@@ -2508,9 +2582,9 @@ async function resolveAuthoritativeBaseRef(
     return { resolved: true, baseRef: configured, warnings, refreshed: false };
   }
   const remoteCandidate = `origin/${configured}`;
-  const fetchWarnings = await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, resolveGitAuth);
+  const { warnings: fetchWarnings, diagnostic } = await refreshRemoteTrackingBaseRefWithDiagnostic(repoRoot, remoteCandidate, resolveGitAuth);
   warnings.push(...fetchWarnings);
-  if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+  if (await resolveBaseRefSha(repoRoot, remoteCandidate, diagnostic)) {
     return { resolved: true, baseRef: remoteCandidate, warnings, refreshed: true };
   }
   return {
@@ -2520,6 +2594,7 @@ async function resolveAuthoritativeBaseRef(
     attemptedRefs: [remoteCandidate],
     warnings,
     fetchError: fetchWarnings[0] ?? null,
+    diagnostic,
   };
 }
 
@@ -2601,13 +2676,8 @@ type GitWorktreeListEntry = {
 export type ManagedGitWorktreeBranchInspection = {
   valid: boolean;
   reason: string | null;
-  reasonCode:
-    | "missing_worktree"
-    | "not_a_git_checkout"
-    | "not_registered"
-    | "wrong_repository_root"
-    | "branch_mismatch"
-    | null;
+  reasonCode: typeof MANAGED_GIT_WORKTREE_REASON_CODES[number] | null;
+  inspectionDiagnostic?: ManagedGitInspectionDiagnostic;
   repoRoot: string | null;
   worktreePath: string;
   expectedBranchName: string | null;
@@ -2683,6 +2753,24 @@ async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
 
+// A repair suggestion must come from the remote's advertised HEAD, never the
+// runtime's main/master fallback heuristic. Failure to inspect is not a guess.
+async function readAdvertisedDefaultBranch(repoRoot: string, resolveGitAuth?: GitRemoteAuthProvider | null): Promise<string | null> {
+  try {
+    const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
+    const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl) : null;
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile("git", [...(auth?.configArgs ?? []), "ls-remote", "--symref", "origin", "HEAD"], {
+        cwd: repoRoot, timeout: 10_000, maxBuffer: 64 * 1024,
+        env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
+      }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    });
+    return /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(output)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function detectDefaultBranch(
   repoRoot: string,
   resolveGitAuth?: GitRemoteAuthProvider | null,
@@ -2730,16 +2818,33 @@ async function resolvePathForWorktreeComparison(value: string): Promise<string> 
   return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
 }
 
-async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
-  const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
+  { paths: Set<string>; diagnostic?: never } | { paths?: never; diagnostic: ManagedGitInspectionDiagnostic }
+> {
+  let proc: Awaited<ReturnType<typeof executeProcess>>;
+  try {
+    proc = await executeProcess({ command: "git", args: ["worktree", "list", "--porcelain"], cwd: repoRoot });
+  } catch (error) {
+    return { diagnostic: readManagedGitInspectionDiagnostic({
+      command: "worktree_list", failure: "spawn_failed", errorCode: (error as NodeJS.ErrnoException)?.code,
+    })! };
+  }
+  if (proc.code !== 0) {
+    return { diagnostic: readManagedGitInspectionDiagnostic({
+      command: "worktree_list", failure: "nonzero_exit", exitCode: proc.code,
+    })! };
+  }
+  if (proc.stdoutTruncated) {
+    return { diagnostic: { command: "worktree_list", failure: "output_truncated" } };
+  }
   const paths = new Set<string>();
-  for (const line of output.split("\n")) {
+  for (const line of proc.stdout.split("\n")) {
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;
     paths.add(await resolvePathForWorktreeComparison(worktree));
   }
-  return paths;
+  return { paths };
 }
 
 export async function inspectManagedGitWorktreeBranch(input: {
@@ -2778,8 +2883,18 @@ export async function inspectManagedGitWorktreeBranch(input: {
     };
   }
 
-  const listedWorktrees = await listLinkedGitWorktreePaths(repoRoot).catch(() => null);
-  if (!listedWorktrees?.has(worktreePath)) {
+  const listedWorktrees = await listLinkedGitWorktreePaths(repoRoot);
+  if (listedWorktrees.diagnostic) {
+    return {
+      ...base,
+      valid: false,
+      reason: "could not inspect the complete git worktree registration list",
+      reasonCode: "git_inspection_failed",
+      repoRoot,
+      inspectionDiagnostic: listedWorktrees.diagnostic,
+    };
+  }
+  if (!listedWorktrees.paths.has(worktreePath)) {
     return {
       ...base,
       valid: false,
@@ -2836,6 +2951,7 @@ async function validateLinkedGitWorktree(input: {
     reason: string;
     reasonCode: Exclude<ManagedGitWorktreeBranchInspection["reasonCode"], null>;
     actualBranchName?: string | null;
+    inspectionDiagnostic?: ManagedGitInspectionDiagnostic;
   }
 > {
   const inspection = await inspectManagedGitWorktreeBranch({
@@ -2850,6 +2966,7 @@ async function validateLinkedGitWorktree(input: {
         reason: inspection.reason ?? "unknown git worktree mismatch",
         reasonCode: inspection.reasonCode ?? "not_a_git_checkout",
         actualBranchName: inspection.actualBranchName,
+        ...(inspection.inspectionDiagnostic ? { inspectionDiagnostic: inspection.inspectionDiagnostic } : {}),
       };
 }
 
@@ -2862,6 +2979,7 @@ export function formatManagedGitWorktreeBranchInspection(input: ManagedGitWorktr
     worktreePath: input.worktreePath,
     expectedBranchName: input.expectedBranchName,
     actualBranchName: input.actualBranchName,
+    ...(input.inspectionDiagnostic ? { inspectionDiagnostic: input.inspectionDiagnostic } : {}),
   };
 }
 
@@ -3539,12 +3657,15 @@ export async function realizeExecutionWorkspace(input: {
   // `fatal: invalid reference`. Stop here instead and raise a pre-dispatch
   // configuration failure that the setup catch routes to a human owner.
   if (!baseRefResolution.resolved) {
-    throw new UnresolvedWorkspaceBaseRefError({
+    const error = new UnresolvedWorkspaceBaseRefError({
       requestedRef: baseRefResolution.requestedRef,
       recoveryIdentityRef: baseRefResolution.recoveryIdentityRef,
       attemptedRefs: baseRefResolution.attemptedRefs,
       fetchError: baseRefResolution.fetchError,
+      defaultBranch: await readAdvertisedDefaultBranch(repoRoot, input.resolveGitAuth),
     });
+    unresolvedBaseRefDiagnostics.set(error, readWorkspaceBaseRefDiagnostic(baseRefResolution.diagnostic)!);
+    throw error;
   }
 
   let branchCreatedByRuntime = true;
@@ -3751,6 +3872,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
             reasonCode: validation.reasonCode,
             worktreePath: reuseWorktreePath,
             executionWorkspaceId: input.workspace.id ?? null,
+            ...(validation.inspectionDiagnostic ? { inspectionDiagnostic: validation.inspectionDiagnostic } : {}),
           },
         },
       );
@@ -5109,21 +5231,35 @@ export async function waitForRuntimeServiceReadiness(input: {
   const now = input.now ?? Date.now;
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = now() + timeoutSec * 1000;
+  const startedAt = now();
+  const deadline = startedAt + timeoutSec * 1000;
   let lastError = "service did not become ready";
+  let lastCause: unknown;
+  let probes = 0;
   while (now() < deadline) {
     const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, deadline - now()));
+    probes += 1;
     try {
       const response = await fetchImpl(readinessUrl, { signal: AbortSignal.timeout(probeBudgetMs) });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
+      lastCause = undefined;
     } catch (err) {
+      lastCause = err;
       lastError = err instanceof Error ? err.message : String(err);
+      // Node fetch hides connection errors behind "fetch failed". Retain the
+      // transport cause so a refused port is distinguishable from a timeout.
+      if (err instanceof Error && err.cause instanceof Error) {
+        lastError += `: ${err.cause.message}`;
+      }
     }
     if (now() >= deadline) break;
     await delay(Math.min(intervalMs, Math.max(0, deadline - now())));
   }
-  throw new Error(`Readiness check failed for ${readinessUrl}: ${lastError}`);
+  throw new Error(
+    `Readiness check failed for ${readinessUrl}: ${lastError} (${probes} probes over ${now() - startedAt}ms)`,
+    { cause: lastCause },
+  );
 }
 
 async function waitForAllocatedPortBind(input: {
@@ -5182,6 +5318,151 @@ function isPaperclipDevRuntimeService(input: { serviceName?: string | null; comm
     || serviceName === "paperclip-dev-once"
     || (command.includes("dev:once") && command.includes("tailscale-auth"))
   );
+}
+
+export const MANAGED_RUNTIME_PUBLIC_URL_ENV = "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL";
+
+const EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS = [
+  "PAPERCLIP_PUBLIC_URL",
+  "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+  "BETTER_AUTH_URL",
+  "BETTER_AUTH_BASE_URL",
+] as const;
+
+function isLoopbackRuntimeHostname(hostname: string) {
+  const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "::1") return true;
+  if (net.isIP(normalized) !== 4) return false;
+  const firstOctet = Number(normalized.split(".")[0]);
+  return firstOctet === 127;
+}
+
+function managedRuntimeOriginError(serviceName: string, reason: string) {
+  return new Error(
+    `Runtime service "${serviceName}" cannot derive a browser-reachable OAuth callback origin: ${reason}. `
+    + "Configure PAPERCLIP_PUBLIC_URL or BETTER_AUTH_URL for this service, or publish an HTTPS expose.urlTemplate "
+    + "that the operator's browser can reach (loopback HTTP is also supported).",
+  );
+}
+
+type TrustedRuntimeHostnameBoundary =
+  | { exactHostname: string; hostnameSuffix?: never }
+  | { exactHostname?: never; hostnameSuffix: string };
+
+function trustedRuntimeHostnameBoundary(
+  urlTemplate: string | null | undefined,
+): TrustedRuntimeHostnameBoundary | null {
+  if (!urlTemplate?.trim()) return null;
+  let markerIndex = 0;
+  const markerPrefix = "paperclip-runtime-template-";
+  const safeTemplate = urlTemplate.replace(
+    /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g,
+    (_match, path: string) => path === "port" ? "443" : `${markerPrefix}${markerIndex++}`,
+  );
+  let parsed: URL;
+  try {
+    parsed = new URL(safeTemplate);
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password) return null;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  const hostname = parsed.hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const markers = [...hostname.matchAll(/paperclip-runtime-template-\d+/g)];
+  const lastMarker = markers.at(-1);
+  if (!lastMarker || lastMarker.index === undefined) {
+    return hostname ? { exactHostname: hostname } : null;
+  }
+
+  const hostnameSuffix = hostname.slice(lastMarker.index + lastMarker[0].length);
+  // A dynamic non-loopback hostname needs at least a stable two-label domain
+  // after the final interpolation. This binds rendered branch/workspace values
+  // to the operator-configured domain instead of trusting URL parsing alone.
+  if (!hostnameSuffix.startsWith(".") || !hostnameSuffix.slice(1).includes(".")) return null;
+  return { hostnameSuffix };
+}
+
+/**
+ * Resolve the low-priority public URL hint injected into a managed Paperclip dev
+ * service. Explicit operator origin settings are deliberately left untouched.
+ */
+export function resolveManagedPaperclipRuntimePublicOrigin(input: {
+  serviceName: string;
+  command: string;
+  environment: Record<string, string>;
+  exposedUrl: string | null;
+  exposedUrlTemplate?: string | null;
+}) {
+  if (!isPaperclipDevRuntimeService(input)) return null;
+  if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => input.environment[key]?.trim())) return null;
+  if (!input.exposedUrl) {
+    throw managedRuntimeOriginError(input.serviceName, "the managed service does not report an exposed URL");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(input.exposedUrl);
+  } catch {
+    throw managedRuntimeOriginError(input.serviceName, "the managed service reports an invalid exposed URL");
+  }
+
+  if (parsed.username || parsed.password) {
+    throw managedRuntimeOriginError(input.serviceName, "the exposed URL contains credentials");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw managedRuntimeOriginError(input.serviceName, "the exposed URL must use HTTP or HTTPS");
+  }
+
+  const hostname = parsed.hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = isLoopbackRuntimeHostname(hostname);
+  if (!hostname || hostname === "0.0.0.0" || hostname === "::") {
+    throw managedRuntimeOriginError(input.serviceName, "the exposed URL uses a bind-only hostname");
+  }
+  if (
+    !loopback
+    && (
+      (!hostname.includes(".") && net.isIP(hostname) === 0)
+      || hostname.endsWith(".invalid")
+      || hostname.endsWith(".test")
+      || hostname.endsWith(".internal")
+      || hostname.endsWith(".localdomain")
+      || hostname === "example.com"
+      || hostname.endsWith(".example.com")
+      || hostname === "example.net"
+      || hostname.endsWith(".example.net")
+      || hostname === "example.org"
+      || hostname.endsWith(".example.org")
+    )
+  ) {
+    throw managedRuntimeOriginError(
+      input.serviceName,
+      `the exposed hostname "${hostname}" is internal-only or non-resolvable from a normal browser`,
+    );
+  }
+  if (!loopback && parsed.protocol !== "https:") {
+    throw managedRuntimeOriginError(input.serviceName, "non-loopback OAuth callbacks require HTTPS");
+  }
+  if (!loopback) {
+    const boundary = trustedRuntimeHostnameBoundary(input.exposedUrlTemplate);
+    if (!boundary) {
+      throw managedRuntimeOriginError(
+        input.serviceName,
+        "the exposed URL template does not define a stable hostname boundary",
+      );
+    }
+    const withinBoundary = "exactHostname" in boundary
+      ? hostname === boundary.exactHostname
+      : hostname.length > boundary.hostnameSuffix.length && hostname.endsWith(boundary.hostnameSuffix);
+    if (!withinBoundary) {
+      throw managedRuntimeOriginError(
+        input.serviceName,
+        `the exposed hostname "${hostname}" is outside the hostname boundary configured by expose.urlTemplate`,
+      );
+    }
+  }
+
+  return parsed.origin;
 }
 
 function resolveRuntimeServiceHealthUrl(
@@ -5598,6 +5879,7 @@ export function resolveRuntimeProvisionCommand(input: {
   if (input.workspace.strategy !== "git_worktree") return "";
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
+  if (existsSync(path.join(stateDir, "seed-empty"))) return "";
   const manifestPath = path.join(stateDir, "seed-manifest.json");
   const provisionScript = path.join(
     input.workspace.baseCwd,
@@ -5958,12 +6240,26 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     port === identityPort
       ? identity.serviceCwd
       : resolveConfiguredPath(renderTemplate(asString(input.service.cwd, "."), templateData), input.workspace.cwd);
+  const runtimeEnvOverrides: Record<string, string> = { ...input.adapterEnv };
+  for (const [key, value] of Object.entries(renderRuntimeServiceEnv({ envConfig, templateData }))) {
+    runtimeEnvOverrides[key] = value;
+  }
   const env: Record<string, string> = {
     ...sanitizeRuntimeServiceBaseEnv(process.env),
-    ...input.adapterEnv,
+    ...runtimeEnvOverrides,
   } as Record<string, string>;
-  for (const [key, value] of Object.entries(renderRuntimeServiceEnv({ envConfig, templateData }))) {
-    env[key] = value;
+  // Managed Paperclip worktrees are development environments, so their UI
+  // should track source edits without each project repeating this setting.
+  // An HTTPS profile must publish the companion HMR listener before it can use
+  // this default. Otherwise, leave the value unset so dev-runner keeps its
+  // built-UI safeguard. Keep every explicit service/adapter value.
+  const uiDevMiddlewareHasTransport =
+    !exposureConfig || exposureConfig.includePaperclipViteHmr;
+  if (
+    uiDevMiddlewareHasTransport
+    && isPaperclipDevRuntimeService({ serviceName, command })
+  ) {
+    env.PAPERCLIP_UI_DEV_MIDDLEWARE ??= "true";
   }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
@@ -6013,6 +6309,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   let url = exposureConfig ? null : backendUrl;
   const readinessUrlTemplate = asString(readiness.urlTemplate, "");
   const readinessUrl = readinessUrlTemplate ? renderTemplate(readinessUrlTemplate, templateData) : null;
+  const managedRuntimePublicOrigin = resolveManagedPaperclipRuntimePublicOrigin({
+    serviceName,
+    command,
+    // Includes the trusted public origin injected above for managed HTTPS
+    // exposure. The inherited parent environment was already sanitized, so
+    // any remaining explicit origin is either service-configured or broker-
+    // derived for this exact runtime.
+    environment: env,
+    exposedUrl: url,
+    exposedUrlTemplate: urlTemplate,
+  });
+  if (managedRuntimePublicOrigin) {
+    env[MANAGED_RUNTIME_PUBLIC_URL_ENV] = managedRuntimePublicOrigin;
+  }
   const stopPolicy = parseObject(input.service.stopPolicy);
   const serviceKey = createLocalServiceKey({
     profileKind: "workspace-runtime",
@@ -7328,6 +7638,7 @@ type StartRuntimeServicesForWorkspaceControlInput = {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   recorder?: WorkspaceOperationRecorder | null;
   serviceIndex?: number | null;
+  runtimeServiceId?: string | null;
   respectDesiredStates?: boolean;
 };
 
@@ -7359,6 +7670,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
   const refs: RuntimeServiceRef[] = [];
   const pendingReadiness: PendingRuntimeServiceReadiness[] = [];
   const startedServiceIds: string[] = [];
+  const requestedRuntimeServiceId = rawServices.length === 1 ? input.runtimeServiceId : null;
 
   for (const service of rawServices) {
     const { scopeType, scopeId } = resolveServiceScopeId({
@@ -7381,7 +7693,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
 
     if (reuseKey) {
       const existing = await findHealthyRunningRuntimeService(reuseKey);
-      if (existing) {
+      if (existing && (!requestedRuntimeServiceId || existing.id === requestedRuntimeServiceId)) {
         const prepared = options?.preparedProvisioning;
         if (prepared?.service === service && prepared.record.id !== existing.id && persistenceDb) {
           await persistenceDb
@@ -7423,6 +7735,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
           : undefined,
       allowFixedPortFallback: options?.allowFixedPortFallback,
       excludedPorts: options?.excludedPorts,
+      runtimeServiceId: requestedRuntimeServiceId ?? undefined,
       reuseKey,
       scopeType,
       scopeId,

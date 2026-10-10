@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_COMMAND_TEXT_VALUE, redactDiagnosticText } from "./command-redaction.js";
+
+describe("explicit diagnostic credential forms", () => {
+  it("masks suffixed CLI options and encoded JSON headers with whitespace", () => {
+    const jwt = `${Buffer.from(' {"alg":"HS256","typ":"JWT"}').toString("base64url")}.abcdefghijk.abcdefghijkl`;
+    expect(redactCommandText("tool --api-key-prod sensitivevalue --token-policy readable"))
+      .not.toContain("sensitivevalue");
+    expect(redactCommandText(`provider ${jwt}`)).not.toContain(jwt);
+    expect(redactCommandText("plan.security.credentials.md")).toBe("plan.security.credentials.md");
+  });
+});
+import {
+  REDACTED_COMMAND_TEXT_VALUE,
+  redactDiagnosticText,
+  redactCommandText,
+} from "./command-redaction.js";
 
 describe("redactDiagnosticText", () => {
+  it("preserves credential metadata and dotted identifiers", () => {
+    for (const text of [
+      '"tokenBudget":4000 --token-budget 4000 SECRET_STORAGE=vault',
+      '{"credentialHandling":"harness","authorizationRequired":true}',
+      "executor.customTools.integrations.list deployment.credentials.example.md api.openai.com",
+      "Use a private key and secret manager with credential handling.",
+      "Use bearer tokens and bearer authentication.",
+    ]) expect(redactDiagnosticText(text)).toBe(text);
+  });
+
   it("redacts a JSON secret field value", () => {
     const input = '{"token":"opaque-value","status":"error"}';
     const output = redactDiagnosticText(input);
@@ -23,7 +47,9 @@ describe("redactDiagnosticText", () => {
     const input = '{\\"token\\":\\"opaque-value\\"}';
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("opaque-value");
-    expect(output).toContain(`\\"token\\":\\"${REDACTED_COMMAND_TEXT_VALUE}\\"`);
+    expect(output).toContain(
+      `\\"token\\":\\"${REDACTED_COMMAND_TEXT_VALUE}\\"`,
+    );
   });
 
   it("still redacts a shell KEY=value secret", () => {
@@ -31,6 +57,15 @@ describe("redactDiagnosticText", () => {
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("super-secret-value");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("redacts an escaped quoted assignment across a literal newline", () => {
+    const input = String.raw`authorization=\"Bearer first-line
+second-line\" status=401`;
+    const expected = String.raw`authorization=\"***REDACTED***\" status=401`;
+    const output = redactDiagnosticText(input);
+    expect(output).toBe(expected);
+    expect(redactDiagnosticText(output)).toBe(expected);
   });
 
   it("keeps non-secret text and non-secret JSON fields intact", () => {

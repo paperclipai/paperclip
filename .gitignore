@@ -3,6 +3,10 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+dist-preview/
+dist-flow-preview/
+server/ui-dist/
+packages/paperclip-runner/runner/target/
 ui/storybook-static/
 .env
 *.tsbuildinfo
@@ -58,6 +62,8 @@ diagnostics/
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+tests/runner-e2e/results/
+.env.runner-e2e.local
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 test-results/issue-detail-perf/
@@ -70,3 +76,12 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+.vercel/
+.env.local
+test-results/
+
+# Retained local lifecycle behavior measurements
+.lifecycle-baseline/
+
+# Local native Runner test/session state
+.paperclip-runner-prp/

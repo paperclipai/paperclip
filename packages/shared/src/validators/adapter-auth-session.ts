@@ -1,3 +1,4 @@
+import { aiConnectionLoginIntentSchema } from "../ai-connections.js";
 import { z } from "zod";
 import { AGENT_ADAPTER_TYPES } from "../constants.js";
 import { ADAPTER_AUTH_SESSION_STATUSES } from "../types/agent.js";
@@ -35,11 +36,13 @@ export type AdapterAuthSessionPrompt = z.infer<typeof adapterAuthSessionPromptSc
 // The owner read schema. It adds the one-time prompt to the public response.
 export const adapterAuthSessionOwnerResponseSchema = adapterAuthSessionResponseSchema.extend({
   prompt: adapterAuthSessionPromptSchema.nullable(),
+  aiConnection: aiConnectionLoginIntentSchema.optional(),
 }).strict();
 export type AdapterAuthSessionOwnerResponse =
   z.infer<typeof adapterAuthSessionOwnerResponseSchema>;
 
 export const startAdapterAuthSessionRequestSchema = z.object({
+  aiConnection: aiConnectionLoginIntentSchema.optional(),
   environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
   ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),

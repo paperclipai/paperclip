@@ -35,10 +35,16 @@ const mockIssueService = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "project:read",
+      action: input.action,
+      reason: "allow_test_read",
+      explanation: "The fixture actor can read the task.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({

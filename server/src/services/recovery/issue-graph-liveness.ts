@@ -12,6 +12,9 @@ export type IssueLivenessState =
   | "in_review_without_action_path";
 
 export interface IssueLivenessIssueInput {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: string | null;
   id: string;
   companyId: string;
   identifier: string | null;
@@ -191,10 +194,11 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
+/** A saved, unconsumed check remains dispatchable when its due time passes. */
+export function hasUnconsumedIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
   const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
-  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+  if (nextCheckAtMs === null) return false;
 
   const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
   const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
@@ -208,6 +212,12 @@ export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now
   return true;
 }
 
+export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
+  const nowMs = typeof now === "number" ? now : readDateMs(now) ?? Date.now();
+  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  return nextCheckAtMs !== null && nextCheckAtMs > nowMs && hasUnconsumedIssueMonitorPath(issue, nowMs);
+}
+
 export function classifyIssueReviewPaths(
   input: IssueGraphLivenessInput,
   issue: IssueLivenessIssueInput,
@@ -216,6 +226,9 @@ export function classifyIssueReviewPaths(
   const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const paths: IssueReviewPathFact[] = [];
+  if (issue.conversationAgentId && issue.conversationUserId && issue.conversationState === "waiting") {
+    return [{ kind: "human_reviewer", ref: issue.conversationUserId, userId: issue.conversationUserId, agentId: null, since: null }];
+  }
 
   if (issue.assigneeUserId) {
     paths.push({

@@ -1,5 +1,12 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import * as idleLocalWork from "../services/idle-local-work.js";
+import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
+import { reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -10,6 +17,7 @@ const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
+  completionSweepMock,
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
@@ -33,25 +41,51 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
-  const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const completionSweepMock = vi.fn(async () => undefined);
+  const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
+    locals: {
+      fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
+      deliveryWork: {
+        register: (_queue: string, task: { run: () => Promise<unknown> }) => ({
+          ready: task.run().catch(() => undefined), wake: vi.fn(),
+        }),
+        stop: vi.fn(async () => {}),
+      },
+      toolGateway: {
+        sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
+        cleanupExpiredSessions: vi.fn(async () => ({ deletedCount: 0 })),
+      },
+      toolActionDeliveries: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
+    },
+  }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
-  const detectPortMock = vi.fn(async (port: number) => port);
+  const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
     suppressed: false,
     reason: null,
   }));
   const heartbeatServiceMock = {
+    reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    recoverNativeRunsAfterRestart: vi.fn(async () => ({
+      restartKind: "hard",
+      dispositions: [],
+      claims: [],
+      awaitingEvidenceRunIds: [],
+      blockedRunIds: [],
+    })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
+    recoverPendingSessionGoalActions: vi.fn(async () => ({ scanned: 0, enqueued: 0, alreadyQueued: 0, invalid: 0 })),
+    recoverActiveSessionGoals: vi.fn(async () => ({ scanned: 0, enqueued: 0 })),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -61,15 +95,11 @@ const {
       skipped: 0,
       issueIds: [],
     })),
-    reconcileIssueGraphLiveness: vi.fn(async () => ({
-      escalationsCreated: 0,
-      dependencyWakesHealed: 0,
-    })),
+    reconcileResolvedDependencyWakes: vi.fn(async () => ({ healed: 0 })),
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
-    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
@@ -110,6 +140,7 @@ const {
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
   const feedbackExportServiceMock = {
+    hasPendingFeedbackTraces: vi.fn(async () => false),
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
@@ -121,11 +152,12 @@ const {
       callback?.();
       return fakeServer;
     }),
-    close: vi.fn(),
+    close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
   };
   const loadConfigMock = vi.fn();
 
   return {
+    completionSweepMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -219,6 +251,16 @@ vi.mock("../app.js", () => ({
   createApp: createAppMock,
 }));
 
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
+}));
+
+// This suite verifies server startup scheduling; replacement correctness is
+// exercised by the dedicated DB-backed recovery suites.
+vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
+  reconcileSafeNativeReplacements: vi.fn(async () => ({ scanned: 0, scheduled: 0 })),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
@@ -269,6 +311,15 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  githubConnectionEventService: vi.fn(() => ({
+    pollOnce: vi.fn(async () => ({
+      leased: 0,
+      processed: 0,
+      duplicate: 0,
+      ignored: 0,
+      failed: 0,
+    })),
+  })),
   issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
@@ -311,7 +362,42 @@ vi.mock("../services/index.js", () => ({
       needsAttention: 0,
       failed: 0,
     })),
+    sweepGitHubConnectionContinuity: vi.fn(async () => ({
+      checked: 0,
+      due: 0,
+      refreshed: 0,
+      failed: 0,
+    })),
   })),
+}));
+
+vi.mock("../services/chat-completion-delivery.js", () => ({ chatCompletionDeliveryService: () => ({ hasPending: vi.fn(async () => false), sweepPending: completionSweepMock }) }));
+
+vi.mock("../services/connection-intent-delivery.js", () => ({
+  connectionIntentDeliveryService: vi.fn(() => ({
+    hasPending: vi.fn(async () => false),
+    sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
+  })),
+}));
+
+vi.mock("../services/question-response-delivery.js", () => ({
+  questionResponseDeliveryService: vi.fn(() => ({
+    hasPending: vi.fn(async () => false),
+    sweepPending: vi.fn(async () => ({
+      scanned: 0,
+      steered: 0,
+      coalesced: 0,
+      wakeFallback: 0,
+      failed: 0,
+    })),
+  })),
+}));
+
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionCancellationIdentity: vi.fn(() => null),
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
 }));
 
 vi.mock("../services/secret-proposals.js", () => ({
@@ -350,6 +436,8 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -364,6 +452,128 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true].flatMap(checkpointMode => [false, true].map(fails => ({ checkpointMode, fails }))))
+  ("finishes restart backup before idle eligibility (checkpoint=$checkpointMode, failure=$fails)", async ({ checkpointMode, fails }) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "startup-idle-backup-"));
+    const previousFlag = process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+    process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = checkpointMode ? "1" : "0";
+    loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
+    const eligible = vi.spyOn(idleLocalWork, "markIdleStartupComplete");
+    let retry: (() => void) | undefined;
+    const timers = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
+      if (ms === 60 * 60 * 1000) retry = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const writeBackup = async (options: Parameters<typeof runDatabaseBackup>[0]) => {
+      const backupFile = path.join(directory, "paperclip-restart.sql.gz");
+      const bytes = gzipSync("SELECT 'restart recovery';\n");
+      writeFileSync(backupFile, bytes);
+      expect(options.retention).toEqual({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+      expect(options.verifyBeforePrune).toEqual(expect.any(Function));
+      await options.verifyBeforePrune!(backupFile);
+      return { backupFile, sizeBytes: bytes.length, prunedCount: 0 };
+    };
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(async options => {
+      await pending;
+      if (fails) throw new Error("fixture restart backup failed");
+      return writeBackup(options);
+    });
+    let starting: ReturnType<typeof startServer> | undefined;
+    try {
+      await markIdleBackupWakeRequired(directory);
+      starting = startServer();
+      await vi.waitFor(() => expect(runDatabaseBackup).toHaveBeenCalledOnce());
+      expect(eligible).not.toHaveBeenCalled();
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      finish();
+      await starting;
+      expect(eligible).toHaveBeenCalledWith({ scheduledBackups: true });
+      const options = createAppMock.mock.calls[0]?.[1] as unknown as { prepareIdleDatabaseBackup?: unknown };
+      expect(Boolean(options.prepareIdleDatabaseBackup)).toBe(checkpointMode);
+      expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
+      if (fails) {
+        vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
+        expect(retry).toEqual(expect.any(Function));
+        const activeBeforeRetry = idleWorkSnapshot().active;
+        retry!();
+        await vi.waitFor(() => {
+          expect(existsSync(idleBackupWakeMarker(directory))).toBe(false);
+          // Marker removal precedes directory fsync and release of the work receipt.
+          expect(idleWorkSnapshot().active).toBe(activeBeforeRetry);
+        });
+        expect(runDatabaseBackup).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      finish();
+      await starting;
+      timers.mockRestore(); eligible.mockRestore();
+      if (previousFlag === undefined) delete process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+      else process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = previousFlag;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(([
+    ["built-in agents", reconcileBuiltInAgentsOnStartup],
+    ["managed homes", reconcileCodexLocalManagedHomesOnStartup],
+    ["runtime services", reconcilePersistedRuntimeServicesOnStartup],
+  ] as const).flatMap(([name, reconcile]) => [false, true].map(fail => ({ name, reconcile, fail }))))
+  ("counts detached $name startup writes after readiness (failure=$fail)", async ({ reconcile, fail }) => {
+    let finishStartup!: () => void;
+    const pending = new Promise<void>(resolve => { finishStartup = resolve; });
+    vi.mocked(reconcile).mockImplementationOnce(async () => {
+      await pending;
+      if (fail) throw new Error("fixture startup write failed");
+      return { reconciled: 0, seeded: 0, failed: 0 } as never;
+    });
+    const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ execute: async () => [{ blocked: false }] }) };
+    const hold = { ownerId: "fixture-owner", draining: true, activeRuns: 0, pendingWakes: 0,
+      startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
+    const report = () => readIdleSleepSafety(emptyDb as never, () => hold, Date.now, hold.ownerId, async () => "none");
+    try {
+      await startServer();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(idleWorkSnapshot().active).toBe(1);
+      expect((await report()).backgroundWork).toBe("unknown");
+      finishStartup();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect((await report()).backgroundWork).toBe("none");
+    } finally {
+      finishStartup();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  });
+
+  it.each([false, true])("counts an accepted backup until completion, including failure=%s", async fails => {
+    await startServer();
+    await new Promise(resolve => setImmediate(resolve));
+    const before = idleWorkSnapshot().active;
+    let resolveBackup!: (value: never) => void;
+    let rejectBackup!: (error: Error) => void;
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveBackup = resolve; rejectBackup = reject;
+    }));
+    const options = createAppMock.mock.calls[0]?.[1] as unknown as {
+      databaseBackupService: { runManualBackup(): Promise<unknown> };
+    };
+    const backup = options.databaseBackupService.runManualBackup();
+    await Promise.resolve();
+    expect(idleWorkSnapshot().active).toBe(before + 1);
+    if (fails) {
+      const rejection = expect(backup).rejects.toThrow("backup failed");
+      rejectBackup(new Error("backup failed"));
+      await rejection;
+    } else {
+      resolveBackup({ backupFile: "backup.sql.gz", sizeBytes: 1, prunedCount: 0 } as never);
+      await backup;
+    }
+    expect(idleWorkSnapshot().active).toBe(before);
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {
@@ -468,6 +678,85 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("keeps startup available when completion delivery recovery fails", async () => {
+    completionSweepMock.mockRejectedValueOnce(new Error("temporary delivery failure"));
+    const { startServer } = await import("../index.js");
+    await expect(startServer()).resolves.toBeDefined();
+    expect(completionSweepMock).toHaveBeenCalled();
+  });
+
+  it("keeps activity-driven completion scans scoped to the changed task", async () => {
+    await startServer();
+    completionSweepMock.mockClear();
+    const { publishLiveEvent } = await import("../services/live-events.js");
+    publishLiveEvent({ companyId: "company-one", type: "activity.logged", payload: {
+      action: "issue.updated", entityId: "task-one",
+    } });
+    expect(completionSweepMock).toHaveBeenCalled();
+    for (const args of completionSweepMock.mock.calls) {
+      expect(args).toEqual([{ companyId: "company-one", taskId: "task-one" }]);
+    }
+    completionSweepMock.mockClear();
+    publishLiveEvent({ companyId: "company-two", type: "activity.logged", payload: { action: "issue.updated" } });
+    expect(completionSweepMock).not.toHaveBeenCalled();
+  });
+
+  it("never invokes the retired review detector at startup or on periodic recovery", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    const retiredDetector = vi.fn(async () => ({ created: 1, updated: 1, failed: 0 }));
+    const runtime = Object.assign(heartbeatServiceMock, { reconcileProductivityReviews: retiredDetector });
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
+      expect(retiredDetector).not.toHaveBeenCalled();
+    } finally {
+      delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("reconciles native replacements at startup and on the execution-control interval", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let executionControlTick: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      if (interval === EXECUTION_RECONCILIATION_INTERVAL_MS) executionControlTick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledExactlyOnceWith(
+        createDbMock.mock.results[0]?.value,
+        expect.any(Date),
+        { verifyStoppedSession: expect.any(Function) },
+      );
+
+      expect(executionControlTick).toBeDefined();
+      executionControlTick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -529,6 +818,7 @@ describe("startServer feedback export wiring", () => {
       // reaped at startup and on the interval.
       expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
@@ -536,9 +826,30 @@ describe("startServer feedback export wiring", () => {
 
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it.each([false, true])("retries failed accounting recovery with heartbeat scheduling enabled: %s", async (enabled) => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    heartbeatServiceMock.reconcileCostAccounting.mockRejectedValueOnce(new Error("temporary ledger outage"));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      expect((await startServer()).server).toBe(fakeServer);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(tick).toBeDefined();
+      tick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
+    } finally {
+      timer.mockRestore();
     }
   });
 
@@ -556,6 +867,21 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes the bound listener when native startup recovery fails", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockRejectedValueOnce(
+      new Error("native recovery unavailable"),
+    );
+
+    await expect(startServer()).rejects.toThrow("native recovery unavailable");
+
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(fakeServer.close).toHaveBeenCalledTimes(1);
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {
@@ -596,6 +922,20 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("checks port availability on the configured bind host", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      host: "127.0.0.1",
+      port: 3210,
+    }));
+
+    await startServer();
+
+    expect(detectPortMock).toHaveBeenCalledWith({
+      port: 3210,
+      hostname: "127.0.0.1",
+    });
   });
 
   it("derives trusted origins from the detected listen port before auth initializes", async () => {

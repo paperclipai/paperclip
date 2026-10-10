@@ -1,5 +1,7 @@
 export {
   createDb,
+  withDedicatedDbConnection,
+  closeRegisteredClients,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
   resetPostgresDatabase,
@@ -15,6 +17,7 @@ export {
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   type EmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
@@ -39,3 +42,5 @@ export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecy
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+
+export { signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";

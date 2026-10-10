@@ -135,7 +135,9 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     id,
     companyId: "company-1",
     agentId,
-    responsibleUserId: null,
+    scopeKind: "company",
+    issueId: null,
+    responsibleUserId: "user-1",
     invocationSource: "assignment",
     triggerDetail: null,
     status,
@@ -314,6 +316,28 @@ const dashboard: DashboardSummary = {
 describe("inbox helpers", () => {
   beforeEach(() => {
     storage.clear();
+  });
+
+  it.each([
+    { currentUserId: "user-1", expected: 1 },
+    { currentUserId: "user-2", expected: 1 },
+    { currentUserId: "local-board", expected: 1 },
+    { currentUserId: null, expected: 0 },
+  ])("counts only personal failed runs for $currentUserId", ({ currentUserId, expected }) => {
+    const result = computeInboxBadgeData({
+      approvals: [], joinRequests: [], dashboard, mineIssues: [],
+      dismissedAlerts: new Set(), dismissedAtByKey: new Map(), currentUserId,
+      heartbeatRuns: [
+        { ...makeRun("own", "failed", "2026-03-11T01:00:00Z"), responsibleUserId: "user-1" },
+        { ...makeRun("other", "timed_out", "2026-03-11T01:00:00Z", "agent-2"), responsibleUserId: "user-2" },
+        { ...makeRun("unowned", "failed", "2026-03-11T01:00:00Z", "agent-3"), responsibleUserId: null },
+        { ...makeRun("old-own", "failed", "2026-03-11T01:00:00Z", "shared-agent"), responsibleUserId: "user-1" },
+        { ...makeRun("new-other", "succeeded", "2026-03-11T02:00:00Z", "shared-agent"), responsibleUserId: "user-2" },
+      ],
+    });
+    expect(result.failedRuns).toBe(expected);
+    expect(result.inbox).toBe(expected);
+    expect(result.alerts).toBe(1); // The budget alert; run failures already describe agent errors in All.
   });
 
   it("counts the same inbox sources the badge uses", () => {
@@ -1135,7 +1159,7 @@ describe("inbox helpers", () => {
         creators: ["user:user-1"],
         labels: ["label-1"],
         projects: ["project-1"],
-        workspaces: ["workspace-1"],
+        workspaces: [],
         liveOnly: true,
         externalObjectStatuses: [],
         hideRoutineExecutions: false,
@@ -1186,7 +1210,7 @@ describe("inbox helpers", () => {
         creators: ["user:user-1"],
         labels: [],
         projects: ["project-1"],
-        workspaces: ["workspace-1"],
+        workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
         hideRoutineExecutions: false,

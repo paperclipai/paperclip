@@ -1,8 +1,9 @@
+import { agentAppearanceSchema } from "../agent-appearance.js";
+import { aiRuntimeConnectionBindingSchema as aiConnectionBindingSchema } from "../ai-connection-router.js";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
-  AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -12,7 +13,9 @@ import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 export const agentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean().optional().default(false),
+  // No schema default: the server derives the default (enabled unless the
+  // permissions record marks the agent low-trust) when the field is omitted.
+  canCreateAgents: z.boolean().optional(),
   canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
@@ -30,10 +33,18 @@ export const updateAgentInstructionsBundleSchema = z.object({
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
 
 export const upsertAgentInstructionsFileSchema = z.object({
-  path: z.string().trim().min(1),
-  content: z.string(),
+  path: z.string().min(1).max(512),
+  content: z.string().max(1024 * 1024),
+  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
-});
+}).strict();
+
+export const restoreAgentInstructionSchema = z.object({
+  path: z.string().min(1).max(512),
+  revisionId: z.string().uuid(),
+  baseRevisionId: z.string().uuid(),
+}).strict();
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
@@ -57,23 +68,27 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
-const agentModelProfileConfigSchema = z.object({
-  enabled: z.boolean().optional(),
-  label: z.string().trim().min(1).optional(),
-  adapterConfig: adapterConfigSchema,
-}).strict();
-
 export const agentRuntimeConfigSchema = z.object({
-  modelProfiles: z.object({
-    cheap: agentModelProfileConfigSchema.optional(),
+  aiConnection: aiConnectionBindingSchema.optional(),
+  debug: z.object({
+    providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
-}).catchall(z.unknown());
+}).catchall(z.unknown()).superRefine((value, ctx) => {
+  if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["modelProfiles"],
+      message: "runtimeConfig.modelProfiles is no longer supported",
+    });
+  }
+});
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  appearance: agentAppearanceSchema.optional(),
   reportsTo: z.string().guid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
@@ -94,6 +109,12 @@ export const createAgentSchema = z.object({
   // round trip. The server permits the no-claim bind only for a user actor and
   // only when that owner already has a stored value. It carries no token.
   applyStoredClaudeLogin: z.boolean().optional(),
+  // Narrow intent flag set by the onboarding wizard when it hires the very first
+  // agent (the chief of staff). It is not an agent column: the server consumes
+  // it to seed the server-owned chief-of-staff persona over the agent's entry
+  // instruction file instead of the generic default, and honors it only for
+  // board-authored requests. Mirrors onboardingFirstTask on issue create.
+  onboardingFirstAgent: z.boolean().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -119,19 +140,22 @@ export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
+  // Agent-authored hires may explicitly request the caller's native runner
+  // settings. The server consumes this intent; it is never an agent column.
+  inheritRuntimeFrom: z.literal("caller").optional(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
 )
   .partial()
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
-    status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
+    status: z.enum(["paused", "idle", "terminated"]).optional(),
+    spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -201,15 +225,26 @@ export const agentMineInboxQuerySchema = z.object({
 export type AgentMineInboxQuery = z.infer<typeof agentMineInboxQuerySchema>;
 
 export const wakeAgentSchema = z.object({
-  source: z.enum(["timer", "assignment", "on_demand", "automation"]).optional().default("on_demand"),
+  source: z
+    .enum(["timer", "assignment", "on_demand", "automation"])
+    .optional()
+    .default("on_demand"),
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
+  /** Select an exact failed run; its chat request and actor are server-derived. */
+  failedRunId: z.string().uuid().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
+  debug: z
+    .object({
+      providerTrace: z.literal("raw"),
+    })
+    .strict()
+    .optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
@@ -221,6 +256,25 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  aiConnection: aiConnectionBindingSchema.optional(),
+  /** Saved agent whose redacted environment entries are restored for this probe. */
+  agentId: z.string().guid().optional(),
+  /** One-shot provider keys for a probe. Never persist these in agent config. */
+  testCredentials: z.object({
+    ANTHROPIC_API_KEY: z.string().max(16384),
+    OPENAI_API_KEY: z.string().max(16384),
+    OPENROUTER_API_KEY: z.string().max(16384),
+    GEMINI_API_KEY: z.string().max(16384),
+    XAI_API_KEY: z.string().max(16384),
+    GROQ_API_KEY: z.string().max(16384),
+    OPENCODE_API_KEY: z.string().max(16384),
+    CURSOR_API_KEY: z.string().max(16384),
+    KIMI_MODEL_API_KEY: z.string().max(16384),
+    API_SERVER_KEY: z.string().max(16384),
+    ZAI_API_KEY: z.string().max(16384),
+    KIMI_API_KEY: z.string().max(16384),
+    MINIMAX_API_KEY: z.string().max(16384),
+  }).partial().strict().optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**
    * Optional environment to run the adapter test inside. When omitted, the
@@ -242,3 +296,9 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const resolveAgentInstructionCandidateSchema = z.object({
+  baseRevisionId: z.string().uuid().nullable(),
+  content: z.string().max(1024 * 1024),
+}).strict();
+export type ResolveAgentInstructionCandidate = z.infer<typeof resolveAgentInstructionCandidateSchema>;
