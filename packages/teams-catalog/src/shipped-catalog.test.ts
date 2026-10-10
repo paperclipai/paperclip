@@ -15,6 +15,7 @@ const EXPECTED_BUNDLED_KEYS = [
 
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/content/content-machine",
+  "paperclipai/optional/software-development/software-sdlc",
 ];
 
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +101,10 @@ describe("shipped teams catalog", () => {
       "product-engineering/senior-coder": { role: "engineer", reportsTo: "cto", skills: ["github-pr-workflow", "doc-maintenance"] },
       "product-design/ux-designer": { role: "designer", reportsTo: null, skills: ["wireframe", "design-critique", "task-planning"] },
       "content-machine/content-lead": { role: "content-strategist", reportsTo: null, skills: ["content-calendar"] },
+      "software-sdlc/delivery-lead": { role: "engineering-manager", reportsTo: null, skills: ["software-sdlc", "task-planning", "github-pr-workflow"] },
+      "software-sdlc/implementer": { role: "engineer", reportsTo: "delivery-lead", skills: ["software-sdlc", "github-pr-workflow"] },
+      "software-sdlc/security-reviewer": { role: "engineer", reportsTo: "delivery-lead", skills: ["software-sdlc"] },
+      "software-sdlc/test-reviewer": { role: "qa", reportsTo: "delivery-lead", skills: ["software-sdlc", "qa-acceptance"] },
     };
     const observed: Record<string, unknown> = {};
     for (const team of catalogTeams) {
