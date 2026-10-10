@@ -143,7 +143,11 @@ import {
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { allowsIssueInteractionWake } from "../../modules/run-dispatch/index.js";
-import { withAgentStartLock } from "../agent-start-lock.js";
+import {
+  runOutsideFleetRunAdmission,
+  withAgentStartLock,
+  withFleetRunAdmissionLock,
+} from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   shouldCancelRunsForNonInvokableAgent,
@@ -190,6 +194,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
+  runtimeEnv: Record<string, string | undefined>;
   liveRunExecutions: { has(id: string): boolean };
   isHeartbeatRunTerminalStatus: (status: string | null | undefined) => boolean;
   isSameTaskScope: (left: string | null, right: string | null) => boolean;
@@ -213,6 +218,12 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MIN = 1;
+const HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MAX = 50;
+
+export const FLEET_MAX_CONCURRENT_RUNS_DEFAULT: number | null = null;
+export const FLEET_MAX_CONCURRENT_RUNS_ENV_VAR =
+  "PAPERCLIP_MAX_CONCURRENT_AGENT_RUNS";
 
 export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -247,6 +258,36 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(
     HEARTBEAT_MAX_CONCURRENT_RUNS_MIN,
     Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed),
+  );
+}
+
+export function normalizeFleetMaxConcurrentRuns(value: unknown): number | null {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(parsed)) return FLEET_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(
+    HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MIN,
+    Math.min(HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MAX, Math.floor(parsed)),
+  );
+}
+
+export function computeAvailableRunSlots(input: {
+  agentMaxConcurrentRuns: number;
+  agentRunningRuns: number;
+  fleetMaxConcurrentRuns: number | null;
+  fleetRunningRuns: number;
+}) {
+  const agentSlots = input.agentMaxConcurrentRuns - input.agentRunningRuns;
+  if (input.fleetMaxConcurrentRuns === null) {
+    return Math.max(0, agentSlots);
+  }
+  return Math.max(
+    0,
+    Math.min(agentSlots, input.fleetMaxConcurrentRuns - input.fleetRunningRuns),
   );
 }
 
@@ -373,6 +414,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     executeRun,
     activeRunExecutionPromises,
     activeWakeupPromises,
+    runtimeEnv,
     instanceSettings,
     getRun,
     sweepPendingCleanupLeases,
@@ -682,6 +724,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ),
       );
     return Number(count ?? 0);
+  }
+
+  async function countRunningRunsGlobal() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  function fleetMaxConcurrentRuns() {
+    return normalizeFleetMaxConcurrentRuns(
+      runtimeEnv[FLEET_MAX_CONCURRENT_RUNS_ENV_VAR],
+    );
   }
 
   async function withChatControlRecoveryGate(
@@ -1849,7 +1905,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           eq(companies.status, "active"),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
         ),
-      );
+      )
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -1905,8 +1962,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const deferredPostCommitEffects: WakeQueuePostCommitEffect[] = [];
     let cancellationReason: string | undefined;
 
-    return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
+    return withAgentStartLock(agentId, () =>
+      withFleetRunAdmissionLock(async () => {
+        const agent = await getAgent(agentId);
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
@@ -1917,10 +1975,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(
-        0,
-        policy.maxConcurrentRuns - runningCount,
-      );
+      const fleetCeiling = fleetMaxConcurrentRuns();
+      const availableSlots = computeAvailableRunSlots({
+        agentMaxConcurrentRuns: policy.maxConcurrentRuns,
+        agentRunningRuns: runningCount,
+        fleetMaxConcurrentRuns: fleetCeiling,
+        fleetRunningRuns:
+          fleetCeiling === null ? 0 : await countRunningRunsGlobal(),
+      });
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -2032,7 +2094,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        const execution = executeRun(claimedRun.id).catch((err) => {
+        const execution = runOutsideFleetRunAdmission(() =>
+          executeRun(claimedRun.id),
+        ).catch((err) => {
           logger.error(
             { err, runId: claimedRun.id },
             "queued heartbeat execution failed",
@@ -2050,7 +2114,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         });
       }
       return claimedRuns;
-    }).finally(async () => {
+    })).finally(async () => {
       // Dispatch promoted inputs after the agent start lock is released.
       try {
         await applyWakeQueuePostCommitEffects(deferredPostCommitEffects);

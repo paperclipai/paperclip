@@ -3427,6 +3427,7 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
+      try {
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
       if (
@@ -3553,6 +3554,20 @@ export function recoveryService(
       // Legacy takeover actions remain readable and resolvable, but recovery no
       // longer schedules another agent-owned wake for them.
       result.skipped += 1;
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 422) throw error;
+        logger.warn(
+          {
+            issueId: issue.id,
+            companyId: issue.companyId,
+            recoveryActionId: action.id,
+            guardStatus: error.status,
+            guardError: error.message,
+          },
+          "recovery action write rejected by a consistency guard; skipping action",
+        );
+        result.skipped += 1;
+      }
     }
     return result;
   }

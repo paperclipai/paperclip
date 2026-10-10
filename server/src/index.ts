@@ -119,7 +119,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
-import { conflict } from "./errors.js";
+import { conflict, HttpError } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
@@ -1608,6 +1608,18 @@ async function startServerWithDatabaseTeardown(
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
       })().catch((err) => {
+        // A guard-rejected write (HttpError 422, for example `assertNoBlockingCycles`
+        // rejecting a cyclic blocking relation during recovery) is a data condition,
+        // not a boot fault. Log it and keep serving; rethrowing here aborted the boot
+        // and systemd's Restart=always turned one bad row into a crash loop. Anything
+        // else still aborts the boot exactly as before.
+        if (err instanceof HttpError && err.status === 422) {
+          logger.error(
+            { err },
+            "startup heartbeat recovery hit a consistency rejection; continuing",
+          );
+          return;
+        }
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
       });
