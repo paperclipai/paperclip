@@ -2149,6 +2149,189 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(stored?.markdown).not.toContain("Trojan Paperclip");
   });
 
+  function unpinnedBundledStub(slug: string, key: string) {
+    return [
+      "---",
+      `name: ${slug}`,
+      `key: ${key}`,
+      `slug: ${slug}`,
+      "metadata:",
+      "  sources:",
+      "    - kind: github-dir",
+      "      repo: paperclipai/paperclip",
+      `      path: skills/${slug}`,
+      "      commit: null",
+      "      trackingRef: master",
+      `      url: https://github.com/paperclipai/paperclip/tree/master/skills/${slug}`,
+      "---",
+      "",
+      `# ${slug}`,
+      "",
+    ].join("\n");
+  }
+
+  it("accepts an unpinned paperclip bundled github stub and keeps an existing bundled row", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const pinned = "0123456789abcdef0123456789abcdef01234567";
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: "paperclipai/paperclip/sweep-stub-skill",
+      slug: "sweep-stub-skill",
+      name: "Sweep Stub Skill",
+      description: "Pinned bundled skill that an unpinned stub must not replace.",
+      markdown: "---\nname: Sweep Stub Skill\n---\n\n# Official Sweep Stub\n",
+      sourceType: "local_path",
+      sourceLocator: null,
+      sourceRef: pinned,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: {
+        sourceKind: "paperclip_bundled",
+        owner: "paperclipai",
+        repo: "paperclip",
+        ref: pinned,
+      },
+    });
+
+    const imported = await svc.importPackageFiles(companyId, {
+      "skills/paperclipai/paperclip/sweep-stub-skill/SKILL.md": unpinnedBundledStub(
+        "sweep-stub-skill",
+        "paperclipai/paperclip/sweep-stub-skill",
+      ),
+    });
+
+    expect(imported).toEqual([
+      expect.objectContaining({
+        action: "skipped",
+        originalKey: "paperclipai/paperclip/sweep-stub-skill",
+        skill: expect.objectContaining({ id: skillId, sourceRef: pinned }),
+      }),
+    ]);
+    const stored = await svc.getById(companyId, skillId);
+    expect(stored).toMatchObject({
+      sourceRef: pinned,
+      metadata: expect.objectContaining({ sourceKind: "paperclip_bundled", ref: pinned }),
+    });
+    expect(stored?.markdown).toContain("# Official Sweep Stub");
+    expect(stored?.markdown).not.toContain("commit: null");
+
+    const replaced = await svc.importPackageFiles(companyId, {
+      "skills/paperclipai/paperclip/sweep-stub-skill/SKILL.md": unpinnedBundledStub(
+        "sweep-stub-skill",
+        "paperclipai/paperclip/sweep-stub-skill",
+      ),
+    }, { onConflict: "replace" });
+    expect(replaced).toEqual([
+      expect.objectContaining({
+        originalKey: "paperclipai/paperclip/sweep-stub-skill",
+        skill: expect.objectContaining({ id: skillId, sourceRef: pinned }),
+      }),
+    ]);
+    const afterReplace = await svc.getById(companyId, skillId);
+    expect(afterReplace?.sourceRef).toBe(pinned);
+    expect(afterReplace?.markdown).toContain("# Official Sweep Stub");
+  });
+
+  it("imports an unpinned paperclip bundled stub when the company does not already have that skill", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const imported = await svc.importPackageFiles(companyId, {
+      "skills/paperclipai/paperclip/sweep-new-stub/SKILL.md": unpinnedBundledStub(
+        "sweep-new-stub",
+        "paperclipai/paperclip/sweep-new-stub",
+      ),
+    });
+
+    expect(imported).toEqual([
+      expect.objectContaining({
+        action: "created",
+        originalKey: "paperclipai/paperclip/sweep-new-stub",
+        skill: expect.objectContaining({
+          key: "paperclipai/paperclip/sweep-new-stub",
+          sourceType: "github",
+          sourceRef: null,
+          metadata: expect.objectContaining({
+            sourceKind: "paperclip_bundled",
+            owner: "paperclipai",
+            repo: "paperclip",
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("rejects an unpinned third-party github skill source", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.importPackageFiles(companyId, {
+      "skills/foreign/SKILL.md": [
+        "---",
+        "name: Foreign",
+        "slug: foreign",
+        "key: acme/skills/foreign",
+        "metadata:",
+        "  sources:",
+        "    - kind: github-dir",
+        "      repo: acme/skills",
+        "      path: skills/foreign",
+        "      commit: null",
+        "      trackingRef: main",
+        "---",
+        "",
+        "# Foreign",
+        "",
+      ].join("\n"),
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { reason: "unpinned_external_source" },
+    });
+
+    const rows = await db.select().from(companySkills);
+    expect(rows.some((row) => row.companyId === companyId && row.slug === "foreign")).toBe(false);
+  });
+
+  it("rejects executable scripts inside an unpinned paperclip bundled stub", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.importPackageFiles(companyId, {
+      "skills/paperclipai/paperclip/paperclip/SKILL.md": unpinnedBundledStub(
+        "paperclip",
+        "paperclipai/paperclip/paperclip",
+      ),
+      "skills/paperclipai/paperclip/paperclip/scripts/bootstrap.sh": "echo pwned\n",
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { reason: "scripts_executables_blocked" },
+    });
+  });
+
   it("clears the missing-source marker when a local-path skill source returns", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

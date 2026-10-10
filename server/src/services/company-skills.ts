@@ -284,6 +284,14 @@ function isPinnedCommitRef(value: string | null | undefined) {
   return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
 }
 
+function isUnpinnablePaperclipBundledStub(skill: ImportedSkill) {
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  return asString(metadata?.sourceKind) === "paperclip_bundled"
+    && asString(metadata?.owner) === "paperclipai"
+    && asString(metadata?.repo) === "paperclip"
+    && isPaperclipBundledSkillKey(skill.key);
+}
+
 function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
   if (!EXTERNAL_SKILL_SOURCE_TYPES.has(skill.sourceType)) return;
   if (skill.trustLevel === "scripts_executables") {
@@ -296,6 +304,12 @@ function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
       },
     );
   }
+  // Company export writes bundled Paperclip skills as github-dir stubs and pins
+  // `commit` with `git rev-parse HEAD`. A package built where that checkout is
+  // missing carries commit: null. Those stubs are first-party catalog pointers,
+  // not third-party fetches, so they may import unpinned. An existing bundled
+  // row is kept instead of being replaced by the stub.
+  if (isUnpinnablePaperclipBundledStub(skill)) return;
   if ((skill.sourceType === "github" || skill.sourceType === "skills_sh") && !isPinnedCommitRef(skill.sourceRef)) {
     throw unprocessable(
       `External skill source "${skill.slug}" must resolve to a pinned Git commit before import.`,
@@ -6248,9 +6262,10 @@ export function companySkillService(db: Db) {
       if (
         existing
         && existingMeta.sourceKind === "paperclip_bundled"
-        && incomingKind === "github"
+        && (incomingKind === "github" || incomingKind === "paperclip_bundled")
         && incomingOwner === "paperclipai"
         && incomingRepo === "paperclip"
+        && isPaperclipBundledSkillKey(skill.key)
       ) {
         out.push(existing);
         continue;
