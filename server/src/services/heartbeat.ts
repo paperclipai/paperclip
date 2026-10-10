@@ -358,6 +358,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentInstructionWorkingCopyService, collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
+import { preparePersistentAgentExecutionHome } from "./agent-file-store.js";
 import {
   resolveManagedOpenAiBilling,
 } from "@paperclipai/adapter-utils";
@@ -4830,6 +4831,11 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      await preparePersistentAgentExecutionHome(db, {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        target: executionTarget,
+      });
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
