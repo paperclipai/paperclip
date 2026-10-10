@@ -342,9 +342,10 @@ export function boatBackend(
     record: ComputerRecord,
     code: string,
     payload: unknown,
+    control = true,
   ) {
     const result = await (
-      await runner(record, { control: true })
+      await runner(record, { control })
     ).execute({
       command: "python3",
       args: ["-c", code],
@@ -550,7 +551,9 @@ print('{}')
       return { url: url.toString(), secretHeaders: { Cookie: cookie } };
     },
     async remote(record, input) {
-      return execute(record, remoteProgram, input);
+      // Git setup and file I/O may wait on locks or transfer substantial data.
+      // Keep lifecycle capacity reserved; only the short owned-port probe uses it.
+      return execute(record, remoteProgram, input, input.action === "owned-port");
     },
   };
 }

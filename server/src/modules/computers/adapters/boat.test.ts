@@ -19,6 +19,11 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { boatBackend, createBoatTransportAdmission, desktopReadinessProgram, processProgram } from "./boat.js";
 import { buildGitAuthInvocation } from "../../../services/git-credentials.js";
 import type { ComputerRecord } from "../domain/ledger.js";
+const sshFactory = vi.hoisted(() => vi.fn());
+vi.mock("@paperclipai/adapter-utils/ssh", async importOriginal => ({
+  ...await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>(),
+  createSshCommandManagedRuntimeRunner: sshFactory,
+}));
 const record: ComputerRecord = {
   id: "computer",
   companyId: "company",
@@ -606,6 +611,34 @@ describe("Boat SSH admission", () => {
     }
     await Promise.all(jobs);
     expect(runner.execute).toHaveBeenCalledTimes(12);
+  });
+  it("classifies checkout and file operations below reserved lifecycle capacity", async () => {
+    const id = randomUUID();
+    const scoped = { ...record, id, providerId: `bx_${id}` };
+    const completions: Array<() => void> = [];
+    const execute = vi.fn(async (_input: { stdin?: string }) => new Promise<typeof result>(resolve => {
+      completions.push(() => resolve({ ...result, stdout: "{}" }));
+    }));
+    sshFactory.mockReturnValue({ execute });
+    const backend = boatBackend(async () => "fixture-key", vi.fn(async () => json({
+      hostKey: "ssh-ed25519 AAAA", sshEndpoint: "fixture.invalid:2222",
+    })));
+    const jobs = Array.from({ length: 8 }, (_, index) => backend.remote(scoped, {
+      action: index % 2 ? "workspace" : "list", root: "/home/user/paperclip/company/project",
+    }));
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(6));
+    jobs.push(backend.retire(scoped, { id: "owner", generation: 1, kind: "runner", phase: "retiring", port: 43127,
+      deadline: null, absoluteDeadline: null, process: null }));
+    jobs.push(backend.remote(scoped, { action: "owned-port", port: 5173, ownerId: "owner" }));
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(8));
+    const actions = execute.mock.calls.map(([input]) => JSON.parse(input.stdin!).action);
+    expect(actions.filter(action => action === "workspace" || action === "list")).toHaveLength(6);
+    expect(actions).toContain("retire"); expect(actions).toContain("owned-port");
+    completions.splice(0).forEach(finish => finish());
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(10));
+    completions.splice(0).forEach(finish => finish());
+    await Promise.all(jobs);
+    sshFactory.mockReset();
   });
   it("expires queued work without starting it and preserves the original remaining timeout", async () => {
     vi.useFakeTimers();
