@@ -2767,6 +2767,47 @@ export function createToolGatewayService(
     }), signal);
   }
 
+  // The virtual on-demand tools need one permitted target, not a decision for
+  // every target. A connection can expose hundreds of on-demand tools, so the
+  // listing stops at the first permitted target instead of deciding the rest.
+  // Decisions already in flight beside it are reads with no effect on the result.
+  async function anyToolPermittedForListing<T extends ToolGatewayDescriptor>(
+    tools: readonly T[],
+    inputForTool: (tool: T) => ToolAccessDecisionInput,
+    cache: ToolAccessDecisionCache,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    let nextIndex = 0;
+    let done = false;
+    let markPermitted: () => void = () => {};
+    const permitted = new Promise<true>((resolve) => {
+      markPermitted = () => resolve(true);
+    });
+    async function worker() {
+      try {
+        while (!done && nextIndex < tools.length) {
+          const tool = tools[nextIndex]!;
+          nextIndex += 1;
+          signal?.throwIfAborted();
+          const decision = await policyService.decide(inputForTool(tool), { cache });
+          if (decision.allowed || decision.decision === "require_approval") {
+            done = true;
+            markPermitted();
+            return;
+          }
+        }
+      } catch (error) {
+        // A failed decision fails discovery, so stop the other workers.
+        done = true;
+        throw error;
+      }
+    }
+    const exhausted = Promise.all(
+      Array.from({ length: Math.min(LISTING_DECISION_CONCURRENCY, tools.length) }, () => worker()),
+    ).then(() => false as const);
+    return Promise.race([permitted, exhausted]);
+  }
+
   function policyErrorStatus(decision: ToolAccessDecision) {
     if (decision.decision === "rate_limited") return 429;
     return 403;
@@ -3065,21 +3106,16 @@ export function createToolGatewayService(
             }
           : tool,
       );
-    if (onDemandTargets.length > 0) {
-      const targetDecisions = await decideToolsForListing(
+    if (
+      onDemandTargets.length > 0 &&
+      await anyToolPermittedForListing(
         onDemandTargets,
         (tool) => policyInputForTool({ session, tool }),
         decisionCache,
         signal,
-      );
-      if (
-        targetDecisions.some(
-          ({ decision }) =>
-            decision.allowed || decision.decision === "require_approval",
-        )
-      ) {
-        visibleTools.push(...VIRTUAL_TOOLS);
-      }
+      )
+    ) {
+      visibleTools.push(...VIRTUAL_TOOLS);
     }
     return visibleTools;
   }
