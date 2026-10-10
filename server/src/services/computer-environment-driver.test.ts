@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveEnvironmentExecutionTarget, resolveEnvironmentExecutionTransport } from "./environment-execution-target.js";
 import { createComputerEnvironmentDriver } from "./computer-environment-driver.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 
 const state = vi.hoisted(() => {
   const binding = { owner: { computerId: "computer", ownerId: "owner", generation: 1 },
@@ -42,5 +43,14 @@ describe("computer environment probe ownership", () => {
     expect(state.admit).not.toHaveBeenCalled();
     expect(state.admitProbe).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company", environmentId: "environment", agentId: "agent", probeId: expect.any(String) }));
     expect(state.acquireLease).toHaveBeenCalledWith(expect.objectContaining({ heartbeatRunId: null, providerLeaseId: "owner", metadata: expect.objectContaining({ driver: "computer", computerOwner: { computerId: "computer", ownerId: "owner", generation: 1 } }) }));
+  });
+});
+
+describe("computer environment selection", () => {
+  const environment = { id: "environment", driver: "computer", status: "active", config: {}, metadata: { computerCompanyId: "owner" } };
+  const service = { getById: async () => environment };
+  it("permits the attached company and rejects another company", async () => {
+    await expect(assertEnvironmentSelectionForCompany(service, "owner", "environment")).resolves.toBeUndefined();
+    await expect(assertEnvironmentSelectionForCompany(service, "other", "environment")).rejects.toThrow("not available in this company");
   });
 });
