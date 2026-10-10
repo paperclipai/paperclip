@@ -401,7 +401,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
       const [identityRun] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
         responsibleUserId: heartbeatRuns.responsibleUserId, status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson,
-        contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+        contextSnapshot: heartbeatRuns.contextSnapshot, runtimeMode: heartbeatRuns.runtimeMode,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
         ));
       if (agentRunWritesRevoked(identityRun)
@@ -415,6 +416,24 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
         identityRun.activeIdentityContextId = captured.context?.id ?? null;
         identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      }
+      if (claims.authorizing_user_id) {
+        // This signed projection exists only for internal native tools. Recheck
+        // the admitted run and current immutable binding on every API call.
+        try {
+          const { parseNativeExecutionInput } = await import("../vendor/paperclip-runner/index.js");
+          const { museRunnerBroker } = await import("../services/muse-runner-broker.js");
+          const execution = parseNativeExecutionInput(identityRun?.runnerProfileJson?.nativeExecutionInput);
+          if (identityRun?.status !== "running" || identityRun.runtimeMode !== "native" || execution.schema !== "paperclip.native-execution-input.v7"
+            || execution.binding.runId !== claims.run_id || execution.binding.agentId !== claims.sub || execution.binding.companyId !== claims.company_id
+            || await museRunnerBroker(db).authorizingUserIdForBinding(execution.provider.binding) !== claims.authorizing_user_id) {
+            throw new Error("Muse internal tool authority mismatch");
+          }
+          await museRunnerBroker(db).assertRunAuthority(execution);
+        } catch {
+          _res.status(403).json({ error: "Muse native tool authority is unavailable" });
+          return;
+        }
       }
       const onBehalfOfUserId = identityRun?.activeIdentityContextId
         ? identityRun.responsibleUserId
@@ -438,6 +457,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyScope: normalizeAgentApiKeyScope(claims.key_scope),
         runId: claims.run_id,
         onBehalfOfUserId,
+        ...(claims.authorizing_user_id ? { authorizingUserId: claims.authorizing_user_id } : {}),
         identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
         source: "agent_jwt",

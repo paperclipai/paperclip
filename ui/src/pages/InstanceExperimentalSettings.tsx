@@ -493,6 +493,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Muse — Personal agent"
+          description="Connect your personal Meta Muse. Pair it, detect its receiver, and verify an independent background reply before assigning tasks."
+          footnote="Requires Paperclip Runner and an authenticated instance with a public HTTPS URL. Turning this off blocks new work; cleanup and stop evidence remain available. Provider usage and cost are unavailable."
+          checked={experimentalQuery.data?.enableMuse === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMuse: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMuse"
+          managed={managedKeys.enableMuse}
+          ariaLabel="Toggle Muse experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="OpenAI Dot"
           description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
           footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."

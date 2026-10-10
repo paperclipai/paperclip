@@ -13,6 +13,7 @@ export interface LocalAgentJwtClaims {
   adapter_type: string;
   run_id: string;
   responsible_user_id?: string | null;
+  authorizing_user_id?: string;
   key_scope?: AgentApiKeyScope | null;
   iat: number;
   exp: number;
@@ -126,6 +127,7 @@ export function createLocalAgentJwt(
   runId: string,
   responsibleUserId?: string | null,
   keyScope: AgentApiKeyScope = { kind: "standard" },
+  authorizingUserId?: string,
 ) {
   const config = jwtConfig();
   if (!config) return null;
@@ -137,6 +139,7 @@ export function createLocalAgentJwt(
     adapter_type: adapterType,
     run_id: runId,
     responsible_user_id: responsibleUserId?.trim() || null,
+    ...(authorizingUserId?.trim() ? { authorizing_user_id: authorizingUserId.trim() } : {}),
     ...(keyScope.kind === "standard" ? {} : { key_scope: keyScope }),
     iat: now,
     exp: now + config.ttlSeconds,
@@ -213,6 +216,9 @@ export function verifyLocalAgentJwt(token: string, options: { strictRunAuthority
       ? claims.responsible_user_id.trim()
       : null
     : undefined;
+  const authorizingUserClaim = Object.hasOwn(claims, "authorizing_user_id")
+    ? typeof claims.authorizing_user_id === "string" && claims.authorizing_user_id.trim() ? claims.authorizing_user_id.trim() : null : undefined;
+  if (authorizingUserClaim === null) return null;
   const keyScopeClaim = Object.hasOwn(claims, "key_scope")
     ? normalizeAgentApiKeyScope(claims.key_scope)
     : undefined;
@@ -253,6 +259,7 @@ export function verifyLocalAgentJwt(token: string, options: { strictRunAuthority
     adapter_type: adapterType,
     run_id: runId,
     ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
+    ...(authorizingUserClaim ? { authorizing_user_id: authorizingUserClaim } : {}),
     ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
     iat,
     exp,

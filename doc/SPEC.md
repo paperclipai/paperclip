@@ -738,6 +738,14 @@ while preserving agent pairing, normal run admission and task authority.
 Personal grants cannot authorize Runner operations. See
 [OpenAI Dot Runner](openai-dot-runner.md) for its supported release boundary.
 
+Personal Meta Muse is another experimental named Runner agent. Its managed
+receiver uses short-lived pairing and rotating private credentials; its human
+authorizer remains distinct from the agent identity. Paperclip owns admission,
+task authority, and native finalization. Detector health alone does not prove
+execution, and uncertain remote effects prevent overlapping dispatch. See
+[Personal Muse receiver](muse-personal-agent.md) for setup, stopping limits, and
+the required live qualification before release.
+
 ### Experimental connection routing
 
 A virtual AI connection can rotate new task/agent allocations through an

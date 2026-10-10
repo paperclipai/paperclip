@@ -609,7 +609,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isDotRunner = adapterType === "paperclip_runner" && (isCreate ? props.values.adapterSchemaValues?.provider : eff("adapterConfig", "provider", config.provider)) === "openai_dot";
-  const isLocal = !isDotRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
+  const isMuseRunner = adapterType === "paperclip_runner" && (isCreate ? props.values.adapterSchemaValues?.provider : eff("adapterConfig", "provider", config.provider)) === "muse";
+  const isExternalRunner = isDotRunner || isMuseRunner;
+  const isLocal = !isExternalRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
   
   // The legacy working directory is an absolute path on the host, so the
   // managed-sandbox-only policy hides it. A stored value stays untouched; it is
@@ -967,9 +969,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // Resolve the effective instructions-file gate once. The instructions file
     // is an absolute host path, so the managed-sandbox-only policy hides it for
     // every adapter without a per-adapter edit.
-    hideInstructionsFile: hideInstructionsFile || hideHostPaths || isDotRunner,
-    managedSandboxOnly: hideHostPaths || isDotRunner,
+    hideInstructionsFile: hideInstructionsFile || hideHostPaths || isExternalRunner,
+    managedSandboxOnly: hideHostPaths || isExternalRunner,
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
+    museEnabled: experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true,
   };
 
   // Section toggle state — advanced always starts collapsed
@@ -1612,12 +1615,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {showAdapterTypeField && (
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : adapterType}
+                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
+                museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
                   const dot = choice === "openai_dot";
-                  const t = dot ? "paperclip_runner" : choice;
+                  const muse = choice === "muse";
+                  const external = dot || muse;
+                  const t = external ? "paperclip_runner" : choice;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -1636,9 +1642,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "paperclip_runner") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     }
-                    if (dot) {
+                    if (external) {
                       nextValues.model = "";
-                      nextValues.adapterSchemaValues = { provider: "openai_dot" };
+                      nextValues.adapterSchemaValues = { provider: muse ? "muse" : "openai_dot" };
                     }
                     set!(nextValues);
                   } else {
@@ -1657,7 +1663,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
-                            : dot ? ""
+                            : external ? ""
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
@@ -1670,8 +1676,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               dangerouslyBypassApprovalsAndSandbox:
                                 DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
                             }
-                          : dot
-                            ? { provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, dotAttachmentAccess: false, dotWorkspaceAccess: false }
+                          : external
+                            ? { provider: muse ? "muse" : "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, ...(dot ? { dotAttachmentAccess: false, dotWorkspaceAccess: false } : {}) }
                           : t === "paperclip_runner"
                             ? {
                                 ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
@@ -1685,7 +1691,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isDotRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+          {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
@@ -2127,7 +2133,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Debugging ---- */}
-      {!isCreate && canConfigureProviderTrace ? (
+      {!isExternalRunner && !isCreate && canConfigureProviderTrace ? (
         <div className={cn(!cards && "border-b border-border")}>
           {cards ? (
             <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -2168,7 +2174,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
-          variant={isDotRunner ? "prerequisites" : "connection"}
+          variant={isExternalRunner ? "prerequisites" : "connection"}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
           error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
@@ -3679,11 +3685,13 @@ export function AdapterTypeDropdown({
   onChange,
   disabledTypes,
   openAiDotEnabled = false,
+  museEnabled = false,
 }: {
   value: string;
   onChange: (type: string) => void;
   disabledTypes: Set<string>;
   openAiDotEnabled?: boolean;
+  museEnabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const selectedDisplay = getAdapterDisplay(value);
@@ -3691,10 +3699,11 @@ export function AdapterTypeDropdown({
     () =>
       [...listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)),
         ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
+        ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
       ].filter(
         (item) => !disabledTypes.has(item.value),
       ),
-    [disabledTypes, openAiDotEnabled],
+    [disabledTypes, openAiDotEnabled, museEnabled],
   );
 
   return (

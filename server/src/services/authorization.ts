@@ -64,6 +64,8 @@ export type AuthorizationActor =
     keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
     onBehalfOfUserId?: string | null;
+    /** Pinned, server-derived external authorizer; never an agent-selected principal. */
+    authorizingUserId?: string | null;
     source?:
       | "local_implicit"
       | "session"
@@ -557,12 +559,13 @@ function projectPrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolea
 
 function projectPrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
   const own = projectPrivacyPrincipalCondition(actor);
-  if (actor.type !== "agent" || !actor.onBehalfOfUserId) return own;
-  return sql<boolean>`(${own} and ${projectPrivacyPrincipalCondition({ type: "board", userId: actor.onBehalfOfUserId })}
+  const userIds = actor.type === "agent"
+    ? [...new Set([actor.onBehalfOfUserId, actor.authorizingUserId].filter((id): id is string => !!id))] : [];
+  return userIds.reduce((condition, userId) => sql<boolean>`(${condition}
+    and ${projectPrivacyPrincipalCondition({ type: "board", userId, ignoreInstanceAdmin: true })}
     and exists (select 1 from ${companyMemberships} m where m.company_id = ${projects.companyId}
-      and m.principal_type = 'user' and m.principal_id = ${actor.onBehalfOfUserId} and m.status = 'active'))`;
+      and m.principal_type = 'user' and m.principal_id = ${userId} and m.status = 'active'))`, own);
 }
-
 export async function canActorReadProjectPrivacy(db: Db | DbTransaction, actor: AuthorizationActor, project: ProjectPrivacyRow) {
   return db.select({ id: projects.id }).from(projects)
     .where(and(eq(projects.id, project.id), eq(projects.companyId, project.companyId), projectPrivacyCondition(actor)))
@@ -613,15 +616,15 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
 }
 
 function issuePrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
-  const principalCondition = issuePrivacyPrincipalCondition(actor);
-  if (actor.type !== "agent" || !actor.onBehalfOfUserId) return principalCondition;
-  const userId = actor.onBehalfOfUserId;
-  // A shared agent's grants cannot amplify the user whose run is making the call.
-  return sql<boolean>`(${principalCondition} and ${issuePrivacyPrincipalCondition({ type: "board", userId })}
+  const own = issuePrivacyPrincipalCondition(actor);
+  const userIds = actor.type === "agent"
+    ? [...new Set([actor.onBehalfOfUserId, actor.authorizingUserId].filter((id): id is string => !!id))] : [];
+  // Shared agent grants cannot amplify either the task owner or external authorizer.
+  return userIds.reduce((condition, userId) => sql<boolean>`(${condition}
+    and ${issuePrivacyPrincipalCondition({ type: "board", userId, ignoreInstanceAdmin: true })}
     and exists (select 1 from ${companyMemberships} m where m.company_id = ${issues.companyId}
-      and m.principal_type = 'user' and m.principal_id = ${userId} and m.status = 'active'))`;
+      and m.principal_type = 'user' and m.principal_id = ${userId} and m.status = 'active'))`, own);
 }
-
 export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: AuthorizationActor, issue: IssuePrivacyRow) {
   return db.select({ id: issues.id }).from(issues)
     .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId), issuePrivacyCondition(actor)))
@@ -630,6 +633,7 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
 
 /** Filter every externally reachable task query with the same privacy predicate. */
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (actor.authorizingUserId) return issuePrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
@@ -641,6 +645,7 @@ export async function issueReadSqlCondition(db: Db | DbTransaction, actor: Autho
 
 /** SQL equivalent used for project list/search pushdown. */
 export async function projectReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (actor.authorizingUserId) return projectPrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (
@@ -2619,6 +2624,42 @@ export function authorizationService(db: Db | DbTransaction) {
     return input.action !== "agent_instructions:update" && responsibleUserAuthzShadowMode() ? agentDecision : denied;
   }
 
+  async function applyAuthorizingUserIntersection(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    agentDecision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    const authorizingUserId = input.actor.authorizingUserId?.trim();
+    if (input.actor.type !== "agent" || !authorizingUserId || !agentDecision.allowed) return agentDecision;
+
+    const companyId = companyIdForResource(input.resource);
+    // External authority always uses current membership, without the request's
+    // responsible-user memo or rollout exceptions for agent-owned grants.
+    const snapshot = await loadResponsibleUserSnapshot(companyId, authorizingUserId);
+    const userDecision = snapshot.userExists && snapshot.activeMembership
+      ? await decideBase({
+          ...input,
+          actor: { type: "board", userId: authorizingUserId, ignoreInstanceAdmin: true, source: "session" },
+        })
+      : deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "The authorizing user is not an active company member.",
+        });
+    if (userDecision.allowed) return agentDecision;
+
+    return deny({
+      action: input.action,
+      reason: userDecision.reason,
+      explanation: `Authorizing user is not authorized for ${input.action}: ${userDecision.explanation}`,
+      grant: userDecision.grant,
+    });
+  }
+
   async function decide(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
@@ -2626,7 +2667,8 @@ export function authorizationService(db: Db | DbTransaction) {
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
     const agentDecision = await decideBase(input);
-    const intersectedDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    const responsibleDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    const intersectedDecision = await applyAuthorizingUserIntersection(input, responsibleDecision);
     if (
       input.action === "project:read"
       && input.resource.type === "project"
@@ -2634,7 +2676,7 @@ export function authorizationService(db: Db | DbTransaction) {
       && intersectedDecision.allowed
       && intersectedDecision.reason !== "allow_instance_admin"
       && intersectedDecision.reason !== "allow_local_board"
-      && issuePrivacyMode() !== "off"
+      && (input.actor.authorizingUserId || issuePrivacyMode() !== "off")
     ) {
       const project = await db
         .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
@@ -2657,7 +2699,7 @@ export function authorizationService(db: Db | DbTransaction) {
           actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
           reason: denied.reason,
         }, "project privacy would deny read");
-        return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+        return !input.actor.authorizingUserId && issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
       }
     }
     if (
@@ -2667,7 +2709,7 @@ export function authorizationService(db: Db | DbTransaction) {
       || !intersectedDecision.allowed
       || intersectedDecision.reason === "allow_instance_admin"
       || intersectedDecision.reason === "allow_local_board"
-      || issuePrivacyMode() === "off"
+      || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")
     ) return intersectedDecision;
 
     const issue = await db
@@ -2703,7 +2745,7 @@ export function authorizationService(db: Db | DbTransaction) {
       actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
       reason: denied.reason,
     }, "issue privacy would deny read");
-    return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+    return !input.actor.authorizingUserId && issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
   }
 
   // A candidate filter only: project policies and responsible-user grants are

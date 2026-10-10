@@ -10,6 +10,13 @@ The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
 
+The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
+uses ordinary task APIs and retained native receipts to measure unattended
+receiver behavior. It is a separate manual qualification probe, not a registered
+Product E2E campaign. Synthetic receiver tests cannot qualify personal Muse;
+real setup, clarification and fresh-conversation collaboration remain separate
+release gates.
+
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
 

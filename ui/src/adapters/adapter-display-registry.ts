@@ -134,6 +134,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Bot,
     experimental: true,
   },
+  muse: {
+    label: "Muse — Personal agent",
+    description: "Your personal Muse at muse.ai",
+    icon: Bot,
+    experimental: true,
+  },
   cursor_cloud: {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",

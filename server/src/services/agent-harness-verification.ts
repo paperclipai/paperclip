@@ -9,6 +9,7 @@ import { aiConnectionRouterService } from "./ai-connection-router.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
+import { museRunnerBroker } from "./muse-runner-broker.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
@@ -32,6 +33,10 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "openai_dot") {
       const binding = await dotRunnerBroker(db).bindingForAgent(agent.companyId, agent.id);
       return binding?.status === "ready" && binding.subscriptionVerified && binding.id === agent.adapterConfig.dotBindingId ? "complete" : "pending";
+    }
+    if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse") {
+      const binding = await museRunnerBroker(db).bindingForAgent(agent.companyId,agent.id);
+      return binding?.status === "ready" && binding.paired && binding.receiverDetected && binding.backgroundReplyVerified && binding.id === agent.adapterConfig.museBindingId ? "complete" : "pending";
     }
     const [company] = await db.select().from(companies).where(eq(companies.id, agent.companyId));
     const responsibleUserId = agent.lifecycleOperation?.responsibleUserId ?? company.defaultResponsibleUserId;

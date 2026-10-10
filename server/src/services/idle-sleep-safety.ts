@@ -108,6 +108,8 @@ const WORK_CHECKS = [
     "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
     "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
     "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",
+    "muse_agent_bindings", "muse_credentials", "muse_runner_assignments",
+    "muse_runner_operations", "muse_mailbox_items", "muse_input_deliveries", "external_agent_holds",
   ].map((table) => `SELECT 1 FROM ${table}`),
 ] as const;
 

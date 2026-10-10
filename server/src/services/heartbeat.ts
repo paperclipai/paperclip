@@ -1,3 +1,4 @@
+import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
@@ -3046,8 +3047,8 @@ export function heartbeatService(
               persistedRunnerProfile.nativeExecutionInput,
             )
           : null;
-      const isDotRun = persistedNativeExecutionInput?.provider.kind === "openai_dot"
-        || (!persistedNativeExecutionInput && agent.adapterType === "paperclip_runner" && parseObject(agent.adapterConfig).provider === "openai_dot");
+      const isDotRun = persistedNativeExecutionInput?.provider.kind === "openai_dot" || persistedNativeExecutionInput?.provider.kind === "muse"
+        || (!persistedNativeExecutionInput && agent.adapterType === "paperclip_runner" && ["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider)));
       const persistedNativeExecutionWorkspaceId =
         persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
       const requestedExecutionWorkspaceId =
@@ -3209,8 +3210,7 @@ export function heartbeatService(
       if (
         nativeChatWorkspaceScope &&
         persistedNativeExecutionInput &&
-        persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v6" &&
-        persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v7" &&
+        persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v6" && persistedNativeExecutionInput.schema !== "paperclip.native-execution-input.v7" &&
         !nativeChatWorkspaceMatches({
           scope: nativeChatWorkspaceScope,
           expectedCwd: nativeChatExpectedCwd,
@@ -4602,6 +4602,7 @@ export function heartbeatService(
           persisted: run,
           enabled:
             resolvedInstanceSettings.experimental.enableNativeRunner === true,
+          museEnabled: resolvedInstanceSettings.experimental.enableMuse === true,
           dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true
             && resolvedInstanceSettings.experimental.enablePublicMcp === true,
           runtimeConfig: agent.runtimeConfig,
@@ -4617,7 +4618,7 @@ export function heartbeatService(
         });
         const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
           ? adapter.supportsInstructionsBundle === true
-          : !["claude_managed_agents_api", "aws_agentcore_harness_api", "openai_dot_mcp"].includes(nativeRuntimeResolution.profile.backend);
+          : !["claude_managed_agents_api", "aws_agentcore_harness_api", "openai_dot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend);
         if (hasInstructionFilesystem) {
           try {
             // Missing contract fields on a restored session mean the deployed
@@ -5350,6 +5351,7 @@ export function heartbeatService(
           adapterExecutionControls.delete(run.id);
         }
       }
+      if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
       if (latestRun?.runtimeMode === "legacy" && ["failed", "timed_out"].includes(latestRun.status) &&

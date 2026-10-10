@@ -12,7 +12,7 @@ export interface MuseBinding {
   qualification: { id: string; expiresAt: string } | null;
   liveAssignments: number; uncertainOperations: number; pendingInputs: number;
   cleanup: { pending: boolean; detectorRemovalRequested?: boolean; detectorRemoved: boolean; workerQuiescenceReported: boolean; expiresAt: string | null };
-  stop: { status: "none" | "cannot_confirm" | "worker_reported" | "operator_attested"; nativeEffectsUnknown: boolean; boundary: MuseStopBoundary | null };
+  stop: { status: "none" | "cannot_confirm" | "worker_reported" | "operator_attested"; nativeEffectsUnknown: boolean; boundary: MuseStopBoundary | null; bindingRevision: number | null };
 }
 export interface MuseInvitation { agent: { id: string; name: string; status: string }; approvalId: string | null; binding: MuseBinding | null }
 export interface MuseConnection {

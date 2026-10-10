@@ -21,6 +21,24 @@ vi.mock("../components/MarkdownBody", () => ({
 }));
 
 describe("AgentOverview", () => {
+  it("identifies Muse and shows its provider-managed model even when old model fields remain", () => {
+    const agent = {
+      id: "muse-agent", companyId: "company-1", name: "Muse Researcher", role: "researcher", status: "active",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "muse", model: "old-model" },
+      runtimeConfig: { model: "old-runtime-model" },
+    } as unknown as AgentDetail;
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview agent={agent} runs={[]} assignedIssues={[]} directReportCount={0} skillNames={[]} agentRouteId="muse-agent" />
+      </QueryClientProvider>,
+    );
+    expect(markup).toContain("Muse — Personal agent");
+    expect(markup).toContain("Managed by Muse");
+    expect(markup).not.toContain("Adapter default");
+    expect(markup).not.toContain("old-model");
+    expect(markup).not.toContain("old-runtime-model");
+  });
+
   it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", () => {
     const agent = {
       id: "agent-1",

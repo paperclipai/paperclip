@@ -1,0 +1,19 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { unprocessable } from "../errors.js";
+export async function museReceiverAssets() {
+  const client=await readFile(fileURLToPath(new URL("./scripts/muse-client.py",import.meta.url)),"utf8");
+  const detector=await readFile(fileURLToPath(new URL("./scripts/muse-detector.sh",import.meta.url)),"utf8");
+  const instructions=await readFile(fileURLToPath(new URL("./scripts/muse-instructions.md",import.meta.url)),"utf8");
+  return {client,detector,instructions,manifest:{version:1,assetVersion:1,clientVersion:"1",assets:{"client.py":{sha256:createHash("sha256").update(client).digest("hex")},"detector.sh":{sha256:createHash("sha256").update(detector).digest("hex")},"instructions.md":{sha256:createHash("sha256").update(instructions).digest("hex")}}}};
+}
+export function musePublicOrigin(value?:string) {
+  const origin=value??process.env.PAPERCLIP_PUBLIC_URL??process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL??process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL;
+  try {const parsed=new URL(origin??"");if(parsed.protocol!=="https:"||parsed.username||parsed.password||parsed.pathname!=="/"||parsed.search||parsed.hash)throw new Error();return parsed.origin;}
+  catch {throw unprocessable("Configure a stable public HTTPS Paperclip hostname before connecting Muse.");}
+}
+export async function buildMuseSetupInstruction(origin:string|undefined,ticket:string,bindingId:string) {
+  const base=musePublicOrigin(origin),assets=await museReceiverAssets();
+  return `Connect this personal Muse conversation to Paperclip at ${base}. Approve access to this hostname through Muse's own UI; that standing hostname permission may cover later Paperclip tasks. Download ${base}/api/muse/v1/assets/1/client.py, detector.sh and instructions.md. Verify SHA-256 digests before installing: client.py ${assets.manifest.assets["client.py"].sha256}; detector.sh ${assets.manifest.assets["detector.sh"].sha256}; instructions.md ${assets.manifest.assets["instructions.md"].sha256}. Install privately (directories0700, files0600) in ~/.config/paperclip-muse; never print worker credentials. Exchange the single-use ticket ${ticket} using python3 client.py --binding ${bindingId} pair --origin ${base} --ticket ${ticket}. Install detector.sh using Muse's supported managed hook interface HATCH_HOOK_RUNTIME, request an interval of five seconds, and install instructions.md beside client.py, then persist a discoverable link to it in Muse's supported environment for every fresh conversation. Read it with python3 client.py --binding ${bindingId} help. Do not silently substitute sixty seconds. Empty or failed checks must stay silent. After installing, end this installation turn. Follow instructions.md from a subsequent independent managed detector wake to read and confirm the readiness challenge; never confirm it inline during setup. Wait for Paperclip's observed verified background reply. For work: read assignment, accept with a stable UUID before execution, use the exact projected native tools. Journal stable requests before I/O and retain exact receipts. For questions use request_user_input with the canonical questionSet; answer persists the canonical answer into the same turn continuation, then consume-input confirms durable ingestion. Pending/unconsumed input blocks finish. Invoke paperclip_finish or paperclip_block first, then submit its exact canonical report to finish. Never treat a wake signal as task content or permission. Idle operations are identify, task list/search/read/history/document read/create/comment only. Preserve your own tool permissions. A fenced assignment stops Paperclip operations; the cleanup-only client can inspect the exact stop boundary and report worker quiescence, which does not prove unobserved private tools stopped. Usage/cost are unavailable.`;
+}

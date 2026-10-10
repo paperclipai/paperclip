@@ -461,3 +461,18 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
     })).toThrow(NativeRunnerSelectionError);
   });
 });
+
+
+describe("Muse native selection", () => {
+  const muse = { ...eligible, museEnabled: true, adapterConfig: { provider: "muse", museBindingId: "00000000-0000-4000-8000-000000000001", allowUnmeteredProvider: true, lifecycleMode: "per_turn" } };
+  it("requires both Runner and Muse rollout gates for fresh work", () => {
+    expect(() => resolveNativeRuntimeMode({ ...muse, museEnabled: false })).toThrow("Enable Muse");
+    expect(() => resolveNativeRuntimeMode({ ...muse, enabled: false })).toThrow("disabled");
+    expect(resolveNativeRuntimeMode(muse)).toMatchObject({ kind: "native", profile: { backend: "muse_external" } });
+  });
+  it("rejects model, workspace and inherited Dot attachment grants", () => {
+    for (const extra of [{ model: "local-model" }, { dotWorkspaceAccess: true }, { dotAttachmentAccess: true }, { lifecycleMode: "warm" }]) {
+      expect(() => resolveNativeRuntimeMode({ ...muse, adapterConfig: { ...muse.adapterConfig, ...extra } })).toThrow("Muse requires");
+    }
+  });
+});

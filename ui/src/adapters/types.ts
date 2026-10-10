@@ -53,6 +53,8 @@ export interface AdapterConfigFieldsProps {
   managedSandboxOnly?: boolean;
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
+  /** Personal Muse is offered only with its own flag and the native Runner enabled. */
+  museEnabled?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {
