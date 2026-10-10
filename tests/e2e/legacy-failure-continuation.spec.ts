@@ -99,9 +99,21 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
       } else if (action === "message") {
         await page.getByRole("textbox", { name: "editable markdown" }).fill("Please continue the pending follow-up.");
         await page.getByRole("button", { name: "Send", exact: true }).click();
+      } else if (action === "inbox_retry") {
+        // Navigation can cancel the mutation before its request is sent.
+        const [response] = await Promise.all([
+          page.waitForResponse((response) => {
+            const request = response.request();
+            return request.method() === "POST"
+              && new URL(response.url()).pathname.endsWith(`/agents/${agent.id}/wakeup`)
+              && request.postDataJSON()?.failedRunId === sourceRunId;
+          }),
+          page.getByRole("button", { name: "Retry", exact: true }).click(),
+        ]);
+        expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
+        await page.goto(taskUrl);
       } else {
         await page.getByRole("button", { name: action === "thread_retry" ? "Try again" : "Retry", exact: true }).click();
-        if (action === "inbox_retry") await page.goto(taskUrl);
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 45_000 });
       await expect(page.getByRole("status", { name: "Task recovery" })).toHaveCount(0);
