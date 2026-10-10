@@ -7405,7 +7405,7 @@ describe("native warm session supervision", () => {
       const name = `computer-owner-${suffix}`;
       const current = { ...execution, binding: { ...execution.binding, runId: name, agentId: name, executionWorkspaceId: name },
         session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
-      const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async () => undefined);
+      const close = vi.fn(async () => undefined), retainWarm = vi.fn(async () => undefined), retire = vi.fn(async () => true);
       const target = { kind: "remote" as const, transport: "computer" as const, environmentId: "shared-computer",
         remoteCwd: `/home/user/${name}`, listenerPort: suffix === "a" ? 45001 : 45002,
         resourceAuthority: { kind: "computer-owner", computerId: "computer", ownerId: name, generation: 1 },
@@ -7427,10 +7427,50 @@ describe("native warm session supervision", () => {
     expect(result.closed).toBe(1);
     expect(owners[0]!.close).toHaveBeenCalledOnce();
     expect(owners[0]!.retire).toHaveBeenCalledOnce();
-    expect(owners[0]!.close.mock.invocationCallOrder[0]).toBeLessThan(owners[0]!.retire.mock.invocationCallOrder[0]!);
+    expect(owners[0]!.retire.mock.invocationCallOrder[0]).toBeLessThan(owners[0]!.close.mock.invocationCallOrder[0]!);
     expect(owners[1]!.close).not.toHaveBeenCalled();
     expect(owners[1]!.retire).not.toHaveBeenCalled();
     await closeWarmNativeSessionsForRun({ runId: owners[1]!.runId, reason: "fixture cleanup" });
+  });
+
+  it("keeps a computer transport alive when its old idle timer loses to warm admission", async () => {
+    const name = "computer-idle-admission-race";
+    const current = { ...execution, binding: { ...execution.binding, runId: `${name}-one`, agentId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    const close = vi.fn(async () => undefined);
+    const detachControllerForRestart = vi.fn(async () => undefined);
+    const session = { close, detachControllerForRestart };
+    let generation = 1;
+    const retire = vi.fn(async () => generation === 1);
+    const target = { kind: "remote", transport: "computer", environmentId: name, remoteCwd: `/home/user/${name}`,
+      resourceAuthority: { kind: "computer-owner", computerId: name, ownerId: name, generation: 1 },
+      retainWarm: vi.fn(async () => undefined), retire };
+    const result = { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" }, turnId: name,
+      normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+      nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.(session); return result;
+    }).mockImplementationOnce(async options => {
+      expect(options.existingSession).toBe(session);
+      await options.onSession?.(session); return result;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name, runnerExecutionTarget: target as never });
+      generation = 2; // The durable admission committed before local reservation.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(retire).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+      expect(detachControllerForRestart).not.toHaveBeenCalled();
+      const next = { ...current, binding: { ...current.binding, runId: `${name}-two` } };
+      const nextRetire = vi.fn(async () => true);
+      await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: name,
+        runnerExecutionTarget: { ...target, resourceAuthority: { ...target.resourceAuthority, generation: 2 }, retire: nextRetire } as never });
+      await closeWarmNativeSessionsForRun({ runId: next.binding.runId, reason: "fixture cleanup" });
+      expect(nextRetire).toHaveBeenCalledOnce();
+      expect(detachControllerForRestart).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   describe("managed directory warm checkpoints", () => {

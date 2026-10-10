@@ -122,6 +122,7 @@ export async function computerExecutionTarget(db: Db, lease: EnvironmentLease, i
       const result = await computers.retire({ ...scope, owner });
       if (result.retired) await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success",
         remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" }) });
+      return result.retired;
     },
     getRunnerIngressEndpoint: ({ port, path }) => {
       if (port !== binding.listenerPort) throw new Error("computer_runner_port_mismatch");

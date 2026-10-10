@@ -222,7 +222,7 @@ it("uses each computer owner's allocated port without changing the sandbox defau
     resourceAuthority: { kind: "computer-owner" as const, computerId: "machine", ownerId: "owner-a", generation: 2 },
     fileAuthority: { kind: "remote-persistent" as const, placementId: "placement", root: "/home/user/project", agentHome: "/home/user/agent-a" },
     launch: async () => ({}), inspectProcess: async () => ({ running: true, claim: {} }),
-    retainWarm: async () => {}, retire: async () => {}, computerTool: { command: "cua-driver", args: ["mcp"] },
+    retainWarm: async () => {}, retire: async () => true, computerTool: { command: "cua-driver", args: ["mcp"] },
   };
   expect(adapterExecutionTargetIsCommandBacked(base)).toBe(true);
   for (const port of [45101, 45102]) {

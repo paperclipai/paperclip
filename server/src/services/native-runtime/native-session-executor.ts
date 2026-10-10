@@ -470,17 +470,31 @@ type WarmNativeSession = {
   lastActivityAt: string;
 };
 
+class ComputerOwnerSupersededError extends Error {
+  constructor() { super("computer_owner_retirement_superseded"); }
+}
+
 async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, preserveInstructionsForRunId?: string) {
+  // Computer admission can advance while an old idle timer is firing. Only
+  // the exact durable owner may stop the runner or its controller transport.
+  if (entry.computerTarget && !(await entry.computerTarget.retire())) {
+    throw new ComputerOwnerSupersededError();
+  }
   // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
   try {
-    try { await entry.session.close({ reason }); }
+    try {
+      if (entry.computerTarget && entry.session.detachControllerForRestart) {
+        await entry.session.detachControllerForRestart();
+      } else {
+        await entry.session.close({ reason });
+      }
+    }
     catch (error) {
       try { await entry.instructionWorkingCopy?.retirementFailed?.(); }
       catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
       throw error;
     }
-    await entry.computerTarget?.retire();
     await entry.instructionWorkingCopy?.collectStopped();
     if (entry.instructionCopy?.runId !== preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
@@ -6191,7 +6205,16 @@ async function releaseWarmNativeSession(
     current.closeOnReleaseReason = "warm native session idle timeout";
     void closeWarmNativeSession(current, current.closeOnReleaseReason)
       .then(() => { if (warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
-      .catch(() => { if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
+      .catch((error) => {
+        if (error instanceof ComputerOwnerSupersededError) {
+          // Admission owns the next generation. Leave this transport available
+          // for its imminent warm reservation instead of closing or deleting it.
+          current.closeOnReleaseReason = undefined;
+          current.idleTimer = null;
+          return;
+        }
+        if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId);
+      })
       .finally(() => { current.busy = false; });
   }, idleTimeoutMs);
   entry.idleTimer.unref();
