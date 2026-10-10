@@ -101,6 +101,7 @@ import {
   type AcpRuntimeStatus,
   type AcpRuntimeTurn,
   type AcpRuntimeTurnResult,
+  type AcpRuntimeTurnResultError,
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
 } from "acpx/runtime";
@@ -3253,6 +3254,65 @@ function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   return result.error.message;
 }
 
+// A capacity / session-cap / usage-limit failure — e.g. "You've hit your
+// session limit · resets 11pm". It shares the `acpx_turn_failed` code with a
+// transport stall but must NOT be retried on a short backoff: the wall clears
+// on the provider's own schedule (#10344). The adapter classifiers move the
+// wording they recognise onto `provider_quota`; anything cap-like they do not
+// recognise is vetoed here so it can never be relabelled transient. The
+// "resets" alternative is anchored to a clock time so it cannot swallow a
+// "connection reset" transport stall below.
+const ACPX_CAPACITY_CAP_RE =
+  /(?:hit your (?:session|usage|weekly|daily|monthly|plan|account)\b|(?:session|usage|weekly|daily|monthly|plan|account|message|token|credit)\s+limit\b|usage limit|\bquota\b|at capacity|capacity limit|out of (?:credits?|usage)|resets?\s+(?:at\s+)?(?:\d|midnight|noon|tomorrow|today))/i;
+
+// The mid-stream transport-stall subclass of a failed ACPX turn: a transport
+// interruption that ended the turn with no terminal answer — the observed
+// "Response stalled mid-stream", an idle / PING-ack stall, or a connection
+// reset. It is very likely to succeed on a later attempt, which is exactly
+// what the server's bounded transient-retry ladder exists for.
+const ACPX_TRANSPORT_STALL_RE =
+  /(?:response[\s_-]?stalled|stalled[\s_-]?mid[\s_-]?stream|mid[\s_-]?stream[\s_-]?stall|(?:stream|response|turn)[\s_-]?stalled|stream[\s_-]?(?:stall|idle)|idle[\s_-]?timeout|no ping ack|stalled ping|transport[\s_-]?(?:stall|lost|closed|reset)|connection[\s_-]?reset|econnreset|socket hang ?up|premature[\s_-]?(?:close|end)|unexpected end of (?:stream|json|data|input)|stream[\s_-]?(?:closed|ended)[\s_-]?(?:unexpectedly|prematurely)|\bgoaway\b)/i;
+
+// Terminal-session categories that already have their own recovery contract
+// (sign-in, quota/context/budget limits). A stall-ish word in their text must
+// not move them onto the transient-retry ladder.
+const NON_TRANSIENT_TERMINAL_CATEGORIES = new Set(["access", "limit"]);
+
+/**
+ * Engine-level fallback for a failed ACPX turn that neither the tool-definition
+ * classifier nor the adapter's `classifyTerminalSessionFailure` claimed.
+ *
+ * Tags only the mid-stream transport-stall subclass as `transient_upstream`,
+ * so the server's heartbeat bounded-retry ladder arms for it (#11257). The
+ * capacity/quota subclass and any `access` / `limit` terminal-session failure
+ * return `null` and keep today's behaviour byte-for-byte.
+ */
+export function classifyAcpxTurnFailureErrorFamily(
+  error: Pick<AcpRuntimeTurnResultError, "message" | "code" | "detailCode">,
+  terminalSessionFailure?: Pick<AcpxTerminalSessionFailure, "category"> | null,
+): "transient_upstream" | null {
+  if (terminalSessionFailure && NON_TRANSIENT_TERMINAL_CATEGORIES.has(terminalSessionFailure.category)) {
+    return null;
+  }
+  const haystack = [error.message, error.code, error.detailCode]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join(" ");
+  if (!haystack) return null;
+  // Checked first so a cap message can never be relabelled, even if it also
+  // carries a stall-ish word.
+  if (ACPX_CAPACITY_CAP_RE.test(haystack)) return null;
+  if (ACPX_TRANSPORT_STALL_RE.test(haystack)) return "transient_upstream";
+  return null;
+}
+
+function classifyTransportStallFallback(
+  error: AcpRuntimeTurnResultError,
+  terminalSessionFailure: AcpxTerminalSessionFailure | null,
+): AcpxTerminalFailureClassification | null {
+  const errorFamily = classifyAcpxTurnFailureErrorFamily(error, terminalSessionFailure);
+  return errorFamily ? { errorFamily } : null;
+}
+
 function usageBreakdownsEqual(
   left: AcpRuntimeUsageBreakdown,
   right: AcpRuntimeUsageBreakdown,
@@ -5108,9 +5168,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : formatTerminalSessionFailure(resultErrorMessage(terminal), failureDiagnostic);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
-        const classifiedFailure = !timedOut && !channelLost && terminal.status === "failed"
-          ? terminalFailureClassification
-          : null;
+        // Adapter-specific classification wins; the engine-level transport-stall
+        // fallback only labels a failure nothing else claimed.
+        const classifiedFailure: AcpxTerminalFailureClassification | null =
+          !timedOut && !channelLost && terminal.status === "failed"
+            ? terminalFailureClassification ?? classifyTransportStallFallback(terminal.error, terminalSessionFailure)
+            : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
