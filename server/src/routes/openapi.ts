@@ -1946,6 +1946,7 @@ registry.registerPath({
                 mtime: z.string().datetime(),
                 ageHours: z.number(),
                 sizeBytes: z.number(),
+                empty: z.boolean(),
               })
               .nullable()
               .optional(),
@@ -1961,6 +1962,7 @@ registry.registerPath({
               z.object({
                 code: z.enum([
                   "database_backup_check_failed",
+                  "database_backup_empty",
                   "database_backup_last_failure",
                   "database_backup_missing",
                   "database_backup_stale",
