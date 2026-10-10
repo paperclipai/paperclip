@@ -490,6 +490,14 @@ with open(output,'wb') as out,open(error,'wb') as err:
         cwd: temp,
         stdin: "foreground-input\n",
       });
+      const stdinProbe = await binding.runner.execute({
+        command: "python3",
+        args: ["-c", "import os,sys; assert os.fstat(0).st_nlink > 0, 'stdin backing file was unlinked before child exit'; assert os.fstat(0).st_mode & 0o777 == 0o600; print(sys.stdin.read(),end='')"],
+        cwd: temp,
+        stdin: "persistent-stdin",
+      });
+      expect(stdinProbe.exitCode).toBe(0);
+      expect(stdinProbe.stdout).toBe("persistent-stdin");
       backgroundPid = Number(result.stdout.trim());
       expect(result.exitCode).toBe(7);
       expect(result.stderr).toBe("foreground-input\n");

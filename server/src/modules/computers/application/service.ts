@@ -209,7 +209,7 @@ export function createComputerService(
             "-c",
             String.raw`
 import os,sys,json,fcntl,subprocess,time,tempfile,shutil
-p=json.load(sys.stdin);root='/home/user/.paperclip-owners/'+p['owner'];os.makedirs(root,exist_ok=True)
+p=json.load(sys.stdin);os.umask(0o077);root='/home/user/.paperclip-owners/'+p['owner'];os.makedirs(root,exist_ok=True)
 # A receipt reports foreground completion independently from cgroup lifetime.
 # ExitType=cgroup keeps nohup/setsid descendants owned until owner retirement.
 supervisor="""
@@ -220,7 +220,8 @@ os.unlink(payload)
 i=p['input']
 try:
  with open(p['stdin'],'rb') as source:
-  os.unlink(p['stdin'])
+  # Boat's persistent filesystem invalidates unlinked stdin descriptors.
+  # Keep the private backing file until the command's normal finally cleanup.
   child=subprocess.Popen([i['command']]+i.get('args',[]),stdin=source)
   code=child.wait()
 except Exception as error:
