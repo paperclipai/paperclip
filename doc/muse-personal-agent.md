@@ -36,6 +36,22 @@ Run the targeted protocol, Runner and UI tests before repository-wide checks. Th
 
 Preserve source/Runner revisions, exact environment, evidence mode, outcome receipts, interventions and latency. Record private provider behavior only when actually observed. Authenticated transport alone does not prove unseen private tool activity.
 
+## Observed native workflow
+
+On October 10, 2026, the scripted HTTP peer completed two ordinary native Muse
+runs against integration revision `01ecffd32ab73d763c05ee0209e64d86b8ebdea6`
+with smoke script revision `eb371d06673764fbdde7cc848ccf336bbd547c3a`.
+The first run claimed its assignment, saved a document, received a structured
+question answer through Paperclip, persisted and consumed the answer, and
+finalized through the native Runner. Reopening the task produced one follow-up
+run that read the new comment, revised the document and finalized. The browser
+showed the answered question, task completion and document revision two.
+
+This was a synthetic authenticated receiver, with no personal Muse model or
+managed hook installed. Both runs committed native finalization; cleanup revoked
+the test connection and left no uncertain work. It validates the Paperclip
+workflow, not the personal Muse service or its five-second polling behavior.
+
 ## Bounded 24-hour probe
 
 `scripts/smoke/muse-qualification.ts` is an operator-run receiver reliability probe using normal task APIs. It is not a registered Product E2E campaign and cannot substitute for the real journeys above. Authenticate through `paperclipai auth login`; the probe uses the saved operator credential and never accepts a Muse cookie or credential argument. State and retained evidence should live in a private directory outside Git.
@@ -56,7 +72,7 @@ Start records a fixed server-owned deadline. Run `check` regularly during the ex
 
 The server's deadline fencing is independent of the watcher. `check` also performs deadline cleanup before task/document reads, so a broken sample cannot prolong the experiment. Use `stop` with the same state path to end early. `report` reads retained evidence without creating work. If a command is killed while holding its local state lock, verify it is no longer running before removing that lock; the server deadline remains authoritative.
 
-Use `--evidence-mode synthetic` for a scripted receiver. Synthetic evidence can calibrate the checker but cannot qualify personal Muse. The report independently requires full duration, native completion/document receipts, cadence coverage, sustained idle, and resolved remote uncertainty. It reports queue-to-offer, queue-to-claim, native acceptance, accepted result and full finalization latency separately. The requested interval remains five seconds; at least 90% of steady observed intervals must be at most seven seconds. Missing persisted contact evidence fails qualification. Do not replace this with the prior sixty-second hook.
+Use `--evidence-mode synthetic` for a scripted receiver. Synthetic evidence can calibrate the checker but cannot qualify personal Muse. The report independently requires full duration, native completion/document receipts, cadence coverage, sustained idle, and resolved remote uncertainty. It reports queue-to-offer, queue-to-claim, native acceptance, accepted result and full finalization latency separately. The requested interval remains five seconds; at least 90% of steady observed intervals must be at most seven seconds. Missing persisted contact evidence or any internal or boundary receiver gap longer than one minute fails qualification. Do not replace this with the prior sixty-second hook.
 
 The public report is an explicit allowlist without task/account/session IDs or credentials. Retain the underlying private evidence for audit. The report's receiver qualification result is separate from its release result; the latter additionally requires the independently verified product journeys. The prior stopped experiment's four replies do not count toward this probe.
 
