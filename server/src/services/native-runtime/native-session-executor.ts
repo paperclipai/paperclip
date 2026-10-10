@@ -13411,6 +13411,7 @@ async function createRunnerdBackendWithinSessionClaim(
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
         externallySandboxed: adapterExecutionTargetIsCommandBacked(remoteTarget),
         computerTool: remoteTarget?.transport === "computer" ? remoteTarget.computerTool : undefined,
+        persistentAgentHome: remoteTarget?.transport === "computer" ? remoteTarget.fileAuthority.agentHome : undefined,
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,

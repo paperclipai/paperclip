@@ -1,3 +1,4 @@
+import { createRunnerdCodexAppServerArgs } from "../live/runnerd-codex-transport.js";
 import {
   chmod,
   lstat,
@@ -516,4 +517,13 @@ command = "untrusted-command"
     });
     await expect(stat(join(symlinkCodexHome, "auth.json"))).rejects.toThrow();
   });
+});
+
+it("exposes a trusted persistent personal directory without instruction files", () => {
+  const options = { environment: { AGENT_HOME: "/untrusted", HOME: "/ambient" }, codexHome: "/private-provider" };
+  const supplied = createRunnerdCodexAppServerArgs({ ...options, persistentAgentHome: "/personal/agent" }).join("\n");
+  expect(supplied).toContain('AGENT_HOME="/personal/agent"');
+  expect(supplied).toContain('"/private-provider"="none"');
+  expect(supplied).not.toContain('AGENT_HOME="/untrusted"');
+  expect(createRunnerdCodexAppServerArgs(options).join("\n")).not.toContain("AGENT_HOME");
 });

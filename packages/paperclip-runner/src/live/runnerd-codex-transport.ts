@@ -1207,6 +1207,8 @@ export interface CapabilityRunnerdProcessEvidence {
 export interface CapabilityRunnerdCodexTransportOptions {
   /** Server-authorized local computer MCP on the selected execution environment. */
   computerTool?: { command: string; args: readonly string[] } | null;
+  /** Controller-authorized durable personal directory, independent of instructions. */
+  persistentAgentHome?: string;
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
@@ -3447,6 +3449,7 @@ export function createRunnerdCodexAppServerArgs(input: {
   codexCommand?: string;
   readOnlyRoots?: string[];
   instructionWorkingCopyRoot?: string;
+  persistentAgentHome?: string;
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
   // runner state outside provider reach. Always bind those names to the actual
@@ -3457,9 +3460,10 @@ export function createRunnerdCodexAppServerArgs(input: {
       ...input.environment,
       HOME: input.codexHome,
       CODEX_HOME: input.codexHome,
+      ...(input.persistentAgentHome ? { AGENT_HOME: input.persistentAgentHome } : {}),
     },
     [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
-    input.instructionWorkingCopyRoot,
+    input.instructionWorkingCopyRoot ?? input.persistentAgentHome,
   );
 }
 
@@ -4969,6 +4973,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                           codexHome,
                           codexCommand: effectiveCodexCommand,
                           instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
+            persistentAgentHome: this.options.persistentAgentHome,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               this.options.environment,
@@ -5453,6 +5458,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             codexHome,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
+            persistentAgentHome: this.options.persistentAgentHome,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
               ...(runtimeContext
