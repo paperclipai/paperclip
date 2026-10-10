@@ -37,6 +37,7 @@ import {
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import {
   filterResolvedGitHubConnectionsForRun,
+  resetGitHubIdentityCache,
   resolveManagedGitHubIdentitySelection,
 } from "../services/git-credentials.js";
 
@@ -223,15 +224,123 @@ const support = await getEmbeddedPostgresTestSupport();
           source: "personal",
         });
         expect(result.env.GH_TOKEN).toBe(`test-token-${user}`);
-        expect(result.env.GIT_AUTHOR_EMAIL).toBe(
-          `${user}+${user}@users.noreply.github.com`,
-        );
+        // `test-token-${user}` is a fixture, not a credential, so `/user` cannot confirm it and
+        // no ident is published. The claim is still reported above as `login`, which is what an
+        // operator needs; what it is never allowed to do is decide whose name a commit carries.
+        // The quartet is published empty rather than absent, so git refuses the commit instead
+        // of falling back to whatever identity the host happens to carry.
+        expect(result.env.GIT_AUTHOR_EMAIL).toBe("");
+        expect(result.env.GIT_COMMITTER_EMAIL).toBe("");
       }
       const history = await db
         .select()
         .from(runIdentityContexts)
         .where(eq(runIdentityContexts.runId, input.runId));
       expect(JSON.stringify(history)).not.toContain("test-token-");
+    });
+    it("never publishes an ident that GitHub contradicts, and still publishes one it confirms", async () => {
+      const input = await seed();
+      const granted = await grant(input, "A");
+      async function claimAs(userId: string, login: string) {
+        // The stand-in tenant that shipped with the managed connection: `100000001` is a live,
+        // unrelated GitHub account, so publishing it credits every agent commit to a stranger.
+        await db
+          .update(connectionGrants)
+          .set({
+            providerTenant: {
+              github: {
+                userId,
+                login,
+                installationCount: 1,
+                repositoryCount: 1,
+                repositorySelection: "selected",
+                installationIds: ["1"],
+                installationOwnerLogins: [login],
+              },
+            },
+          })
+          .where(eq(connectionGrants.id, granted.id));
+      }
+      async function resolveAs(answer: { id: number; login: string } | { status: number } | { throw: string }) {
+        resetGitHubIdentityCache();
+        const fetchImpl = vi.fn(async () => {
+          if ("throw" in answer) throw new Error(answer.throw);
+          if ("status" in answer) {
+            return {
+              ok: false,
+              status: answer.status,
+              // Every real `Response` carries `headers`, and the identity check reads the
+              // rate-limit headers off a 403 to tell a refusal from an exhausted quota.
+              headers: new Headers(),
+              json: async () => ({ message: "nope" }),
+            };
+          }
+          return { ok: true, status: 200, json: async () => answer };
+        });
+        vi.stubGlobal("fetch", fetchImpl);
+        try {
+          return await resolveGitHubOperationCredentials(db, input);
+        } finally {
+          vi.unstubAllGlobals();
+          resetGitHubIdentityCache();
+        }
+      }
+
+      // A claim GitHub contradicts fails the whole acquisition. Before this the claim was
+      // published verbatim, so every commit on this connection was a verified-looking
+      // contribution to `Tessalol`; and when that was stopped, the credential was still
+      // released with no ident, so git committed under whatever identity the host carried —
+      // trading one misattribution for another. Refusing is the only outcome that attributes
+      // the work to nobody.
+      await claimAs("100000001", "Tessalol");
+      const contradicted = await resolveAs({ id: 5732579, login: "albisher" });
+      expect(contradicted.status).toBe("unavailable");
+      expect(contradicted.reason).toContain("100000001");
+      expect(contradicted.reason).toContain("5732579");
+      expect(contradicted.env.GIT_AUTHOR_EMAIL).toBeUndefined();
+      expect(contradicted.env.GIT_COMMITTER_EMAIL).toBeUndefined();
+      expect(contradicted.env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(JSON.stringify(contradicted.env)).not.toContain("100000001");
+
+      // A credential GitHub itself refuses — a placeholder token, a revoked one — is reported
+      // as available, because the connection itself is healthy and reads are unaffected. What
+      // must not happen is it looking like a credential that can commit: no ident is published,
+      // git is told to refuse an ambient one, and the reason is surfaced so the operator knows
+      // to issue a real token instead of retrying.
+      const rejected = await resolveAs({ status: 401 });
+      expect(rejected.status).toBe("available");
+      expect(rejected.reason).toMatch(/rejected the credential/i);
+      expect(rejected.env.GIT_AUTHOR_EMAIL).toBe("");
+      expect(rejected.env.GIT_COMMITTER_EMAIL).toBe("");
+      expect(JSON.stringify(rejected.env)).not.toContain("100000001");
+
+      // A credential whose identity cannot be reached is a different matter: nothing is known
+      // about the token, so reads keep working. The commit path is closed instead, by telling
+      // git to read the ident from configuration only — with none published, a commit stops
+      // rather than inheriting the host's identity.
+      const unreachable = await resolveAs({ throw: "ECONNREFUSED" });
+      expect(unreachable.status).toBe("available");
+      expect(unreachable.reason).toMatch(/could not be reached/i);
+      expect(unreachable.env.GIT_AUTHOR_EMAIL).toBe("");
+      expect(unreachable.env.GIT_COMMITTER_EMAIL).toBe("");
+      expect(JSON.stringify(unreachable.env)).not.toContain("100000001");
+
+      // A claim GitHub agrees with is published from GitHub's own answer, so the healthy path
+      // still yields a real ident rather than silently degrading to the ambient host identity.
+      await claimAs("5732579", "albisher");
+      const confirmed = await resolveAs({ id: 5732579, login: "albisher" });
+      expect(confirmed).toMatchObject({
+        status: "available",
+        login: "albisher",
+      });
+      expect(confirmed.env.GIT_AUTHOR_EMAIL).toBe(
+        "5732579+albisher@users.noreply.github.com",
+      );
+      expect(confirmed.env.GIT_COMMITTER_EMAIL).toBe(
+        "5732579+albisher@users.noreply.github.com",
+      );
+      // Nothing to warn about when GitHub confirms the record, so no reason is invented.
+      expect(confirmed.reason).toBeUndefined();
     });
     it("returns no credential for unconnected users, removed membership, or ambiguous personal accounts", async () => {
       const input = await seed();
