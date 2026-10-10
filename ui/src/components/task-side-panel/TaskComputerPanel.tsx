@@ -23,19 +23,22 @@ function ComputerConnection({ issueId, environmentId, active = true }: ComputerP
   const connectPending = useRef(false);
   const [port, setPort] = useState("5173");
   const [previewPending, setPreviewPending] = useState(false);
+  const [preview, setPreview] = useState<{ url: string; port: string } | null>(null);
 
   async function openPreview() {
     const previewWindow = window.open("about:blank", "_blank");
-    if (!previewWindow) { setError("Allow a new tab to open the preview."); return; }
-    previewWindow.opener = null;
+    if (previewWindow) previewWindow.opener = null;
     setPreviewPending(true);
+    setPreview(null);
     setError(null);
     try {
       const result = await computersApi.preview(issueId, environmentId, Number(port));
-      if (mounted.current) previewWindow.location.replace(result.url);
-      else previewWindow.close();
+      if (mounted.current) {
+        setPreview({ url: result.url, port });
+        previewWindow?.location.replace(result.url);
+      } else previewWindow?.close();
     } catch (cause) {
-      previewWindow.close();
+      previewWindow?.close();
       if (mounted.current) setError(cause instanceof Error ? cause.message : "Could not open the preview.");
     } finally { if (mounted.current) setPreviewPending(false); }
   }
@@ -155,6 +158,8 @@ function ComputerConnection({ issueId, environmentId, active = true }: ComputerP
           className="min-w-0 flex-1" onChange={event => setPort(event.target.value)} />
         <Button type="submit" variant="outline" disabled={previewPending || !port}>Open preview</Button>
       </form>
+      {preview && preview.port === port && <a href={preview.url} target="_blank" rel="noopener noreferrer"
+        className="text-sm text-primary underline">Open port {preview.port} in a new tab</a>}
     </div>
   </div>;
 }

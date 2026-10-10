@@ -41,6 +41,35 @@ beforeEach(() => {
 afterEach(async () => { if (!unmounted) await unmount(); host.remove(); delete (Element.prototype as { checkVisibility?: unknown }).checkVisibility; vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("Computer connection lifetime", () => {
+  it("offers an explicit preview link when the browser blocks the new window", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    vi.mocked(computersApi.preview).mockResolvedValue({ url: "https://preview.example/app" });
+    await render();
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(computersApi.preview).toHaveBeenCalledWith("task-a", "environment-a", 5173);
+    const link = host.querySelector("a")!;
+    expect(link.href).toBe("https://preview.example/app");
+    expect(link.textContent).toBe("Open port 5173 in a new tab");
+    expect(link.rel).toBe("noopener noreferrer");
+    await render({ environmentId: "environment-b" });
+    expect(host.querySelector("a")).toBeNull();
+  });
+
+  it("discards a preview response after the task changes", async () => {
+    const close = vi.fn();
+    const replace = vi.fn();
+    vi.spyOn(window, "open").mockReturnValue({ close, location: { replace } } as unknown as Window);
+    const pending = deferred<{ url: string }>();
+    vi.mocked(computersApi.preview).mockReturnValue(pending.promise);
+    await render();
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await render({ issueId: "task-b" });
+    await act(async () => pending.resolve({ url: "https://preview.example/app" }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(replace).not.toHaveBeenCalled();
+    expect(host.querySelector("a")).toBeNull();
+  });
+
   it("connects only after the explicit action and keeps credentials in the iframe with no referrer", async () => {
     await render(); await tick(60_000);
     expect(computersApi.connect).not.toHaveBeenCalled();
