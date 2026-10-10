@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { resolveEnvironmentExecutionTarget, resolveEnvironmentExecutionTransport } from "./environment-execution-target.js";
 import { createComputerEnvironmentDriver } from "./computer-environment-driver.js";
 
 const state = vi.hoisted(() => {
@@ -12,6 +13,13 @@ vi.mock("./environments.js", () => ({ environmentService: () => state }));
 vi.mock("./instance-settings.js", () => ({ instanceSettingsService: () => ({ getExperimental: async () => ({ enableBoatEnvironments: true }) }) }));
 
 describe("computer environment probe ownership", () => {
+  it("does not construct a computer owner for legacy transport serialization", async () => {
+    const input = { db: {} as never, companyId: "company", adapterType: "paperclip_runner",
+      environment: { id: "environment", driver: "computer", config: {} }, leaseMetadata: null };
+    await expect(resolveEnvironmentExecutionTransport(input)).resolves.toBeNull();
+    await expect(resolveEnvironmentExecutionTarget(input)).rejects.toThrow("computer_lease_required");
+  });
+
   it("keeps stable configuration on one session key and fences a changed model", async () => {
     state.admit.mockClear();
     const db = { update: () => ({ set: () => ({ where: async () => undefined }) }) };

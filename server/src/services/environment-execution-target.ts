@@ -679,5 +679,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
 export async function resolveEnvironmentExecutionTransport(
   input: Parameters<typeof resolveEnvironmentExecutionTarget>[0],
 ): Promise<Record<string, unknown> | null> {
+  // Computer execution uses a live owner capability, resolved after workspace
+  // realization. It has no legacy serialized transport to resolve at acquire.
+  if (input.environment.driver === "computer") return null;
   return adapterExecutionTargetToRemoteSpec(await resolveEnvironmentExecutionTarget(input)) as Record<string, unknown> | null;
 }
