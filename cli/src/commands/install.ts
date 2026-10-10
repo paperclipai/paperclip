@@ -37,6 +37,8 @@ export type CommandRunner = (
 
 type ReleasePackageEntry = { dir: string; name: string };
 
+type NpmCommand = { file: string; argsPrefix: string[] };
+
 export async function runCommandWithDiagnostics(
   file: string,
   args: string[],
@@ -51,6 +53,54 @@ export async function runCommandWithDiagnostics(
     if (!stderr || (error instanceof Error && error.message.includes(stderr))) throw error;
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`, { cause: error });
   }
+}
+
+/**
+ * Resolves the npm command invocation for the target platform.
+ *
+ * On Windows, npm is distributed as a shell/cmd wrapper (`npm.cmd`) rather than a direct
+ * executable binary, so `execFile("npm")` fails with `ENOENT`. To ensure portable execution,
+ * the CLI resolves the underlying `npm-cli.js` script and invokes it directly with Node.
+ *
+ * The lookup order on Windows is:
+ * 1. Beside the current Node executable (`<node_dir>/node_modules/npm/bin/npm-cli.js`).
+ * 2. Along PATH directories containing an `npm.cmd` entry.
+ *
+ * @param platform - The operating system platform (defaults to `process.platform`).
+ * @param nodeExecutable - Path to the Node executable (defaults to `process.execPath`).
+ * @param pathEnvironment - The PATH environment string to search (defaults to `process.env.PATH`).
+ * @returns The executable and arguments prefix required to run npm on this platform.
+ * @throws Error if `npm-cli.js` cannot be located on Windows, indicating Node/npm needs reinstalling.
+ */
+export function resolveNpmCommand(
+  platform = process.platform,
+  nodeExecutable = process.execPath,
+  pathEnvironment = process.env.Path ?? process.env.PATH ?? "",
+): NpmCommand {
+  if (platform !== "win32") return { file: "npm", argsPrefix: [] };
+
+  const npmCliPaths = [
+    path.join(path.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js"),
+    ...pathEnvironment
+      .split(path.delimiter)
+      .filter(Boolean)
+      .filter((directory) => fs.existsSync(path.join(directory, "npm.cmd")))
+      .map((directory) => path.join(directory, "node_modules", "npm", "bin", "npm-cli.js")),
+  ];
+  const npmCliPath = npmCliPaths.find((candidate) => fs.existsSync(candidate));
+  if (!npmCliPath) {
+    throw new Error("Could not locate npm-cli.js from Node or npm.cmd on PATH. Reinstall Node.js with npm included.");
+  }
+  return { file: nodeExecutable, argsPrefix: [npmCliPath] };
+}
+
+export async function runNpmCommand(
+  args: string[],
+  runCommand: CommandRunner,
+  options?: Parameters<CommandRunner>[2],
+  command = resolveNpmCommand(),
+): Promise<{ stdout: string; stderr: string }> {
+  return runCommand(command.file, [...command.argsPrefix, ...args], options);
 }
 
 export function resolveGitInstallWorkspacePackages(checkoutPath: string): ReleasePackageEntry[] {
@@ -118,9 +168,9 @@ function parseResolvedVersion(stdout: string): string {
 }
 
 export async function resolvePublishedVersion(spec: string, runCommand: CommandRunner): Promise<string> {
-  const result = await runCommand(
-    "npm",
+  const result = await runNpmCommand(
     ["view", `paperclipai@${spec}`, "version", "--json", `--registry=${PUBLIC_NPM_REGISTRY}`],
+    runCommand,
     { maxBuffer: 1024 * 1024 },
   );
   return parseResolvedVersion(result.stdout);
@@ -207,8 +257,7 @@ export async function installNpmPayload(
       `registry=${PUBLIC_NPM_REGISTRY}\n@paperclipai:registry=${PUBLIC_NPM_REGISTRY}\n`,
       { mode: 0o600 },
     );
-    await runCommand(
-      "npm",
+    await runNpmCommand(
       [
         "install",
         "--prefix",
@@ -219,6 +268,7 @@ export async function installNpmPayload(
         "--no-audit",
         "--no-fund",
       ],
+      runCommand,
       {
         cwd: sourceRoot,
         env: { ...process.env, npm_config_userconfig: npmUserConfigPath },
@@ -287,19 +337,19 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+        await runNpmCommand(["pack", stagedPackage, "--pack-destination", stagingRoot], runCommand, { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
     }
-    await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+    await runNpmCommand(["pack", "--pack-destination", stagingRoot], runCommand, { cwd: path.join(checkoutPath, "cli"), env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));
     const cliTarball = tarballs.find((entry) => entry === `paperclipai-${metadata.version}.tgz`);
     const workspaceTarballs = tarballs.filter((entry) => entry !== cliTarball);
     if (!cliTarball || workspaceTarballs.length !== workspacePackages.length) {
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
-    await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
+    await runNpmCommand(["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], runCommand, { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };

@@ -9,8 +9,10 @@ import {
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
+  resolveNpmCommand,
   resolveNpmInstallRequest,
   runCommandWithDiagnostics,
+  runNpmCommand,
 } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
@@ -60,6 +62,26 @@ describe("managed install commands", () => {
     });
     expect(() => resolveNpmInstallRequest({ canary: true, version: "1.2.3" })).toThrow();
     expect(() => resolveNpmInstallRequest({ version: "latest" })).toThrow();
+  });
+
+  it("uses Node to execute npm-cli.js on Windows", () => {
+    const nodeExecutable = path.join(root, "node", "node.exe");
+    const npmDirectory = path.join(root, "npm-bin");
+    const npmCliPath = path.join(npmDirectory, "node_modules", "npm", "bin", "npm-cli.js");
+    fs.mkdirSync(path.dirname(npmCliPath), { recursive: true });
+    fs.writeFileSync(path.join(npmDirectory, "npm.cmd"), "@echo off\n");
+    fs.writeFileSync(npmCliPath, "// npm CLI fixture\n");
+
+    const windowsCommand = resolveNpmCommand("win32", nodeExecutable, npmDirectory);
+    expect(windowsCommand).toEqual({
+      file: nodeExecutable,
+      argsPrefix: [npmCliPath],
+    });
+    expect(resolveNpmCommand("linux", nodeExecutable)).toEqual({ file: "npm", argsPrefix: [] });
+
+    const runCommand = vi.fn(async () => ({ stdout: '"2026.929.0"\n', stderr: "" }));
+    return runNpmCommand(["view", "paperclipai@canary", "version", "--json"], runCommand, undefined, windowsCommand)
+      .then(() => expect(runCommand).toHaveBeenCalledWith(nodeExecutable, [npmCliPath, "view", "paperclipai@canary", "version", "--json"], undefined));
   });
 
   it("resolves branch, tag, full SHA, and short SHA refs through GitHub", async () => {
@@ -216,10 +238,16 @@ describe("managed install commands", () => {
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
     const version = "2026.720.0";
+    const npmArgsFor = (file: string, args: string[]) => {
+      if (file === "npm") return args;
+      if (file === process.execPath && path.basename(args[0] ?? "") === "npm-cli.js") return args.slice(1);
+      return undefined;
+    };
     const runCommand = vi.fn(async (file: string, args: string[], _options?: unknown) => {
-      if (file === "npm" && args[0] === "view") return { stdout: JSON.stringify(version), stderr: "" };
-      if (file === "npm" && args[0] === "install") {
-        const prefix = args[args.indexOf("--prefix") + 1];
+      const npmArgs = npmArgsFor(file, args);
+      if (npmArgs?.[0] === "view") return { stdout: JSON.stringify(version), stderr: "" };
+      if (npmArgs?.[0] === "install") {
+        const prefix = npmArgs[npmArgs.indexOf("--prefix") + 1];
         const entrypoint = path.join(prefix, "node_modules", "paperclipai", "dist", "index.js");
         fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
         fs.writeFileSync(entrypoint, "#!/usr/bin/env node\n");
@@ -240,9 +268,9 @@ describe("managed install commands", () => {
     expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(manifest!.payloadPath));
     expect(fs.existsSync(paths.shimPath)).toBe(true);
     const installCall = runCommand.mock.calls.find(
-      ([file, args]) => file === "npm" && args[0] === "install",
+      ([file, args]) => npmArgsFor(file, args)?.[0] === "install",
     );
-    expect(installCall?.[1]).toContain("--@paperclipai:registry=https://registry.npmjs.org");
+    expect(installCall && npmArgsFor(installCall[0], installCall[1])).toContain("--@paperclipai:registry=https://registry.npmjs.org");
     const installOptions = installCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
     expect(installOptions?.env?.npm_config_userconfig).toContain(".npmrc-");
     const entrypoint = path.join(manifest!.payloadPath, "node_modules", "paperclipai", "dist", "index.js");
