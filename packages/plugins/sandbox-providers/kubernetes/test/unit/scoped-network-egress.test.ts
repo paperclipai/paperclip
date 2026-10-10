@@ -39,6 +39,43 @@ describe("scoped network egress", () => {
     }));
   });
 
+  it("creates a per-lease adapter policy with base rules, scoped to the run", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const name = await createScopedNetworkEgressPolicy({
+      clients: { custom: { createNamespacedCustomObject } } as never,
+      namespace: "paperclip-acme",
+      mode: "cilium",
+      runId: "run-123",
+      workloadName: "pc-workload",
+      ownerReference: { apiVersion: "agents.x-k8s.io/v1alpha1", kind: "Sandbox", name: "pc-workload", uid: "uid-1" },
+      suffix: "-adapter-egress",
+      grant: { allowFqdns: ["claude.com"], allowCidrs: [] },
+      baseRules: { paperclipServerNamespace: "paperclip", paperclipServerPodSelector: { app: "paperclip" } },
+    });
+    expect(name).toBe("pc-workload-adapter-egress");
+    const body = createNamespacedCustomObject.mock.calls[0][0].body;
+    expect(body.spec.endpointSelector).toEqual({ matchLabels: { "paperclip.io/run-id": "run-123" } });
+    expect(body.metadata.ownerReferences[0].uid).toBe("uid-1");
+    const egress = JSON.stringify(body.spec.egress);
+    for (const v of ["claude.com", "kube-dns", "\"app\":\"paperclip\"", "3100"]) expect(egress).toContain(v);
+  });
+
+  it("creates the per-lease adapter policy even with an empty grant (base rules only)", async () => {
+    const createNamespacedNetworkPolicy = vi.fn().mockResolvedValue({});
+    await createScopedNetworkEgressPolicy({
+      clients: { networking: { createNamespacedNetworkPolicy } } as never,
+      namespace: "paperclip-acme",
+      mode: "standard",
+      runId: "run-123",
+      workloadName: "pc-workload",
+      ownerReference: { apiVersion: "batch/v1", kind: "Job", name: "pc-workload", uid: "uid-1" },
+      suffix: "-adapter-egress",
+      grant: { allowFqdns: [], allowCidrs: [] },
+      baseRules: { paperclipServerNamespace: "paperclip" },
+    });
+    expect(createNamespacedNetworkPolicy).toHaveBeenCalledTimes(1);
+  });
+
   it("caps scoped policy names while preserving the workload tail", async () => {
     const createNamespacedNetworkPolicy = vi.fn().mockResolvedValue({});
     const workloadName = `pc-${"a".repeat(260)}-unique-tail`;
