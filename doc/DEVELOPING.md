@@ -64,6 +64,13 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+The watch entrypoint runs the `tsx` CLI within the entrypoint process, so `tsx` handles
+`SIGINT` and `SIGTERM` and waits for its server child to stop. This also avoids
+forwarding a terminal's process-group signal to the watcher twice. When
+investigating a failed stop, check
+the remaining process tree and listening ports as well as `pnpm dev:list`; a
+missing registry entry alone does not prove that all child processes stopped.
+
 To run against a separate local state root, pass `--data-dir`. The dev runner
 translates it to an isolated `PAPERCLIP_HOME` before migration checks or server
 startup, so embedded PostgreSQL and other default instance state live under that
