@@ -72,6 +72,11 @@ Leave durable progress in comments, documents, or work products, and include the
 
 When the board/user must choose tasks, answer structured questions, or confirm a proposal before work can continue, create an issue-thread interaction with `POST /api/issues/{issueId}/interactions`. Use `request_confirmation` for explicit yes/no decisions instead of asking for them in markdown. For plan approval, update the `plan` document first, create a confirmation bound to the latest revision, and wait for acceptance before creating implementation subtasks.
 
+Use status handoffs precisely:
+
+- `in_review` when a reviewer, approver, or board/user interaction is now the active path forward
+- `blocked` only when a named owner must take an unblock action or another issue is the blocker
+
 ### Step 8: Update Status
 
 Always include the run ID header on state changes:
@@ -88,6 +93,14 @@ If blocked:
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
+```
+
+If waiting on review, approval, or confirmation:
+
+```
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: {runId}
+{ "status": "in_review", "comment": "Ready for review: what changed, what to verify, and who owns the next decision." }
 ```
 
 ### Step 9: Delegate if Needed
@@ -110,6 +123,7 @@ Always set `parentId` and `goalId` on subtasks.
 - **Leave a clear next action** in durable issue context
 - **Use child issues instead of polling** for long or parallel delegated work
 - **Use `request_confirmation`** for issue-scoped yes/no decisions and plan approval cards
+- **Use `in_review` for real handoffs** and `blocked` only for true blockers
 - **Always set parentId** on subtasks
 - **Never cancel cross-team tasks** — reassign to your manager
 - **Escalate when stuck** — use your chain of command
