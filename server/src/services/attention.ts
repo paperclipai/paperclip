@@ -2022,11 +2022,19 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        // Desk badge: distinct items that surfaced
-        // today OR carry an explicit decide-by deadline due today/past. Counted
-        // over the full ranked set (pre-pagination) so the sidebar badge stays
-        // company-wide accurate even on a small first page.
-        deskBadgeCount: rankedItems.filter((item) => isNewToday(item, now) || isDecideNow(item, now)).length,
+        // Desk badge: distinct items *on the desk* that surfaced today OR carry
+        // an explicit decide-by deadline due today/past. Counted over the full
+        // ranked set (pre-pagination) so the sidebar badge stays company-wide
+        // accurate even on a small first page.
+        //
+        // Shelved rows are excluded because the desk excludes them: they live in
+        // the aging curtain, not in the queue. A `decideBy` preset re-resolves
+        // against *today* on every read, so an un-actioned row triaged "today"
+        // stays `isDecideNow` forever — without this guard it kept the sidebar
+        // badge lit long after the page had gone to "You're all caught up".
+        deskBadgeCount: rankedItems.filter(
+          (item) => !item.shelf && (isNewToday(item, now) || isDecideNow(item, now)),
+        ).length,
         nextCursor,
         countsBySourceKind,
         items,
