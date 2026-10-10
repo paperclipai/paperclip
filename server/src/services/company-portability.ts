@@ -2735,6 +2735,146 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
 }
 
 
+const YAML_SIMPLE_ESCAPES: Record<string, string> = {
+  "0": "\0",
+  a: "\x07",
+  b: "\b",
+  t: "\t",
+  "\t": "\t",
+  n: "\n",
+  v: "\v",
+  f: "\f",
+  r: "\r",
+  e: "\x1b",
+  " ": " ",
+  "\"": "\"",
+  "/": "/",
+  "\\": "\\",
+  N: "\u0085",
+  _: "\u00a0",
+  L: "\u2028",
+  P: "\u2029",
+};
+
+const YAML_HEX_ESCAPE_LENGTHS: Record<string, number> = { x: 2, u: 4, U: 8 };
+
+class YamlFlowParseError extends Error {}
+
+/** Reads a double-quoted YAML scalar starting at `start`; returns the value and the index after the closing quote. */
+function readYamlDoubleQuoted(input: string, start: number): { value: string; end: number } {
+  let value = "";
+  let index = start + 1;
+  while (index < input.length) {
+    const char = input[index]!;
+    if (char === "\"") return { value, end: index + 1 };
+    if (char !== "\\") {
+      value += char;
+      index += 1;
+      continue;
+    }
+    const escape = input[index + 1];
+    if (escape === undefined) break;
+    const hexLength = YAML_HEX_ESCAPE_LENGTHS[escape];
+    if (hexLength !== undefined) {
+      const hex = input.slice(index + 2, index + 2 + hexLength);
+      if (hex.length !== hexLength || !/^[0-9a-fA-F]+$/.test(hex)) break;
+      const codePoint = parseInt(hex, 16);
+      if (codePoint > 0x10ffff) break;
+      value += String.fromCodePoint(codePoint);
+      index += 2 + hexLength;
+      continue;
+    }
+    const simple = YAML_SIMPLE_ESCAPES[escape];
+    if (simple === undefined) break;
+    value += simple;
+    index += 2;
+  }
+  throw new YamlFlowParseError("Unterminated or invalid double-quoted YAML string");
+}
+
+/** Reads a single-quoted YAML scalar, where only `''` is an escape. */
+function readYamlSingleQuoted(input: string, start: number): { value: string; end: number } {
+  let value = "";
+  let index = start + 1;
+  while (index < input.length) {
+    if (input[index] === "'") {
+      if (input[index + 1] !== "'") return { value, end: index + 1 };
+      value += "'";
+      index += 2;
+      continue;
+    }
+    value += input[index];
+    index += 1;
+  }
+  throw new YamlFlowParseError("Unterminated single-quoted YAML string");
+}
+
+function skipYamlFlowWhitespace(input: string, index: number) {
+  let next = index;
+  while (next < input.length && /\s/.test(input[next]!)) next += 1;
+  return next;
+}
+
+const YAML_FLOW_MAX_DEPTH = 64;
+
+function readYamlFlowNode(
+  input: string,
+  start: number,
+  isKey: boolean,
+  depth = 0,
+): { value: unknown; end: number } {
+  if (depth > YAML_FLOW_MAX_DEPTH) throw new YamlFlowParseError("YAML flow collection is nested too deeply");
+  const index = skipYamlFlowWhitespace(input, start);
+  const char = input[index];
+  if (char === "\"") return readYamlDoubleQuoted(input, index);
+  if (char === "'") return readYamlSingleQuoted(input, index);
+  if (!isKey && char === "[") {
+    const items: unknown[] = [];
+    let cursor = skipYamlFlowWhitespace(input, index + 1);
+    while (input[cursor] !== "]") {
+      const item = readYamlFlowNode(input, cursor, false, depth + 1);
+      items.push(item.value);
+      cursor = skipYamlFlowWhitespace(input, item.end);
+      if (input[cursor] === ",") cursor = skipYamlFlowWhitespace(input, cursor + 1);
+      else if (input[cursor] !== "]") throw new YamlFlowParseError("Expected , or ] in YAML flow sequence");
+    }
+    return { value: items, end: cursor + 1 };
+  }
+  if (!isKey && char === "{") {
+    const record: Record<string, unknown> = {};
+    let cursor = skipYamlFlowWhitespace(input, index + 1);
+    while (input[cursor] !== "}") {
+      const key = readYamlFlowNode(input, cursor, true, depth + 1);
+      cursor = skipYamlFlowWhitespace(input, key.end);
+      if (input[cursor] !== ":") throw new YamlFlowParseError("Expected : in YAML flow mapping");
+      const value = readYamlFlowNode(input, cursor + 1, false, depth + 1);
+      record[String(key.value)] = value.value;
+      cursor = skipYamlFlowWhitespace(input, value.end);
+      if (input[cursor] === ",") cursor = skipYamlFlowWhitespace(input, cursor + 1);
+      else if (input[cursor] !== "}") throw new YamlFlowParseError("Expected , or } in YAML flow mapping");
+    }
+    return { value: record, end: cursor + 1 };
+  }
+  if (char === undefined || char === "[" || char === "{") {
+    throw new YamlFlowParseError("Unexpected token in YAML flow collection");
+  }
+  let end = index;
+  while (end < input.length && !(isKey ? ":" : ",]}").includes(input[end]!)) end += 1;
+  const plain = input.slice(index, end).trim();
+  if (plain === "" && isKey) throw new YamlFlowParseError("Empty key in YAML flow mapping");
+  return { value: isKey ? plain : parseYamlScalar(plain), end };
+}
+
+function parseYamlFlowValue(trimmed: string): unknown {
+  try {
+    const node = readYamlFlowNode(trimmed, 0, false);
+    if (skipYamlFlowWhitespace(trimmed, node.end) === trimmed.length) return node.value;
+  } catch (error) {
+    if (!(error instanceof YamlFlowParseError)) throw error;
+  }
+  return trimmed;
+}
+
 function parseYamlScalar(rawValue: string): unknown {
   const trimmed = rawValue.trim();
   if (trimmed === "") return "";
@@ -2743,17 +2883,13 @@ function parseYamlScalar(rawValue: string): unknown {
   if (trimmed === "false") return false;
   if (trimmed === "[]") return [];
   if (trimmed === "{}") return {};
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) return Number(trimmed);
   if (
     trimmed.startsWith("\"") ||
     trimmed.startsWith("[") ||
     trimmed.startsWith("{")
   ) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return trimmed;
-    }
+    return parseYamlFlowValue(trimmed);
   }
   return trimmed;
 }

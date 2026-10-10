@@ -3224,6 +3224,103 @@ describe("company portability", () => {
     }), { createdByUserId: "user-1" });
   });
 
+  it("parses flow-style maps and escaped double-quoted strings in .paperclip.yaml", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "CEO",
+    });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const files = {
+      "COMPANY.md": ["---", 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "agents/ceo/AGENTS.md": ["---", 'name: "CEO"', "---", "", "You lead.", ""].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "agents:",
+        "  ceo:",
+        "    adapter:",
+        '      type: "claude_local"',
+        "      config:",
+        '        cwd: "C:\\\\work\\\\acme"',
+        '        label: "tab\\there \\x41\\u00e9\\_end"',
+        "        tags: [alpha, \"b, c\", 'it''s', { nested: true }]",
+        "    runtime:",
+        '      aiConnection: { method: "subscription", mode: "responsible_user", provider: "anthropic" }',
+        "    permissions: { canCreateAgents: false, canCreateSkills: false }",
+        "",
+      ].join("\n"),
+    };
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledTimes(1);
+    const [, createdAgentInput] = agentSvc.create.mock.calls[0]!;
+    expect(createdAgentInput.permissions).toMatchObject({ canCreateAgents: false, canCreateSkills: false });
+    expect(createdAgentInput.runtimeConfig).toMatchObject({
+      aiConnection: { method: "subscription", mode: "responsible_user", provider: "anthropic" },
+    });
+    expect(createdAgentInput.adapterConfig).toMatchObject({
+      cwd: "C:\\work\\acme",
+      label: "tab\there A\u00e9\u00a0end",
+      tags: ["alpha", "b, c", "it's", { nested: true }],
+    });
+  });
+
+  it("parses exponent numbers in flow maps and rejects too-deep flow nesting without throwing", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported Paperclip" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({ id: "agent-created", name: "CEO" });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const tooDeep = `${"[".repeat(5000)}${"]".repeat(5000)}`;
+    const files = {
+      "COMPANY.md": ["---", 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "agents/ceo/AGENTS.md": ["---", 'name: "CEO"', "---", "", "You lead.", ""].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "agents:",
+        "  ceo:",
+        "    adapter:",
+        '      type: "claude_local"',
+        "      config:",
+        `        deep: ${tooDeep}`,
+        "    budgetMonthlyCents: 1e3",
+        "    runtime: { budget: { cents: 1e3, small: -2.5E-1 } }",
+        "",
+      ].join("\n"),
+    };
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    const [, createdAgentInput] = agentSvc.create.mock.calls[0]!;
+    expect(createdAgentInput.budgetMonthlyCents).toBe(1000);
+    expect(createdAgentInput.runtimeConfig).toMatchObject({ budget: { cents: 1000, small: -0.25 } });
+    expect(createdAgentInput.adapterConfig.deep).toBe(tooDeep);
+  });
+
   it("preserves agent role from frontmatter when extension block omits it", async () => {
     const portability = companyPortabilityService({} as any);
 
