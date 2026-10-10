@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import {
   agents,
   environmentLeases,
@@ -103,10 +105,28 @@ function fixture(
   ]);
   const select = vi.fn(() => ({
     from: (table: unknown) => {
+      let ordering: string[] = [];
       const query = {
         where: vi.fn(() => query),
-        orderBy: vi.fn(() => query),
-        limit: vi.fn(async () => rows.get(table) ?? []),
+        orderBy: vi.fn((...expressions: SQL[]) => {
+          ordering = expressions.map(expression => new PgDialect().sqlToQuery(expression).sql);
+          return query;
+        }),
+        limit: vi.fn(async (limit: number) => {
+          const result = [...(rows.get(table) ?? [])];
+          if (table === environmentLeases) result.sort((left, right) => {
+            const a = left as Record<string, unknown>;
+            const b = right as Record<string, unknown>;
+            for (const expression of ordering) {
+              const column = expression.includes('"created_at"') ? "createdAt"
+                : expression.includes('"updated_at"') ? "updatedAt" : "id";
+              const compare = String(b[column]).localeCompare(String(a[column]));
+              if (compare) return compare;
+            }
+            return 0;
+          });
+          return result.slice(0, limit);
+        }),
       };
       return query;
     },
@@ -175,6 +195,31 @@ beforeEach(() => {
 });
 
 describe("Computer routes", () => {
+  it.each([true, false])("uses the latest admission despite an older lease's later finalization (latest live=%s)", async latestLive => {
+    const f = fixture();
+    const older = { ...f.lease, id: "older", createdAt: "2026-10-10T20:00:00Z", updatedAt: "2026-10-10T20:12:00Z" };
+    const latest = { ...f.lease, id: "latest", createdAt: "2026-10-10T20:06:00Z", updatedAt: "2026-10-10T20:11:00Z" };
+    f.rows.set(environmentLeases, [older, latest]);
+    mocks.getLease.mockImplementation(async (id: string) => id === latest.id ? latest : older);
+    if (!latestLive) f.computers.preview.mockRejectedValue(new ComputerError("conflict", "Preview owner is not live"));
+    const response = await request(f.app).post(`${endpoint}/preview`).send({ environmentId, port: 5173 });
+    expect(response.status).toBe(latestLive ? 200 : 409);
+    expect(mocks.getLease).toHaveBeenCalledExactlyOnceWith(latest.id);
+    expect(mocks.owner).toHaveBeenCalledExactlyOnceWith(latest);
+    expect(f.computers.preview).toHaveBeenCalledTimes(1);
+    if (!latestLive) expect(response.body.error).toBe("Preview owner is not live");
+  });
+
+  it("breaks equal admission timestamps deterministically by lease ID", async () => {
+    const f = fixture();
+    const first = { ...f.lease, id: "00000000-0000-4000-8000-000000000001", createdAt: "2026-10-10T20:00:00Z" };
+    const last = { ...first, id: "00000000-0000-4000-8000-000000000002" };
+    f.rows.set(environmentLeases, [first, last]);
+    mocks.getLease.mockResolvedValue(last);
+    expect((await request(f.app).post(`${endpoint}/preview`).send({ environmentId, port: 5173 })).status).toBe(200);
+    expect(mocks.getLease).toHaveBeenCalledExactlyOnceWith(last.id);
+  });
+
   it("rejects agents and invalid task IDs before looking up a computer", async () => {
     const agent = fixture({ actor: "agent" });
     expect((await request(agent.app).get(endpoint)).status).toBe(403);
