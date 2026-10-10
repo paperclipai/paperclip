@@ -1603,6 +1603,9 @@ function withAgentCommentAuthorizationMetadata(
     ...(metadata?.sourceRunId !== undefined
       ? { sourceRunId: metadata.sourceRunId }
       : {}),
+    ...(metadata?.crossAssignee !== undefined
+      ? { crossAssignee: metadata.crossAssignee }
+      : {}),
     authorizationReason: reason,
     sections: metadata?.sections.length
       ? metadata.sections
@@ -13478,6 +13481,66 @@ export function issueService(db: Db) {
       return explicitAgentMentionIds.filter((agentId) =>
         companyAgentIds.has(agentId),
       );
+    },
+
+    /**
+     * Attribution only: resolve the first-class link (parent/child or blocks)
+     * between the caller's checked-out issue and the target issue so a
+     * cross-assignee comment can cite the issue it carries evidence from.
+     * This never decides access — the comment gate has already allowed the
+     * write before the route asks for a link.
+     */
+    findCrossAssigneeEvidenceLink: async (input: {
+      companyId: string;
+      actorAgentId: string;
+      actorRunId: string | null;
+      targetIssueId: string;
+      targetParentId: string | null;
+    }): Promise<{ viaIssueId: string } | null> => {
+      if (!input.actorRunId) return null;
+      const checkedOut = await db
+        .select({ id: issues.id, parentId: issues.parentId })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          eq(issues.checkoutRunId, input.actorRunId),
+        ));
+      if (checkedOut.length === 0) return null;
+
+      for (const candidate of checkedOut) {
+        if (candidate.id === input.targetIssueId) continue;
+        if (candidate.parentId === input.targetIssueId) return { viaIssueId: candidate.id };
+        if (input.targetParentId === candidate.id) return { viaIssueId: candidate.id };
+      }
+
+      const candidateIds = checkedOut
+        .map((candidate) => candidate.id)
+        .filter((candidateId) => candidateId !== input.targetIssueId);
+      if (candidateIds.length === 0) return null;
+      const relations = await db
+        .select({ issueId: issueRelations.issueId, relatedIssueId: issueRelations.relatedIssueId })
+        .from(issueRelations)
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.type, "blocks"),
+          or(
+            and(
+              inArray(issueRelations.issueId, candidateIds),
+              eq(issueRelations.relatedIssueId, input.targetIssueId),
+            ),
+            and(
+              eq(issueRelations.issueId, input.targetIssueId),
+              inArray(issueRelations.relatedIssueId, candidateIds),
+            ),
+          ),
+        ))
+        .limit(1);
+      const relation = relations[0];
+      if (!relation) return null;
+      return {
+        viaIssueId: relation.issueId === input.targetIssueId ? relation.relatedIssueId : relation.issueId,
+      };
     },
 
     findMentionedProjectIds: async (
