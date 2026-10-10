@@ -785,6 +785,20 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     if (principalsEqual(currentParticipant, actor)) {
+      // A board override clears the execution state instead of casting a
+      // stage decision. This check must run before the `done` conversion
+      // below: that branch returns or throws for every `done` request, so an
+      // override tested after it could never rescue a close.
+      if (
+        input.allowBoardOverride &&
+        requestedStatus &&
+        requestedStatus !== "in_review" &&
+        requestedStatus !== "in_progress"
+      ) {
+        patch.executionState = null;
+        return { patch };
+      }
+
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
@@ -837,16 +851,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           },
           workflowControlledAssignment: true,
         };
-      }
-
-      if (
-        input.allowBoardOverride &&
-        requestedStatus &&
-        requestedStatus !== "in_review" &&
-        requestedStatus !== "in_progress"
-      ) {
-        patch.executionState = null;
-        return { patch };
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
