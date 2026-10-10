@@ -131,6 +131,11 @@ import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceT
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
+import {
+  hasPendingOnboardingImport,
+  ImportExistingOrganization,
+  type ImportedOrganization,
+} from "./onboarding/ImportExistingOrganization";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
@@ -572,6 +577,23 @@ function OnboardingWizardInner({
 
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
+  // Step 1 offers two ways to land on an organization. Most customers arrive
+  // without one and name it; a customer moving from another instance already
+  // has one and imports it. `import` keeps its own actions inside the step
+  // (read the package, then import), so the footer CTA is hidden in that mode.
+  // Starts on the import branch when an import from this session is still
+  // unfinished. The draft cannot carry this: the import job lives in
+  // sessionStorage under its own key, and a reload must land on the branch that
+  // can adopt it. Otherwise the step opens on "New organization" and the create
+  // path makes a second company while the first import finishes in the
+  // background.
+  const [companyMode, setCompanyMode] = useState<"new" | "import">(() =>
+    hasPendingOnboardingImport() ? "import" : "new",
+  );
+  // Set while the import branch owns a running job. The toggle below has to
+  // stop moving: an abandoned import still finishes on the server, and it would
+  // then select the imported organization after the user chose a different path.
+  const [companyImportBusy, setCompanyImportBusy] = useState(false);
 
   // Step 2
   // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
@@ -1971,6 +1993,29 @@ function OnboardingWizardInner({
     }
   }
 
+  /**
+   * Adopt an organization created by the step-1 import path.
+   *
+   * Mirrors `handleCreateCompany`'s commit rules — the same race exists here, and
+   * a route that supplied a company mid-import must still win — then continues
+   * into the agent step like a freshly created organization does.
+   */
+  function handleOrganizationImported(imported: ImportedOrganization) {
+    const companyIdAtStart = createdCompanyIdRef.current;
+    if (!canCommitCreatedCompany(companyIdAtStart, imported.companyId)) return;
+    // The company list drives the selection, and it does not know about the
+    // imported organization yet. Selecting first would let the provider decide
+    // the cached list is wrong and fall back to an older company, so refresh
+    // first and adopt after. The create path invalidates for the same reason.
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    setCreatedCompanyId(imported.companyId);
+    createdCompanyIdRef.current = imported.companyId;
+    setCreatedCompanyPrefix(imported.issuePrefix);
+    setSelectedCompanyId(imported.companyId);
+    if (imported.name) setCompanyName(imported.name);
+    setStep(3);
+  }
+
   // Step 1 → 3 ("Name your organization"): create the organization, then go
   // straight to the first agent. There is no mission step between them anymore.
   //
@@ -2602,23 +2647,58 @@ function OnboardingWizardInner({
                   target. */}
               {step === 1 && (
                 <motion.div key="step-1" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="mx-auto flex w-full flex-col gap-9">
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-company-name">Name</Label>
-                    <Input
-                      id="onboarding-company-name"
-                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
-                      placeholder="e.g. Northwind Labs"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && companyName.trim()) {
-                          e.preventDefault();
-                          void handleCreateCompany();
-                        }
-                      }}
-                      autoFocus
-                    />
+                  {/* Two ways onto step 3: name a new organization, or bring an
+                      existing one over. The toggle sits above both because the
+                      question is "which organization?" and only then "what is it
+                      called?" — a customer with a package should not have to
+                      read the name field before discovering they never needed
+                      it. */}
+                  <div className="grid grid-cols-2 gap-2" role="group" aria-label="Organization source">
+                    <Button
+                      type="button"
+                      variant={companyMode === "new" ? "secondary" : "ghost"}
+                      className="rounded-lg"
+                      aria-pressed={companyMode === "new"}
+                      disabled={companyImportBusy}
+                      onClick={() => setCompanyMode("new")}
+                    >
+                      New organization
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={companyMode === "import" ? "secondary" : "ghost"}
+                      className="rounded-lg"
+                      aria-pressed={companyMode === "import"}
+                      disabled={companyImportBusy}
+                      onClick={() => setCompanyMode("import")}
+                    >
+                      Import existing
+                    </Button>
                   </div>
+                  {companyMode === "new" ? (
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="onboarding-company-name">Name</Label>
+                      <Input
+                        id="onboarding-company-name"
+                        className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
+                        placeholder="e.g. Northwind Labs"
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && companyName.trim()) {
+                            e.preventDefault();
+                            void handleCreateCompany();
+                          }
+                        }}
+                        autoFocus
+                      />
+                    </div>
+                  ) : (
+                    <ImportExistingOrganization
+                      onImported={handleOrganizationImported}
+                      onBusyChange={setCompanyImportBusy}
+                    />
+                  )}
                 </motion.div>
               )}
 
@@ -3111,6 +3191,10 @@ function OnboardingWizardInner({
                   // Step 4 says what it is doing through `connectCta` instead:
                   // it has four faces and only two of them are the step working.
                   loading={step === 3 || step === 4 ? false : loading}
+                  // The import branch of step 1 owns its actions inside the
+                  // step (read the package, then import it), so the footer CTA
+                  // would either duplicate them or sit inert.
+                  hidePrimary={step === 1 && companyMode === "import"}
                   primaryDisabled={
                     step === 1
                       ? !companyName.trim() || loading

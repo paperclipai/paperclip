@@ -53,6 +53,9 @@ const mockCompaniesApi = vi.hoisted(() => ({
   // cache, so ownership cases are driven from here. `mockCompany.companies`
   // below still feeds the *inner* wizard, which is a different question.
   list: vi.fn(),
+  // Read by step 1's import branch when a reload left an import unfinished.
+  getImportJob: vi.fn(),
+  get: vi.fn(),
 }));
 const mockGoalsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -248,6 +251,7 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
+import { importJobStorageKey } from "../lib/import-job-watch";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
@@ -340,6 +344,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
     mockSecretsApi.removeUserSecretDefinition.mockResolvedValue({ ok: true });
     window.localStorage.clear();
+    // Step 1's import branch reads a pending job from sessionStorage and opens
+    // on that branch when one exists. Clearing it here keeps that state from
+    // leaking into the next test.
+    window.sessionStorage.clear();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
@@ -443,6 +451,29 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       await flushReact();
     }
+
+    it("opens on the import branch when a reload left an import unfinished", async () => {
+      // A reload must not land on the create form while the server is still
+      // running an import: Continue there creates a second organization.
+      window.sessionStorage.setItem(
+        importJobStorageKey("onboarding", "package"),
+        JSON.stringify({ jobId: "job-pending", pauseAutomations: true }),
+      );
+mockCompaniesApi.getImportJob.mockResolvedValue({
+        // Still running: the step must stay put rather than offer the create form.
+        job: { id: "job-pending", status: "running" },
+      });
+
+      const { root } = await openStepOne();
+
+      // The import branch is showing, and the create form is not.
+      expect(document.body.querySelector("#onboarding-import-package")).not.toBeNull();
+      expect(document.body.querySelector("#onboarding-company-name")).toBeNull();
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
 
     it("creates the organization on Continue and lands on the agent step, no mission", async () => {
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });

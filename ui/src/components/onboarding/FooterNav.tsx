@@ -28,6 +28,7 @@ export function FooterNav({
   loading,
   loadingLabel,
   primaryIcon,
+  hidePrimary,
   onPrimary,
 }: {
   onBack?: () => void;
@@ -43,6 +44,13 @@ export function FooterNav({
    * is waiting on another tab, not working.
    */
   primaryIcon?: FooterPrimaryIcon;
+  /**
+   * Step 1 offers two ways to land on an organization — name a new one or
+   * import an existing one — and the import path carries its own actions
+   * (read the package, then import it). Keeping a footer CTA there would either
+   * duplicate those actions or sit inert, so the step hides it.
+   */
+  hidePrimary?: boolean;
   onPrimary: () => void;
 }) {
   const label = loading && loadingLabel ? loadingLabel : primaryLabel;
@@ -80,7 +88,10 @@ export function FooterNav({
         Without `popLayout` the two labels would briefly sit side by side and
         the button would widen to hold both before shrinking back.
       */}
-      <motion.div layout transition={CTA_WIDTH} className="min-w-0">
+      {hidePrimary ? (
+        <span />
+      ) : (
+        <motion.div layout transition={CTA_WIDTH} className="min-w-0">
         <Button
           size="lg"
           className="w-full rounded-full px-6"
@@ -114,7 +125,8 @@ export function FooterNav({
             {icon === "arrow" ? <ArrowRight className="ml-1 size-3.5" /> : null}
           </motion.span>
         </Button>
-      </motion.div>
+        </motion.div>
+      )}
     </div>
   );
 }
