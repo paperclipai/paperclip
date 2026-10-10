@@ -13250,6 +13250,49 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("drains accepted GitHub webhooks from commit wakes and durable retry deadlines", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service, webhookSecret } = await configuredGitHubEndpoint(fixture, {
+      deferWebhookProcessing: true, scheduleDeferredWork: () => undefined,
+    });
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    let attempts = 0;
+    providerRuntime.webhookHook = async () => {
+      providerRuntime.webhookResponse = new Response("result", { status: ++attempts === 1 ? 503 : 202 });
+    };
+    const delivery = randomUUID();
+    const send = () => service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+      delivery, event: "installation_repositories", payload: { action: "added", installation: { id: 2468 } }, webhookSecret,
+    }));
+    const onError = vi.fn();
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const receipt = () => db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id),
+      eq(chatActions.providerActionId, `github_webhook_ingress:${delivery}`))).then(rows => rows[0]);
+    try {
+      await registerChatActionWork(coordinator, service, () => true).ready;
+      expect((await send()).status).toBe(202);
+      await expect.poll(async () => (await receipt())?.status, { timeout: 10_000 }).toBe("processed");
+      expect(attempts).toBe(2);
+      expect((await receipt())?.result).toMatchObject({ attempts: 2, httpStatus: 202 });
+      // A duplicate callback wakes the lane but cannot repeat a settled effect.
+      await send();
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      expect(attempts).toBe(2);
+      await coordinator.stop();
+      // Work committed while no worker exists is recovered by the next startup.
+      const restartDelivery = randomUUID();
+      await service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+        delivery: restartDelivery, event: "installation_repositories",
+        payload: { action: "added", installation: { id: 2468 } }, webhookSecret,
+      }));
+      expect(attempts).toBe(2);
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      await registerChatActionWork(coordinator, service, () => true).ready;
+      await expect.poll(() => attempts, { timeout: 10_000 }).toBe(3);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
+
   it("safely re-arms an exact terminal GitHub delivery after an operator redelivery", async () => {
     const fixture = await seedCompany();
     const { endpoint, runtime, service, webhookSecret } =
@@ -32819,7 +32862,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .update(chatEndpoints)
         .set({ status: "active" })
         .where(eq(chatEndpoints.id, endpoint.id));
-      const channelId = `C-LANE-${endpoint.id}`;
+      const channelId = `C${endpoint.id.replaceAll("-", "").toUpperCase()}`;
       await db.insert(chatEndpointResources).values({
         companyId: fixture.companyId,
         endpointId: endpoint.id,
@@ -32892,6 +32935,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...fixture, storage, runtime, service, lanes, enqueue, cleanup };
   }
 
+  it("wakes Slack session sync from publication commit and leaves settled action queues quiet", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await registerChatActionWork(coordinator, f.service, () => true).ready;
+      await f.enqueue(0, "A completed answer");
+      await f.service.processPendingPublications();
+      await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
+        .where(and(eq(chatActions.endpointId, lane.endpoint.id), eq(chatActions.kind, "slack_session_sync"))),
+        { timeout: 10_000 }).toEqual([{ status: "processed" }]);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      const scans = vi.spyOn(db, "select");
+      try {
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        expect(scans).not.toHaveBeenCalled();
+      } finally { scans.mockRestore(); }
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
+
+  it("recovers stale provider sends on startup without replaying uncertain effects", async () => {
+    const f = await publicationLaneFixture(1);
+    const lane = f.lanes[0]!;
+    const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: lane.endpoint.id,
+      kind: "provider_effect", providerActionId: randomUUID(), status: "processing", result: { attempts: 1 },
+      updatedAt: new Date(Date.now() - 120_000), payload: {} }).returning();
+    const before = lane.providerRuntime.posts.length;
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true });
+    try {
+      await registerChatActionWork(coordinator, f.service, () => true).ready;
+      await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
+        .where(eq(chatActions.id, action!.id)), { timeout: 10_000 }).toEqual([{ status: "delivery_unknown" }]);
+      expect(await f.service.nextChatActionAt("provider_effect")).toBeNull();
+      expect(lane.providerRuntime.posts).toHaveLength(before);
+    } finally { await coordinator.stop(); await f.cleanup(); }
+  });
+
   it("restores action retry and stale-claim deadlines and parks paused or uncertain work", async () => {
     const f = await publicationLaneFixture(1);
     const lane = f.lanes[0]!;
@@ -32929,6 +33011,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await set("delivery_unknown");
           expect(await f.service.nextChatActionAt(kind)).toBeNull();
           expect(await due()).toBe(false);
+        } else if (kind === "slack_session_sync") {
+          expect(await due()).toBe(true);
+          await set("received", { retryAt: later.toISOString() });
+          expect(await f.service.nextChatActionAt(kind)).toBe(later.getTime());
+          expect(await due()).toBe(false);
+          await set("processing");
+          expect(await f.service.nextChatActionAt(kind)).toBe(at.getTime() + 60_000);
+          for (const status of ["paused", "attention"]) {
+            await db.update(chatEndpoints).set({ status }).where(eq(chatEndpoints.id, lane.endpoint.id));
+            expect(await f.service.nextChatActionAt(kind)).toBeNull();
+            expect(await due()).toBe(false);
+          }
+          await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, lane.endpoint.id));
+          await set("failed", { retryable: true });
+          expect(await f.service.nextChatActionAt(kind)).toBeNull();
         } else {
           expect(await due()).toBe(true);
           await set("processing");
@@ -53999,6 +54096,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  it("delivers queued provider notices from commit wakes without the deferred fast path", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, runtime } =
+      await configuredSlackEndpoint(fixture, { scheduleDeferredWork: () => undefined });
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Slack slash command callback was not registered");
+    }
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-CONTROL-GUIDANCE",
+      label: "control-guidance",
+      availability: "available",
+      enabled: true,
+    });
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    const post = vi.fn(async () => ({
+      id: "unexpected-channel-control-post",
+      threadId: "slack:C-CONTROL-GUIDANCE:root",
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "channel-control-guidance",
+      threadId: "slack:C-CONTROL-GUIDANCE:root",
+    }));
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    vi.spyOn(providerRuntime, "thread").mockReturnValue({ post, postEphemeral } as never);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true });
+    onTestFinished(async () => { await coordinator.stop(); });
+    await registerChatActionWork(coordinator, service, () => true).ready;
+    for (const control of ["status"] as const) {
+      await callbacks.onSlashCommand({
+        endpointId: endpoint.id,
+        provider: "slack",
+        event: {
+          channel: {
+            id: "slack:C-CONTROL-GUIDANCE",
+            name: "control-guidance",
+            isDM: false,
+            post,
+            postEphemeral,
+          } as never,
+          command,
+          text: control,
+          triggerId: `channel-control-${control}`,
+          user: {
+            userId: "U-CHANNEL-CONTROLLER",
+            userName: "channel-controller",
+            fullName: "Channel Controller",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { command, text: control },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    }
+    await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
+      .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "provider_effect"))),
+      { timeout: 10_000 }).toEqual([{ status: "processed" }]);
+    expect(postEphemeral).toHaveBeenCalledTimes(1);
+    expect(post).not.toHaveBeenCalled();
+    expect(await service.nextChatActionAt("provider_effect")).toBeNull();
+    await coordinator.stop();
+  });
+
   it("returns ephemeral guidance for exact Slack controls in channels without creating tasks or actions", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } =
@@ -54438,6 +54604,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredTelegramEndpoint(fixture);
+    const workWake = vi.fn();
+    const stopWorkObserver = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatProviderEffects, workWake);
+    onTestFinished(() => { stopWorkObserver(); expect(workWake).toHaveBeenCalled(); });
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }

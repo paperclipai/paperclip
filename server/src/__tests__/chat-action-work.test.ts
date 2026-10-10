@@ -19,6 +19,9 @@ function setup() {
   const coordinator = createDeliveryWorkCoordinator({ owner, canRun: enabled, canReconcile: enabled, onError });
   coordinators.push(coordinator);
   const service = {
+    processPendingProviderEffects: vi.fn(async () => {}),
+    processPendingGitHubWebhookIngress: vi.fn(async () => {}),
+    processPendingSlackSessionSyncs: vi.fn(async () => {}),
     processPendingSlackBoardMessages: vi.fn(async () => {}),
     processPendingSlackTaskStarts: vi.fn(async () => {}),
     processPendingReceiptReactions: vi.fn(async () => {}),
@@ -27,7 +30,7 @@ function setup() {
     nextChatActionAt: vi.fn(async (): Promise<number | null> => null),
     nextVerificationMessageAt: vi.fn(async (): Promise<number | null> => null),
   };
-  const runs = [service.processPendingSlackBoardMessages, service.processPendingSlackTaskStarts,
+  const runs = [service.processPendingProviderEffects, service.processPendingGitHubWebhookIngress, service.processPendingSlackSessionSyncs, service.processPendingSlackBoardMessages, service.processPendingSlackTaskStarts,
     service.processPendingReceiptReactions, service.processPendingSlackSessionStops, service.processPendingVerificationMessages];
   return { owner, service, runs, coordinator, enabled, onError, start: () => registerChatActionWork(coordinator, service, enabled) };
 }
@@ -37,7 +40,7 @@ describe("chat action scheduling", () => {
     await s.start().ready;
     await vi.advanceTimersByTimeAsync(3_600_000);
     for (const run of s.runs) expect(run).toHaveBeenCalledTimes(1);
-    expect(s.service.nextChatActionAt).toHaveBeenCalledTimes(4);
+    expect(s.service.nextChatActionAt).toHaveBeenCalledTimes(7);
     expect(s.service.nextVerificationMessageAt).toHaveBeenCalledTimes(1);
     expect(s.coordinator.nextWakeAt()).toBeNull();
     expect(vi.getTimerCount()).toBe(0);

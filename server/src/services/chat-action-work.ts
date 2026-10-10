@@ -23,6 +23,10 @@ export function chatActionDeadline(kind: ScheduledChatAction) {
     when ${chatActions.status} = 'admitting' then ${updated} + ${SLACK_COMMAND_ADMISSION_STALE_MS}
     when ${chatActions.status} = 'resolving' then ${updated} + ${SLACK_COMMAND_EXPLICIT_RETRY_STALE_MS}
     when ${chatActions.status} = 'validating' then ${updated} + ${SLACK_COMMAND_POST_STALE_MS} end`;
+  if (kind === "slack_session_sync") return sql<number>`case
+    when ${chatEndpoints.status} in ('paused', 'attention') then null
+    when ${chatActions.status} = 'received' then ${retry}
+    when ${chatActions.status} = 'processing' then ${updated} + ${PROVIDER_EFFECT_STALE_MS} end`;
   return sql<number>`case
     when ${chatActions.status} = 'received' then 0
     when ${chatActions.status} = 'processing' then ${updated} + ${PROVIDER_EFFECT_STALE_MS}
@@ -30,13 +34,15 @@ export function chatActionDeadline(kind: ScheduledChatAction) {
 }
 
 function pendingChatAction(kind: ScheduledChatAction) {
-  // Filter history before the endpoint join and aggregate. Failed reactions
-  // and stops only remain live when the saved result permits another attempt.
+  // Filter history before the endpoint join and aggregate. Failed actions
+  // only remain live when the saved result permits another attempt.
   const status = kind === "slack_board_message"
     ? eq(chatActions.status, "received")
     : kind === "slash_task_start"
       ? inArray(chatActions.status, ["queued", "provider_confirmed", "admitting", "resolving", "validating"])
-      : or(inArray(chatActions.status, ["received", "processing"]),
+      : kind === "slack_session_sync"
+        ? inArray(chatActions.status, ["received", "processing"])
+        : or(inArray(chatActions.status, ["received", "processing"]),
         and(eq(chatActions.status, "failed"), sql`${chatActions.result}->>'retryable' = 'true'`));
   return and(eq(chatActions.kind, kind), status);
 }
@@ -54,6 +60,9 @@ export async function nextChatActionAt(db: Db, kind: ScheduledChatAction): Promi
 }
 
 type ChatActionService = {
+  processPendingProviderEffects(): Promise<unknown>;
+  processPendingGitHubWebhookIngress(): Promise<unknown>;
+  processPendingSlackSessionSyncs(): Promise<unknown>;
   processPendingSlackBoardMessages(): Promise<unknown>;
   processPendingSlackTaskStarts(): Promise<unknown>;
   processPendingReceiptReactions(): Promise<unknown>;
@@ -69,6 +78,9 @@ export function registerChatActionWork(
   canRun: () => boolean,
 ) {
   const actions = [
+    { kind: "provider_effect", run: service.processPendingProviderEffects },
+    { kind: "github_webhook_ingress", run: service.processPendingGitHubWebhookIngress },
+    { kind: "slack_session_sync", run: service.processPendingSlackSessionSyncs },
     { kind: "slack_board_message", run: service.processPendingSlackBoardMessages },
     { kind: "slash_task_start", run: service.processPendingSlackTaskStarts },
     { kind: "receipt_reaction", run: service.processPendingReceiptReactions },
