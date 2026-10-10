@@ -24,6 +24,7 @@ import {
   SETUP_TOKEN_TOKEN_UNAVAILABLE,
   SETUP_TOKEN_STORAGE_FAILED,
   SETUP_TOKEN_CANCELLABLE_STATES,
+  reapSetupTokenLeases,
   type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
@@ -681,6 +682,76 @@ describe("SetupTokenSessionService durable reaper", () => {
     const summary = await service.reap(5_000);
     expect(summary.failed).toBe(1);
     expect(store.rows.has("orphan-2")).toBe(true);
+  });
+
+  it("clears a terminal record with no provider lease without attempting a release", async () => {
+    const store = new FakeStore();
+    // A session that ended before ever binding a provider lease leaves
+    // provider_lease_id null, which the record maps to an empty lease id.
+    await store.record({
+      sessionId: "orphan-3",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "",
+      deadline: 1_000,
+      state: "timed_out",
+      boundAt: null,
+    });
+    const leases = new FakeLeaseManager();
+    // Prove the empty-lease record is cleared without ever reaching the lease
+    // manager: any release attempt would throw and strand the row forever.
+    leases.releaseById = async () => {
+      throw new Error("releaseById must not be called for an empty lease id");
+    };
+    const { service } = buildService({ store, leases, now: () => 5_000 });
+    const summary = await service.reap(5_000);
+    expect(summary.released).toBe(1);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("leaves a local terminal sign-in row for its own reaper instead of deleting it", async () => {
+    const store = new FakeStore();
+    // A local Anthropic sign-in shares the claude_local adapter but carries a
+    // connection method and owns an on-disk home. The setup-token reaper must
+    // not delete it, or the local-login reaper loses the row it needs to find
+    // and remove that home.
+    await store.record({
+      sessionId: "local-subscription-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "",
+      deadline: 1_000,
+      state: "timed_out",
+      connectionMethod: "local_subscription",
+      boundAt: null,
+    });
+    // A genuine setup-token row with no lease, cleared in the same sweep.
+    await store.record({
+      sessionId: "setup-token-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "",
+      deadline: 1_000,
+      state: "timed_out",
+      boundAt: null,
+    });
+    const leases = new FakeLeaseManager();
+    leases.releaseById = async () => {
+      throw new Error("releaseById must not be called for an empty lease id");
+    };
+    const { service } = buildService({ store, leases, now: () => 5_000 });
+    const summary = await service.reap(5_000);
+    expect(summary.released).toBe(1);
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.has("local-subscription-1")).toBe(true);
+    expect(store.rows.has("setup-token-1")).toBe(false);
   });
 });
 
@@ -1522,6 +1593,47 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     expect(ids.has(consumed.sessionId)).toBe(true);
     // A live, unexpired, unconsumed stored claim is not reapable.
     expect(ids.has(liveStored.sessionId)).toBe(false);
+  });
+
+  it("does not list a local terminal sign-in row, so its own reaper keeps the cleanup", async () => {
+    const store = createDbSetupTokenCleanupStore(db);
+    const now = Date.now();
+
+    // A genuine setup-token row: no connection method, terminal, past deadline.
+    const setupToken = await seedScope();
+    await insertRecord(setupToken, "timed_out", now - 1_000);
+
+    // A local terminal sign-in row. It shares the adapter type and is expired,
+    // so the terminal and deadline branches would otherwise match it, but it
+    // carries a connection method and owns an on-disk home. The store writes no
+    // connection method, so this row is inserted directly.
+    const localSignIn = await seedScope();
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: localSignIn.sessionId,
+      companyId: localSignIn.companyId,
+      environmentId: localSignIn.environmentId,
+      adapterType: localSignIn.adapterType,
+      startedByUserId: localSignIn.ownerUserId,
+      connectionMethod: "local_subscription",
+      status: "timed_out",
+      expiresAt: new Date(now - 1_000),
+    });
+
+    const reapable = await store.listReapable(now);
+    const ids = new Set(reapable.map((record) => record.sessionId));
+    expect(ids.has(setupToken.sessionId)).toBe(true);
+    // The local sign-in row must stay out of the scan: deleting it here would
+    // remove the row id its own reaper uses to find the sign-in home.
+    expect(ids.has(localSignIn.sessionId)).toBe(false);
+
+    // The reaper over this store also leaves the row in place, so the sweep that
+    // clears the setup-token row does not touch the local sign-in row.
+    const leases = new FakeLeaseManager();
+    const summary = await reapSetupTokenLeases({ store, leases }, now);
+    expect(summary.released).toBe(1);
+    expect(await readRow(localSignIn.sessionId)).toBeDefined();
+    expect(await readRow(setupToken.sessionId)).toBeUndefined();
   });
 
   it("returns no row when the claim row lock holds until after the deadline", async () => {
