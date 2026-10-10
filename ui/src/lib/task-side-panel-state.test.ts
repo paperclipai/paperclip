@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   readTaskSidePanelState,
   taskPanelDocumentTab,
+  taskPanelComputerTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
   taskPanelSkillTab,
@@ -15,6 +16,31 @@ import {
 
 describe("task side-panel persistence", () => {
   beforeEach(() => window.localStorage.clear());
+
+  it("persists only computer identity and removes accidental credentials before writing storage", () => {
+    const environmentId = "12345678-1234-1234-1234-123456789012";
+    const tab = taskPanelComputerTab(environmentId);
+    const contaminated = { ...tab, viewerUrl: "https://viewer.example/#private-top-token",
+      payload: { ...tab.payload, viewerUrl: "https://viewer.example/#private-payload-token", owner: { ownerId: "private-owner" }, secretHeaders: { Cookie: "private-cookie" } } };
+    writeTaskSidePanelState("user-1", "company-1", "computer-task", {
+      state: { tabs: [contaminated], activeTabId: tab.id }, launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+    });
+    const stored = window.localStorage.getItem(window.localStorage.key(0)!)!;
+    expect(stored).not.toContain("private-");
+    expect(stored).not.toContain("viewerUrl");
+    expect(stored).not.toContain("secretHeaders");
+    expect(readTaskSidePanelState("user-1", "company-1", "computer-task", true)?.state.tabs[0]?.payload)
+      .toEqual({ kind: "computer", environmentId });
+
+    // A later write also scrubs unsupported fields from retained task entries.
+    const parsed = JSON.parse(stored);
+    parsed.tasks["computer-task"].state.tabs[0].payload.viewerUrl = "https://viewer.example/#private-old-token";
+    window.localStorage.setItem(window.localStorage.key(0)!, JSON.stringify(parsed));
+    writeTaskSidePanelState("user-1", "company-1", "other-task", {
+      state: { tabs: [taskPanelPropertiesTab()], activeTabId: "properties" }, launcherOpen: false, userInteracted: false, autoPlanHandled: false, updatedAt: 2,
+    });
+    expect(window.localStorage.getItem(window.localStorage.key(0)!)).not.toContain("private-old-token");
+  });
 
   it("round-trips an intentionally empty task state", () => {
     writeTaskSidePanelState("user-1", "company-1", "task-1", {

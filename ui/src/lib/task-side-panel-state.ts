@@ -209,7 +209,14 @@ export function writeTaskSidePanelState(
   if (typeof window === "undefined") return;
   try {
     const store = readStore(accountScope, companyId);
-    const tasks = { ...store.tasks, [taskId]: entry };
+    // Persist only the tab contract, including when a caller accidentally mixes
+    // ephemeral viewer credentials into a payload. Sanitize retained old tasks
+    // too, so a later write removes unsupported fields already in storage.
+    const tasks = Object.fromEntries(Object.entries({ ...store.tasks, [taskId]: entry })
+      .flatMap(([id, value]) => {
+        const parsed = parseEntry(value, true);
+        return parsed ? [[id, parsed]] : [];
+      }));
     const retained = Object.entries(tasks)
       .sort((left, right) => (right[1].updatedAt ?? 0) - (left[1].updatedAt ?? 0))
       .slice(0, MAX_TASK_STATES);

@@ -5,16 +5,22 @@ import { computersApi } from "@/api/computers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export function TaskComputerPanel({ issueId, environmentId, active = true }: {
-  issueId: string;
-  environmentId: string;
-  active?: boolean;
-}) {
+type ComputerPanelProps = { issueId: string; environmentId: string; active?: boolean };
+
+export function TaskComputerPanel(props: ComputerPanelProps) {
+  // A connection belongs to one task/environment. A new scope gets new state,
+  // so a late response can only retire its old owner, never install its viewer.
+  return <ComputerConnection key={`${props.issueId}:${props.environmentId}`} {...props} />;
+}
+
+function ComputerConnection({ issueId, environmentId, active = true }: ComputerPanelProps) {
   const [viewer, setViewer] = useState<ComputerViewer | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const current = useRef<ComputerViewer | null>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const mounted = useRef(true);
+  const connectPending = useRef(false);
   const [port, setPort] = useState("5173");
   const [previewPending, setPreviewPending] = useState(false);
 
@@ -26,11 +32,18 @@ export function TaskComputerPanel({ issueId, environmentId, active = true }: {
     setError(null);
     try {
       const result = await computersApi.preview(issueId, environmentId, Number(port));
-      previewWindow.location.replace(result.url);
+      if (mounted.current) previewWindow.location.replace(result.url);
+      else previewWindow.close();
     } catch (cause) {
       previewWindow.close();
-      setError(cause instanceof Error ? cause.message : "Could not open the preview.");
-    } finally { setPreviewPending(false); }
+      if (mounted.current) setError(cause instanceof Error ? cause.message : "Could not open the preview.");
+    } finally { if (mounted.current) setPreviewPending(false); }
+  }
+
+  function release(view: ComputerViewer) {
+    void computersApi.disconnect(issueId, environmentId, view.owner).catch(() => {
+      // The server's bounded presence deadline also releases lost viewers.
+    });
   }
 
   useEffect(() => {
@@ -39,20 +52,19 @@ export function TaskComputerPanel({ issueId, environmentId, active = true }: {
       mounted.current = false;
       const previous = current.current;
       current.current = null;
-      if (previous) void computersApi.disconnect(issueId, environmentId, previous.owner).catch(() => {
-        // The server's bounded presence deadline also releases lost viewers.
-      });
+      if (previous) release(previous);
     };
   }, [issueId, environmentId]);
 
   async function connect() {
-    if (connecting) return;
+    if (connectPending.current) return;
+    connectPending.current = true;
     setConnecting(true);
     setError(null);
     try {
       const result = await computersApi.connect(issueId, environmentId);
       if (!mounted.current) {
-        await computersApi.disconnect(issueId, environmentId, result.owner);
+        release(result);
         return;
       }
       current.current = result;
@@ -60,6 +72,7 @@ export function TaskComputerPanel({ issueId, environmentId, active = true }: {
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : "Could not connect to the computer.");
     } finally {
+      connectPending.current = false;
       if (mounted.current) setConnecting(false);
     }
   }
@@ -69,24 +82,34 @@ export function TaskComputerPanel({ issueId, environmentId, active = true }: {
     let disposed = false;
     let pending = false;
     const renew = async () => {
-      if (pending || !active || document.visibilityState === "hidden") return;
+      const frame = frameRef.current;
+      if (pending || !active || document.visibilityState === "hidden" || !frame || !frame.getClientRects().length ||
+        (frame.checkVisibility && !frame.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))) return;
       pending = true;
       try {
         const next = await computersApi.presence(issueId, environmentId, viewer.owner);
-        if (!disposed) {
-          current.current = next;
-          setViewer(next);
+        if (disposed || !mounted.current) {
+          // It may have renewed the old owner while this pane was closing.
+          if (current.current?.owner.ownerId !== next.owner.ownerId) release(next);
+          return;
         }
+        current.current = next;
+        setViewer(next);
       } catch (cause) {
         if (!disposed) {
+          const previous = current.current;
           current.current = null;
           setViewer(null);
+          if (previous) release(previous);
           setError(cause instanceof Error ? cause.message : "The connection ended. Connect to try again.");
         }
       } finally { pending = false; }
     };
     const timer = setInterval(() => void renew(), 30_000);
     document.addEventListener("visibilitychange", renew);
+    // A hidden pane may have outlived its server hold. Revalidate immediately
+    // when it becomes active, before waiting for the next periodic renewal.
+    void renew();
     return () => {
       disposed = true;
       clearInterval(timer);
@@ -94,7 +117,21 @@ export function TaskComputerPanel({ issueId, environmentId, active = true }: {
     };
   }, [issueId, environmentId, viewer?.owner.ownerId, active]);
 
+  useEffect(() => {
+    if (!viewer) return;
+    const expiresAt = Date.parse(viewer.expiresAt);
+    const timer = setTimeout(() => {
+      if (current.current !== viewer) return;
+      current.current = null;
+      setViewer(null);
+      setError("The connection expired. Connect to try again.");
+      release(viewer);
+    }, Math.max(0, Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0));
+    return () => clearTimeout(timer);
+  }, [viewer]);
+
   const desktop = viewer ? <iframe
+    ref={frameRef}
     title="Agent computer"
     src={viewer.viewerUrl}
     className="h-full w-full border-0"
