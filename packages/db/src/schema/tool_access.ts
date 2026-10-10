@@ -799,6 +799,63 @@ export const toolInvocations = pgTable(
   ],
 );
 
+export type GovnaAuthorityOperationState =
+  | "pending"
+  | "approved"
+  | "dispatch_claimed"
+  | "succeeded"
+  | "failed"
+  | "outcome_unknown"
+  | "denied"
+  | "expired"
+  | "revoked"
+  | "cancelled";
+
+/**
+ * Host-private exact-call authority state. It stores only signed bindings and
+ * the already-supported signed argument envelope. Bearers, private keys, host
+ * proofs, dispatch tickets, and token digests never enter this table.
+ */
+export const toolGovnaAuthorityOperations = pgTable(
+  "tool_govna_authority_operations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    invocationId: uuid("invocation_id").notNull().references(() => toolInvocations.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "restrict" }),
+    state: text("state").$type<GovnaAuthorityOperationState>().notNull().default("pending"),
+    operationId: text("operation_id").notNull(),
+    hostContextId: text("host_context_id").notNull(),
+    localPolicyRevision: text("local_policy_revision").notNull(),
+    connectionGeneration: integer("connection_generation").notNull(),
+    requestHash: text("request_hash").notNull(),
+    signedArguments: text("signed_arguments").notNull(),
+    authorityBinding: jsonb("authority_binding").$type<Record<string, unknown>>().notNull(),
+    reservationId: text("reservation_id").notNull(),
+    approvalUrl: text("approval_url").notNull(),
+    safeSummary: text("safe_summary").notNull(),
+    ticketGeneration: integer("ticket_generation"),
+    localClaimId: text("local_claim_id"),
+    approvalExpiresAt: timestamp("approval_expires_at", { withTimezone: true }).notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    errorCode: text("error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_govna_authority_operations_invocation_uq").on(table.invocationId),
+    uniqueIndex("tool_govna_authority_operations_company_operation_uq").on(table.companyId, table.operationId),
+    uniqueIndex("tool_govna_authority_operations_company_reservation_uq").on(table.companyId, table.reservationId),
+    uniqueIndex("tool_govna_authority_operations_company_claim_uq").on(table.companyId, table.localClaimId),
+    index("tool_govna_authority_operations_company_state_idx").on(table.companyId, table.state),
+    check("tool_govna_authority_operations_state_check", sql`${table.state} in ('pending', 'approved', 'dispatch_claimed', 'succeeded', 'failed', 'outcome_unknown', 'denied', 'expired', 'revoked', 'cancelled')`),
+    check("tool_govna_authority_operations_generation_check", sql`${table.connectionGeneration} > 0`),
+    check("tool_govna_authority_operations_ticket_generation_check", sql`${table.ticketGeneration} is null or ${table.ticketGeneration} > 0`),
+    check("tool_govna_authority_operations_claim_shape_check", sql`(${table.state} in ('dispatch_claimed', 'succeeded', 'failed', 'outcome_unknown') and ${table.localClaimId} is not null and ${table.claimedAt} is not null) or (${table.state} not in ('dispatch_claimed', 'succeeded', 'failed', 'outcome_unknown') and ${table.localClaimId} is null and ${table.claimedAt} is null)`),
+  ],
+);
+
 export const toolActionRequests = pgTable(
   "tool_action_requests",
   {

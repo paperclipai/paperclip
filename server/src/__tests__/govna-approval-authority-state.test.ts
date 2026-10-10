@@ -1,0 +1,210 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  companies,
+  createDb,
+  toolApplications,
+  toolCallEvents,
+  toolConnections,
+  toolGovnaAuthorityOperations,
+  toolInvocations,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import {
+  GovnaAuthorityStateError,
+  govnaAuthorityOperationService,
+} from "../services/govna-approval-authority.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("Govna approval authority durable state", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-govna-authority-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(toolCallEvents);
+    await db.delete(toolGovnaAuthorityOperations);
+    await db.delete(toolInvocations);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function fixture() {
+    const [company] = await db.insert(companies).values({
+      name: `Govna ${randomUUID()}`,
+      issuePrefix: `GV${randomUUID().slice(0, 6).toUpperCase()}`,
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `govna-${randomUUID()}`,
+      name: "Govna fixture",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Govna fixture",
+      uid: `govna/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "https://example.invalid/mcp" },
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      toolName: "send_email",
+      argumentsHash: "request-hash",
+      policyDecision: "require_approval",
+      approvalState: "pending",
+      status: "awaiting_approval",
+    }).returning();
+    return { company: company!, connection: connection!, invocation: invocation! };
+  }
+
+  function pendingInput(f: Awaited<ReturnType<typeof fixture>>) {
+    return {
+      companyId: f.company.id,
+      invocationId: f.invocation.id,
+      connectionId: f.connection.id,
+      operationId: `operation-${randomUUID()}`,
+      hostContextId: `context-${randomUUID()}`,
+      localPolicyRevision: "policy-v1",
+      connectionGeneration: 1,
+      requestHash: "request-hash",
+      signedArguments: "signed-arguments",
+      authorityBinding: { trust_id: "atr_test", trust_revision: 1 },
+      reservationId: "arv_01m4hfpth0emf9wpckns4ngbxt",
+      approvalUrl: "https://app.govna.io/authority-approval?org=org_test&reservation=arv_test",
+      safeSummary: "Send one email",
+      approvalExpiresAt: new Date(Date.now() + 60_000),
+    };
+  }
+
+  it("replays an identical reservation and rejects operation-id substitution", async () => {
+    const f = await fixture();
+    const input = pendingInput(f);
+    const service = govnaAuthorityOperationService(db);
+
+    const first = await service.reserve(input);
+    const replay = await service.reserve(input);
+
+    expect(first.replayed).toBe(false);
+    expect(replay).toMatchObject({ replayed: true, operation: { id: first.operation.id } });
+    await expect(service.reserve({ ...input, requestHash: "different" }))
+      .rejects.toMatchObject({ code: "binding_mismatch" } satisfies Partial<GovnaAuthorityStateError>);
+  });
+
+  it("allows exactly one local dispatch claim and records the intent atomically", async () => {
+    const f = await fixture();
+    const input = pendingInput(f);
+    const service = govnaAuthorityOperationService(db);
+    await service.reserve(input);
+    await service.approve({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    });
+
+    const results = await Promise.allSettled([
+      service.claimDispatch({
+        companyId: f.company.id,
+        operationId: input.operationId,
+        reservationId: input.reservationId,
+        requestHash: input.requestHash,
+        localPolicyRevision: input.localPolicyRevision,
+        connectionGeneration: input.connectionGeneration,
+        ticketGeneration: 1,
+      }),
+      service.claimDispatch({
+        companyId: f.company.id,
+        operationId: input.operationId,
+        reservationId: input.reservationId,
+        requestHash: input.requestHash,
+        localPolicyRevision: input.localPolicyRevision,
+        connectionGeneration: input.connectionGeneration,
+        ticketGeneration: 1,
+      }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    const events = await db.select().from(toolCallEvents);
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, f.invocation.id));
+    expect(operation).toMatchObject({ state: "dispatch_claimed", localClaimId: expect.any(String) });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      eventType: "call_started",
+      invocationId: f.invocation.id,
+      reasonCode: "govna_dispatch_claimed",
+      outcome: "pending",
+    });
+    expect(invocation).toMatchObject({ status: "executing", approvalState: "approved" });
+  });
+
+  it("marks a claimed call outcome unknown and never makes it claimable again", async () => {
+    const f = await fixture();
+    const input = pendingInput(f);
+    const service = govnaAuthorityOperationService(db);
+    await service.reserve(input);
+    await service.approve({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    });
+    await service.claimDispatch({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    });
+
+    await service.markOutcomeUnknown({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      errorCode: "dispatch_receipt_missing",
+    });
+
+    await expect(service.claimDispatch({
+      companyId: f.company.id,
+      operationId: input.operationId,
+      reservationId: input.reservationId,
+      requestHash: input.requestHash,
+      localPolicyRevision: input.localPolicyRevision,
+      connectionGeneration: input.connectionGeneration,
+      ticketGeneration: 1,
+    })).rejects.toMatchObject({ code: "not_dispatchable" } satisfies Partial<GovnaAuthorityStateError>);
+    const [operation] = await db.select().from(toolGovnaAuthorityOperations);
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(operation).toMatchObject({ state: "outcome_unknown", errorCode: "dispatch_receipt_missing" });
+    expect(invocation).toMatchObject({ status: "failed", errorCode: "dispatch_receipt_missing" });
+  });
+});

@@ -1578,7 +1578,11 @@ export function toolAccessPolicyService(db: Db) {
     }
   }
 
-  async function recordInvocation(input: ToolAccessDecisionInput, accessDecision: ToolAccessDecision) {
+  async function recordInvocation(
+    input: ToolAccessDecisionInput,
+    accessDecision: ToolAccessDecision,
+    options: { createActionRequest?: boolean } = {},
+  ) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
@@ -1628,7 +1632,7 @@ export function toolAccessPolicyService(db: Db) {
       completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
     }).returning();
     let actionRequest = null;
-    if (accessDecision.decision === "require_approval") {
+    if (accessDecision.decision === "require_approval" && options.createActionRequest !== false) {
       [actionRequest] = await db.insert(toolActionRequests).values({
         companyId: ctx.companyId,
         invocationId: invocation.id,

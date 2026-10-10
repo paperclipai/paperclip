@@ -176,6 +176,7 @@ export {
   toolGatewaySessions,
   connectionTokenIssuances,
   toolInvocations,
+  toolGovnaAuthorityOperations,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,

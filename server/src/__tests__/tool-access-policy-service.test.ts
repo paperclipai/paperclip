@@ -821,6 +821,41 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("can reserve an approval-required invocation for an external authority without a local prompt", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Govna delegates exact calls",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: "send_email",
+        arguments: { to: "ops@example.com", body: "ship it" },
+        sideEffecting: true,
+      },
+    };
+
+    const decision = await toolAccessPolicyService(db).decide(input);
+    const recorded = await toolAccessPolicyService(db).recordInvocation(input, decision, {
+      createActionRequest: false,
+    });
+
+    expect(decision.decision).toBe("require_approval");
+    expect(recorded.actionRequest).toBeNull();
+    expect(recorded.invocation).toMatchObject({
+      approvalState: "pending",
+      status: "awaiting_approval",
+    });
+    expect(await db.select().from(toolActionRequests)).toHaveLength(0);
+  });
+
   it("replays side-effecting calls with the same idempotency key instead of creating a new invocation", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
