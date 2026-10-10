@@ -1232,7 +1232,8 @@ export async function prepareSandboxManagedRuntime(input: {
     }
     ignoredPaths = managedIgnored.paths("ignored");
   }
-  const deletedPaths = gitSnapshot?.deletedPaths ?? managedIgnored?.paths("deleted") ?? [];
+  let deletedPaths = gitSnapshot?.deletedPaths ?? managedIgnored?.paths("deleted") ?? [];
+  let filesystemDeleted: Awaited<ReturnType<typeof createWorkspaceManifest>> | null = null;
   managedIgnored?.close();
   let baselineSnapshot: DirectorySnapshot | null = null;
   const cleanupWorkspaceSnapshot = async () => {
@@ -1241,6 +1242,7 @@ export async function prepareSandboxManagedRuntime(input: {
     await disposeGitWorkspaceSnapshot(gitSnapshot);
     if (!gitSnapshot) for (const repo of repositories) await disposeGitWorkspaceSnapshot(repo.snapshot);
     if (managedIgnored) await fs.rm(path.dirname(managedIgnored.filePath), { recursive: true, force: true });
+    if (filesystemDeleted) await fs.rm(path.dirname(filesystemDeleted.filePath), { recursive: true, force: true });
   };
   try {
   // A selected subfolder has no cloneable Git snapshot, but its parent
@@ -1290,6 +1292,18 @@ export async function prepareSandboxManagedRuntime(input: {
       omit: repositoryMetadataExcludes, exclude: mergeExcludes(input.workspaceBaseline.exclude, repositoryMetadataExcludes),
       ignoredPaths: input.workspaceBaseline.ignoredPaths,
     });
+  }
+  if (input.workspaceFileMode === "all" && baselineSnapshot
+    && (isPathManifest(deletedPaths) ? deletedPaths.count : deletedPaths.length) > 0) {
+    // The filesystem is authoritative in all-files mode. Git can report a
+    // staged untracking as deleted while its file remains in the admitted tree.
+    filesystemDeleted = await createWorkspaceManifest();
+    try {
+      for (const relative of workspacePaths(deletedPaths)) {
+        if (!baselineSnapshot.entries.has(relative)) filesystemDeleted.add("deleted", relative);
+      }
+      deletedPaths = filesystemDeleted.paths("deleted");
+    } finally { filesystemDeleted.close(); }
   }
 
   const seedGeneration = input.workspaceSeedCacheDirectory && baselineSnapshot && workspaceInboundMode !== "durable_seed"

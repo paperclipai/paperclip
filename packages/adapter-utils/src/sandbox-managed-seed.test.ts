@@ -24,6 +24,10 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
   await git(repository, "init", "-b", "main");
   await fs.writeFile(path.join(repository, ".gitignore"), "ignored.txt\n");
   await fs.writeFile(path.join(repository, "work.txt"), "first\n");
+  if (workspaceFileMode === "all") {
+    await fs.writeFile(path.join(repository, "notes.txt"), "keep after untracking\n");
+    await fs.writeFile(path.join(repository, "absent.txt"), "truly deleted\n");
+  }
   await git(repository, "add", ".");
   await git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "first");
   await git(repository, "branch", "private-fixture");
@@ -34,6 +38,10 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
   await fs.writeFile(path.join(repository, ".git/hooks/post-commit"), "private-hook-fixture");
   await fs.writeFile(path.join(repository, "work.txt"), "dirty\n");
   await fs.writeFile(path.join(repository, "ignored.txt"), "ordinary ignored bytes");
+  if (workspaceFileMode === "all") {
+    await git(repository, "rm", "--cached", "notes.txt");
+    await fs.unlink(path.join(repository, "absent.txt"));
+  }
   const run = async (command: string) => { await execute("sh", ["-c", command]); };
   const sync = async (operations: SandboxSyncOperation[]) => {
     for (const operation of operations) {
@@ -68,7 +76,11 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
     expect(await git(checkout, "rev-parse", "HEAD")).toBe(head);
     expect(await git(checkout, "show", "HEAD:work.txt")).toBe("committed");
     expect(await fs.readFile(path.join(checkout, "work.txt"), "utf8")).toBe("dirty\n");
-    if (workspaceFileMode === "all") expect(await fs.readFile(path.join(checkout, "ignored.txt"), "utf8")).toBe("ordinary ignored bytes");
+    if (workspaceFileMode === "all") {
+      expect(await fs.readFile(path.join(checkout, "ignored.txt"), "utf8")).toBe("ordinary ignored bytes");
+      expect(await fs.readFile(path.join(checkout, "notes.txt"), "utf8")).toBe("keep after untracking\n");
+      await expect(fs.stat(path.join(checkout, "absent.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
   };
   const cold = await prepare(); await assertSanitized();
   expect([...cold.workspaceSyncSnapshot!.baseline.entries].some(([key]) => key.startsWith(`${relative}/.git/`))).toBe(false);
@@ -94,6 +106,10 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
   expect(await fs.readFile(path.join(repository, "work.txt"), "utf8")).toBe("restored dirty bytes\n");
   expect(await fs.readFile(path.join(repository, ".git/config"), "utf8")).toContain("fixture-token");
   expect(await fs.readFile(path.join(repository, ".git/hooks/post-commit"), "utf8")).toBe("changed private hook");
-  if (workspaceFileMode === "all") expect(await fs.readFile(path.join(repository, "ignored.txt"), "utf8")).toBe("updated ordinary ignored bytes");
+  if (workspaceFileMode === "all") {
+    expect(await fs.readFile(path.join(repository, "ignored.txt"), "utf8")).toBe("updated ordinary ignored bytes");
+    expect(await fs.readFile(path.join(repository, "notes.txt"), "utf8")).toBe("keep after untracking\n");
+    await expect(fs.stat(path.join(repository, "absent.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  }
   await recovered.cleanupWorkspaceSnapshot(); await cached.cleanupWorkspaceSnapshot();
 }, 30000);
