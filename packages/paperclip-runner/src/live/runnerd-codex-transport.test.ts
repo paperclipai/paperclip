@@ -4915,18 +4915,18 @@ it.each([
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
-      const preparedStates: (typeof core.store.state)[] = [];
-      const commit = core.store.commit.bind(core.store);
-      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+      const retiredAuthorities: (typeof core.store.state)[] = [];
+      const store = core.store as typeof core.store & {
+        commit(candidate: typeof core.store.state): void;
+      };
+      const commit = store.commit.bind(store);
+      vi.spyOn(store, "commit").mockImplementation((candidate) => {
+        // The authenticated successor can activate before the attach observer.
+        // Capture the old journal at its actual durable retirement boundary.
+        const retired = candidate.identity.runId !== store.state.identity.runId
+          ? structuredClone(store.state) : null;
         commit(candidate);
-        // Capture the durable old epoch at publication. The authenticated
-        // successor may activate before attachRun observes the completed command.
-        if (
-          candidate.identity.runId === oldIdentity.runId &&
-          candidate.warmTransition?.phase === "prepared"
-        ) {
-          preparedStates.push(structuredClone(core.store.state));
-        }
+        if (retired) retiredAuthorities.push(retired);
       });
       if (observer === "after-activation") {
         const getCommand = core.getCommand.bind(core);
@@ -4983,6 +4983,7 @@ it.each([
         );
         expect(rotations).toHaveLength(0);
         expect(core.store.state.identity).toEqual(oldIdentity);
+        expect(retiredAuthorities).toHaveLength(0);
         expect((await readRunner()).runId).toBe(oldIdentity.runId);
         const read = await within(
           "read under unchanged authority",
@@ -5016,8 +5017,9 @@ it.each([
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        expect(preparedStates.length).toBeGreaterThan(0);
-        const retired = preparedStates[0]!;
+        expect(retiredAuthorities).toHaveLength(1);
+        const retired = retiredAuthorities[0]!;
+        expect(retired.identity).toEqual(oldIdentity);
         if (observer === "after-activation") {
           expect(rotations[0]!.identity.runId).toBe("run-warm-ack-next");
           expect(

@@ -365,6 +365,18 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
         }
         // Exercise actual bounded file reads during managed-home restoration;
         // reporting empty success for every shell command hides missing bytes.
+        // This fake lease has no preinstalled CLI, regardless of the host PATH.
+        if (args[1] === "command -v 'agent' >/dev/null 2>&1") {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: null,
+          };
+        }
         return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, args, {
           cwd: remoteWorkspace,
           env: {

@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import type { ActivityPublication } from "../../services/activity-log.js";
 import { createPostgresRunDispatchAdapter } from "./adapters/postgres.js";
 import {
   createCancelStaleQueuedRun,
@@ -48,6 +49,8 @@ export { RunDispatchApplicationError } from "./application/types.js";
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */
   adapter?: ScheduledRetryReader & RunDispatchWriter;
+  /** Only pass inside withAccountingTransaction, using its transaction and publication buffer. */
+  accountingPublications?: ActivityPublication[];
 };
 
 /**
@@ -57,7 +60,7 @@ export type RunDispatchDeps = {
  * the queued-run staleness gate to it.
  */
 export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
-  const adapter = deps.adapter ?? createPostgresRunDispatchAdapter(db);
+  const adapter = deps.adapter ?? createPostgresRunDispatchAdapter(db, deps.accountingPublications);
 
   const promoteScheduledRetry = createPromoteScheduledRetry({
     writer: adapter,

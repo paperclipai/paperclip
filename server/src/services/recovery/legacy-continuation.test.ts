@@ -23,6 +23,15 @@ describe("legacy continuation authority", () => {
   it.each(["paused", "terminated", "pending_approval"])("does not repair with a %s agent", status => {
     expect(decideLegacyContinuation({ ...input, agent: { ...input.agent!, status } }).kind).toBe("skip");
   });
+  it.each(["stopped", "paused", "budgetBlocked", "pendingWait", "activeExecution", "ownedLifecycle", "conversation"] as const)(
+    "preserves %s ahead of unavailable-owner escalation",
+    gate => {
+      const decision = decideLegacyContinuation({ ...input, agent: { ...input.agent!, status: "terminated" },
+        gates: { ...input.gates, agentInvokable: false, [gate]: true } });
+      expect(decision.kind).toBe("skip");
+      expect(decision).not.toMatchObject({ reason: "agent_not_invokable" });
+    },
+  );
   it("rejects foreign agent and reassigned issue", () => {
     expect(decideLegacyContinuation({ ...input, agent: { ...input.agent!, id: "other" } }).kind).toBe("skip");
     expect(decideLegacyContinuation({ ...input, issue: { ...input.issue!, assigneeAgentId: "other" } }).kind).toBe("skip");

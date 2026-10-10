@@ -42,6 +42,7 @@ import {
 } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { parseObject } from "../../adapters/utils.js";
+import { withAccountingTransaction } from "../accounting-transaction.js";
 import { logActivity } from "../activity-log.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
@@ -60,7 +61,7 @@ import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
-import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import { createRunDispatch, type PostCommitEffect, type ScheduledRetryGateErrorCode } from "../../modules/run-dispatch/index.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
@@ -561,7 +562,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         retryReasonOverride: retryReason,
         now,
       });
-      if (!gate.allowed) {
+      // A max-turn successor may already own the lock. This is only a
+      // deferral to locked revalidation below, never permission to schedule.
+      if (!gate.allowed && !(retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
+          gate.errorCode === "issue_execution_lock_changed")) {
         await appendRunEvent(run, {
           eventType: "lifecycle",
           stream: "system",
@@ -680,20 +684,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       | {
           outcome: "not_scheduled";
           reason: string;
-          errorCode:
-            | "issue_not_found"
-            | "issue_reassigned"
-            | "issue_cancelled"
-            | "issue_terminal_status"
-            | "issue_not_in_progress"
-            | "continuation_user_authorization_missing"
-            | "issue_execution_lock_changed";
+          errorCode: ScheduledRetryGateErrorCode | "continuation_user_authorization_missing";
           issueId: string | null;
           details: Record<string, unknown>;
         };
 
-    const scheduleResult = await db.transaction(
-      async (tx): Promise<ScheduledRetryTransactionResult> => {
+    const scheduleResult = await withAccountingTransaction(
+      db, run.companyId,
+      async (tx, accountingPublications): Promise<ScheduledRetryTransactionResult> => {
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -808,6 +806,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             .where(
               and(
                 eq(heartbeatRuns.companyId, run.companyId),
+                eq(heartbeatRuns.agentId, run.agentId),
+                eq(heartbeatRuns.scopeKind, run.scopeKind),
+                issueId ? eq(heartbeatRuns.issueId, issueId) : sql`${heartbeatRuns.issueId} is null`,
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
@@ -822,6 +823,20 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
             .limit(1)
             .then((rows) => rows[0] ?? null);
+
+          // The exact successor is an authorization candidate, not a grant.
+          // Evaluate all current gates against its own lock while holding the
+          // issue lock. A foreign owner, changed assignment, pending human
+          // response or budget denial must still reject reuse. Company was
+          // locked first; budget activity publishes only after outer commit.
+          const gate = await createRunDispatch(tx, { accountingPublications })
+            .evaluateScheduledRetryGate({
+              runId: existingContinuation?.id ?? run.id,
+              companyId: run.companyId,
+              retryReasonOverride: retryReason,
+              now,
+            });
+          if (!gate.allowed) return { outcome: "not_scheduled", ...gate };
 
           if (existingContinuation) {
             if (existingContinuation.wakeupRequestId) {
