@@ -225,25 +225,30 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
 
   if (type === "message_end") {
     const message = asRecord(parsed.message);
-    if (message) {
-      const content = message.content as string | Array<{ type: string; text?: string; thinking?: string }>;
-      const { text, thinking } = extractTextContent(content);
-      
-      const entries: TranscriptEntry[] = [];
-      
-      // Emit final thinking block if present
-      if (thinking) {
-        entries.push({ kind: "thinking", ts, text: thinking });
-      }
-      
-      // Emit final text block if present
-      if (text) {
-        entries.push({ kind: "assistant", ts, text });
-      }
-      
-      return entries;
+    if (!message) return [];
+
+    const role = asString(message.role);
+    const content = message.content as string | Array<{ type: string; text?: string; thinking?: string }>;
+    const { text, thinking } = extractTextContent(content);
+
+    if (role === "user") {
+      return text ? [{ kind: "user", ts, text }] : [];
     }
-    return [];
+    if (role !== "assistant") return [];
+
+    const entries: TranscriptEntry[] = [];
+
+    // Emit final thinking block if present
+    if (thinking) {
+      entries.push({ kind: "thinking", ts, text: thinking });
+    }
+
+    // Emit final text block if present
+    if (text) {
+      entries.push({ kind: "assistant", ts, text });
+    }
+
+    return entries;
   }
 
   // Tool execution
