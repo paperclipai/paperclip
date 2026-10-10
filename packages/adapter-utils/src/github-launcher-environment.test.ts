@@ -144,6 +144,29 @@ describe("managed GitHub launcher environment", () => {
     }
   });
 
+  it("routes loopback through the sandbox proxy and leaves unsandboxed shells alone", async () => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-no-proxy", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    const sandboxNoProxy = "localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,[::1],127.0.0.0/8,mylocalhost,127.0.0.10";
+    const readNoProxy = `printf '%s|%s' "$NO_PROXY" "$no_proxy"`;
+    for (const profile of [".profile", ".bash_profile", ".bashrc", ".zshenv", ".zprofile", ".zshrc"]) {
+      const script = await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, profile), "utf8");
+      for (const shell of ["sh", "bash"]) {
+        for (const sandboxed of [false, true]) {
+          const result = await fixture.runner.execute({ command: shell, args: ["-c", `${script}\n${readNoProxy}`],
+            env: { ...env, HTTP_PROXY: "http://localhost:9", NO_PROXY: sandboxNoProxy, no_proxy: sandboxNoProxy,
+              ...(sandboxed ? { SANDBOX_RUNTIME: "1" } : {}) } });
+          expect(result.exitCode, result.stderr).toBe(0);
+          const expected = sandboxed ? "169.254.0.0/16,10.0.0.0/8,mylocalhost,127.0.0.10" : sandboxNoProxy;
+          expect(result.stdout).toBe(`${expected}|${expected}`);
+        }
+      }
+    }
+  });
+
   it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {
     const fixture = await sandbox("usr/bin");
     const env = await prepareGitHubExecutionEnvironment({
