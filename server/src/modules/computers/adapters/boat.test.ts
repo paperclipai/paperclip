@@ -397,11 +397,11 @@ describe("Boat desktop input readiness", () => {
     mkdirSync(runtime, { mode: 0o700 });
     mkdirSync(bin);
     if (initiallyHealthy) writeFileSync(healthy, "ready");
-    writeFileSync(join(bin, "ibus"), "#!/bin/sh\nprintf '%s\\n' 'unix:path=/test/ibus'\n", { mode: 0o700 });
+    writeFileSync(join(bin, "ibus"), "#!/bin/sh\ntest \"$HOME\" = /home/user && test \"$XDG_CONFIG_HOME\" = /home/user/.config && test \"$XDG_CACHE_HOME\" = /home/user/.cache || exit 1\nprintf '%s\\n' 'unix:path=/test/ibus'\n", { mode: 0o700 });
     writeFileSync(join(bin, "gdbus"), `#!/bin/sh\ntest -f '${healthy}'\n`, { mode: 0o700 });
     writeFileSync(join(bin, "ibus-daemon"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ntouch '${healthy}'\n`, { mode: 0o700 });
     const call = (program = desktopReadinessProgram) => spawnSync("python3", ["-c", program.replaceAll("/run/user/", `${temp}/`)], {
-      encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: "utf8", env: { ...process.env, HOME: join(temp, "agent-home"), XDG_CONFIG_HOME: join(temp, "agent-config"), XDG_CACHE_HOME: join(temp, "agent-cache"), PATH: `${bin}:${process.env.PATH}` },
     });
     return { temp, runtime, healthy, calls, call };
   }
