@@ -1,5 +1,7 @@
 import * as fs from "node:fs/promises";
 import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -22,7 +24,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import { buildRemoteClaudeConfigMaterializationCommand, prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -265,5 +267,33 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
       errorClass: "Error",
     });
     warnSpy.mockRestore();
+  });
+});
+
+
+describe("managed Claude user-scope skills", () => {
+  it("refreshes only its skill symlink and refuses an existing directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-user-skills-"));
+    const config = path.join(root, "config");
+    const seed = path.join(root, "seed");
+    const first = path.join(root, "first-skills");
+    const second = path.join(root, "second-skills");
+    const run = (remoteSkillsDir: string) => promisify(execFile)("sh", ["-c",
+      buildRemoteClaudeConfigMaterializationCommand({
+        remoteClaudeConfigDir: config, remoteClaudeConfigSeedDir: seed, remoteSkillsDir,
+      }),
+    ], { env: { PATH: process.env.PATH, HOME: root } });
+    try {
+      await fs.mkdir(first); await fs.mkdir(second);
+      await run(first);
+      expect(await fs.realpath(path.join(config, "skills"))).toBe(await fs.realpath(first));
+      await run(second);
+      expect(await fs.realpath(path.join(config, "skills"))).toBe(await fs.realpath(second));
+      await fs.unlink(path.join(config, "skills"));
+      await fs.mkdir(path.join(config, "skills"));
+      await fs.writeFile(path.join(config, "skills", "keep.txt"), "user file");
+      await expect(run(first)).rejects.toThrow();
+      expect(await fs.readFile(path.join(config, "skills", "keep.txt"), "utf8")).toBe("user file");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

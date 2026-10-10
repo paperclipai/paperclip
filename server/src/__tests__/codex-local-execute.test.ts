@@ -538,6 +538,101 @@ describe("codex execute", () => {
     }
   });
 
+  it("uses registered persistent instruction paths in computer CLI prompts", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-sandbox-"));
+    const localWorkspace = path.join(root, "workspace");
+    const remoteWorkspace = path.join(root, "sandbox");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const capturePath = path.join(remoteWorkspace, "capture.json");
+    const localInstructions = path.join(localWorkspace, "AGENTS.md");
+    const remoteInstructions = path.join(remoteWorkspace, "nested", "AGENTS.md");
+    const runner = createLocalSandboxRunner();
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+
+    await fs.mkdir(localWorkspace, { recursive: true });
+    await fs.mkdir(remoteWorkspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    await fs.writeFile(localInstructions, "Persistent guidance contents.");
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    await seedSharedCodexAuth(root);
+
+    try {
+      const result = await execute({
+        runId: "run-sandbox-auth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: localWorkspace,
+          instructionsFilePath: localInstructions,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: { paperclipWorkspace: { instructionsFilePath: remoteInstructions, agentHome: remoteWorkspace } },
+        executionTarget: {
+          kind: "remote",
+          transport: "computer",
+          providerKey: "e2b",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: remoteWorkspace,
+          timeoutMs: 30_000,
+          runner,
+          processRunner: runner,
+          listenerPort: 12345,
+          resourceAuthority: { kind: "computer-owner", computerId: "computer-1", ownerId: "owner-1", generation: 1 },
+          fileAuthority: { kind: "remote-persistent", placementId: "placement-1", root: remoteWorkspace, agentHome: remoteWorkspace },
+          workspaceRealization: { mode: "in_place", authoritativeRoot: remoteWorkspace },
+          launch: async () => ({}),
+          inspectProcess: async () => ({ running: false, claim: null }),
+          retainWarm: async () => {},
+          retire: async () => true,
+          computerTool: { command: "unused", args: [] },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toContain(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "owners"));
+      expect(capture.prompt).toContain("Persistent guidance contents.");
+      expect(capture.prompt).toContain(remoteInstructions);
+      expect(capture.prompt).toContain(`${path.dirname(remoteInstructions)}/`);
+      expect(capture.prompt).not.toContain(localInstructions);
+      expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
+      expect(capture.paperclipApiBridgeMode).toBe("queue_v1");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("delivers oversized wake context through stdin (sandbox=%s)", async (sandbox) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");

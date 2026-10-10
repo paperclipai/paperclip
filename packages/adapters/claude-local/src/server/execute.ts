@@ -464,7 +464,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const hasExplicitClaudeConfigDir =
     typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim().length > 0;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  // Controller scratch supplies prompt bytes; persistent computer paths come
+  // from the registered instruction copy, including a nested entry file.
+  const persistentComputer = executionTarget?.kind === "remote" && executionTarget.transport === "computer";
+  const promptInstructionsFilePath = persistentComputer
+    ? asString(workspaceContext.instructionsFilePath, "").trim()
+    : instructionsFilePath;
+  const instructionsFileDir = promptInstructionsFilePath ? `${(persistentComputer ? path.posix : path).dirname(promptInstructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
     agentIdentity: ctx.agentIdentity,
     runId,
@@ -513,12 +519,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      instructionsPathDirective =
-        `Agent instructions for this run were loaded from ${instructionsFilePath}. ` +
+      instructionsPathDirective = promptInstructionsFilePath ?
+        `Agent instructions for this run were loaded from ${promptInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory. ` +
-        `This location replaces any instruction file location from earlier turns.`;
+        `This location replaces any instruction file location from earlier turns.` : "";
       combinedInstructionsContents = instructionsContent +
         "\nUse the agent instruction file location supplied in the current run prompt to resolve relative file references.";
     } catch (err) {
@@ -723,6 +729,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: executionTarget,
       remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir,
+      remoteSkillsDir: config.managedAiConnection
+        ? path.posix.join(effectivePromptBundleAddDir, ".claude", "skills") : undefined,
       options: {
         cwd,
         env,
