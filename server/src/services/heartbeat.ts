@@ -1775,6 +1775,10 @@ export function heartbeatService(
     return recovery.sweepStaleIssueLocks();
   }
 
+  async function repairBlockedWithNoBlockers() {
+    return recovery.repairBlockedWithNoBlockers();
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return (
@@ -5557,6 +5561,8 @@ export function heartbeatService(
     resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
+
+    repairBlockedWithNoBlockers,
 
     reconcileResolvedDependencyWakes,
 
