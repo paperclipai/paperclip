@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { spawn, execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
 import { promisify } from "node:util";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,13 +36,21 @@ async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<type
     if (!processLive) throw new Error("computer_process_claim_stale");
     return execute(input);
   }) };
-  const target = remote === "computer" ? {
+  const target: AdapterExecutionTarget | null = remote === "computer" ? {
     kind: "remote", transport: "computer", remoteCwd: root,
     runner: { execute: async (input: Parameters<typeof execute>[0]) => {
       if (generation !== 1) throw new Error("computer_attempt_superseded");
       return execute(input);
     } }, processRunner,
-  } as Parameters<typeof createNativeGitHubAccess>[0]["target"] : remote ? {
+    listenerPort: 43127,
+    resourceAuthority: { kind: "computer-owner", computerId: "computer-a", ownerId: "owner-a", generation: 1 },
+    fileAuthority: { kind: "remote-persistent", placementId: "placement-a", root, agentHome: root },
+    launch: async () => { throw new Error("Fixture runner is already launched"); },
+    inspectProcess: async () => ({ running: processLive, claim: { nonce: "fixture-process" } }),
+    retainWarm: async () => undefined,
+    retire: async () => { processLive = false; return true; },
+    computerTool: { command: "fixture-computer-tool", args: [] },
+  } : remote ? {
     kind: "remote" as const, transport: "sandbox" as const, providerKey: "test",
     remoteCwd: root, runner: { execute }, streamRunLogs: false,
   } : null;
