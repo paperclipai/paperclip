@@ -4861,10 +4861,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ), Boolean(this.options.persistentAgentHome), sourceRuntimeContext);
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
-        ? unboundBaseInstructions.replaceAll(
-            sourceRuntimeContext.instructions.bundle.rootPath,
-            runtimeContext.instructions.bundle.rootPath,
-          )
+        ? retargetComposedInstructions(unboundBaseInstructions, sourceRuntimeContext, runtimeContext)
         : unboundBaseInstructions;
     const acpxProfile =
       provider === "acpx"
@@ -7114,6 +7111,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 
 export const runnerdRecoveryInternals = Object.freeze({
   withComputerProcessInstructions,
+  retargetComposedInstructions,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   readControlPlaneState,
