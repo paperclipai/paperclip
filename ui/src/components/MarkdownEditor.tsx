@@ -82,6 +82,7 @@ export interface MentionOption {
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
+  ariaLabel?: string;
   placeholder?: string;
   className?: string;
   contentClassName?: string;
@@ -509,12 +510,22 @@ function getMentionMenuSize(optionCount: number): MentionMenuSize {
   };
 }
 
+// CodeMirror's editable surface is `.cm-content`, not a `pre` or `code` node.
+// MDXEditor wraps that surface in a hashed `codeMirrorWrapper` class. A paste
+// that starts inside either of those belongs to the nested editor.
+const CODE_LIKE_SELECTOR = [
+  "pre",
+  "code",
+  ".cm-editor",
+  ".cm-content",
+  "[class*='codeMirrorWrapper']",
+  "[class*='codeBlockEditor']",
+].join(",");
+
 function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
   if (!node || !container.contains(node)) return false;
-  const el = node.nodeType === Node.ELEMENT_NODE
-    ? (node as HTMLElement)
-    : node.parentElement;
-  return Boolean(el?.closest("pre, code"));
+  const el = node instanceof Element ? node : node.parentElement;
+  return Boolean(el?.closest(CODE_LIKE_SELECTOR));
 }
 
 function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
@@ -525,6 +536,17 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
     if (nodeInsideCodeLike(container, node)) return true;
   }
   return false;
+}
+
+function isPasteInsideCodeLikeElement(
+  container: HTMLElement | null,
+  event: { target: EventTarget | null },
+): boolean {
+  if (!container) return false;
+  if (event.target instanceof Node && nodeInsideCodeLike(container, event.target)) return true;
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  if (active instanceof Node && nodeInsideCodeLike(container, active)) return true;
+  return isSelectionInsideCodeLikeElement(container);
 }
 
 /** The human title of an issue mention — `name` minus its leading identifier. */
@@ -708,6 +730,7 @@ function applyMention(markdown: string, state: MentionState, option: Autocomplet
 export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(function MarkdownEditor({
   value,
   onChange,
+  ariaLabel,
   placeholder,
   className,
   contentClassName,
@@ -1278,12 +1301,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!clipboard || !ref.current) return;
     const types = new Set(Array.from(clipboard.types));
     if (types.has("Files") || types.has("text/html")) return;
-    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+    if (isPasteInsideCodeLikeElement(containerRef.current, event)) return;
 
     const rawText = clipboard.getData("text/plain");
     if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
+    // Lexical also handles paste on the editable element. Once Markdown is
+    // inserted here, prevent that handler from inserting the plain text again.
+    event.stopPropagation();
     ref.current.insertMarkdown(escapeUnsupportedAngleBrackets(normalizeMarkdown(rawText)));
   }, []);
 
@@ -1336,6 +1362,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         </div>
         <textarea
           ref={fallbackTextareaRef}
+          aria-label={ariaLabel}
           value={value}
           placeholder={placeholder}
           readOnly={readOnly}
@@ -1369,8 +1396,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         isDragOver && "ring-1 ring-primary/60 bg-accent/20",
         className,
       )}
+      onInputCapture={(event) => {
+        if (
+          !readOnly
+          && event.target instanceof HTMLElement
+          && event.target.closest('[contenteditable="true"]')
+        ) {
+          // Actual input may be the editor's first change. An intentional clear
+          // must not be mistaken for its programmatic empty mount reset.
+          initialChildOnChangeRef.current = false;
+        }
+      }}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
+        if (
+          (e.key === "Backspace" || e.key === "Delete")
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          // Lexical handles deletion on keydown and may suppress DOM input.
+          initialChildOnChangeRef.current = false;
+        }
         // Cmd/Ctrl+Enter to submit
         if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -1473,6 +1519,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       <MarkdownEditorRichErrorBoundary onError={handleRichEditorRenderError}>
         <MDXEditor
           ref={setEditorRef}
+          translation={(key, fallback, interpolations = {}) =>
+            key === "contentArea.editableMarkdown" && ariaLabel
+              ? ariaLabel
+              : Object.entries(interpolations).reduce(
+                  (text, [name, value]) => text.replaceAll(`{{${name}}}`, String(value)),
+                  fallback,
+                )
+          }
           markdown={editorValue}
           iconComponentFor={editorIconFor}
           suppressHtmlProcessing

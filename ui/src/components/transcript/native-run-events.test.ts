@@ -307,6 +307,16 @@ describe("nativeRunEventsToTranscript", () => {
     expect(transcript.filter((entry) => entry.kind === "run_terminal")).toHaveLength(1);
   });
 
+  it("preserves buffered output tails when a native turn ends", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "item.delta", { itemId: "reasoning-1", kind: "reasoning", text: "Thinking" }),
+      event(2, "turn.completed", { status: "completed", outputTails: [
+        { itemId: "reasoning-1", payload: { kind: "reasoning", text: "-" } },
+      ] }),
+    ]);
+    expect(transcript.filter(entry => entry.kind === "thinking").map(entry => "text" in entry ? entry.text : "").join("")).toBe("Thinking-");
+  });
+
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
     const transcript = nativeRunEventsToTranscript([
       event(6, "run.result.proposed", runResult("Done safely.")),

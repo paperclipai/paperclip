@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { definePlugin } from "../src/define-plugin.js";
-import { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "../src/environment-creation-cleanup.js";
+import { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic } from "../src/environment-creation-cleanup.js";
 import { createRequest, isJsonRpcResponse, JsonRpcCallError, parseMessage, serializeMessage, type JsonRpcResponse } from "../src/protocol.js";
 import { startWorkerRpcHost } from "../src/worker-rpc-host.js";
 
@@ -71,5 +71,74 @@ describe("failed environment creation ownership", () => {
 
   it.each([null, {}, { data: { schema: "unknown", cleanup: ownership } }, { data: { schema, cleanup: [] } }])("rejects malformed envelopes %j", (value) => {
     expect(readEnvironmentCreationCleanupError(value)).toBeNull();
+  });
+});
+
+
+describe("acquisition failure observations", () => {
+  const diagnostic = { phase: "shell", elapsedMs: 300_000, budgetMs: 300_000 } as const;
+
+  it("crosses the real acquire RPC without provider causes or ownership in the diagnostic", async () => {
+    const input = { ...diagnostic, url: "private-url", command: "private-command", token: "private-token" };
+    const response = await invoke("environmentAcquireLease", new PluginEnvironmentCreationCleanupError(
+      [new Error("private-provider-cause")], "Cleanup required", ownership, input,
+    ));
+    if (!("error" in response) || !response.error) throw new Error("Expected RPC error");
+    expect(response.error.data).toEqual({ schema, cleanup: ownership, acquisitionDiagnostic: diagnostic });
+    expect(readEnvironmentAcquisitionDiagnostic(new JsonRpcCallError(response.error))).toEqual(diagnostic);
+    expect(JSON.stringify(response)).not.toContain("private-");
+    // The old ownership reader and envelope version remain valid.
+    expect(readEnvironmentCreationCleanupError(new JsonRpcCallError(response.error))).toEqual(ownership);
+    expect(readEnvironmentAcquisitionDiagnostic({ data: { schema, cleanup: ownership } })).toBeNull();
+  });
+
+  it.each(["environmentDestroyLease", "environmentProbe"])("omits acquisition diagnostics from %s", async method => {
+    const response = await invoke(method, new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership, diagnostic));
+    expect("error" in response && response.error).not.toHaveProperty("data.acquisitionDiagnostic");
+    if (method === "environmentDestroyLease") expect("error" in response && response.error?.data).toEqual({ schema, cleanup: ownership });
+  });
+
+  it.each([
+    null, [], {}, { ...diagnostic, phase: "cleanup" }, { ...diagnostic, phase: "private-command" },
+    { ...diagnostic, elapsedMs: -1 }, { ...diagnostic, elapsedMs: NaN }, { ...diagnostic, elapsedMs: Infinity },
+    { ...diagnostic, elapsedMs: 604_800_001 }, { ...diagnostic, elapsedMs: 0.5 }, { ...diagnostic, elapsedMs: "300000" },
+    { ...diagnostic, budgetMs: 0 }, { ...diagnostic, budgetMs: 86_400_001 }, { ...diagnostic, budgetMs: Infinity },
+    { ...diagnostic, budgetMs: "private-token" }, Object.create(diagnostic),
+  ])("omits malformed optional diagnostics without rejecting cleanup (%j)", invalid => {
+    const error = new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership, invalid as typeof diagnostic);
+    expect(readEnvironmentAcquisitionDiagnostic(error)).toBeNull();
+    expect(environmentCreationCleanupErrorData(error, true)).toEqual({ schema, cleanup: ownership });
+  });
+
+  it("omits accessor diagnostics without invoking their getters", () => {
+    let reads = 0;
+    const invalid = Object.defineProperty({ ...diagnostic }, "phase", { get() { reads++; throw new Error("private-getter"); } });
+    const error = new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership, invalid);
+    expect(environmentCreationCleanupErrorData(error, true)).toEqual({ schema, cleanup: ownership });
+    expect(reads).toBe(0);
+  });
+
+  it("does not read an inherited or accessor acquisitionDiagnostic envelope field", () => {
+    let reads = 0;
+    const accessor = Object.defineProperty({ schema, cleanup: ownership }, "acquisitionDiagnostic", {
+      get() { reads++; throw new Error("private-getter"); },
+    });
+    const inherited = Object.assign(Object.create({ acquisitionDiagnostic: diagnostic }), { schema, cleanup: ownership });
+    for (const data of [accessor, inherited]) {
+      expect(readEnvironmentAcquisitionDiagnostic({ data })).toBeNull();
+      expect(readEnvironmentCreationCleanupError({ data })).toEqual(ownership);
+    }
+    const typed = new PluginEnvironmentCreationCleanupError([], "Cleanup required", ownership);
+    Object.defineProperty(typed, "acquisitionDiagnostic", { get() { reads++; throw new Error("private-getter"); } });
+    expect(environmentCreationCleanupErrorData(typed, true)).toEqual({ schema, cleanup: ownership });
+    expect(reads).toBe(0);
+  });
+
+  it("does not serialize forged error properties or accept invalid ownership with valid diagnostics", async () => {
+    const forged = Object.assign(new Error("Cleanup required"), { acquisitionDiagnostic: diagnostic,
+      data: { schema, cleanup: ownership, acquisitionDiagnostic: diagnostic } });
+    const response = await invoke("environmentAcquireLease", forged);
+    expect("error" in response && response.error).not.toHaveProperty("data");
+    expect(readEnvironmentAcquisitionDiagnostic({ data: { schema, cleanup: { ...ownership, runId: "private/path" }, acquisitionDiagnostic: diagnostic } })).toBeNull();
   });
 });

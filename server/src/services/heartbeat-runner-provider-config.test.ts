@@ -8,6 +8,28 @@ import {
 } from "./native-runtime/provider-profile.js";
 
 describe("Paperclip Runner native provider configuration", () => {
+  it.each([
+    ["gpt-6.1-sol", "0.158.0", "gpt-6-sol"],
+    ["gpt-6.1-sol", "0.156.0", "gpt-5.6-sol"],
+    ["gpt-6-luna", "0.156.0", "gpt-5.6-luna"],
+  ])("recovers %s on Codex %s with compatible model %s", (model, codexCliVersion, expectedModel) => {
+    const input = {
+      backend: "codex_app_server" as const,
+      adapterConfig: { provider: "codex", model, modelReasoningEffort: "high", codexPermissionMode: "never" },
+      codexCliVersion,
+    };
+    expect(resolvePaperclipRunnerNativeProviderInput(input)).toEqual({
+      provider: "codex", model: expectedModel, codexApprovalPolicy: "never", codexReasoningEffort: "high",
+    });
+    expect(input.adapterConfig.model).toBe(model);
+  });
+
+  it.each([
+    ["gpt-6.1-sol", "0.159.0"], ["gpt-6-sol", "0.157.0"], ["gpt-5.6-sol", "0.156.0"],
+  ])("keeps a supported %s selection on Codex %s", (model, codexCliVersion) => {
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model }, codexCliVersion })).toMatchObject({ model });
+  });
   it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
     "passes Grok's full-auto default or explicit %s policy to the native runner",
     (acpxPermissionMode) => {
@@ -82,6 +104,15 @@ describe("Paperclip Runner native provider configuration", () => {
       .toEqual({
         provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
       });
+  });
+
+  it("keeps the connection's authoritative model namespace in durable input", () => {
+    const projected = projectPaperclipRunnerTaskConfig("opencode_server",
+      { provider: "opencode", model: "openai/gpt-5.4" },
+      { provider: "codex", model: "team-alias" },
+      "paperclip/team-alias");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toMatchObject({ provider: "opencode", model: "paperclip/team-alias" });
   });
 
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
@@ -425,12 +456,12 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toThrow("provider changed after this run selected its native backend");
   });
 
-  it("rejects Pi before a native descriptor is persisted", () => {
-    expect(() =>
+  it("preserves a caller-selected Pi model in the native descriptor", () => {
+    expect(
       resolvePaperclipRunnerNativeProviderInput({
         backend: "acpx_runtime",
         adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "pi-model" },
       }),
-    ).toThrow("Pi is awaiting local and Daytona qualification");
+    ).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "pi-model" });
   });
 });

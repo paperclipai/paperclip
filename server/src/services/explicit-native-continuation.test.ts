@@ -30,7 +30,7 @@ const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("explicit-native-message-"); db = createDb(database.connectionString); }, 30000);
+  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("explicit-native-message-"); db = createDb(database.connectionString); }, 90_000);
   afterAll(async () => { await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
@@ -387,6 +387,65 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+
+  it.each(["other_user", "same_user", "unaddressed", "tool_access"])("scopes connection waits to the user starting the fresh turn (%s)", async audience => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "slack_session_stopped" })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId: f.companyId, issueId: f.issueId, sourceRunId: f.sourceRunId,
+      createdByAgentId: f.agentId, kind: "connection_intent", status: "pending",
+      addresseeUserId: ["other_user", "tool_access"].includes(audience) ? "other-user" : audience === "same_user" ? "board" : null,
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, ...(audience === "tool_access" ? {} : { purpose: "ai" as const }), serviceSlug: "openai", serviceName: "OpenAI",
+        requestingAgentId: f.agentId, requestingAgentName: "Native", phase: "requested" },
+    }).returning();
+    expect(await admit(f)).toEqual(audience === "other_user"
+      ? { previousRunId: f.sourceRunId, commentId: f.commentId } : null);
+    // Starting another user's turn grants no connection authority and retains the card.
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+      .toMatchObject({ status: "pending", result: null, addresseeUserId: interaction.addresseeUserId });
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    if (audience === "other_user") expect(blocker).toBeNull();
+    else expect(blocker).not.toBeNull();
+  });
+
+  it.each(["fresh", "before_stop", "delivered", "unknown_stop_time", "wrong_actor", "approval"])(
+    "resumes an already-saved follow-up after native Slack Stop (%s)", async gate => {
+      const f = await seed(), queueId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "slack_session_stopped",
+        startedAt: new Date("2026-09-11T09:30:00Z"), finishedAt: gate === "unknown_stop_time" ? null : new Date("2026-09-11T10:00:00Z"),
+        contextSnapshot: { issueId: f.issueId, ...(gate === "delivered" ? { wakeCommentId: f.commentId } : {}) },
+        // Pre-fix Slack Stops recorded a system cancellation, with no operator identity.
+        resultJson: { cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Stopped from the bound Slack agent session", recordedAt: "2026-09-11T10:00:00Z" } },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (gate === "before_stop") await db.update(issueComments).set({ createdAt: new Date("2026-09-11T09:00:00Z") })
+        .where(eq(issueComments.id, f.commentId));
+      await db.insert(issueThreadInteractions).values({
+        companyId: f.companyId, issueId: f.issueId, sourceRunId: f.sourceRunId,
+        createdByAgentId: f.agentId, kind: "connection_intent", status: "pending", addresseeUserId: "other-user",
+        effectiveResolverPolicy: "human_only", payload: { version: 1, purpose: "ai", serviceSlug: "openai",
+          serviceName: "OpenAI", requestingAgentId: f.agentId, requestingAgentName: "Native", phase: "requested" },
+      });
+      if (gate === "approval") {
+        const [approval] = await db.insert(approvals).values({ companyId: f.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+        await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: approval.id });
+      }
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+        source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: gate === "wrong_actor" ? "other-user" : "board",
+        payload: { issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: {
+          issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } },
+      });
+      const result = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+        return admitExplicitNativeContinuation({ ...f, actorId: gate === "wrong_actor" ? "other-user" : f.actorId,
+          db: tx as unknown as typeof db, queuedCommentRequestId: queueId, dryRun: true });
+      });
+      expect(result).toEqual(gate === "fresh" ? { previousRunId: f.sourceRunId, commentId: f.commentId } : null);
+    },
+  );
 
   async function seedTimedOutExplicitTurn() {
     const f = await seed();

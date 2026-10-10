@@ -24,7 +24,10 @@ test("built chat initializes after service worker takeover and reload with a slo
     try {
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       await page.goto(f.route);
-      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      // These navigations deliberately parse and mount the shipped UI at 4x
+      // CPU throttling. Bound initial readiness separately from assertions on
+      // an already rendered page; the default five seconds is too short in CI.
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
       // The failed CI traces stopped before React evaluated, while a service
       // worker forwarded the Vite module graph. Keep this test on shipped assets
       // and cover both first takeover and subsequent controlled navigations.
@@ -36,7 +39,7 @@ test("built chat initializes after service worker takeover and reload with a slo
       await page.evaluate(async () => { await navigator.serviceWorker.ready; });
       for (let reload = 0; reload < 3; reload += 1) {
         await page.reload();
-        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
         expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
       }
       expect(await json(await request.get(f.chatPath))).toBeNull();
@@ -262,7 +265,14 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     }));
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
     await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Who would you like to talk to?" })).toBeVisible();
+    // With no recent conversation, Chat opens the first human-created primary.
+    // Navigation alone must not create a conversation or start execution.
+    expect(await json(await request.get(`/api/companies/${f.company.id}/primary-agent/me`))).toMatchObject({
+      primaryAgentId: f.agents[0].id, initialized: true,
+    });
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    expect(await json(await request.get(f.chatPath))).toBeNull();
+    expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
     const sidebar = page.getByRole("complementary", { name: "Chat", exact: true });
     // The rail lists every eligible agent before any conversation exists.
     const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });

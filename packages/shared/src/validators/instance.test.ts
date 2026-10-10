@@ -5,6 +5,10 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults GitHub review bots off independently of chat and accepts explicit changes", () => {
+    expect(instanceExperimentalSettingsSchema.parse({ enableChatConnectors: true }).enableGitHubReviewBots).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableGitHubReviewBots: true })).toEqual({ enableGitHubReviewBots: true });
+  });
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).enableChatConnectors).toBe(false);
     expect(instanceExperimentalSettingsSchema.parse({ enableApps: true }).enableChatConnectors).toBe(false);

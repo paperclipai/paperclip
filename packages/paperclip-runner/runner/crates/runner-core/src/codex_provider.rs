@@ -32,6 +32,11 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_AI_PROVIDER_KEY",
+    "PAPERCLIP_AI_PROVIDER_URL",
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
     "OPENROUTER_API_KEY",
     "PAPERCLIP_NATIVE_MCP_NAME",
     "PAPERCLIP_NATIVE_MCP_URL",
@@ -242,6 +247,15 @@ impl ProviderTraceSink {
     }
 
     fn frame(&mut self, direction: &str, raw: &[u8]) -> Option<u64> {
+        // Raw protocol frames can contain arbitrary private-key fragments.
+        // Preserve trace metadata without retaining raw content for identity runs.
+        let redacted =
+            if std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY").is_ok_and(|key| !key.is_empty()) {
+                "[REDACTED: agent identity runtime]".to_owned()
+            } else {
+                String::from_utf8_lossy(raw).into_owned()
+            };
+        let raw = redacted.as_bytes();
         if self.captured_bytes.saturating_add(raw.len()) > self.max_bytes {
             self.truncated = true;
             return None;
@@ -792,6 +806,10 @@ const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_AI_PROVIDER_KEY",
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
     "CODEX_HOME",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",

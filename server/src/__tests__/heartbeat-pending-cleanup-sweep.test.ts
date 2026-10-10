@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   heartbeatRuns,
@@ -71,6 +72,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(environments);
     await db.delete(agents);

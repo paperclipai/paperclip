@@ -54,6 +54,104 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it.each([false, true])("admits only the declared qualified Codex platform in its npm-hoisted slot (published platform declaration: %s)", async (publishedDeclaration) => {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-hoist-")));
+    temporaryDirectories.push(parent);
+    const root = join(parent, "node_modules/@paperclipai/server");
+    const runtime = join(root, "node_modules/@openai/codex/package.json");
+    const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
+    const platform = join(platformRoot, "package.json");
+    const alias = "npm:@openai/codex@0.160.0-linux-x64";
+    const selected = { name: "@paperclipai/server", optionalDependencies: { "@openai/codex-linux-x64": alias } };
+    const runtimeMetadata = { name: "@openai/codex", version: "0.160.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
+    const platformMetadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+    await mkdir(dirname(runtime), { recursive: true });
+    await mkdir(platformRoot, { recursive: true });
+    const reset = async () => Promise.all([
+      writeFile(join(root, "package.json"), JSON.stringify(selected)),
+      writeFile(runtime, JSON.stringify(runtimeMetadata)),
+      writeFile(platform, JSON.stringify(platformMetadata)),
+    ]);
+    await reset();
+    const resolver = createAcpxPackageJsonResolver(root);
+    expect(resolver("@openai/codex-linux-x64", runtime)).toBe(platform);
+    // Direct provider discovery remains closed; only the selected runtime can
+    // hand off its explicitly declared, qualified executable dependency.
+    expect(() => resolver("@openai/codex-linux-x64")).toThrow("outside the selected provider root");
+    for (const [file, metadata] of [
+      [join(root, "package.json"), { ...selected, optionalDependencies: {} }],
+      [join(root, "package.json"), { ...selected, optionalDependencies: { "@openai/codex-linux-x64": "latest" } }],
+      [runtime, { ...runtimeMetadata, version: "0.159.0" }],
+      [runtime, { ...runtimeMetadata, optionalDependencies: {} }],
+      [runtime, { ...runtimeMetadata, optionalDependencies: { "@openai/codex-linux-x64": "latest" } }],
+      [platform, { ...platformMetadata, version: "0.159.0-linux-x64" }],
+      [platform, { ...platformMetadata, name: "unqualified-provider" }],
+      [platform, { ...platformMetadata, cpu: ["arm64"] }],
+    ] as const) {
+      await writeFile(file, JSON.stringify(metadata));
+      expect(() => resolver("@openai/codex-linux-x64", runtime)).toThrow("outside the selected provider root");
+      await reset();
+    }
+    const outside = join(parent, "outside-platform");
+    await mkdir(outside);
+    await writeFile(join(outside, "package.json"), JSON.stringify(platformMetadata));
+    await rm(platformRoot, { recursive: true });
+    await symlink(outside, platformRoot);
+    expect(() => resolver("@openai/codex-linux-x64", runtime)).toThrow("outside the selected provider root");
+  });
+
+  it.each([false, true])("retains Codex executable version and byte admission for the hoisted platform (stale bundled alias: %s)", async (staleBundledAlias) => {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-admission-")));
+    temporaryDirectories.push(parent);
+    const root = join(parent, "node_modules/@paperclipai/server");
+    const bridge = join(root, "node_modules/@agentclientprotocol/codex-acp");
+    const runtime = join(bridge, "node_modules/@openai/codex");
+    const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
+    const native = join(platformRoot, "vendor/x86_64-unknown-linux-musl/bin/codex");
+    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.160.0-linux-x64" };
+    await Promise.all([mkdir(runtime, { recursive: true }), mkdir(dirname(native), { recursive: true })]);
+    const command = 'process.stdout.write("unexecuted fixture");';
+    await Promise.all([
+      writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
+      writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2", bin: "server.js" })),
+      writeFile(join(bridge, "server.js"), command),
+      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.160.0" })),
+      writeFile(native, "unqualified native bytes", { mode: 0o755 }),
+    ]);
+    const profile = { ...resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
+    const resolver = createAcpxPackageJsonResolver(root);
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+    try {
+      const metadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+      await writeFile(join(platformRoot, "package.json"), JSON.stringify(metadata));
+      // A stale in-bundle package shadows the correct declared npm slot and
+      // must fail rather than falling through to the hoisted installation.
+      if (staleBundledAlias) {
+        const stale = join(runtime, "node_modules/@openai/codex-linux-x64");
+        await mkdir(stale, { recursive: true });
+        await writeFile(join(stale, "package.json"), JSON.stringify({ ...metadata, version: "0.159.0-linux-x64" }));
+      }
+      // A callback without an explicit selected package authority cannot
+      // adopt the published server's platform declaration implicitly.
+      await expect(verifyQualifiedAcpxInstallation(profile, (...args) => resolver(...args))).rejects.toThrow(
+        "runtime omitted its verified platform executable package",
+      );
+      await expect(verifyQualifiedAcpxInstallation(profile, resolver)).rejects.toThrow(staleBundledAlias
+        ? /runtime executable package version mismatch/
+        : /digest mismatch/);
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", root);
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+      await expect(verifyQualifiedAcpxInstallation(profile)).rejects.toThrow(staleBundledAlias
+        ? /runtime executable package version mismatch/
+        : /digest mismatch/);
+    } finally {
+      vi.unstubAllEnvs();
+      platformSpy.mockRestore();
+      archSpy.mockRestore();
+    }
+  });
+
   it.each([["linux", "arm64"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
     "rejects the actual Claude runtime probe on unsupported %s %s",
     async (platform, arch) => {
@@ -197,7 +295,7 @@ describe("ACPX installation integrity", () => {
     await mkdir(nestedRuntimeDirectory, { recursive: true });
     await writeFile(
       join(nestedRuntimeDirectory, "package.json"),
-      JSON.stringify({ version: "0.84.2" }),
+      JSON.stringify({ version: "1.0.0" }),
     );
 
     await expect(
@@ -1309,7 +1407,7 @@ describe("ACPX installation integrity", () => {
         fixture.runtimePackageJsonPath,
         JSON.stringify({
           name: packageName,
-          version: "0.84.2",
+          version: "1.0.0",
           main: "index.js",
         }),
       ),
@@ -1926,9 +2024,15 @@ async function expectOutput(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
-  const normalized = process.platform === "darwin"
-    ? stdout.replace(/\/private\/var\/[^"\s]*\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
-    : stdout;
+  let normalized = stdout;
+  if (process.platform === "darwin") {
+    const snapshotPrefix = join(await realpath(tmpdir()), "paperclip-acpx-")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    normalized = stdout.replace(
+      new RegExp(`${snapshotPrefix}[^/"\\s]+/0(?=[/"])`, "g"),
+      "/proc/self/fd/4",
+    );
+  }
   expect(normalized).toBe(expected);
 }
 
@@ -2103,7 +2207,7 @@ async function installationFixture() {
       serverPackageJsonPath,
       JSON.stringify({ version: "0.0.33", bin: "bin/server.js" }),
     ),
-    writeFile(runtimePackageJsonPath, JSON.stringify({ version: "0.84.2" })),
+    writeFile(runtimePackageJsonPath, JSON.stringify({ version: "1.0.0" })),
     writeFile(commandPath, command),
   ]);
   await chmod(commandPath, 0o755);
@@ -2140,18 +2244,12 @@ async function installationFixture() {
 
 
 describe("Grok launcher subscription refresh", () => {
-  it("keeps the Grok launcher digest synchronized across TypeScript, Rust, server, and provider pack", async () => {
+  it("binds the Grok launcher bytes to the shared release declaration", async () => {
     const launcher = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url));
     const digest = `sha256:${createHash("sha256").update(launcher).digest("hex")}`;
-    expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest).toBe(digest);
-    const [server, pack, rust] = await Promise.all([
-      readFile(new URL("../../../../../server/src/services/native-runtime/native-session-executor.ts", import.meta.url), "utf8"),
-      readFile(new URL("../../../scripts/build-provider-pack.mjs", import.meta.url), "utf8"),
-      readFile(new URL("../../../runner/crates/runner-core/src/acpx_provider_backend.rs", import.meta.url), "utf8"),
-    ]);
-    expect(server).toContain(`grok: "${digest}"`);
-    expect(pack).toContain(`grok: "${digest}"`);
-    expect(rust.split('"grok" =>')[1]?.slice(0, 600)).toContain(`"${digest}"`);
+    const manifest = JSON.parse(await readFile(new URL("../../../acpx-profiles.json", import.meta.url), "utf8"));
+    expect(manifest.profiles.grok.commandDigest).toBe(digest);
+    expect(resolveQualifiedAcpxProfile("grok", "explicit-model").commandDigest).toBe(digest);
   });
 
   async function fixture(input: {

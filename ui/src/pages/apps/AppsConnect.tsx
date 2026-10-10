@@ -1,13 +1,15 @@
+import { useQuery } from "@tanstack/react-query";
+import { aiConnectionsApi } from "@/api/ai-connections";
+import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { isRetiredComposioConnection } from "@paperclipai/shared";
 import { findComposioCatalogApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
-import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
+import { aiProviderSetupPreset, type ToolConnectionCredentialSource } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { consumeSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
@@ -24,6 +26,11 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   const [searchParams] = useSearchParams();
   const { appKey } = useParams<{ appKey?: string }>();
   const source = searchParams.get("source") ?? appKey ?? searchParams.get("appKey");
+  const reconnectId = searchParams.get("reconnect");
+  const preset = aiProviderSetupPreset(source);
+  const aiReconnectRequested = Boolean(reconnectId && (preset || ["openai", "anthropic", "xai"].includes(source ?? "")));
+  const aiAccounts = useQuery({ queryKey: ["ai-connections", selectedCompanyId], queryFn: () => aiConnectionsApi.list(selectedCompanyId!), enabled: Boolean(selectedCompanyId && aiReconnectRequested) });
+  const aiReconnect = aiAccounts.data?.connections.find(c => c.id === reconnectId);
   const gallery = useQuery({ queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"), queryFn: () => toolsApi.listGallery(selectedCompanyId!), enabled: !!selectedCompanyId && !!source?.startsWith("ai-router-") });
   const router = gallery.data?.apps.find(app => app.slug === source)?.aiConnectionRouter;
   const toolkit = searchParams.get("targetToolkit");
@@ -48,6 +55,21 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
     const path = selectedCompanyId && consumeSkillSourceReturn(selectedCompanyId);
     if (path) navigate(path);
   }
+  if (aiReconnectRequested && aiAccounts.isPending) return <p role="status">Loading connection…</p>;
+  if (aiReconnectRequested && aiAccounts.isError) return <p role="alert">Could not load this connection. Refresh to try again.</p>;
+  if (aiReconnectRequested && !aiReconnect) return <p role="alert">This connection is unavailable. Return to Connectors to choose an account.</p>;
+  if (selectedCompanyId && (preset || aiReconnect?.routing)) return (
+    <AiProviderSetup
+      key={reconnectId ?? source}
+      companyId={selectedCompanyId}
+      reconnect={aiReconnect}
+      initialProvider={preset?.provider}
+      initialProtocol={preset?.protocol}
+      providerLabel={preset?.label}
+      onCancel={() => navigate("/apps")}
+      onComplete={binding => navigate(`/apps/${binding.connectionId}/permissions`)}
+    />
+  );
   if (source?.startsWith("ai-router-")) {
     if (gallery.isPending) return <p role="status">Loading connector…</p>;
     if (!router) return <p role="alert">{gallery.error?.message ?? "This connection pool plugin is unavailable. Enable it in Plugins."}</p>;

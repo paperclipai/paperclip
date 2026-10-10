@@ -29,6 +29,7 @@ import {
   isEphemeralPostgresScanFile,
   redactText,
   sanitizeJson,
+  browserDiagnosticUrl,
 } from "./redaction.js";
 import { parseDarwinSharedMemory } from "./shared-memory.js";
 import {
@@ -288,6 +289,15 @@ describe("runner E2E server port allocation", () => {
 });
 
 describe("runner E2E sensitive API boundary", () => {
+  it("uses the authenticated browser session for encrypted secret provisioning", async () => {
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "43123");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ id: "secret-id" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new RunnerApi({} as never);
+    api.setBrowserSession("fixture.session=opaque");
+    await api.postSensitive("/api/companies/company/secrets", { value: "fixture-value" });
+    expect(fetchMock).toHaveBeenCalledWith(new URL("http://127.0.0.1:43123/api/companies/company/secrets"), expect.objectContaining({ headers: { "content-type": "application/json", Cookie: "fixture.session=opaque", Origin: "http://127.0.0.1:43123" } }));
+  });
   it("keeps secret request bodies out of Playwright API tracing", async () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "43123");
     const playwrightPost = vi.fn();
@@ -1055,6 +1065,17 @@ describe("runner E2E evidence redaction", () => {
     );
   });
 
+  it("drops OAuth callback credentials before collecting browser diagnostics", () => {
+    const code = "pcmcp_code_fixture_private_code";
+    const route = browserDiagnosticUrl(`https://name:password@assistant.example/callback?code=${code}&state=private-state#token`);
+    expect(route).toBe("https://assistant.example/callback");
+    expect(() => assertSecretFree(JSON.stringify({ url: route }), [code, "password", "private-state"], "browser-diagnostics")).not.toThrow();
+    expect(browserDiagnosticUrl(`data:text/plain,${code}`)).toBe("[non-HTTP URL]");
+    expect(browserDiagnosticUrl(code)).toBe("[invalid URL]");
+    // The pre-publication credential gate must still fail for leaked API data.
+    expect(() => assertSecretFree(JSON.stringify({ body: code }), [code], "api-state")).toThrow("Secret leak");
+  });
+
   it("detects leaks and accepts sanitized evidence", () => {
     expect(findSecretLeak(Buffer.from(secret), [secret])).toBeTruthy();
     expect(() => assertSecretFree("safe", [secret], "fixture")).not.toThrow();
@@ -1430,6 +1451,13 @@ describe("persisted final response selection", () => {
   it("fails closed when the selected final comment is missing or belongs to another run", () => {
     expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
     expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
+  });
+  it("waits for the native response receipt and its selected comment, not an earlier attachment comment", () => {
+    const native = { ...run, runtimeMode: "native" };
+    expect(persistedFinalRunMessage(comments.slice(0, 1), { id: native.id, runtimeMode: "native" })).toBe("");
+    expect(persistedFinalRunMessage(comments, { id: native.id, runtimeMode: "native", resultJson: { summary: "FINAL" } })).toBe("");
+    expect(persistedFinalRunMessage(comments.slice(0, 1), native)).toBe("");
+    expect(persistedFinalRunMessage(comments, native)).toBe("FINAL");
   });
   it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
     expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");

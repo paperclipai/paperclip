@@ -221,6 +221,21 @@ describe("cost routes", () => {
     });
   });
 
+  it("requires an explicit all-time request and rejects conflicting ranges", () => {
+    const { parseCostDateRange } = loadCostParsers();
+    expect(parseCostDateRange({})).toBeUndefined();
+    expect(parseCostDateRange({ period: "all" })).toEqual({ allTime: true });
+    for (const input of [
+      { from: "2026-09-02", to: "2026-09-01" },
+      { from: ["2026-09-01"] },
+      { from: "2026-02-30" },
+      { from: "" },
+      { from: "09/01/2026" },
+      { period: "all", from: "2026-09-01" },
+      { period: "unknown" },
+    ]) expect(() => parseCostDateRange(input)).toThrow();
+  });
+
   it("returns 400 for an invalid 'from' date string", async () => {
     const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ from: "not-a-date" })).toThrow(/invalid 'from' date/i);
@@ -270,7 +285,7 @@ describe("cost routes", () => {
 
   it("returns 400 for invalid finance event list limits", async () => {
     const { parseCostLimit } = loadCostParsers();
-    expect(() => parseCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
+    for (const limit of ["0", "25garbage", "1.5", ["25"], "501"]) expect(() => parseCostLimit({ limit })).toThrow(/invalid 'limit'/i);
   });
 
   it("accepts valid finance event list limits", async () => {
@@ -352,7 +367,8 @@ describe("cost routes", () => {
   });
 
   it("allows authorized board users to update an agent budget and budget policy", async () => {
-    mockAgentService.update.mockResolvedValueOnce({
+    mockAgentService.getById.mockResolvedValueOnce({ id: "agent-1", companyId: "company-1", name: "Budget Agent", budgetMonthlyCents: 100, spentMonthlyCents: 0 });
+    mockAgentService.getById.mockResolvedValueOnce({
       id: "agent-1",
       companyId: "company-1",
       name: "Budget Agent",
@@ -373,30 +389,22 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith("agent-1", { budgetMonthlyCents: 2500 });
+    expect(res.body.budgetMonthlyCents).toBe(2500);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).toHaveBeenCalledTimes(1);
     expect(mockBudgetService.upsertPolicy).toHaveBeenCalledWith(
       "company-1",
       {
         scopeType: "agent",
         scopeId: "agent-1",
         amount: 2500,
+        isActive: true,
         windowKind: "calendar_month_utc",
       },
       "board-user",
     );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        companyId: "company-1",
-        actorType: "user",
-        actorId: "board-user",
-        agentId: null,
-        action: "agent.budget_updated",
-        entityType: "agent",
-        entityId: "agent-1",
-        details: { budgetMonthlyCents: 2500 },
-      }),
-    );
+    // Policy mutation owns the atomic entity update and activity log.
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });
 
@@ -529,6 +537,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         cachedInputTokens: 10,
         outputTokens: 200_000_000,
         costCents: 2_000_000_000,
+        costStatus: "estimated",
         occurredAt: new Date("2026-04-11T00:00:00.000Z"),
       },
     ]);
@@ -543,8 +552,15 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const [byAgentModelRow] = await costs.byAgentModel(companyId, range);
 
     expect(byAgentRow?.costCents).toBe(4_000_000_000);
-    expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
+    // Historical OpenAI input includes these ten cached tokens.
+    expect(byAgentRow?.inputTokens).toBe(3_999_999_990);
+    expect(byAgentRow!.inputTokens + byAgentRow!.cachedInputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
+    expect(byProjectRow).toMatchObject({ eventCount: 2, estimatedEventCount: 1 });
+    const [firstDayProject] = await costs.byProject(companyId, {
+      ...range, to: new Date("2026-04-10T23:59:59.999Z"),
+    });
+    expect(firstDayProject).toMatchObject({ eventCount: 1, estimatedEventCount: 0 });
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
@@ -692,7 +708,8 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       issueCount: 3,
       includeDescendants: true,
       costCents: 600,
-      inputTokens: 60,
+      costCentsExact: "600.0000000",
+      inputTokens: 54,
       cachedInputTokens: 6,
       outputTokens: 12,
       runCount: 0,

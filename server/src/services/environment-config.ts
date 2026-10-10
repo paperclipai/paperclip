@@ -337,7 +337,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
@@ -482,7 +482,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
   pluginWorkerManager?: PluginWorkerManager;

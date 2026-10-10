@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -42,7 +43,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
@@ -296,6 +297,151 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(companies);
       await db.delete(authUsers);
       await temporary.cleanup();
+    }
+  });
+
+  it.each([
+    ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"],
+    ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"],
+  ] as const)("revokes an in-flight %s on %s", async (operation, reason) => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `detached-${identity.runId}` };
+    let detached = false;
+    const controller = new AbortController();
+    const port = new PaperclipControlPlanePort(db, binding, {
+      assertControllerActive: () => { if (detached) throw new Error("controller_detached"); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const mutate = () => operation === "event" ? port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "turn.interrupted", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: { reason: "governed_wait" },
+    }, { signal: controller.signal }) : operation === "checkpoint"
+      ? port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity }, { signal: controller.signal })
+      : port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }, { signal: controller.signal });
+    let pending: Promise<unknown> | undefined;
+    await db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)).for("update");
+      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+      pending = mutate().then(() => null, error => error);
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const [state] = await db.execute(sql`select exists (
+          select 1 from pg_stat_activity where ${backend.pid} = any(pg_blocking_pids(pid))
+        ) as waiting`) as unknown as Array<{ waiting: boolean }>;
+        if (state.waiting) { waiting = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      if (reason === "detach") detached = true;
+      else controller.abort(new Error("controller_detached"));
+    });
+    expect(await pending).toMatchObject({ message: "controller_detached" });
+    await expect(mutate()).rejects.toThrow("controller_detached");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(run.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+    expect(run.nextEventSeq).toBe(1);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, identity.runId))).toEqual([]);
+    // A new controller's independently authorized port can still settle it.
+    const replacement = new PaperclipControlPlanePort(db, binding);
+    await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await expect(replacement.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
+  });
+
+  it("redacts identity private material before persisting native events and checkpoints", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const keyBody = privateKeyPem.split("\n")[1];
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `identity-${identity.runId}`,
+    }, { privateKeyPem, onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "tool.execution.started", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: {
+        schema: "paperclip.tool.execution.v1", executionId: "identity-output", transport: "builtin",
+        operation: "execute", name: "diagnostic", target: null, namespace: null, readOnly: true,
+        status: "running", durationMs: null, exitCode: null, progress: null,
+        output: privateKeyPem, outputBytes: Buffer.byteLength(privateKeyPem), outputTruncated: false,
+        outputDigest: `sha256:${"a".repeat(64)}`,
+      },
+    });
+    await port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity,
+      semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: privateKeyPem },
+    });
+    let sourceSeq = 2;
+    for (const [itemId, chunks] of [
+      ["halves", [keyBody.slice(0, 31), keyBody.slice(31)]],
+      ["bytes", [...keyBody]],
+    ] as const) {
+      for (const [index, chunk] of chunks.entries()) {
+        const event: PrpEvent = {
+          schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+          sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+          normalizedSessionId: identity.sessionId, turnId: "identity-turn", itemId,
+          eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+          payload: { itemId, kind: "commandExecution", text: chunk, update: { delta: chunk } },
+        };
+        await port.appendEvent(event);
+        expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+        if (index === 0) await port.appendEvent({
+          ...event, sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+          payload: { itemId: "another-provider-item", kind: "commandExecution", text: "Unrelated output\n", update: { delta: "Unrelated output\n" } },
+        });
+      }
+    }
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "tail-turn", itemId: "reasoning-item",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+      payload: { kind: "reasoning", text: "Thinking-" },
+    });
+    const terminal: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "tail-turn",
+      eventType: "turn.completed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
+      payload: { status: "completed" },
+    };
+    await port.appendEvent(terminal);
+    expect((await port.appendEvent(terminal)).disposition).toBe("duplicate");
+    expect(observed.at(-1)?.payload.outputTails).toEqual([{ itemId: "reasoning-item", payload: { kind: "reasoning", text: "-" } }]);
+    const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    for (const value of [persistedEvents, observed, run.runnerProfileJson]) {
+      expect(JSON.stringify(value)).not.toContain(keyBody);
+      expect(JSON.stringify(value)).toContain("***REDACTED***");
+    }
+    for (const itemId of ["halves", "bytes"]) {
+      const deltas = observed.filter(event => event.payload.itemId === itemId).map(event => event.payload);
+      expect(deltas.map(delta => delta.text).join("")).toBe("***REDACTED***");
+      expect(deltas.map(delta => (delta.update as { delta: string }).delta).join("")).toBe("***REDACTED***");
     }
   });
 
@@ -829,7 +975,37 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(response.decision.chosenSource).toBe("final_agent_message");
     expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
       .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
-    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
+    // A workspace recovery owner can commit before the live heartbeat reaches
+    // presentation. The file-preparation comment must not hide the real reply.
+    const [prepared] = await db.insert(issueComments).values({
+      companyId: identity.companyId, issueId: taskIssueId,
+      authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
+      body: "Prepared Continuity file for this response.",
+    }).returning();
+    const receipt = { semanticToolReceipts: { file: {
+      operationId: "register_deliverable", result: {
+        commandId: "deliverable-prepared:attachment-1", disposition: "applied",
+        attachmentId: "attachment-1", entityRefs: ["attachment-1", prepared!.id],
+      },
+    } } };
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { skipIssueComment: true },
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(receipt)}::jsonb`,
+    }).where(eq(heartbeatRuns.id, taskRunId));
+    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const repair = () => repairCommittedNativeChatResponse(db, {
+      companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
+    });
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
+      .where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(true);
+    expect(await repair()).toBe(false);
+    expect(await db.select({ body: issueComments.body }).from(issueComments)
+      .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
+      .toEqual([{ body: prepared!.body }, { body: finalText }]);
     await expect(port.completeRun({
       result: taskResult,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
@@ -947,9 +1123,16 @@ describe("PaperclipControlPlanePort conformance", () => {
       restore: Partial<typeof heartbeatRuns.$inferInsert>;
     }>;
     for (const mutation of mutations) {
-      await db.update(heartbeatRuns).set(mutation.invalid).where(eq(heartbeatRuns.id, runId));
+      // Verify service-level binding checks even for corrupted historical rows.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set(mutation.invalid).where(eq(heartbeatRuns.id, runId));
+      });
       await expect(createPort().openRun(open)).rejects.toThrow("native_open_run_not_authorized");
-      await db.update(heartbeatRuns).set(mutation.restore).where(eq(heartbeatRuns.id, runId));
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.update(heartbeatRuns).set(mutation.restore).where(eq(heartbeatRuns.id, runId));
+      });
     }
 
     const openedPort = createPort();
@@ -1411,12 +1594,13 @@ describe("PaperclipControlPlanePort conformance", () => {
 
   });
 
-  it("completes DOT-29-style low-risk work with an environment caveat and no corrective run", async () => {
+  it.each(["none", "queued", "claimed", "deferred_issue_execution", "coalesced", "current_run", "current_intent"])(
+    "preserves completion caveats and pending child delivery (%s)", async (delivery) => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
-    const issueId = "30000000-0000-4000-8000-000000000029";
-    const localContractId = "31000000-0000-4000-8000-000000000029";
-    const runId = "32000000-0000-4000-8000-000000000029";
-    const runnerInstanceId = "33000000-0000-4000-8000-000000000029";
+    const issueId = randomUUID();
+    const localContractId = randomUUID();
+    const runId = randomUUID();
+    const runnerInstanceId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId: identity.companyId,
@@ -1494,10 +1678,28 @@ describe("PaperclipControlPlanePort conformance", () => {
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
       callerResultId: "dot-29-result",
     });
+    const pendingDelivery = ["queued", "claimed", "deferred_issue_execution"].includes(delivery);
+    if (delivery !== "none") {
+      const intentId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: intentId, companyId: identity.companyId, agentId: identity.agentId,
+        source: "automation", triggerDetail: "system", reason: delivery === "deferred_issue_execution" ? "issue_execution_deferred" : "issue_children_completed",
+        requestedByActorType: "system", requestedByActorId: delivery === "deferred_issue_execution"
+          ? `native-status-wake-dispatch:${randomUUID()}` : "native-status-committer",
+        status: delivery.startsWith("current_") ? "claimed" : delivery,
+        runId: delivery === "current_run" ? runId : null,
+        payload: { issueId, _paperclipWakeContext: { wakeReason: "issue_children_completed", nativeChildCompletionDecisionId: randomUUID() } },
+      });
+      if (delivery === "current_intent") await db.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId, nativeStatusWakeIntentId: intentId } })
+        .where(eq(heartbeatRuns.id, runId));
+    }
+    const expectedStatus = pendingDelivery ? "in_progress" : "done";
+    const expectedReason = pendingDelivery ? "native_child_completion_pending" : "completion_claim_policy_accepted";
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
 
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
-      expect.objectContaining({ status: "done", statusVersion: 1 }),
+      expect.objectContaining({ status: expectedStatus, statusVersion: 1 }),
     ]);
     await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId))).resolves.toEqual([]);
     await expect(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, identity.companyId)))
@@ -1505,12 +1707,12 @@ describe("PaperclipControlPlanePort conformance", () => {
         expect.objectContaining({ payload: expect.objectContaining({ issueId, sourceRunId: runId }) }),
       ]));
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "done", reasonCode: "completion_claim_policy_accepted" }),
+      expect.objectContaining({ toStatus: expectedStatus, reasonCode: expectedReason }),
     ]);
     const [persistedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(persistedRun).toMatchObject({ status: "succeeded", nativePhase: "committed" });
     expect(persistedRun?.resultJson).toMatchObject({
-      finalizationReasonCode: "completion_claim_policy_accepted",
+      finalizationReasonCode: expectedReason,
       verificationCaveats: [{
         commandOrCheck: "Run npm test",
         reasonCode: "tool_unavailable",
@@ -1523,13 +1725,116 @@ describe("PaperclipControlPlanePort conformance", () => {
     });
   });
 
-  it("coalesces a completed child dependency into one rich parent wake", async () => {
+  it("serializes a concurrent child notification with the parent's completion check", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
-    const parentIssueId = "30000000-0000-4000-8000-000000000145";
-    const childIssueId = "30000000-0000-4000-8000-000000000146";
-    const localContractId = "31000000-0000-4000-8000-000000000146";
-    const runId = "32000000-0000-4000-8000-000000000146";
-    const runnerInstanceId = "33000000-0000-4000-8000-000000000146";
+    async function preparedRun(parentId: string | null) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId: identity.companyId,
+        name: parentId ? "Child worker" : "Parent lead", adapterType: "codex_local", status: "running" });
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const localContractId = randomUUID();
+      const runnerInstanceId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId: identity.companyId, parentId,
+        title: parentId ? "Revised child" : "Deliver revised child result", status: "in_progress",
+        assigneeAgentId: agentId, workMode: "standard" });
+      await db.insert(completionContracts).values({ id: localContractId, companyId: identity.companyId,
+        issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v3",
+        risk: "low", completionAuthority: "agent_claim_policy", incompleteCriteriaPolicy: "preserve_non_terminal",
+        contractJson: { revision: "handoff-race-v1", objective: "Deliver the requested result",
+          criteria: [{ id: "objective", requirement: "Complete the requested work" }] },
+        canonicalSha256: localContractId, createdByActorType: "system", createdByActorId: "test" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: identity.companyId, agentId,
+        status: "succeeded", runtimeMode: "native", nativeIssueId: issueId, nativeSessionId: identity.sessionId,
+        runnerInstanceId, completionContractId: localContractId, completionContractSha256: localContractId,
+        contextSnapshot: { issueId } });
+      const port = new PaperclipControlPlanePort(db, { ...identity, agentId, issueId, runId,
+        completionContractId: localContractId, completionContractSha256: localContractId,
+        sourceInstanceId: runnerInstanceId, controlPlaneSourceInstanceId: "handoff-race" });
+      await port.openRun({ identity: { ...identity, agentId, issueId, runId }, backendKind: "mock", sourceInstanceId: runnerInstanceId });
+      await port.completeRun({ result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+        summary: parentId ? "Revised result is ready." : "The result is delivered.",
+        completionClaim: { contractRevision: "handoff-race-v1", objectiveSatisfied: true,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+        evidence: [], verification: [{ commandOrCheck: "node --test", status: "passed" }], attentionRequests: [],
+      }, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: "handoff-race-result" });
+      return { issueId, runId };
+    }
+    const parent = await preparedRun(null);
+    const child = await preparedRun(parent.issueId);
+    const suffix = randomUUID().replace(/-/g, "");
+    const trigger = `handoff_barrier_${suffix}`;
+    const lockKey = Number.parseInt(suffix.slice(0, 7), 16);
+    // A test-only database barrier pauses the real child transaction after it
+    // reads the parent and immediately before it inserts the completion wake.
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+      begin
+        if NEW.requested_by_actor_id = 'native-status-committer'
+          and NEW.payload->>'issueId' = '${parent.issueId}' then
+          perform pg_advisory_xact_lock(${lockKey}, 1);
+        end if;
+        return NEW;
+      end $$`));
+    await db.execute(sql.raw(`create trigger ${trigger} before insert on agent_wakeup_requests
+      for each row execute function ${trigger}()`));
+    let childCompletion: Promise<unknown> | undefined;
+    let parentCompletion: Promise<unknown> | undefined;
+    let parentSettled = false;
+    async function waitUntil(check: () => Promise<boolean>) {
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (await check()) return true;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      return false;
+    }
+    try {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(${lockKey}::integer, 1)`);
+        const [controller] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+        childCompletion = finalizeNativeRun({ db, runId: child.runId, workspaceFinalizeStatus: "succeeded" })
+          .then(() => null, (error: unknown) => error);
+        let childPid: number | null = null;
+        expect(await waitUntil(async () => {
+          const [blocked] = await db.execute(sql`select pid from pg_stat_activity
+            where ${controller.pid} = any(pg_blocking_pids(pid)) limit 1`) as unknown as Array<{ pid: number }>;
+          childPid = blocked?.pid ?? null;
+          return childPid !== null;
+        })).toBe(true);
+        parentCompletion = finalizeNativeRun({ db, runId: parent.runId, workspaceFinalizeStatus: "succeeded" })
+          .then(() => { parentSettled = true; return null; }, (error: unknown) => { parentSettled = true; return error; });
+        let parentWaiting = false;
+        expect(await waitUntil(async () => {
+          const [state] = await db.execute(sql`select exists (select 1 from pg_stat_activity
+            where ${childPid}::integer = any(pg_blocking_pids(pid))) as waiting`) as unknown as Array<{ waiting: boolean }>;
+          parentWaiting = state.waiting;
+          return parentWaiting || parentSettled;
+        })).toBe(true);
+        expect(parentSettled).toBe(false);
+        expect(parentWaiting).toBe(true);
+      });
+      expect(await childCompletion).toBeNull();
+      expect(await parentCompletion).toBeNull();
+      expect((await db.select().from(issues).where(eq(issues.id, child.issueId)))[0]!.status).toBe("done");
+      expect((await db.select().from(issues).where(eq(issues.id, parent.issueId)))[0]!.status).toBe("in_progress");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, parent.issueId)))
+        .toEqual([expect.objectContaining({ reasonCode: "native_child_completion_pending" })]);
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, identity.companyId));
+      expect(wakes.filter(wake => wake.payload?.issueId === parent.issueId)).toHaveLength(1);
+    } finally {
+      await Promise.all([childCompletion, parentCompletion]);
+      await db.execute(sql.raw(`drop trigger ${trigger} on agent_wakeup_requests`));
+      await db.execute(sql.raw(`drop function ${trigger}()`));
+    }
+  }, 30_000);
+
+  it.each(["child_dependency", "child"].flatMap((relationship) =>
+    ["manual", "task_watchdog", "task_watchdog_product_bug"].map((originKind) => ({ relationship, originKind })),
+  ))("preserves completion wake identity across reopen ($relationship, $originKind)", async ({ relationship, originKind }) => {
+    const hasDependency = relationship !== "child";
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const parentIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const localContractId = randomUUID();
     await db.insert(issues).values([
       {
         id: parentIssueId,
@@ -1544,12 +1849,13 @@ describe("PaperclipControlPlanePort conformance", () => {
         companyId: identity.companyId,
         parentId: parentIssueId,
         title: "Implement the accepted plan",
+        originKind,
         status: "in_progress",
         assigneeAgentId: identity.agentId,
         workMode: "standard",
       },
     ]);
-    await db.insert(issueRelations).values({
+    if (hasDependency) await db.insert(issueRelations).values({
       companyId: identity.companyId,
       issueId: childIssueId,
       relatedIssueId: parentIssueId,
@@ -1574,80 +1880,111 @@ describe("PaperclipControlPlanePort conformance", () => {
       createdByActorType: "system",
       createdByActorId: "test",
     });
-    await db.insert(heartbeatRuns).values({
-      id: runId,
-      companyId: identity.companyId,
-      agentId: identity.agentId,
-      status: "running",
-      runtimeMode: "native",
-      nativeIssueId: childIssueId,
-      nativeSessionId: identity.sessionId,
-      runnerInstanceId,
-      completionContractId: localContractId,
-      completionContractSha256: "child-wake-contract",
-      contextSnapshot: { issueId: childIssueId },
-    });
-    const port = new PaperclipControlPlanePort(db, {
-      companyId: identity.companyId,
-      issueId: childIssueId,
-      runId,
-      agentId: identity.agentId,
-      sessionId: identity.sessionId,
-      completionContractId: localContractId,
-      completionContractSha256: "child-wake-contract",
-      sourceInstanceId: runnerInstanceId,
-      controlPlaneSourceInstanceId: "child-wake-control",
-    });
-    await port.openRun({
-      identity: { ...identity, issueId: childIssueId, runId },
-      backendKind: "mock",
-      sourceInstanceId: runnerInstanceId,
-    });
-    const result: PrpStructuredRunResult = {
-      ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
-      summary: "Implemented the accepted plan and passed 44/44 tests.",
-      completionClaim: {
-        contractRevision: "child-wake-v1",
-        objectiveSatisfied: true,
-        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
-        remainingWork: [],
-      },
-      verification: [{ commandOrCheck: "node --test", status: "passed" }],
-      attentionRequests: [],
-    };
-    await port.completeRun({
-      result,
-      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
-      callerResultId: "child-wake-result",
-    });
-    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+    for (const revision of [1, 2]) {
+      const runId = randomUUID();
+      const runnerInstanceId = randomUUID();
+      if (revision === 2) {
+        // The original completion wake was already consumed. Feedback reopens
+        // the same child while its parent still needs the revised result.
+        await db.update(agentWakeupRequests).set({ status: "completed" })
+          .where(sql`${agentWakeupRequests.payload}->>'issueId' = ${parentIssueId}`);
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, parentIssueId));
+        await db.update(issues).set({ status: "in_progress", statusVersion: 2 })
+          .where(eq(issues.id, childIssueId));
+      }
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: identity.companyId,
+        agentId: identity.agentId,
+        status: "running",
+        runtimeMode: "native",
+        nativeIssueId: childIssueId,
+        nativeSessionId: identity.sessionId,
+        runnerInstanceId,
+        completionContractId: localContractId,
+        completionContractSha256: "child-wake-contract",
+        contextSnapshot: { issueId: childIssueId },
+      });
+      const port = new PaperclipControlPlanePort(db, {
+        companyId: identity.companyId,
+        issueId: childIssueId,
+        runId,
+        agentId: identity.agentId,
+        sessionId: identity.sessionId,
+        completionContractId: localContractId,
+        completionContractSha256: "child-wake-contract",
+        sourceInstanceId: runnerInstanceId,
+        controlPlaneSourceInstanceId: "child-wake-control",
+      });
+      await port.openRun({
+        identity: { ...identity, issueId: childIssueId, runId },
+        backendKind: "mock",
+        sourceInstanceId: runnerInstanceId,
+      });
+      const result: PrpStructuredRunResult = {
+        ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+        summary: `Implemented revision ${revision} and passed 44/44 tests.`,
+        completionClaim: {
+          contractRevision: "child-wake-v1",
+          objectiveSatisfied: true,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }],
+          remainingWork: [],
+        },
+        verification: [{ commandOrCheck: "node --test", status: "passed" }],
+        attentionRequests: [],
+      };
+      await port.completeRun({
+        result,
+        terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+        callerResultId: "child-wake-result",
+      });
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+      const [completedChild] = await db.select().from(issues).where(eq(issues.id, childIssueId));
+      expect(completedChild).toMatchObject({ status: "done", statusVersion: revision === 1 ? 1 : 3 });
 
-    const parentWakes = await db.select().from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.companyId, identity.companyId))
-      .then((rows) => rows.filter((row) => row.payload?.issueId === parentIssueId));
-    expect(parentWakes).toHaveLength(1);
-    expect(parentWakes[0]).toMatchObject({
-      reason: "issue_children_completed",
-      payload: {
-        issueId: parentIssueId,
-        completedChildIssueId: childIssueId,
-        childIssueIds: [childIssueId],
-        childIssueSummaries: [{
-          id: childIssueId,
-          title: "Implement the accepted plan",
-          status: "done",
-          summary: "Implemented the accepted plan and passed 44/44 tests.",
-        }],
-        childIssueSummaryTruncated: false,
-        _paperclipWakeContext: {
-          wakeReason: "issue_children_completed",
+      const parentWakes = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, identity.companyId))
+        .then((rows) => rows.filter((row) => row.payload?.issueId === parentIssueId));
+      const wakeCount = originKind === "task_watchdog" ? 1 : revision;
+      expect(parentWakes).toHaveLength(wakeCount);
+      const latestWake = parentWakes.find((wake) => wake.status === "queued");
+      if (originKind === "task_watchdog" && revision === 2) {
+        expect(latestWake).toBeUndefined();
+      } else expect(latestWake).toMatchObject({
+        reason: "issue_children_completed",
+        payload: {
+          issueId: parentIssueId,
+          completedChildIssueId: childIssueId,
+          childIssueIds: [childIssueId],
           childIssueSummaries: [{
             id: childIssueId,
-            summary: "Implemented the accepted plan and passed 44/44 tests.",
+            title: "Implement the accepted plan",
+            status: "done",
+            summary: `Implemented revision ${revision} and passed 44/44 tests.`,
           }],
+          childIssueSummaryTruncated: false,
+          _paperclipWakeContext: {
+            wakeReason: "issue_children_completed",
+            childIssueSummaries: [{
+              id: childIssueId,
+              summary: `Implemented revision ${revision} and passed 44/44 tests.`,
+            }],
+          },
         },
-      },
-    });
+      });
+      if (latestWake) {
+        const delivery = latestWake.payload?._paperclipWakeContext as Record<string, unknown>;
+        expect(delivery.nativeChildCompletionDecisionId).toBe(
+          originKind === "task_watchdog" ? undefined : completedChild!.lastStatusDecisionId,
+        );
+      }
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+      const replayWakes = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, identity.companyId))
+        .then((rows) => rows.filter((row) => row.payload?.issueId === parentIssueId));
+      expect(replayWakes).toHaveLength(wakeCount);
+      expect(new Set(replayWakes.map((wake) => wake.idempotencyKey)).size).toBe(wakeCount);
+    }
   });
 
   it("returns a rejected native completion review to the original agent with the reviewer reason", async () => {

@@ -44,42 +44,27 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
-  it("schedules a capacity retry while preserving partial work and review authority", () => {
-    for (const nativeReviewOutcome of [undefined, "pending"] as const) {
-      const decision = arbitrate({ terminalState: "failed", providerOverloaded: true, nativeReviewOutcome });
-      expect(decision).toMatchObject({ statusAction: "preserve", reasonCode: "native_provider_overloaded" });
-      expect(decision.effects).toContainEqual(expect.objectContaining({ kind: "schedule_retry", cause: "native_provider_overloaded" }));
-    }
-    expect(arbitrate({ terminalState: "failed", providerOverloaded: true, failureRetryCount: 2 }))
-      .toMatchObject({ statusAction: "blocked", reasonCode: "native_provider_overloaded_exhausted", effects: [{ kind: "bind_blocker", owner: "board", action: expect.stringContaining("Automatic retries exhausted") }] });
+  it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
+    const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Explicit continuation needed", idempotencyKey: "cursor-plan-wait:event" } });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true })).toMatchObject({
+      toStatus: "in_progress", reasonCode: "native_plan_accepted_waiting_for_continuation", effects: [],
+    });
+    expect(arbitrate({ assessment: passive })).toMatchObject({
+      toStatus: "in_progress",
+      reasonCode: "completion_evidence_incomplete",
+      effects: [expect.objectContaining({
+        kind: "enqueue_continuation",
+        continuationKind: "same_agent",
+        idempotencyKey: "native-completion-incomplete",
+      })],
+    });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, terminalState: "failed" }).reasonCode).not.toBe("native_plan_accepted_waiting_for_continuation");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, priorIssueStatus: "cancelled" }).toStatus).toBe("cancelled");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, governanceGate: { kind: "interaction", id: "pending" } }).toStatus).toBe("in_review");
   });
-  it.each([
-    { hasActivePauseHold: true }, { hasUnresolvedIssueBlockers: true },
-    { governanceGate: { kind: "approval" as const, id: "approval" } },
-    { priorIssueStatus: "blocked" as const }, { priorIssueStatus: "done" as const },
-    { workspaceFinalizeStatus: "failed" as const }, { nativeReviewOutcome: "stale" as const },
-    { nativeReviewOutcome: "resolved" as const },
-  ])("does not schedule capacity retries through existing authority or cleanup gates (%j)", (gate) => {
-    const decision = arbitrate({ terminalState: "failed", providerOverloaded: true, ...gate });
-    expect(decision.effects.some(effect => effect.kind === "schedule_retry")).toBe(false);
-  });
-  it.each(["in_progress", "in_review"] as const)("blocks a current worker's proven model rejection without a retry (%s)", (priorIssueStatus) => {
-    const decision = arbitrate({ priorIssueStatus, terminalState: "failed", providerModelRejected: true });
-    expect(decision).toMatchObject({ statusAction: "blocked", toStatus: "blocked", reasonCode: "native_provider_model_rejected", unblockDescriptor: { owner: "board" } });
-    expect(decision.effects).toEqual([{ kind: "bind_blocker", owner: "board", action: expect.any(String) }]);
-    expect(arbitrate({ terminalState: "failed", providerModelRejected: false }).effects).toContainEqual(expect.objectContaining({ kind: "schedule_retry" }));
-    expect(arbitrate({ terminalState: "succeeded", providerModelRejected: true }).reasonCode).not.toBe("native_provider_model_rejected");
-    expect(arbitrate({ terminalState: "failed", providerModelRejected: true, workspaceFinalizeStatus: "failed" }).reasonCode).toBe("finalization_failed_claim_preserved");
-    expect(arbitrate({ terminalState: "failed", providerModelRejected: true, priorIssueStatus: "done" }).toStatus).toBe("done");
-    for (const nativeReviewOutcome of ["stale", "resolved"] as const) {
-      expect(arbitrate({ terminalState: "failed", providerModelRejected: true, priorIssueStatus, nativeReviewOutcome }))
-        .toMatchObject({ statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "native_review_action_finished" });
-    }
-  });
-  it("preserves pending review authority without automatic recovery after model rejection", () => {
-    expect(arbitrate({ priorIssueStatus: "in_review", terminalState: "failed", providerModelRejected: true, nativeReviewOutcome: "pending" }))
-      .toMatchObject({ statusAction: "preserve", toStatus: "in_review", reasonCode: "native_provider_model_rejected", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] });
-  });
+
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -135,7 +120,7 @@ describe("native status authority", () => {
       toStatus: "in_review",
       effects: [expect.objectContaining({ kind: "create_interaction" })],
     });
-    for (const kind of ["same_agent", "retry", "monitor"] as const) {
+    for (const kind of ["same_agent", "retry"] as const) {
       expect(
         arbitrate({
           assessment: {
@@ -547,7 +532,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v9",
+        policyVersion: "phase6-v11",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

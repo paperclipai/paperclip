@@ -27,6 +27,28 @@ describe("live runner fixtures", () => {
     },
   );
 
+  it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"])(
+    "sets both connection-guidance budget stops for %s before execution", async profile => {
+      const execution = runnerMatrix.find(row => row.suite.id === "native-connection-guidance" && row.profile.id === profile)!;
+      let companyBudget: unknown;
+      let agentBudget: unknown;
+      const api = {
+        async get() { return [{ id: "local", driver: "local" }]; },
+        async postSensitive() { return { id: "secret" }; },
+        async post(url: string, data: any) {
+          if (url === "/api/companies") { companyBudget = data.budgetMonthlyCents; return { id: "company", name: "Test" }; }
+          if (url.endsWith("/agents")) { agentBudget = data.budgetMonthlyCents; return { id: "lead", ...data }; }
+          throw new Error("Unexpected POST " + url);
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "nonce", workspacePath: "/tmp/test",
+        credentials: { [execution.profile.credential]: "test-value" } });
+      expect(companyBudget).toBe(1_000);
+      expect(agentBudget).toBe(1_000);
+      await fixtures.teardown();
+    },
+  );
+
   it.each(["runner-codex", "legacy-codex", "runner-acpx-claude", "legacy-opencode"])(
     "creates a production-default %s hire with company and agent budget stops", async (profile) => {
       const execution = runnerMatrix.find(row => row.suite.id === "stock-harness" && row.profile.id === profile)!;

@@ -596,7 +596,6 @@ function OpenFiltersPopover() {
           currentUserId="user-board"
           enableRoutineVisibilityFilter
           buttonVariant="outline"
-          workspaces={storybookExecutionWorkspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
           creators={[
             { id: "user:user-board", label: "Riley Board", kind: "user", searchText: "board user human" },
             ...storybookAgents.map((agent) => ({
@@ -890,6 +889,21 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const FullSurfaceMatrix: Story = {};
+
+export const IssuePropertiesUnavailablePolicy: Story = {
+  name: "IssueProperties - unavailable execution policy",
+  render: () => (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <IssueProperties
+          issue={{ ...primaryIssue, executionPolicy: { stages: {} } as unknown as Issue["executionPolicy"] }}
+          onUpdate={() => undefined}
+          inline
+        />
+      </div>
+    </StorybookData>
+  ),
+};
 
 export const IssuePropertiesLongValuesDesktop: Story = {
   name: "IssueProperties - long values desktop pane",

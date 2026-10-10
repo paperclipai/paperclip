@@ -8,12 +8,13 @@ import {
   RotateCcw,
   XCircle,
 } from "lucide-react";
-import type { AiAuthMethod, ConnectionIntentInteraction } from "@paperclipai/shared";
+import { AI_CONNECTION_CAPABILITIES, aiProviderSchema, type AiAuthMethod, type ConnectionIntentInteraction } from "@paperclipai/shared";
 import { AgentMailIntentSetup } from "./AgentMailIntentSetup";
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
+import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { defaultAiConnectionName } from "@/components/ai-connections/model";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -63,6 +64,8 @@ export function ConnectionIntentInteractionBody({
   );
   const isPending = interaction.status === "pending";
   const isAi = interaction.payload.purpose === "ai";
+  const provider = isAi ? aiProviderSchema.safeParse(interaction.payload.serviceSlug).data : undefined;
+  const serviceName = provider ? AI_CONNECTION_CAPABILITIES[provider].name : interaction.payload.serviceName;
   const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
   const accessRequest = interaction.payload.accessRequest;
   const agentQuery = useQuery({
@@ -240,7 +243,7 @@ export function ConnectionIntentInteractionBody({
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
-          title: accessRequest ? `${interaction.payload.serviceName} access granted` : interaction.payload.upstreamService ? "External provider connected" : `${interaction.payload.serviceName} connected`,
+          title: accessRequest ? `${serviceName} access granted` : interaction.payload.upstreamService ? "External provider connected" : `${serviceName} connected`,
           body: accessRequest ? null : interaction.payload.upstreamService ? `${interaction.payload.requestingAgentName} can now verify and authorize ${interaction.payload.upstreamService.name} through this provider. The app is not yet verified.` : isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
         }
       : interaction.status === "rejected"
@@ -377,11 +380,13 @@ export function ConnectionIntentInteractionBody({
                 renderSetup ? renderSetup(setupProps) : <ConnectionSetupFlow {...setupProps} />
               ) : null;
   const aiConnection = setupQuery.data?.aiConnection;
+  const needsOwnAiConnection = isAi && (!repair || setupQuery.data?.aiConnectionRequiresAdoption) && aiConnection?.mode === "responsible_user";
+  const aiProviderName = aiConnection ? AI_CONNECTION_CAPABILITIES[aiConnection.provider].name : serviceName;
   const inlineContent = setupQuery.isLoading || setupQuery.isError ? setupContent
     : readyForAdoption ? <div className="space-y-3">
         <p className="text-sm">
-          Use Connections for {interaction.payload.requestingAgentName}? This replaces the agent’s existing authentication
-          with the responsible person’s {interaction.payload.serviceName} connection. The model stays the same.
+          Use your {aiProviderName} connection for {interaction.payload.requestingAgentName}? This replaces the agent’s existing authentication
+          with each responsible person’s own account. The model stays the same.
         </p>
         <Button disabled={adoptMutation.isPending} onClick={() => adoptMutation.mutate(readyForAdoption)}>
           {adoptMutation.isPending ? "Checking connection…" : "Use connection and continue"}
@@ -393,7 +398,13 @@ export function ConnectionIntentInteractionBody({
           {completeMutation.isPending ? "Continuing…" : "Continue task"}
         </Button>
       </div>
-    : repair ? repair.canReconnect ? <AiConnectionCredentialStep
+    : repair ? repair.canReconnect ? repair.connection.routing ? <AiProviderSetup
+        companyId={interaction.companyId}
+        agentId={interaction.payload.requestingAgentId}
+        reconnect={repair.connection}
+        onComplete={(binding) => selectAiAccountMutation.mutate({ connectionId: binding.connectionId, grantId: binding.grantId, method: binding.method ?? "api_key", generation })}
+        onCancel={() => { closeSetup(); returnFocusToCard(); }}
+      /> : <AiConnectionCredentialStep
         companyId={interaction.companyId}
         provider={repair.connection.provider}
         initialMethod={repair.connection.method}
@@ -443,10 +454,14 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {isAi ? `${interaction.payload.serviceName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
+              {readyForAdoption ? `Use your ${aiProviderName} account` : needsOwnAiConnection ? `Connect your ${aiProviderName} account` : isAi ? `${aiProviderName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {interaction.payload.purpose === "ai"
+              {readyForAdoption
+                ? `Your account is connected. Use it for ${interaction.payload.requestingAgentName} to resume this task.`
+                : needsOwnAiConnection
+                ? `${interaction.payload.requestingAgentName} needs your own AI connection. Connect here and the task will resume automatically.`
+                : interaction.payload.purpose === "ai"
                 ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
                 : isEmail ? "Connect AgentMail to create an email address for this agent."
                 : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
@@ -484,7 +499,7 @@ export function ConnectionIntentInteractionBody({
             Not now
           </Button>}
           {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
-            <Plug className="h-4 w-4" />{open ? "Close setup" : "Fix connection"}
+            <Plug className="h-4 w-4" />{open ? "Close setup" : readyForAdoption ? "Continue setup" : needsOwnAiConnection ? `Connect ${aiProviderName}` : "Fix connection"}
           </Button> : <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button type="button">

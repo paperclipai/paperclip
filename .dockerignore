@@ -36,6 +36,23 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # on master failed its drift check — .github/docker-context-checks.Dockerfile
 # now guards this in PR CI.
 !packages/paperclip-runner/generated/**
+# ACPX generation verifies these immutable release attestations as build inputs.
+# Keep the two declarations while excluding other development fixtures.
+!packages/paperclip-runner/test
+packages/paperclip-runner/test/**
+!packages/paperclip-runner/test/fixtures
+packages/paperclip-runner/test/fixtures/**
+!packages/paperclip-runner/test/fixtures/copilot-profile-v16-identity.json
+!packages/paperclip-runner/test/fixtures/copilot-profile-v17-identity.json
+!packages/paperclip-runner/test-fixtures
+packages/paperclip-runner/test-fixtures/**
+!packages/paperclip-runner/test-fixtures/pi-acp
+packages/paperclip-runner/test-fixtures/pi-acp/**
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v18-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v19-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v20-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v21-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v22-identity.json
 !packages/paperclip-runner/docs/capability-contract.md
 # check:runner-workflow-traceability access()es every regression test the
 # stress-traceability spec names — those are src/**/*.test.ts files, so

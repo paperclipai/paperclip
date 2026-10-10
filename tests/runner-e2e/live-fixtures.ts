@@ -1,5 +1,7 @@
+import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import path from "node:path";
+import { installedReleaseDaytonaPlugin } from "./installed-release.js";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
@@ -114,8 +116,9 @@ export async function setupLiveFixtures(input: {
     registry.register<PluginRecord>({
       id: "sandbox-provider",
       async setup() {
+        const installed = await verifyInstalledDaytonaPlugin(process.env, [execution]);
         return api.post<PluginRecord>("/api/plugins/install", {
-          packageName: path.resolve(
+          packageName: installed?.packageRoot ?? path.resolve(
             import.meta.dirname,
             "../../packages/plugins/sandbox-providers/daytona",
           ),
@@ -136,7 +139,7 @@ export async function setupLiveFixtures(input: {
       return api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: ["native-completion", "native-instruction-consolidation"].includes(execution.suite.id)
+        budgetMonthlyCents: ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
           : execution.suite.id === "stock-harness" ? 1_000 : 0,
@@ -292,7 +295,7 @@ export async function setupLiveFixtures(input: {
         secretRefs,
         executionId: input.executionNonce,
       });
-      if (execution.suite.id === "stock-harness"
+      if (["stock-harness", "native-connection-guidance"].includes(execution.suite.id)
         || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
         agent.budgetMonthlyCents = 1_000;
       }
@@ -316,7 +319,7 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.environment.configurationKey === "warm-reuse-v1"
+  if (execution.task.flow === "warm_three_turn"
     || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",

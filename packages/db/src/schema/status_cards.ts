@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, numeric, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import type { CompanySearchQuery, StatusCardRefreshPolicy } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -81,7 +81,7 @@ export const statusCardUpdates = pgTable(
     changes: jsonb("changes").$type<StatusCardUpdateChange[]>().notNull().default(sql`'[]'::jsonb`),
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
-    costCents: integer("cost_cents").notNull().default(0),
+    costCents: numeric("cost_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     model: text("model"),
     queryVersion: integer("query_version"),
     changeSummary: text("change_summary"),

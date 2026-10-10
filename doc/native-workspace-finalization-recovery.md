@@ -28,6 +28,24 @@ start time rather than trusted by PID alone.
 
 ## Unverified copyback after controller replacement
 
+Generic orphan recovery does not turn a missing provider PID into `process_lost`
+while the native coordinator is `workspace_finalizing` with an accepted result
+bound to the same company, issue, and run. The finalizer owns that unfinished
+suffix, including the interval before it acquires its physical owner receipt.
+The heartbeat's phase or profile alone does not establish this authority.
+The conditional orphan write rechecks the durable result and the heartbeat's
+PostgreSQL tuple version, so a result published while the write waits on its row
+lock cannot be overwritten using an older statement snapshot. Result publishers
+lock and update that heartbeat in the same transaction as acceptance.
+
+The running run keeps its source lease while the existing finalizer either
+completes, records its bounded failure policy, or requires operator stop
+verification. A new queued run or a healthy child task cannot clear an
+unverified copyback hold. Verified finalization clears the matching run's hold
+after commitment. Existing terminal-task dispositions and explicit cancellation
+remain unchanged; this does not recover a source already destroyed by an older
+controller or claim that an unfinished export succeeded.
+
 The controller cannot verify a process on a foreign or unknown host, or orphaned
 copyback children after an abrupt parent death before the success barrier. It surfaces
 `native_workspace_finalization_owner_unverified` as board-owned recovery, with no
@@ -201,3 +219,28 @@ plugin RPC. Its intent pins the registered built-in provider and its receipt say
 `builtin.stopLease`. This provider owns no real process or filesystem; the receipt
 models its lifecycle. Missing built-in stop support or an unconfirmed receipt
 also remains pending through restart, without calling release or destroy.
+
+### Legacy copy-back after a confirmed stop
+
+A legacy adapter can report failed workspace copy-back after cancellation has
+already stopped and released its sandbox lease. The host records the exact lease
+snapshot from before adapter dispatch. For an originally ephemeral source, the
+recorder can preserve the released allocation for repair only while the current
+lease is still ephemeral and its company, run, issue, workspace, provider,
+allocation, acquisition time, plugin, and realized root still match. It requires
+both the dedicated stop-and-retain receipt and the matching stopped-execution
+receipt. A competing owner or changed source fails closed. The recorder leaves
+release status and receipts intact, excludes the allocation from reuse, and
+creates the existing board-owned file-repair obligation without replaying work
+or changing a newer run or the task's status.
+
+This late-recording path does not admit reusable leases. Provider resume can
+precede the database handoff, so an old stop receipt and a database row lock
+cannot prove that reuse has not started. Existing active-source and previously
+recorded recovery paths retain their behavior. A missing or rejected original
+snapshot does not authorize adopting another released lease.
+
+A retained source receipt records control-plane evidence; it does not prove the
+provider still holds the original bytes or that copy-back succeeded. Operators
+must verify and recover the exact source separately. Later successful runs and
+completed tasks do not certify recovery of earlier workspace files.

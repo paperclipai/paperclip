@@ -164,6 +164,17 @@ vi.mock("@mdxeditor/editor", async () => {
         className={className}
         contentEditable
         suppressContentEditableWarning
+        onKeyDown={(event) => {
+          if (event.key === "Delete" || event.key === "Backspace") {
+            setContent("");
+            onChange?.("");
+          }
+        }}
+        onInput={(event) => {
+          const next = event.currentTarget.textContent ?? "";
+          setContent(next);
+          onChange?.(next);
+        }}
       >
         {/* The real editor paints resolved text, never the escapes that carried it in. */}
         {content.replace(/\\</g, "<") || placeholder || ""}
@@ -374,6 +385,43 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("allows a user to clear loaded text as the first editor change", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["Delete", "Backspace"])("allows first-change clearing when Lexical handles %s without an input event", async (key) => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+    await act(async () => root.unmount());
   });
 
   it("does not recreate the mention decoration observer when the external value changes", async () => {
@@ -858,6 +906,94 @@ describe("MarkdownEditor", () => {
     ]);
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("handles Markdown paste once before the inner editor receives it", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="" onChange={() => {}} />);
+    });
+    await flush();
+    const editable = container.querySelector('[data-testid="mdx-editor"]')!;
+    const innerPaste = vi.fn();
+    editable.addEventListener("paste", innerPaste);
+    const pasted = '```json\n{"content":"nonce\\n"}\n```';
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => pasted },
+    });
+    await act(async () => { editable.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([pasted]);
+    expect(innerPaste).not.toHaveBeenCalled();
+
+    const dashed = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(dashed, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "- a single dashed line" },
+    });
+    await act(async () => { editable.dispatchEvent(dashed); });
+    expect(dashed.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      pasted,
+      "- a single dashed line",
+    ]);
+
+    const plain = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(plain, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "ordinary text" },
+    });
+    await act(async () => { editable.dispatchEvent(plain); });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(innerPaste).toHaveBeenCalledOnce();
+    await act(async () => { root.unmount(); });
+  });
+
+  it("leaves a markdown paste inside a nested code block", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="```txt\n\n```" onChange={() => {}} />);
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement;
+    const code = document.createElement("div");
+    code.className = "cm-content";
+    code.setAttribute("contenteditable", "true");
+    const text = document.createTextNode("");
+    code.appendChild(text);
+    editable.appendChild(code);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    code.focus();
+
+    const pasted = "- keep this line in the code block\n- and this one";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+    const innerPaste = vi.fn();
+    code.addEventListener("paste", innerPaste);
+
+    await act(async () => {
+      code.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+    expect(innerPaste).toHaveBeenCalledOnce();
 
     await act(async () => {
       root.unmount();

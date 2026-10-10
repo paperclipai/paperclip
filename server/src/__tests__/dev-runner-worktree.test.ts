@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   bootstrapDevRunnerWorktreeEnv,
+  applyEmptyWorktreeSigningSecrets,
   isWorktreeSeedPending,
   isLinkedGitWorktreeCheckout,
   resolveWorktreeEnvFilePath,
@@ -25,6 +26,18 @@ function createTempRoot(prefix: string): string {
 }
 
 describe("dev-runner worktree env bootstrap", () => {
+  it("uses saved empty-instance signing keys instead of inherited source keys", () => {
+    const root = createTempRoot("paperclip-empty-signing-keys-");
+    fs.mkdirSync(path.join(root, ".paperclip"));
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/empty\n");
+    fs.writeFileSync(path.join(root, ".paperclip", "seed-empty"), "explicitly empty\n");
+    fs.writeFileSync(resolveWorktreeEnvFilePath(root), 'PAPERCLIP_AGENT_JWT_SECRET="fresh-jwt"\nPAPERCLIP_TOOL_ACTION_SIGNING_SECRET="fresh-actions"\n');
+    const env = { PAPERCLIP_AGENT_JWT_SECRET: "source-jwt", PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "source-actions", BETTER_AUTH_SECRET: "source-auth" };
+    bootstrapDevRunnerWorktreeEnv(root, env);
+    expect(env).toMatchObject({ PAPERCLIP_AGENT_JWT_SECRET: "fresh-jwt", PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "fresh-actions", BETTER_AUTH_SECRET: "fresh-jwt" });
+    fs.writeFileSync(resolveWorktreeEnvFilePath(root), 'PAPERCLIP_AGENT_JWT_SECRET="fresh-jwt"\n');
+    expect(() => applyEmptyWorktreeSigningSecrets(root, env)).toThrow("missing its saved PAPERCLIP_TOOL_ACTION_SIGNING_SECRET");
+  });
   it("guards seed-pending worktrees until a seed-complete marker exists", () => {
     const root = createTempRoot("paperclip-dev-runner-seed-pending-");
     fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });

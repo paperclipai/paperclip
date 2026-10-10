@@ -8,6 +8,19 @@ import type { AgentEnvConfig } from "./secrets.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
+export type ProjectVisibility = "open" | "private";
+export type ProjectAccessSubjectType = "user" | "agent";
+
+export interface ProjectAccessMember {
+  id: string;
+  companyId: string;
+  projectId: string;
+  subjectType: ProjectAccessSubjectType;
+  subjectId: string;
+  subjectDisplayName: string | null;
+  subjectAvatarUrl: string | null;
+  createdAt: Date;
+}
 
 export interface ProjectGoalRef {
   id: string;
@@ -98,6 +111,12 @@ export interface Project {
   goals: ProjectGoalRef[];
   name: string;
   description: string | null;
+  /** Omitted by older servers/fixtures; clients must treat omission as open. */
+  visibility?: ProjectVisibility;
+  /** Present only for the lazily-created per-user "My private tasks" project. */
+  personalOwnerUserId?: string | null;
+  /** Only this user and administrators may change the project audience. */
+  privacyOwnerUserId?: string | null;
   status: ProjectStatus;
   leadAgentId: string | null;
   targetDate: string | null;
@@ -130,6 +149,8 @@ export interface Project {
 export interface ProjectRepository {
   id: string;
   fullName: string;
+  /** Provider-confirmed ownership; absent on older repository observations. */
+  ownerType?: "personal" | "organization";
   url: string;
   private?: boolean;
   connections: string[];

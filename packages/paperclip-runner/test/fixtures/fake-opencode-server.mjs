@@ -619,6 +619,15 @@ const server = createServer(async (request, response) => {
             },
           },
         });
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("invalid-tool-feedback")) {
+          for (const [status, state] of [
+            ["pending", {}], ["running", { title: "Checking tool name" }],
+            ["error", { error: "Tool not found: fixture_missing" }],
+          ]) emit({ type: "message.part.updated", id: `event-invalid-${status}`, properties: {
+            sessionID: session.id, part: { id: "part-invalid", messageID: "message-assistant",
+              type: "tool", tool: "invalid", callID: "call-invalid", state: { status, ...state } },
+          } });
+        }
         emit({
           type: "message.part.updated",
           id: "event-patch",

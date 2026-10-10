@@ -17,8 +17,11 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  chatActions,
   chatConversations,
   chatEndpoints,
+  chatGitHubConfigurations,
+  chatGitHubReviews,
   chatMessageLinks,
   chatPublications,
   heartbeatRunEvents,
@@ -46,6 +49,16 @@ const OWNERSHIP_ATTENTION_CODES = [
 ] as const;
 
 export { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON };
+
+// Only upgraded GitHub bots have the task-scoped response tools. Legacy
+// connections retain automatic progress and final-answer publication.
+function allowsAutomaticRunPublication() {
+  return or(ne(chatEndpoints.provider, "github"), notExists(
+    sql`(select 1 from ${chatGitHubConfigurations}
+      where ${chatGitHubConfigurations.companyId} = ${chatEndpoints.companyId}
+        and ${chatGitHubConfigurations.endpointId} = ${chatEndpoints.id})`,
+  ));
+}
 
 /**
  * Heartbeat's presentation resolver may externalize its selected final prose
@@ -93,7 +106,93 @@ export async function resolveChatRunPresentationAuthorizationReason(
   if (await hasChatRunOwnedProviderInteraction(db, input)) {
     return "internal_agent_write";
   }
+  // GitHub replies are authored through task-scoped tools. Runner-selected
+  // final prose stays local even when no tool reply has been sent yet.
+  const githubEndpoints = await db
+    .select({ id: chatEndpoints.id })
+    .from(chatEndpoints)
+    .innerJoin(chatGitHubConfigurations, and(
+      eq(chatGitHubConfigurations.companyId, chatEndpoints.companyId),
+      eq(chatGitHubConfigurations.endpointId, chatEndpoints.id),
+    ))
+    .where(and(
+      eq(chatEndpoints.companyId, input.companyId),
+      eq(chatEndpoints.provider, "github"),
+      inArray(chatEndpoints.id, bindings.map(binding => binding.endpointId)),
+    ));
+  if (bindings.every(binding => githubEndpoints.some(endpoint => endpoint.id === binding.endpointId))) {
+    return "internal_agent_write";
+  }
   return CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+}
+
+/** A missing receipt is not proof that a provider write never arrived. */
+export async function githubRunReplyState(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string; endpointId: string },
+): Promise<"none" | "unsettled" | "confirmed"> {
+  const actions = await db
+    .select({
+      status: chatActions.status,
+      operation: sql<string>`${chatActions.payload}->>'operation'`,
+      reviewId: sql<string | null>`${chatActions.payload}->>'reviewId'`,
+      result: chatActions.result,
+    })
+    .from(chatActions)
+    .innerJoin(chatConversations, and(
+      eq(chatConversations.id, chatActions.conversationId),
+      eq(chatConversations.companyId, input.companyId),
+      eq(chatConversations.endpointId, input.endpointId),
+      eq(chatConversations.issueId, input.issueId),
+    ))
+    .innerJoin(chatEndpoints, and(
+      eq(chatEndpoints.id, input.endpointId),
+      eq(chatEndpoints.companyId, input.companyId),
+      eq(chatEndpoints.provider, "github"),
+      sql`${chatEndpoints.assignedAgentId}::text = ${chatActions.payload}->'session'->>'agentId'`,
+    ))
+    .where(and(
+      eq(chatActions.companyId, input.companyId),
+      eq(chatActions.endpointId, input.endpointId),
+      eq(chatActions.kind, "github_review_publication"),
+      sql`${chatActions.payload}->'session'->>'companyId' = ${input.companyId}`,
+      sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
+      sql`${chatActions.payload}->'session'->>'runId' = ${input.runId}`,
+      sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
+    ));
+  let unsettled = false;
+  for (const action of actions) {
+    // An assessment can publish findings before a later step fails or loses
+    // authority. Those durable receipts still prove a reply was delivered.
+    if (action.operation === "assessment") {
+      const [review] = await db
+        .select({ receipts: chatGitHubReviews.publicationReceipts })
+        .from(chatGitHubReviews)
+        .where(and(
+          eq(chatGitHubReviews.companyId, input.companyId),
+          eq(chatGitHubReviews.endpointId, input.endpointId),
+          eq(chatGitHubReviews.runId, input.runId),
+          eq(chatGitHubReviews.issueId, input.issueId),
+          sql`${chatGitHubReviews.id}::text = ${String(action.reviewId ?? action.result?.reviewId ?? "")}`,
+        ));
+      if (review && Object.values(review.receipts).some(receipt => receipt.id && receipt.url)) return "confirmed";
+    }
+    if (action.status === "processed") {
+      if (action.operation === "comment" || action.operation === "formal_review") {
+        if (action.result?.id && action.result?.url) return "confirmed";
+        unsettled = true;
+      }
+      if (action.operation === "assessment") {
+        if (action.result?.summaryUrl) return "confirmed";
+      }
+    } else if (action.result?.replyWriteStarted === true || ["received", "processing"].includes(action.status) ||
+      (action.status === "failed" && (action.result?.retryable === true || action.result?.code === "publication_failed")) ||
+      // A later authorization denial cannot disprove an earlier ambiguous write.
+      (action.status === "cancelled" && Number(action.result?.attempts ?? 0) > 1)) {
+      unsettled = true;
+    }
+  }
+  return unsettled ? "unsettled" : "none";
 }
 
 type ChatRunMilestoneCandidate = {
@@ -241,6 +340,7 @@ async function enqueueSafeNativeChatProgress(
           eq(chatEndpoints.companyId, chatConversations.companyId),
           eq(chatEndpoints.id, chatConversations.endpointId),
           eq(chatEndpoints.publicationMode, "automatic"),
+          allowsAutomaticRunPublication(),
           eq(chatEndpoints.assignedAgentId, heartbeatRuns.agentId),
         ),
       )
@@ -361,7 +461,8 @@ async function enqueueSafeNativeChatProgress(
             and(
               eq(chatEndpoints.companyId, chatConversations.companyId),
               eq(chatEndpoints.id, chatConversations.endpointId),
-          eq(chatEndpoints.publicationMode, "automatic"),
+              eq(chatEndpoints.publicationMode, "automatic"),
+              allowsAutomaticRunPublication(),
               eq(chatEndpoints.assignedAgentId, row.agentId),
             ),
           )
@@ -697,6 +798,8 @@ export async function enqueueChatRunMilestones(
             "timed_out",
             "cancelled",
           ]),
+          or(allowsAutomaticRunPublication(),
+            inArray(heartbeatRuns.status, ["succeeded", "interrupted", "failed", "timed_out", "cancelled"])),
           or(
             and(
               sql`${heartbeatRuns.contextSnapshot} ->> 'source' like 'chat:%'`,

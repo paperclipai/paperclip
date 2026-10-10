@@ -287,6 +287,8 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
 function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
   return {
     id: "run-1",
+    issueId: null,
+    scopeKind: "company",
     companyId: "company-1",
     agentId: "agent-1",
     responsibleUserId: null,

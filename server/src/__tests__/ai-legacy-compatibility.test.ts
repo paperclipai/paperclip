@@ -13,6 +13,16 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
+const browserLogin = vi.hoisted(() => ({ submitCode: vi.fn(), abort: vi.fn() }));
+vi.mock("../services/local-ai-browser-login.js", () => ({
+  startLocalBrowserLogin: () => ({
+    authorizationUrl: "https://auth.openai.com/codex/device",
+    code: "TEST-CODE",
+    submitCode: browserLogin.submitCode,
+    abort: browserLogin.abort,
+  }),
+}));
+
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
 let home: string;
@@ -72,6 +82,35 @@ const loginIntent = () => ({ ...intent, agentIds: [] });
 const auth = (mark: string, hour = 10) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${mark}`, access_token: `access-${mark}`, refresh_token: `refresh-${mark}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
 const directoryFor = (id: string) => path.join(resolvePaperclipInstanceRoot(), "ai-local-logins", id);
 
+it("accepts a Claude code once, only from its owner, and audits without the code", async () => {
+  const login = localAiLoginService(db);
+  const intent = { ...loginIntent(), provider: "anthropic" as const };
+  const attempt = await login.start(companyId, owner, intent);
+  browserLogin.submitCode.mockClear();
+  await expect(login.submitCode(companyId, "another-owner", attempt.sessionId, "fixture-secret-code")).rejects.toThrow("not found");
+  await expect(login.submitCode(randomUUID(), owner, attempt.sessionId, "fixture-secret-code")).rejects.toThrow("not found");
+  expect(browserLogin.submitCode).not.toHaveBeenCalled();
+  await login.submitCode(companyId, owner, attempt.sessionId, "fixture-secret-code");
+  expect(browserLogin.submitCode).toHaveBeenCalledExactlyOnceWith("fixture-secret-code");
+  await expect(login.submitCode(companyId, owner, attempt.sessionId, "fixture-secret-code")).rejects.toThrow("cannot accept a code");
+  const events = await db.select().from(activityLog).where(eq(activityLog.entityId, attempt.sessionId));
+  expect(events.filter(event => event.action === "ai_connection.local_login_code_submitted")).toHaveLength(1);
+  expect(JSON.stringify(events)).not.toContain("fixture-secret-code");
+  await login.cancel(companyId, owner, attempt.sessionId);
+});
+
+it.each(["cancelled", "expired"])("rejects code submission to a %s Claude attempt", async state => {
+  const login = localAiLoginService(db);
+  const intent = { ...loginIntent(), provider: "anthropic" as const };
+  const attempt = await login.start(companyId, owner, intent);
+  browserLogin.submitCode.mockClear();
+  if (state === "cancelled") await login.cancel(companyId, owner, attempt.sessionId);
+  else await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, attempt.sessionId));
+  await expect(login.submitCode(companyId, owner, attempt.sessionId, "fixture-code")).rejects.toThrow("expired or was cancelled");
+  expect(browserLogin.submitCode).not.toHaveBeenCalled();
+  await login.reapExpired();
+});
+
 it("isolates sign-in and refresh from the host, survives restart, and completes only once", async () => {
   const hostHome = path.join(home, "host-codex");
   await mkdir(hostHome);
@@ -82,15 +121,17 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
   const attempt = await login.start(companyId, owner, loginIntent());
   const directory = directoryFor(attempt.sessionId);
   expect(await localAiLoginService(db).start(companyId, owner, loginIntent())).toEqual(attempt);
-  expect(attempt.command).toContain(`(export CODEX_HOME='${directory}' && mkdir -p "$CODEX_HOME" && codex`);
+  expect(attempt.command).toBeUndefined();
   expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
-  expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "sign_in_required" });
+  expect(await localAiLoginService(db).check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({
+    status: "sign_in_required", authorizationUrl: "https://auth.openai.com/codex/device", code: "TEST-CODE",
+  });
   // Resuming a valid attempt also repairs a missing directory without changing its ID.
   await rm(directory, { recursive: true });
   expect(await login.start(companyId, owner, loginIntent())).toEqual(attempt);
   expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
   // A valid host login cannot satisfy an unfinished connection-specific login.
-  await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("sign-in command shown");
+  await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("Finish browser sign-in");
   expect((await aiConnectionService(db).list(companyId, owner)).filter(c => c.provider === "openai")).toHaveLength(0);
   await writeFile(path.join(directory, "auth.json"), auth("independent-login"));
   expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "ready" });

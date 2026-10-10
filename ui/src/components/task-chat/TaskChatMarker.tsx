@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
-import { ChevronDown, CircleDot, OctagonX, Square, Flag } from "lucide-react";
+import { ChevronDown, CircleDot, OctagonX, Square, Flag, KeyRound } from "lucide-react";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type { TaskChatMarkerItem } from "./task-chat-model";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,29 @@ export function TaskChatMarker({
       // The parent mutation owns visible error feedback.
       .catch(() => undefined);
   };
+
+  if (item.credentialAccess) {
+    const { agentName, credentialName, deniedUser, settingsHref } = item.credentialAccess;
+    return (
+      <div role="alert" data-testid="task-chat-credential-access-notice"
+        className="tc-enter-marker flex w-full items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
+        <KeyRound className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <p className="font-semibold text-destructive">{agentName} couldn’t start</p>
+          <p className="break-words font-medium text-foreground">
+            {agentName} is configured to use {credentialName || "an AI credential"}, but {deniedUser === "you" ? "you don’t" : `${deniedUser} doesn’t`} have access to that credential.
+          </p>
+          <p className="text-muted-foreground">
+            Choose an AI connection {deniedUser === "you" ? "you can" : `${deniedUser} can`} use, or ask an administrator to update {agentName}’s connection. Then try again.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button asChild variant="outline" size="sm"><Link to={settingsHref}>Change AI connection</Link></Button>
+            {item.runHref && <Button asChild variant="ghost" size="sm"><Link to={item.runHref}>View run</Link></Button>}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (item.collapsible) {
     return (

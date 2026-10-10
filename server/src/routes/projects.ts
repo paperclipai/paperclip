@@ -8,14 +8,19 @@ import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, instanceUserRoles, projectAccessMembers } from "@paperclipai/db";
+import { inArray } from "drizzle-orm";
 import {
+  addProjectAccessMemberSchema,
   createProjectSchema,
   projectDiscoverySchema,
   type ProjectDiscoveryPage,
   createProjectWorkspaceSchema,
+  deriveProjectUrlKey,
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  normalizeProjectUrlKey,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -28,6 +33,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -137,11 +143,17 @@ export function projectRoutes(db: Db) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
     if (!companyId) return rawId;
-    const resolved = await svc.resolveByReference(companyId, rawId);
-    if (resolved.ambiguous) {
+    const urlKey = normalizeProjectUrlKey(rawId);
+    if (!urlKey) return rawId;
+    const visibleProjects = await filterProjectsForActor(
+      req,
+      await svc.list(companyId, { includeArchived: true }),
+    );
+    const matches = visibleProjects.filter((project) => deriveProjectUrlKey(project.name, project.id) === urlKey);
+    if (matches.length > 1) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    return matches[0]?.id ?? rawId;
   }
 
   async function assertProjectReadAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
@@ -151,8 +163,85 @@ export function projectRoutes(db: Db) {
       resource: { type: "project", companyId: project.companyId, projectId: project.id },
     });
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Project is outside this actor's authorization boundary" });
+    res.status(404).json({ error: "Project not found" });
     return false;
+  }
+
+  async function assertCanManageProjectPrivacy(req: Request, res: Response, project: {
+    companyId: string; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null;
+  }) {
+    const actor = req.actor;
+    if (actor.type === "board" && actor.userId) {
+      if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
+      if (actor.userId === project.privacyOwnerUserId || actor.userId === project.personalOwnerUserId) return true;
+      const instanceAdmin = actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+        .where(and(eq(instanceUserRoles.userId, actor.userId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
+      if (instanceAdmin) return true;
+      const membership = await db.select({ role: companyMemberships.membershipRole }).from(companyMemberships)
+        .where(and(eq(companyMemberships.companyId, project.companyId), eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, actor.userId), eq(companyMemberships.status, "active"))).limit(1);
+      if (["owner", "admin"].includes(membership[0]?.role ?? "")) return true;
+    }
+    res.status(403).json({ error: "Only the project privacy owner or an administrator can change project access" });
+    return false;
+  }
+
+  async function addActorAsPrivateProjectPrincipal(req: Request, project: { id: string; companyId: string; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null }, dbOrTx: Db = db) {
+    const ownerUserId = project.privacyOwnerUserId ?? project.personalOwnerUserId;
+    if (ownerUserId) await ensureProjectAccessMember(dbOrTx, {
+      companyId: project.companyId, projectId: project.id, subjectType: "user", subjectId: ownerUserId,
+    });
+    if (req.actor.type === "board" && req.actor.userId) {
+      await ensureProjectAccessMember(dbOrTx, {
+        companyId: project.companyId,
+        projectId: project.id,
+        subjectType: "user",
+        subjectId: req.actor.userId,
+      });
+      return;
+    }
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      if (req.actor.onBehalfOfUserId) {
+        await ensureProjectAccessMember(dbOrTx, {
+          companyId: project.companyId,
+          projectId: project.id,
+          subjectType: "user",
+          subjectId: req.actor.onBehalfOfUserId,
+        });
+      }
+      await ensureProjectAccessMember(dbOrTx, {
+        companyId: project.companyId,
+        projectId: project.id,
+        subjectType: "agent",
+        subjectId: req.actor.agentId,
+      });
+    }
+  }
+
+  async function enrichProjectAccessMembers(rows: Array<typeof projectAccessMembers.$inferSelect>) {
+    const agentIds = rows.filter((row) => row.subjectType === "agent").map((row) => row.subjectId);
+    const userIds = rows.filter((row) => row.subjectType === "user").map((row) => row.subjectId);
+    const [agentRows, userRows] = await Promise.all([
+      agentIds.length === 0
+        ? Promise.resolve([])
+        : db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)),
+      userIds.length === 0
+        ? Promise.resolve([])
+        : db.select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, image: authUsers.image })
+            .from(authUsers)
+            .where(inArray(authUsers.id, userIds)),
+    ]);
+    const agentsById = new Map(agentRows.map((row) => [row.id, row]));
+    const usersById = new Map(userRows.map((row) => [row.id, row]));
+    return rows.map((row) => {
+      const agent = row.subjectType === "agent" ? agentsById.get(row.subjectId) : null;
+      const user = row.subjectType === "user" ? usersById.get(row.subjectId) : null;
+      return {
+        ...row,
+        subjectDisplayName: agent?.name ?? user?.name ?? user?.email ?? null,
+        subjectAvatarUrl: user?.image ?? null,
+      };
+    });
   }
 
   async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
@@ -248,6 +337,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);
     res.json(summary);
   });
@@ -261,6 +351,7 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
@@ -305,6 +396,7 @@ export function projectRoutes(db: Db) {
       if (runContext) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
       for (const repo of urlRepositories) {
@@ -347,7 +439,12 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
+    if (body.visibility !== undefined) {
+      if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
+    }
+    if (body.visibility === "private") await addActorAsPrivateProjectPrincipal(req, existing);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
@@ -399,10 +496,101 @@ export function projectRoutes(db: Db) {
     res.json(project);
   });
 
+  router.get("/projects/:id/access-members", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    const rows = await db
+      .select()
+      .from(projectAccessMembers)
+      .where(and(eq(projectAccessMembers.companyId, project.companyId), eq(projectAccessMembers.projectId, project.id)));
+    res.json(await enrichProjectAccessMembers(rows));
+  });
+
+  router.post("/projects/:id/access-members", validate(addProjectAccessMemberSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!(await assertCanManageProjectPrivacy(req, res, project))) return;
+    const subjectType = req.body.subjectType as "user" | "agent";
+    const subjectId = req.body.subjectId as string;
+    const subjectExists = subjectType === "agent"
+      ? await db.select({ id: agents.id }).from(agents)
+          .where(and(eq(agents.id, subjectId), eq(agents.companyId, project.companyId)))
+          .then((rows) => rows.length > 0)
+      : await db.select({ id: companyMemberships.id }).from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, subjectId),
+            eq(companyMemberships.companyId, project.companyId),
+            eq(companyMemberships.status, "active"),
+          ))
+          .then((rows) => rows.length > 0);
+    if (!subjectExists) {
+      res.status(422).json({ error: "Project access member must belong to this company" });
+      return;
+    }
+    await ensureProjectAccessMember(db, { companyId: project.companyId, projectId: project.id, subjectType, subjectId });
+    const rows = await db.select().from(projectAccessMembers).where(and(
+      eq(projectAccessMembers.projectId, project.id),
+      eq(projectAccessMembers.subjectType, subjectType),
+      eq(projectAccessMembers.subjectId, subjectId),
+    ));
+    const [member] = await enrichProjectAccessMembers(rows);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.access_member_added",
+      entityType: "project",
+      entityId: project.id,
+      details: { subjectType, subjectId },
+    });
+    res.status(201).json(member);
+  });
+
+  router.delete("/projects/:id/access-members/:memberId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!(await assertCanManageProjectPrivacy(req, res, project))) return;
+    const member = await db.select().from(projectAccessMembers).where(and(
+      eq(projectAccessMembers.id, req.params.memberId as string),
+      eq(projectAccessMembers.companyId, project.companyId),
+      eq(projectAccessMembers.projectId, project.id),
+    )).then((rows) => rows[0] ?? null);
+    if (!member) {
+      res.status(404).json({ error: "Project access member not found" });
+      return;
+    }
+    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)) {
+      res.status(422).json({ error: "The project privacy owner cannot be removed" });
+      return;
+    }
+    await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, member.id));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.access_member_removed",
+      entityType: "project",
+      entityId: project.id,
+      details: { subjectType: member.subjectType, subjectId: member.subjectId },
+    });
+    res.json(member);
+  });
+
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -411,6 +599,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -450,6 +639,7 @@ export function projectRoutes(db: Db) {
       const workspaceId = req.params.workspaceId as string;
       const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
       if (!existing) return;
+      if (!(await assertProjectReadAllowed(req, res, existing))) return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
@@ -496,6 +686,7 @@ export function projectRoutes(db: Db) {
 
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {
@@ -770,6 +961,7 @@ export function projectRoutes(db: Db) {
     const workspaceId = req.params.workspaceId as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -798,6 +990,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

@@ -1,6 +1,7 @@
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
@@ -102,7 +103,9 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(36);
+    expect(authority.definitions()).toHaveLength(44);
+    expect(authority.definitions().map(tool => tool.name)).not.toContain("read_chat_attachment");
+    expect(authority.definitions().map(tool => tool.name)).not.toContain("read_current_wake_comments");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");
@@ -123,9 +126,12 @@ describe("PaperclipRunnerToolAuthority", () => {
         "get_task_history",
         "search_tasks",
         "report_progress",
+        "submit_complaint",
+        "submit_suggestion",
         "request_human_input",
         "create_task",
         "set_dependencies",
+        "set_task_monitor",
         "list_documents",
         "read_document",
         "list_document_revisions",
@@ -137,10 +143,8 @@ describe("PaperclipRunnerToolAuthority", () => {
         "list_approvals",
         "get_approval",
         "get_approval_context",
-        READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
         "list_chat_attachments",
         "reuse_chat_attachment",
-        "read_chat_attachment",
       ]),
     );
     const context = await authority.execute({
@@ -247,10 +251,8 @@ describe("PaperclipRunnerToolAuthority", () => {
         executionTargetKind: "local",
       });
     const requiredChatFileTools = [
-      READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
       "list_chat_attachments",
       "reuse_chat_attachment",
-      "read_chat_attachment",
       "register_deliverable",
     ];
 
@@ -368,6 +370,48 @@ describe("PaperclipRunnerToolAuthority", () => {
       else process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
       if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("dispatches cross-task Markdown documents that pass route validation and persist revisions", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "document-test-secret");
+    const taskId = randomUUID();
+    await db.insert(issues).values({ id: taskId, companyId, title: "Cross-task document target", status: "todo" });
+    const service = documentService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, request) => {
+      expect(String(url)).toBe(`http://runner-test.invalid/api/issues/${taskId}/documents/notes`);
+      expect(new Headers(request?.headers).get("authorization")).toMatch(/^Bearer /);
+      // Use the real route validator and persistence service, so a missing
+      // required format or stale base revision cannot be hidden by a spy.
+      const body = upsertIssueDocumentSchema.parse(JSON.parse(String(request?.body)));
+      const saved = await service.upsertIssueDocument({ issueId: taskId, key: "notes", ...body,
+        createdByAgentId: agentId, createdByRunId: runId });
+      return new Response(JSON.stringify(saved.document), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiToolsEnabled: true, apiUrl: "http://runner-test.invalid" });
+      const first = { tool: "write_task_document", callId: "cross-task-document-create", arguments: {
+        taskId, key: "notes", title: "Notes", body: "# First revision", baseRevisionId: null,
+      } };
+      expect(await authority.execute(first)).toMatchObject({ ok: true, status: 200 });
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      expect(saved).toMatchObject({ format: "markdown", body: "# First revision" });
+      expect(await authority.execute({ ...first, callId: "cross-task-document-update", arguments: {
+        ...first.arguments, body: "# Second revision", baseRevisionId: saved!.latestRevisionId,
+      } })).toMatchObject({ ok: true, status: 200 });
+      expect(await service.getIssueDocumentByKey(taskId, "notes")).toMatchObject({ body: "# Second revision" });
+      expect(await service.listIssueDocumentRevisions(taskId, "notes")).toHaveLength(2);
+      const tooLong = await authority.execute({ ...first, callId: "cross-task-document-long-title", arguments: {
+        ...first.arguments, title: "x".repeat(201),
+      } });
+      expect(tooLong).toMatchObject({ outcome: "failed", code: "runner_bridge_invalid_arguments" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchMock.mockRestore();
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      if (saved) await db.delete(documents).where(eq(documents.id, saved.id));
+      await db.delete(issues).where(eq(issues.id, taskId));
     }
   });
 
@@ -611,6 +655,23 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: { approvalId },
       }),
     ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
+  });
+
+  it("rejects Dot artifact publication from instance state before reading a file", async () => {
+    const [actor] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await db.update(agents).set({ adapterConfig: { ...actor.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, agentId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      dotRuntime: true, workspaceBridge: true, workspaceRoot: "/tmp/fixture-workspace" });
+    try {
+      for (const contentRef of [".paperclip/.env", "nested/.PaPeRcLiP/config.json"]) {
+        await expect(authority.execute({ tool: "register_deliverable", callId: contentRef, arguments: {
+          idempotencyKey: contentRef, filename: "config.txt", title: "Config", contentType: "text/plain",
+          byteSize: 10, sha256: "0".repeat(64), contentRef,
+        } })).rejects.toThrow("runner_workspace_instance_state_denied");
+      }
+    } finally {
+      await db.update(agents).set({ adapterConfig: actor.adapterConfig }).where(eq(agents.id, agentId));
+    }
   });
 
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
@@ -1283,16 +1344,15 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("captures delegation and approval origins before steering and preserves replay identity", async () => {
     const issueId = "00000000-0000-4000-8000-000000000120";
     const runId = "00000000-0000-4000-8000-000000000121";
-    for (const userId of ["person-a", "person-b"]) {
-      await db.insert(authUsers).values({ id: userId, name: userId, email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
-    }
+
     await db.insert(issues).values({ id: issueId, companyId, title: "Identity delegation",
       status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,
       status: "running", runtimeMode: "native", nativeIssueId: issueId,
       invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(authUsers).values(["person-a", "person-b"].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values(["person-a", "person-b"].map(principalId => ({ companyId, principalType: "user", principalId, status: "active", membershipRole: "operator" })));
     const origin = await initializeRunIdentity(db, {
       companyId, runId, issueId, responsibleUserId: "person-a", cause: "instruction",
     });

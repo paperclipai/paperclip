@@ -1,6 +1,6 @@
 # Tool connection permission audit — 2026-09-30
 
-This review covers 117 tool methods (84 OAuth methods). The machine-readable
+This review covers 119 tool methods (85 OAuth methods). The machine-readable
 [source of reviewed defaults](./tool-method-permission-reviews.json) lists each
 method's exact requested scopes, supported actions, restrictions, sources and
 verification limits. AI runtime authentication and chat/channel setup are
@@ -8,7 +8,9 @@ separate contracts and were not changed.
 
 Methods reviewed after this audit carry their own `reviewedAt` date in the same
 ledger; the counts above are not restated. Later additions: [Neon](./NEON.md)
-(`mcp-oauth`, `mcp-api-key`; 2026-10-02).
+(`mcp-oauth`, `mcp-api-key`; 2026-10-02), [Superagent](./SUPERAGENT.md)
+(`mcp-api-key`; 2026-10-06), [Gauge](./GAUGE.md)
+(`mcp-oauth`, `mcp-api-key`; 2026-10-08).
 
 ## Shared credential failure
 

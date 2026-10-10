@@ -63,7 +63,7 @@ class ProbeFailure extends Error {
   constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>) { super(code); }
 }
 
-async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
+export async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
   // Fixed origins, no redirects, and a deadline covering headers AND response bytes.
   const response = await request(url, {
     headers, redirect: "error", signal: AbortSignal.timeout(15000),
@@ -332,7 +332,7 @@ export async function probeAiConnectionUsage(
   options: { request?: typeof fetch } = {},
 ): Promise<Omit<AiConnectionUsage, "connectionId" | "grantId">> {
   const base = { ...metadata, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
-  if (!supportsAiConnectionUsage(metadata.provider, metadata.method)) {
+  if (metadata.provider === "google" || !supportsAiConnectionUsage(metadata.provider, metadata.method)) {
     return { ...base, status: "unsupported", errorCode: "unsupported", message: messages.unsupported };
   }
   try {

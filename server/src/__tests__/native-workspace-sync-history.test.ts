@@ -11,7 +11,7 @@ import { runLocalGit } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { prepareNativeWorkspaceSync } from "../services/native-runtime/native-workspace-sync.js";
 
 const runner: CommandManagedRuntimeRunner = {
-  execute: (input) => new Promise((resolve) => {
+  execute: (input) => new Promise((resolve, reject) => {
     const child = execFile(input.command, input.args ?? [], {
       cwd: input.cwd, env: { ...process.env, ...input.env },
       timeout: input.timeoutMs, maxBuffer: 16 * 1024 * 1024,
@@ -19,6 +19,11 @@ const runner: CommandManagedRuntimeRunner = {
       exitCode: error ? (typeof error.code === "number" ? error.code : 1) : 0,
       signal: error?.signal ?? null, timedOut: error?.killed ?? false, stdout, stderr,
     }));
+    // Git probes may exit without consuming stdin; their exit status remains
+    // authoritative. Surface unexpected pipe errors instead of masking them.
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
     child.stdin?.end(input.stdin ?? "");
   }),
 };

@@ -37,6 +37,11 @@ const mockAgentsApi = vi.hoisted(() => ({
 const mockAdaptersApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+  getGeneral: vi.fn(),
+  get: vi.fn(),
+}));
 const mockRoutinesApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
@@ -71,6 +76,10 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/adapters", () => ({
   adaptersApi: mockAdaptersApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/routines", () => ({
@@ -268,6 +277,9 @@ describe("CompanyImport", () => {
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: false });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({});
+    mockInstanceSettingsApi.get.mockResolvedValue({});
     mockAdaptersApi.list.mockResolvedValue([
       { type: "claude_local", disabled: false },
       { type: "codex_local", disabled: false },
@@ -1059,7 +1071,7 @@ describe("CompanyImport", () => {
   function lastImportMeta() {
     const call = mockCompaniesApi.importBundleAsync.mock.calls.at(-1);
     expect(call).toBeTruthy();
-    return call![0] as { adapterOverrides?: Record<string, { adapterType: string }> };
+    return call![0] as { adapterOverrides?: Record<string, { adapterType: string; adapterConfig?: Record<string, unknown> }> };
   }
 
   it("keeps manifest adapters and sends no overrides when the user touches nothing", async () => {
@@ -1111,6 +1123,7 @@ describe("CompanyImport", () => {
   });
 
   it("offers Paperclip Runner import configuration after its experimental flag is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableOpenAiDot: false });
     mockAdaptersApi.list.mockResolvedValue([
       { type: "claude_local", disabled: false },
       { type: "codex_local", disabled: false },
@@ -1121,6 +1134,82 @@ describe("CompanyImport", () => {
     for (const select of findAdapterSelects()) {
       expect(Array.from(select.options).map((option) => option.value))
         .toContain("paperclip_runner");
+    }
+  });
+
+  it("keeps imported Dot agents and falls back other Runner providers under Dot-only opt-in", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "paperclip_runner", disabled: false },
+    ]);
+    const preview = buildMixedAdapterPreviewResult();
+    preview.manifest.agents[0]!.adapterType = "paperclip_runner";
+    preview.manifest.agents[0]!.adapterConfig = { provider: "openai_dot", allowUnmeteredProvider: true };
+    preview.manifest.agents[1]!.adapterType = "paperclip_runner";
+    preview.manifest.agents[1]!.adapterConfig = { provider: "codex" };
+    mockCompaniesApi.importPreview.mockResolvedValue(preview);
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["openai_dot", "claude_local"]);
+    for (const select of findAdapterSelects()) {
+      const choices = Array.from(select.options).map((option) => option.value);
+      expect(choices).toContain("openai_dot");
+      expect(choices).not.toContain("paperclip_runner");
+    }
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+    expect(lastImportMeta().adapterOverrides).toEqual({ researcher: { adapterType: "claude_local" } });
+  });
+
+  it("requires billing acknowledgement and serializes the standalone Dot import choice as Runner", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "paperclip_runner", disabled: false },
+    ]);
+    await previewMixedAdapterPackage();
+    const select = findAdapterSelects()[0]!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "openai_dot");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(container.textContent).toContain("Allow externally billed provider");
+    expect(container.textContent).not.toContain("Harness");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+    expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("OpenAI Dot requires acknowledgement of external billing");
+
+    const billingToggle = Array.from(container.querySelectorAll<HTMLButtonElement>('button[role="switch"]'))
+      .find((button) => button.closest("label")?.textContent?.includes("Allow externally billed provider")
+        || button.parentElement?.textContent?.includes("Allow externally billed provider"));
+    expect(billingToggle).toBeTruthy();
+    await act(async () => billingToggle!.click());
+    await flushReact();
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+    expect(lastImportMeta().adapterOverrides?.coder).toEqual({
+      adapterType: "paperclip_runner",
+      adapterConfig: {
+        provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: true,
+        dotAttachmentAccess: false, dotWorkspaceAccess: false,
+      },
+    });
+  });
+
+  it("does not expose Dot when only the general Runner option is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableOpenAiDot: false });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "paperclip_runner", disabled: false }]);
+    await previewMixedAdapterPackage();
+    for (const select of findAdapterSelects()) {
+      const choices = Array.from(select.options).map((option) => option.value);
+      expect(choices).toContain("paperclip_runner");
+      expect(choices).not.toContain("openai_dot");
     }
   });
 

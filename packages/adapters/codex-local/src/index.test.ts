@@ -1,11 +1,57 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_CHATGPT_MODEL_REJECTION_RE,
+  codexCliVersionAtLeast,
   codexLocalReasoningEffortsForModel,
   DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
+  minimumCodexCliVersionForModel,
   models,
   normalizeCodexModel,
+  parseCodexCliVersionOutput,
 } from "./index.js";
+
+describe("codex model CLI floors", () => {
+  it("records the oldest Codex CLI verified to run each gated model with ChatGPT sign-in", () => {
+    expect(minimumCodexCliVersionForModel("gpt-6.1-sol")).toBe("0.159.0");
+    expect(minimumCodexCliVersionForModel(" gpt-6.1-sol ")).toBe("0.159.0");
+    expect(minimumCodexCliVersionForModel("gpt-6-sol")).toBe("0.157.0");
+    expect(minimumCodexCliVersionForModel("gpt-6-luna")).toBe("0.157.0");
+  });
+
+  it.each([DEFAULT_CODEX_LOCAL_MODEL, "gpt-5.6", "gpt-6-astra", "gpt-5.5", "custom-model", "", null, undefined])(
+    "has no floor for %s so callers skip the version probe", (model) => {
+      expect(minimumCodexCliVersionForModel(model)).toBeNull();
+    },
+  );
+
+  it("compares stable versions numerically and rejects prerelease or ambiguous input", () => {
+    expect(codexCliVersionAtLeast("0.159.0", "0.159.0")).toBe(true);
+    expect(codexCliVersionAtLeast("0.160.1", "0.159.0")).toBe(true);
+    expect(codexCliVersionAtLeast("1.0.0", "0.159.0")).toBe(true);
+    expect(codexCliVersionAtLeast("0.156.1", "0.159.0")).toBe(false);
+    expect(codexCliVersionAtLeast("0.16.0", "0.159.0")).toBe(false);
+    expect(codexCliVersionAtLeast("0.160.0-alpha.1", "0.159.0")).toBe(false);
+    expect(codexCliVersionAtLeast("", "0.159.0")).toBe(false);
+  });
+
+  it("parses only a single stable `codex-cli x.y.z` line from --version output", () => {
+    expect(parseCodexCliVersionOutput("codex-cli 0.160.0\n")).toBe("0.160.0");
+    expect(parseCodexCliVersionOutput("WARNING: PATH unchanged\r\ncodex-cli 0.156.0\r\n")).toBe("0.156.0");
+    expect(parseCodexCliVersionOutput("codex-cli 0.162.0-alpha.17")).toBeNull();
+    expect(parseCodexCliVersionOutput("codex 0.160.0")).toBeNull();
+    expect(parseCodexCliVersionOutput("codex-cli 0.149.0\ncodex-cli 0.160.0")).toBeNull();
+    expect(parseCodexCliVersionOutput("")).toBeNull();
+  });
+
+  it("matches the backend's ChatGPT model rejection and captures the model", () => {
+    const match = CODEX_CHATGPT_MODEL_REJECTION_RE.exec(
+      "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}",
+    );
+    expect(match?.[1]).toBe("gpt-6.1-sol");
+    expect(CODEX_CHATGPT_MODEL_REJECTION_RE.test("Model metadata for `gpt-6.1-sol` not found")).toBe(false);
+  });
+});
 
 describe("codex local adapter metadata", () => {
   it("advertises current Codex-capable OpenAI models without changing the default", () => {

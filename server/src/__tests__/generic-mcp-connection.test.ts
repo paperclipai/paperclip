@@ -950,6 +950,14 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         iss: callback.searchParams.get("iss")!, redirectUri: input.redirectUri, actor,
       });
       expect(completed.connection.config.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
+      const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+      expect(grants).toHaveLength(1);
+      expect(grants[0].providerTenant?.oauth).toMatchObject({
+        requestedScopes: ["mcp:read", "offline_access"],
+        scopes: ["mcp:read", "offline_access"],
+        scopeSource: "provider",
+        unrequestedScopes: [],
+      });
       const reconnect = await service.startOAuth(company.id, connected.connectionId, { redirectUri: input.redirectUri, actor });
       expect(new URL(reconnect.authorizationUrl).searchParams.get("scope")).toBe("mcp:read offline_access");
     } finally { await fixture.close(); }

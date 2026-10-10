@@ -43,7 +43,7 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk", "voice"]);
 export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
@@ -220,6 +220,9 @@ export const connectionGrantSchema = z.object({
       strategy: z.string().trim().min(1).max(100).optional(),
       accessTokenExpiresAt: z.string().datetime().nullable().optional(),
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      scopeSource: z.enum(["provider", "requested_fallback"]).optional(),
+      unrequestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      requestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
       refreshTokenExpiresAt: z.string().datetime().optional(),
       refreshedAt: z.string().datetime().optional(),

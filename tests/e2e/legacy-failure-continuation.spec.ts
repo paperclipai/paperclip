@@ -27,9 +27,12 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
         name: "Recovery fixture", role: "engineer", adapterType: "claude_local",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
-          env: { PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1" } },
+          // The ACP fixture has no provider login. Use a fixture key to keep setup offline.
+          env: { ANTHROPIC_API_KEY: "acp-stop-fixture-key", PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1" } },
         runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
       } }));
+      await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState,
+        { timeout: 45_000 }).toBe("ready");
       const issue = await json(await request.post(`/api/companies/${company.id}/issues`, { data: {
         title: "Continue after startup failure", description: "Answer the pending follow-up once.",
         status: "backlog", assigneeAgentId: agent.id,

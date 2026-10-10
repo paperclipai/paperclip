@@ -16,6 +16,15 @@ function nodeTransport(
 }
 
 describe("Codex app-server transport limits", () => {
+  it("passes the selected managed provider key without admitting arbitrary host secrets", () => {
+    expect(createSanitizedCodexEnvironment({
+      PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key",
+      CODEX_HOME: "/isolated/connection",
+      OPENROUTER_API_KEY: "ambient-other-key",
+      DATABASE_URL: "private-database",
+    })).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key", CODEX_HOME: "/isolated/connection" });
+  });
+
   it("passes only bounded controller-projected GitHub credentials", () => {
     expect(
       createSanitizedCodexEnvironment({

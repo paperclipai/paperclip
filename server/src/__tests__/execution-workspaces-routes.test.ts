@@ -1,8 +1,15 @@
+import { sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+
+vi.mock("../services/authorization.js", async (importActual) => ({
+  ...await importActual<typeof import("../services/authorization.js")>(),
+  executionWorkspaceReadSqlCondition: async () => sql<boolean>`true`,
+  canActorReadExecutionWorkspace: async () => true,
+}));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -133,6 +140,7 @@ describe("execution workspace routes", () => {
       },
     ]);
     expect(mockExecutionWorkspaceService.listSummaries).toHaveBeenCalledWith("company-1", {
+      readCondition: expect.anything(),
       projectId: undefined,
       projectWorkspaceId: undefined,
       issueId: undefined,
@@ -159,7 +167,7 @@ describe("execution workspace routes", () => {
       status: ["active", "idle"],
       limit: 25,
       offset: 10,
-    });
+    }, expect.anything());
   });
 
   it("rejects invalid workspace overview pagination", async () => {

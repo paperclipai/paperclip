@@ -3,10 +3,13 @@ import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { cloudWarmStandbyMiddleware, cloudWarmStandbyServerOptions } from "../middleware/cloud-warm-standby.js";
 import { healthRoutes } from "../routes/health.js";
 import { emailChannelService } from "../services/email-channels.js";
 import { createPluginJobScheduler } from "../services/plugin-job-scheduler.js";
+import { createPublicMcpEvents } from "../services/public-mcp/events.js";
+import type { PublicMcpOAuth } from "../services/public-mcp/oauth.js";
 
 const healthOptions = {
   deploymentMode: "authenticated" as const,
@@ -98,11 +101,31 @@ describe("unclaimed Cloud background work", () => {
     }
   });
 
+  it("MCP event timers do not read the persisted setting until claim", async () => {
+    vi.useFakeTimers();
+    let standby = true;
+    const isEnabled = vi.fn().mockResolvedValue(false);
+    const events = createPublicMcpEvents({} as Db, { isEnabled } as PublicMcpOAuth, vi.fn(), {
+      isBackgroundWorkEnabled: () => !standby,
+    });
+    try {
+      events.start();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await events.tick();
+      expect(isEnabled).not.toHaveBeenCalled();
+      standby = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(isEnabled).toHaveBeenCalledOnce();
+    } finally {
+      await events.stop();
+    }
+  });
+
   it("email and plugin timers leave SQL idle, then resume without restarting", async () => {
     vi.useFakeTimers();
     let enabled = false;
     const select = vi.fn(() => { throw new Error("SQL probe"); });
-    const db = { select } as unknown as Db;
+    const db = installDatabaseWorkSignals({ select, execute: vi.fn(), transaction: vi.fn() }) as unknown as Db;
     const email = emailChannelService(db, { heartbeat: { wakeup: vi.fn() }, isBackgroundWorkEnabled: () => enabled });
     const scheduler = createPluginJobScheduler({
       db,

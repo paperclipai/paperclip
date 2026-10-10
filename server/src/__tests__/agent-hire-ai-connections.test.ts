@@ -1,3 +1,5 @@
+import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -6,7 +8,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, closeRegisteredClients, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -19,8 +21,17 @@ import { secretService } from "../services/secrets.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+
+const captureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sentry.js")>(),
+  captureRunFailure,
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
 
@@ -29,11 +40,17 @@ beforeAll(async () => {
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
   vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
-  db = createDb(database.connectionString);
+  if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+  else {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
+    db = createDb(database.connectionString);
+  }
 }, 90_000);
 
 afterAll(async () => {
+  await waitForPendingRunFailureReports();
+  if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
+  await db?.$client.end();
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });
@@ -118,7 +135,9 @@ describe("agent-created hires use managed AI connections", () => {
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
     const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local" });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toContain("no compatible harness");
+    // Fixed bindings contain identity only; compatibility is decided from
+    // authoritative connection metadata when selecting each pool member.
+    expect(response.body.details?.code).toBe("ai_connection_pool_no_eligible_member");
     expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
   });
 
@@ -356,7 +375,7 @@ describe("agent-created hires use managed AI connections", () => {
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Other provider", role: "engineer", adapterType }));
     expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: otherProvider, mode: "responsible_user" });
     await expect(prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: agent.id, responsibleUserId: f.userId, adapterType, binding: agent.runtimeConfig.aiConnection, config: agent.adapterConfig })).rejects.toMatchObject({ details: { code: "ai_connection_default_missing" } });
-    expect(agent.status).toBe("idle");
+    expect(agent).toMatchObject({ status: "paused", lifecycleState: "preparing" });
   });
 
   for (const endpoint of ["agent-hires", "agents"]) {
@@ -468,11 +487,61 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
+  async function finishSetup(agentId: string) {
+    // These tests cover task credentials after setup; lifecycle tests cover verification.
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    try { await worker.process(agentId); } finally { await worker.stop(); }
+  }
+  it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {
+    const f = await fixture("openai", "subscription");
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    // Only an operator may set host execution paths after the agent is hired.
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Wait for credential rotation", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, resultJson: {} }));
+    registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+      .mockRejectedValueOnce(Object.assign(new Error("quota refresh holds company lock"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
+      expect(run).not.toBeNull();
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
+      await heartbeat.drainActiveRunExecutions();
+      const cancelled = await heartbeat.getRun(run!.id);
+      expect(cancelled).toMatchObject({ errorCode: "ai_connection_busy", resultJson: {
+        executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for shared AI credentials",
+          recordedAt: cancelled!.finishedAt!.toISOString(),
+        },
+      } });
+      await waitForPendingRunFailureReports();
+      expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
+      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" });
+      expect(retries[0].resultJson?.cancellation).toBeUndefined();
+      const [savedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(savedIssue.status).not.toBe("blocked");
+      expect(savedIssue.executionRunId).toBe(retries[0].id);
+      expect(execute).not.toHaveBeenCalled();
+      expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
+    } finally {
+      lock.mockRestore();
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter(f.adapterType);
+    }
+  });
+
   it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     // Host working directories are configured by an operator, not an agent key.
     await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    await finishSetup(agent.id);
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {

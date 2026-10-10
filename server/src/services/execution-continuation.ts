@@ -452,7 +452,7 @@ export async function buildExecutionContinuation(input: {
         kind: row.kind,
         status: row.status,
         result: row.result,
-      })), ...await childReviewOutcomes(db, companyId, issueId)],
+      })), ...await childReviewOutcomes(db, companyId, issueId, { type: "agent", agentId: input.agentId, companyId, onBehalfOfUserId: issue.responsibleUserId })],
     // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
     // from requestContext and encodes it in the fenced, non-authoritative
     // continuation-evidence section. It cannot supply objective or authority.

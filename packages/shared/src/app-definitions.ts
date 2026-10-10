@@ -4,11 +4,14 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
-  "anthropic", "openai", "openrouter", "xai",
+  "anthropic", "openai", "openrouter", "xai", "google", "bedrock",
+  "responses-api", "messages-api", "chat-completions-api", "local",
   "agentmail",
   "browser-use-cloud",
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
+  "monday",
+  "enterpret",
   "zapier",
   "arcade",
   "executor",
@@ -49,17 +52,17 @@ export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
  */
 export const APP_STORE_HIDDEN_SLUGS = new Set([
   "beehiiv",
-  "bitly",
   "brex",
   "candid",
+  "clickup",
   "coda",
-  "context7",
   "egnyte",
   "embat",
   "kernel",
+  "klaviyo",
   "local-falcon",
-  "make",
   "manufact",
+  "monday",
   "oreilly",
   "planetscale",
   "razorpay",
@@ -255,14 +258,20 @@ export function resolveConnectionMethodServerUrl(
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
   // Keep the parameters in the public contract: callers resolve defaults for a
-  // concrete app/method even though the initial policy is uniform. This is
-  // an open default, not an approval bypass: connection finalization remains a
-  // configure-authorized, audited operation, and Ask first stays available as
-  // an operator-selected policy for any action after the connection is made.
-  // The connect flow lands on the Permissions tab so that choice is the very
-  // next screen (PAP-659: agents get full permissions unless someone narrows them).
-  void app;
+  // concrete app/method. Connection finalization remains a configure-authorized,
+  // audited operation, and Ask first stays available as an operator-selected
+  // policy for any action after the connection is made.
   void methodKey;
+  // Enterpret's run_graph_query self-reports readOnlyHint but executes Cypher
+  // and has not been established as read-only. Classify it as write (server
+  // classifyRisk) and require Ask first so new token connections do not ship
+  // that action as Allowed.
+  if (app.slug === "enterpret") {
+    return {
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    };
+  }
   return {
     access: "all_agents",
     askFirstRiskLevels: [],

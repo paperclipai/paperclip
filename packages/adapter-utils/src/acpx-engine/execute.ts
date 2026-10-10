@@ -1491,9 +1491,10 @@ function buildCodexStartupConfig(input: {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
+  identityEnvironmentKeys?: string[];
 }): { value: string | null; invalidExistingConfig: boolean } {
   const hasRuntimeConfig = Boolean(
-    input.requestedModel || input.requestedThinkingEffort || input.fastMode,
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode || input.identityEnvironmentKeys,
   );
   if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
 
@@ -1524,6 +1525,11 @@ function buildCodexStartupConfig(input: {
             },
           }
         : {}),
+      ...(input.identityEnvironmentKeys ? {
+        features: { ...parseObject(existing.features), ...(input.fastMode ? { fast_mode: true } : {}), shell_snapshot: false },
+        shell_environment_policy: { ...parseObject(existing.shell_environment_policy),
+          inherit: "all", ignore_default_excludes: true, include_only: input.identityEnvironmentKeys },
+      } : {}),
     }),
     invalidExistingConfig,
   };
@@ -1959,7 +1965,7 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.ctx.agentIdentity), PAPERCLIP_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -2039,9 +2045,22 @@ async function buildRuntime(input: {
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
   }
+  // Gemini CLI reads GEMINI_MODEL when creating each ACP session. Its ACP
+  // implementation supports set_model, but not set_config_option; configure
+  // the selected model before startup without changing the transport.
+  if (requestedModel && acpxAgent === "gemini") {
+    env.GEMINI_MODEL = requestedModel;
+  }
   if (acpxAgent === "codex") {
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,
+      ...(input.ctx.agentIdentity ? { identityEnvironmentKeys: [...new Set([
+        "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
+        "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+        // Preserve Codex's default secret-name exclusions. The short-lived
+        // Paperclip API token is required by the agent skill's Bash/curl calls.
+        ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+      ])] } : {}),
       requestedModel,
       requestedThinkingEffort,
       fastMode,
@@ -2184,8 +2203,9 @@ async function buildRuntime(input: {
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused
   // — not invalidated — on the next run. Remote runner-backed → the in-sandbox
-  // workspace dir; local and the runner-less fallback → the HOST cwd,
-  // byte-identical to today.
+  // workspace dir; local and the runner-less fallback → the HOST cwd.
+  // Local Gemini resolves tool paths through realpath. Give its ACP filesystem
+  // client the same canonical root so workspace aliases stay within that root.
   //
   // PR 3: the staging transport derives the in-sandbox workspace dir
   // deterministically from the target's `remoteCwd` (it is exactly `remoteCwd`
@@ -2198,11 +2218,14 @@ async function buildRuntime(input: {
   const sessionCwd =
     useRemoteProcessSession && executionTarget?.kind === "remote"
       ? executionTarget.remoteCwd
-      : cwd;
+      : acpxAgent === "gemini" && !executionTargetIsRemote
+        ? await fs.realpath(cwd)
+        : cwd;
   // The 17 fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
   const fingerprintIdentity: SessionFingerprintIdentity = {
+    ...(input.ctx.agentIdentity ? { agentIdentityKeyId: input.ctx.agentIdentity.keyId } : {}),
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
     cwd: path.resolve(sessionCwd),
@@ -2542,6 +2565,28 @@ async function buildRuntime(input: {
     await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
     throw err;
   }
+  const currentSkillRoot = acpxAgent === "codex" && runtimeEnv.CODEX_HOME
+    ? path.join(runtimeEnv.CODEX_HOME, "skills")
+    : acpxAgent === "gemini" && !executionTargetIsRemote && typeof skillsIdentity.skillsHome === "string"
+      ? skillsIdentity.skillsHome
+      : null;
+  if (currentSkillRoot && Array.isArray(skillsIdentity.selectedSkills) && skillsIdentity.selectedSkills.length > 0) {
+    // Managed connection homes are disposable. A resumed conversation may
+    // remember a previous home's skill paths; supply the current root on every
+    // turn, after the remote launch environment has rebased CODEX_HOME.
+    skillPromptInstructions = [
+      `Paperclip has materialized selected runtime skills for this ACPX ${acpxAgent === "codex" ? "Codex" : "Gemini"} run.`,
+      `Skill root for this run: ${currentSkillRoot}`,
+      `Selected skills: ${skillsIdentity.selectedSkills.join(", ")}`,
+      "When a task calls for one of these skills, read its SKILL.md from this root and follow it. Resolve referenced scripts and files relative to that skill. Use this run's root even when an earlier turn used a different path.",
+      ...(acpxAgent === "gemini" && skillsIdentity.selectedSkills.includes("paperclip")
+        ? [
+          "Before calling Paperclip APIs or delivering task artifacts, read the selected paperclip skill's SKILL.md and its referenced artifact workflow. A completion comment does not upload an artifact or change task status.",
+          "Gemini's shell tool rejects command substitution. Write JSON request bodies to a workspace file and use curl --data-binary @file, or use the selected skill's helpers, instead of constructing a body with command substitution.",
+        ]
+        : []),
+    ].join("\n");
+  }
   // The relay runs on the host with the sanitized remote launch environment.
   // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
   const overrideCommand = processSessionBridge?.agentCommand
@@ -2609,13 +2654,14 @@ async function buildRuntime(input: {
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
   const options: Array<{ key: string; value: string }> = [];
-  // Claude and Codex runtime config is pre-set via startup env vars; skip
+  // Claude, Codex and Gemini runtime config is pre-set via startup env vars; skip
   // set_config_option to avoid ACP-server picker validation rejecting valid
   // backend model IDs that are not advertised by the local ACP server.
   if (
     prepared.requestedModel &&
     prepared.acpxAgent !== "claude" &&
-    prepared.acpxAgent !== "codex"
+    prepared.acpxAgent !== "codex" &&
+    prepared.acpxAgent !== "gemini"
   ) {
     options.push({ key: "model", value: prepared.requestedModel });
   }
@@ -3896,6 +3942,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       provider: billingIdentity?.provider ?? "acpx",
       ...(billingIdentity?.biller ? { biller: billingIdentity.biller } : {}),
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
+      pricingContext: undefined as AdapterExecutionResult["pricingContext"],
     };
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
     // The host run site owns the warm-handle store on this run. It operates over
@@ -4200,6 +4247,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }),
           );
           buildRuntimeSettled = true;
+          billingFields.pricingContext = prepared.fastMode ? { serviceTier: "fast" } : undefined;
           // Capture acquired resources before the cancellation boundary so the
           // normal settlement path also releases a just-completed build.
           releaseStagingLease = prepared.sessionStagingLeaseRelease;
@@ -4705,8 +4753,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      // Receipt persistence is fallible; retain the provider evidence before
+      // calling the sink so the failure result can still return it to the host.
+      let observedUsage: Pick<AdapterExecutionResult, "usage" | "usageBasis" | "costUsd" | "usageComplete"> = { usageComplete: false };
       let lastRuntimeEventAt: number | null = null;
       let observedRuntimeEvents = 0;
+      let turnDispatchAttempted = false;
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
@@ -4761,6 +4813,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                       ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
                       : prepared.acpxAgent === "codex"
                         ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
+                      : prepared.acpxAgent === "gemini"
+                        ? `Requested ACPX model: ${prepared.requestedModel} (set via GEMINI_MODEL at startup).`
                       : `Requested ACPX model: ${prepared.requestedModel}.`,
                   ]
                 : []),
@@ -4789,6 +4843,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
+        // After entering startTurn, a thrown error cannot prove the provider
+        // received no work. Only failures before this boundary are free to settle.
+        turnDispatchAttempted = true;
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -4905,6 +4962,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              const checkpoint = summarizeAcpxTurnUsage({ preStatus: preTurnStatus, postStatus: null, eventBreakdown, eventCostUsd });
+              observedUsage = { usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd, usageBasis: "per_run", usageComplete: false };
+              await ctx.onUsage?.({ ...billingFields, usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd,
+                model: prepared.requestedModel, usageBasis: "per_run", complete: false });
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
@@ -4991,6 +5052,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
+        // An interrupted stream is provisional unless the runtime supplies its
+        // post-terminal receipt. An in-stream usage_update alone cannot close it.
+        const usageComplete = !channelLost && (turnSucceeded || postTurnStatus?.usage != null);
+        observedUsage = { usage: turnUsage.usage ?? undefined, costUsd: turnUsage.costUsd, usageBasis: "per_run", usageComplete };
+        await ctx.onUsage?.({ ...billingFields, usage: turnUsage.usage ?? undefined, costUsd: turnUsage.costUsd,
+          model: prepared.requestedModel, usageBasis: "per_run", complete: usageComplete });
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
         // ACPX can defer session/load until runTurn. Forget an unavailable
         // session so the next bounded turn receives the full task conversation.
@@ -5076,6 +5143,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           model: prepared.requestedModel || null,
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
+          usageComplete,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
             ...activityDiagnostics,
@@ -5209,6 +5277,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorMessage: message,
           errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
           errorMeta: emitted?.classified.errorMeta,
+          ...observedUsage,
+          ...(!turnDispatchAttempted ? { executionRecovery: { kind: "bootstrap" as const, providerWorkStarted: false as const } } : {}),
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,

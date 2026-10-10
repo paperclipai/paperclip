@@ -21,7 +21,9 @@ export function cloudWarmStandbyMiddleware(
     if (!isStandby()) return next();
     req.actor = { type: "none", source: "none" };
     const unavailable = () => res.status(503).json({ error: "workspace_unclaimed" });
-    if (/^\/api(?:\/|$)/i.test(req.path) || req.headers.upgrade || (req.method !== "GET" && req.method !== "HEAD")) {
+    const isProtocolPath = /^\/(?:api|mcp)(?:\/|$)/i.test(req.path)
+      || /^\/\.well-known\/oauth-(?:protected-resource|authorization-server)(?:\/|$)/i.test(req.path);
+    if (isProtocolPath || req.headers.upgrade || (req.method !== "GET" && req.method !== "HEAD")) {
       unavailable();
       return;
     }

@@ -1,4 +1,5 @@
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipRunnerCursorMode, resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
 import { createHash } from "node:crypto";
 import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
@@ -6,6 +7,8 @@ import type {
   NativeAcpxPermissionMode,
   NativeCodexApprovalPolicy,
   NativeExecutionInputV5,
+  NativeExecutionInputV6,
+  DotBindingSnapshot,
   NativeCompletionSource,
   NativeInteractionResponseEnvelope,
   NativeOpenCodePermissionMode,
@@ -30,7 +33,7 @@ const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
 ].join("\n");
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
-export function buildNativeExecutionInput(input: {
+export interface BuildNativeExecutionInput {
   companyId: string;
   runId: string;
   issue: {
@@ -53,10 +56,13 @@ export function buildNativeExecutionInput(input: {
   wakePayload?: unknown;
   /** Additive source ownership emitted by the server task/wake builders. */
   turnContext?: unknown;
+  /** Skill keys selected from the admitted, manager-authored GitHub configuration. */
+  githubInstructionSkillKeys?: readonly string[];
   resumedSession?: boolean;
   previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
   agentId: string;
+  agentKeyId?: string;
   workspace: {
     id: string;
     cwd: string;
@@ -65,12 +71,15 @@ export function buildNativeExecutionInput(input: {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot";
+  dotBinding?: DotBindingSnapshot;
   acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
   codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
+  acpxSessionMode?: "agent" | "plan" | "ask";
+  piThinkingLevel?: "off" | "low" | "high" | "max";
   model?: string | null;
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
@@ -98,10 +107,16 @@ export function buildNativeExecutionInput(input: {
     sources?: Array<{ id: string; source: NativeCompletionSource }>;
   };
   runtimeContext: NativeRuntimeContextSnapshot;
-}): NativeExecutionInputV5 {
+}
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "openai_dot"; dotBinding: DotBindingSnapshot }): NativeExecutionInputV6;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot"> }): NativeExecutionInputV5;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
   }
+  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
+  const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(input.provider, input.acpxAgent, input.piThinkingLevel);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
   const acpxProfile = input.provider === "acpx"
@@ -171,6 +186,15 @@ export function buildNativeExecutionInput(input: {
   const externalChatTurn =
     isPaperclipExternalChatContractTurn(wakePayload) ||
     isPaperclipExternalChatQuestionResponseTurn(wakePayload);
+  const configuredGitHubSkillKeys = new Set(input.githubInstructionSkillKeys ?? []);
+  const configuredGitHubSkills = externalChatTurn && wake?.externalChatProvider === "github"
+    ? input.runtimeContext.skills.filter((skill) => configuredGitHubSkillKeys.has(skill.key))
+    : [];
+  // Native skill invocation reads task.description. Project only verified skill
+  // names here; never restore the first provider message or scan untrusted text.
+  const externalChatSkillDescription = configuredGitHubSkills.length > 0
+    ? `Configured GitHub instruction skills:\n${configuredGitHubSkills.map((skill) => `/${skill.runtimeName}`).join("\n")}`
+    : null;
   const taskPrompt = [
     wakePrompt,
     // Durable task questions must survive the current provider turn.
@@ -186,7 +210,7 @@ export function buildNativeExecutionInput(input: {
   const completionSources = !externalChatTurn && !input.conversationMode && input.taskPrompt.trim()
     ? verifiedCompletionSources(input.turnContext, input.completionContract.sources ?? [])
     : [];
-  return parseNativeExecutionInput({
+  const prepared = {
     schema: "paperclip.native-execution-input.v5",
     ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
       initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
@@ -207,6 +231,7 @@ export function buildNativeExecutionInput(input: {
       runId: input.runId,
       issueId: input.issue.id,
       agentId: input.agentId,
+      ...(input.agentKeyId ? { agentKeyId: input.agentKeyId } : {}),
       executionWorkspaceId: input.workspace.id,
     },
     task: {
@@ -218,7 +243,7 @@ export function buildNativeExecutionInput(input: {
       // explicitly labeled background, but give authenticated external-chat
       // turns neutral structured fields.
       title: externalChatTurn ? "External chat follow-up" : input.issue.title,
-      description: externalChatTurn ? null : input.issue.description,
+      description: externalChatTurn ? externalChatSkillDescription : input.issue.description,
       prompt: taskPrompt,
       workMode: input.issue.workMode,
     },
@@ -263,6 +288,8 @@ export function buildNativeExecutionInput(input: {
           agent: acpxProfile!.agent,
           model: input.model,
           permissionMode: input.acpxPermissionMode ?? "approve-all",
+          ...(mode === undefined ? {} : { mode }),
+          ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -302,7 +329,12 @@ export function buildNativeExecutionInput(input: {
     interactionResponses: input.interactionResponses ?? [],
     credentialBindings: [],
     runtimeContext: input.runtimeContext,
-  }) as NativeExecutionInputV5;
+  };
+  return parseNativeExecutionInput(input.provider === "openai_dot" ? { ...prepared,
+    schema: "paperclip.native-execution-input.v6", provider: { kind: "openai_dot", model: null, binding: input.dotBinding },
+    workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
+    session: { ...prepared.session, driverKind: "openai_dot_mcp", lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }
+  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6;
 }
 
 

@@ -13,8 +13,9 @@ Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [Asana](./ASANA.md), [PostHog](./POSTHOG.md), [Neon](./NEON.md),
-[AgentMail](./AGENTMAIL.md), and [iMessage Photon](./IMESSAGE-PHOTON.md). Optional credential custody:
+[Gmail](./GMAIL.md), [Asana](./ASANA.md), [PostHog](./POSTHOG.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md),
+[AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md), and
+[Enterpret](./ENTERPRET.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip
@@ -205,3 +206,6 @@ translate the intent into Apps v2:
 Do not add new work to the retired v1 branch. If an old ticket still describes a
 valid product gap, retarget it to an active Apps v2 issue or close it as
 superseded with a link to the replacement.
+
+For Slack chat bot creation, installation, recovery, and live qualification, see
+[Automatic Slack app setup](SLACK-AUTOMATIC-SETUP.md).

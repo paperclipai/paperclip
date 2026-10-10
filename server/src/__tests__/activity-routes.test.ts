@@ -42,6 +42,14 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
 }));
 
+vi.mock("../services/authorization.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/authorization.js")>();
+  return {
+    ...actual,
+    issueReadSqlCondition: vi.fn(async () => ({}) as any),
+  };
+});
+
 vi.mock("../services/agent-action-audit.js", () => ({
   agentActionAuditService: () => mockAgentActionAuditService,
 }));
@@ -219,6 +227,7 @@ describe("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+      readCondition: expect.anything(),
     });
   });
 
@@ -237,6 +246,7 @@ describe("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+      readCondition: expect.anything(),
     });
   });
 
@@ -258,7 +268,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 

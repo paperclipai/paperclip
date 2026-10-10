@@ -1,15 +1,23 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   chmod,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { Agent as HttpAgent, createServer as createHttpServer, request as requestHttp, type IncomingMessage } from "node:http";
+import { Agent as HttpsAgent, request as requestHttps } from "node:https";
+import { getCACertificates } from "node:tls";
+import { pipeline } from "node:stream/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -76,6 +84,69 @@ export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
+
+/** Resolve a declared, pinned native dependency without PATH or install fallback. */
+export function resolvePinnedOpenCodeCommand(
+  issuer: string | URL = import.meta.url,
+  target: { platform?: string; architecture?: string } = {},
+): string {
+  try {
+    const platform = target.platform ?? process.platform;
+    const architecture = target.architecture ?? process.arch;
+    const packageNames: Record<string, string[]> = {
+      "linux-x64": ["opencode-linux-x64-baseline"],
+      "darwin-arm64": ["opencode-darwin-arm64"],
+      "darwin-x64": ["opencode-darwin-x64-baseline"],
+    };
+    const candidates = packageNames[`${platform}-${architecture}`];
+    if (!candidates) {
+      throw new Error("OpenCode native target is not qualified");
+    }
+    const manifestPath = realpathSync(createRequire(issuer).resolve("opencode-ai/package.json"));
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.name !== "opencode-ai" || manifest.version !== QUALIFIED_OPENCODE_VERSION) {
+      throw new Error(`OpenCode package version mismatch: expected opencode-ai@${QUALIFIED_OPENCODE_VERSION}`);
+    }
+    const dependencyRequire = createRequire(manifestPath);
+    for (const name of candidates) {
+      if (manifest.optionalDependencies?.[name] !== QUALIFIED_OPENCODE_VERSION) {
+        throw new Error("OpenCode platform dependency does not match its qualified version");
+      }
+      let platformManifest: string;
+      try {
+        platformManifest = realpathSync(dependencyRequire.resolve(`${name}/package.json`));
+      } catch (error) {
+        if (["MODULE_NOT_FOUND", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          continue;
+        }
+        throw error;
+      }
+      const metadata = JSON.parse(readFileSync(platformManifest, "utf8"));
+      if (metadata.name !== name || metadata.version !== QUALIFIED_OPENCODE_VERSION
+        || !Array.isArray(metadata.os) || !metadata.os.includes(platform)
+        || !Array.isArray(metadata.cpu) || !metadata.cpu.includes(architecture)) {
+        throw new Error("OpenCode installed platform artifact identity mismatch");
+      }
+      const root = dirname(platformManifest);
+      const executable = realpathSync(resolve(root, "bin/opencode"));
+      const inside = relative(root, executable);
+      if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+        throw new Error("OpenCode executable escapes its qualified platform package");
+      }
+      if (!statSync(executable).isFile()) {
+        throw new Error("OpenCode executable is not a regular file");
+      }
+      accessSync(executable, constants.X_OK);
+      return executable;
+    }
+    throw new Error("OpenCode qualified platform dependency is missing");
+  } catch (error) {
+    throw new Error(
+      `Pinned OpenCode runtime unavailable: ${(error as Error).message}. Restore Paperclip's runtime dependencies.`,
+      { cause: error },
+    );
+  }
+}
 
 type DynamicToolHandler = (call: {
   tool: string;
@@ -262,6 +333,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
         recovered: false,
         reason: redact(String(error), [
           this.#options.environment?.OPENROUTER_API_KEY,
+          this.#options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
         ]),
       };
     }
@@ -610,10 +682,9 @@ class OpenCodeHarnessSession implements HarnessSession {
           // at this HTTP boundary.
           providerID,
           modelID,
-          // This exact OpenCode version passed the native-question conformance
-          // suite. question.asked is adapted into PRP v2 and its reply/reject API
-          // remains private to this driver.
-          tools: { question: true },
+          // Keep question enabled in the isolated config. OpenCode 1.18.32
+          // turns a prompt's deprecated `tools` map into replacement session
+          // permissions, so a sparse override here discards the session policy.
           ...(this.#sendFullContext
             ? { system: this.#systemInstructions }
             : {}),
@@ -1969,6 +2040,110 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 }
 
+/** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
+  const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
+  const token = randomBytes(32).toString("base64url");
+  // Agent-local settings keep one runtime's transport configuration out of other sessions.
+  const proxyEnv = {
+    HTTP_PROXY: environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    HTTPS_PROXY: environment.https_proxy ?? environment.HTTPS_PROXY ?? environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    NO_PROXY: environment.no_proxy ?? environment.NO_PROXY,
+  };
+  const ca = [...getCACertificates("default")];
+  if (environment.SSL_CERT_FILE) ca.push(await readFile(environment.SSL_CERT_FILE, "utf8"));
+  if (environment.SSL_CERT_DIR) {
+    for (const entry of await readdir(environment.SSL_CERT_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        const certificate = await readFile(join(environment.SSL_CERT_DIR, entry.name), "utf8");
+        if (certificate.includes("-----BEGIN CERTIFICATE-----")) ca.push(certificate);
+      }
+    }
+  }
+  const agent = upstreamUrl.protocol === "https:" ? new HttpsAgent({ proxyEnv, ca }) : new HttpAgent({ proxyEnv });
+  const controllers = new Set<AbortController>();
+  const server = createHttpServer((request, response) => {
+    const controller = new AbortController();
+    controllers.add(controller);
+    response.once("close", () => controller.abort());
+    void (async () => {
+      if (request.headers.authorization !== `Bearer ${token}`) {
+        response.writeHead(401).end();
+        return;
+      }
+      if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      for await (const chunk of request) {
+        bytes += chunk.length;
+        if (bytes > 16 * 1024 * 1024) {
+          response.writeHead(413).end();
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+      const body = Buffer.concat(chunks);
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(body.toString("utf8")); }
+      catch { response.writeHead(400).end(); return; }
+      if (!payload || typeof payload !== "object" || payload.model !== model) {
+        response.writeHead(400).end();
+        return;
+      }
+      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+        const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
+          method: "POST",
+          agent,
+          headers: { "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+        }, resolve);
+        outgoing.once("error", reject);
+        outgoing.end(body);
+      });
+      // Never forward authentication to a redirect destination.
+      const status = upstream.statusCode ?? 502;
+      if (status >= 300 && status < 400) {
+        upstream.destroy();
+        throw new Error("Provider redirects are not supported");
+      }
+      const headers: Record<string, string> = {};
+      for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
+        const value = upstream.headers[name];
+        if (typeof value === "string") headers[name] = value;
+      }
+      response.writeHead(status, headers);
+      await pipeline(upstream, response);
+    })().catch(() => {
+      if (!response.headersSent) response.writeHead(502).end("Provider request failed");
+      else response.destroy();
+    }).finally(() => controllers.delete(controller));
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+  } catch (error) { agent.destroy(); throw error; }
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    agent.destroy();
+    throw new Error("Could not bind OpenCode provider proxy");
+  }
+  return {
+    baseURL: `http://127.0.0.1:${address.port}/v1`,
+    token,
+    close: async () => {
+      for (const controller of controllers) controller.abort();
+      agent.destroy();
+      await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+    },
+  };
+}
+
 async function startRuntime(input: {
   options: OpenCodeServerDriverOptions;
   root: string;
@@ -2020,143 +2195,175 @@ async function startRuntime(input: {
   const assignedMcp = nativeMcpLaunchBinding(
     input.options.environment ?? process.env,
   );
-  input.trace?.addSensitiveValues([
+  const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
+  const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
+    ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
+  const sensitiveValues = [
+    ...identityValues,
     password,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
     input.options.environment?.OPENROUTER_API_KEY,
-  ]);
+    input.options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+  ].filter((value): value is string => Boolean(value));
+  input.trace?.addSensitiveValues(sensitiveValues);
   const instructionRoot =
     input.options.runtimeContext?.instructions.bundle.rootPath;
+  // OpenCode canonicalizes tool paths (for example /var -> /private/var on
+  // macOS). Permit the assigned workspace under either spelling; operations
+  // within it still obey the selected allow/ask/deny permission mode.
+  const externalDirectories: Record<string, string> = { "*": "deny" };
+  for (const root of new Set([input.cwd, await realpath(input.cwd)])) {
+    externalDirectories[root] = "allow";
+    externalDirectories[`${root}/**`] = "allow";
+  }
+  if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const config = {
-    $schema: "https://opencode.ai/config.json",
-    model: input.options.model,
-    small_model: input.options.model,
-    share: "disabled",
-    // The configured entry is already composed exactly once into the session
-    // system prompt; siblings remain available through the read-only root.
-    instructions: [],
-    plugin: [],
-    // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
-    // catalog. Bind the already-qualified exact model slug into the built-in
-    // provider instead of silently falling back or rejecting a newer model.
-    provider: {
-      [modelProvider!]: {
-        models: {
-          [providerModelId]: { name: providerModelId },
+  const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
+        await bridge.close().catch(() => {});
+        await rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      })
+    : null;
+  if (providerProxy) {
+    sensitiveValues.push(providerProxy.token);
+    input.trace?.addSensitiveValues([providerProxy.token]);
+  }
+  let child: ChildProcess | undefined;
+  try {
+    const config = {
+      $schema: "https://opencode.ai/config.json",
+      model: input.options.model,
+      small_model: input.options.model,
+      share: "disabled",
+      // The configured entry is already composed exactly once into the session
+      // system prompt; siblings remain available through the read-only root.
+      instructions: [],
+      plugin: [],
+      // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
+      // catalog. Bind the already-qualified exact model slug into the built-in
+      // provider instead of silently falling back or rejecting a newer model.
+      provider: {
+        [modelProvider!]: {
+          ...(providerProxy ? {
+            npm: "@ai-sdk/openai-compatible",
+            name: "Paperclip connection",
+            options: {
+              baseURL: providerProxy.baseURL,
+              apiKey: providerProxy.token,
+            },
+          } : {}),
+          models: {
+            [providerModelId]: { name: providerModelId },
+          },
         },
       },
-    },
-    tools: {
-      question: true,
-    },
-    permission: {
-      "*": input.options.permissionMode ?? "allow",
-      question: "allow",
-      "paperclip_*": "allow",
-      "mcp__paperclip__*": "allow",
-      external_directory: instructionRoot
-        ? { "*": "deny", [`${instructionRoot}/**`]: "allow" }
-        : "deny",
-    },
-    mcp: {
-      paperclip: {
-        type: "remote",
-        url: bridge.url,
-        enabled: true,
-        oauth: false,
-        headers: { Authorization: `Bearer ${bridge.secret}` },
-        timeout: 30_000,
+      tools: {
+        question: true,
       },
-      ...(assignedMcp
-        ? {
-            [assignedMcp.name]: {
-              type: "remote",
-              url: assignedMcp.url,
-              enabled: true,
-              oauth: false,
-              headers: { Authorization: `Bearer ${assignedMcp.token}` },
-              timeout: 30_000,
-            },
-          }
-        : {}),
-    },
-  };
-  await writeFile(
-    join(configHome, "opencode", "opencode.json"),
-    `${JSON.stringify(config, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  const environment = sanitizedEnvironment(
-    input.options.environment ?? process.env,
-    {
-      HOME: isolatedHome,
-      XDG_CONFIG_HOME: configHome,
-      XDG_DATA_HOME: dataHome,
-      XDG_CACHE_HOME: cacheHome,
-      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-      OPENCODE_SERVER_USERNAME: username,
-      OPENCODE_SERVER_PASSWORD: password,
-    },
-  );
-  const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
-  const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "ignore", "pipe"];
-  if (input.options.commandFd !== undefined) {
-    while (stdio.length <= input.options.commandFd) stdio.push("ignore");
-    stdio[input.options.commandFd] = input.options.commandFd;
-  }
-  input.options.commandLifecycle?.beforeSpawn();
-  const child = spawn(
-    input.options.command ?? "opencode",
-    ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
-    {
-      cwd: input.cwd,
-      env: environment,
-      stdio,
-      detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
-    },
-  );
-  if (child.pid !== undefined) {
-    try {
-      input.options.commandLifecycle?.afterSpawn();
-    } catch (error) {
-      child.kill("SIGKILL");
-      throw error;
+      permission: {
+        "*": input.options.permissionMode ?? "allow",
+        question: "allow",
+        "paperclip_*": "allow",
+        "mcp__paperclip__*": "allow",
+        external_directory: externalDirectories,
+      },
+      mcp: {
+        paperclip: {
+          type: "remote",
+          url: bridge.url,
+          enabled: true,
+          oauth: false,
+          headers: { Authorization: `Bearer ${bridge.secret}` },
+          timeout: 30_000,
+        },
+        ...(assignedMcp
+          ? {
+              [assignedMcp.name]: {
+                type: "remote",
+                url: assignedMcp.url,
+                enabled: true,
+                oauth: false,
+                headers: { Authorization: `Bearer ${assignedMcp.token}` },
+                timeout: 30_000,
+              },
+            }
+          : {}),
+      },
+    };
+    await writeFile(
+      join(configHome, "opencode", "opencode.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const environment = sanitizedEnvironment(
+      input.options.environment ?? process.env,
+      {
+        HOME: isolatedHome,
+        XDG_CONFIG_HOME: configHome,
+        XDG_DATA_HOME: dataHome,
+        XDG_CACHE_HOME: cacheHome,
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+        OPENCODE_SERVER_USERNAME: username,
+        OPENCODE_SERVER_PASSWORD: password,
+        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+      },
+    );
+    const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
+    const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "ignore", "pipe"];
+    if (input.options.commandFd !== undefined) {
+      while (stdio.length <= input.options.commandFd) stdio.push("ignore");
+      stdio[input.options.commandFd] = input.options.commandFd;
     }
-  }
-  let diagnostics = "";
-  child.stderr?.on("data", (chunk) => {
-    const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-    const redactedDiagnostic = redact(raw.toString("utf8"), [
-      password,
-      input.options.environment?.OPENROUTER_API_KEY,
-    ]);
-    diagnostics = `${diagnostics}${redactedDiagnostic}`.slice(-8_192);
-    const frameId = input.trace?.frame({
-      direction: "provider_stderr",
-      raw,
-      transport: "process_stderr",
-      nativeMethod: "opencode serve stderr",
-    });
-    if (frameId) {
-      input.trace?.interpretation({
-        frameId,
-        stage: "typescript_opencode_process_transport",
-        ruleId: "opencode.stderr",
-        disposition: "operator_only",
-        reason:
-          "OpenCode stderr is retained only in the restricted trace sidecar",
+    input.options.commandLifecycle?.beforeSpawn();
+    child = spawn(
+      input.options.command ?? resolvePinnedOpenCodeCommand(),
+      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
+      {
+        cwd: input.cwd,
+        env: environment,
+        stdio,
+        detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
+      },
+    );
+    if (child.pid !== undefined) {
+      try {
+        input.options.commandLifecycle?.afterSpawn();
+      } catch (error) {
+        child.kill("SIGKILL");
+        throw error;
+      }
+    }
+    let diagnostics = "";
+    child.stderr?.on("data", (chunk) => {
+      const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const redactedDiagnostic = redact(raw.toString("utf8"), sensitiveValues);
+      diagnostics = `${diagnostics}${redactedDiagnostic}`.slice(-8_192);
+      const frameId = input.trace?.frame({
+        direction: "provider_stderr",
+        raw,
+        transport: "process_stderr",
+        nativeMethod: "opencode serve stderr",
       });
-    }
-    input.options.onDiagnostic?.(redactedDiagnostic);
-  });
-  try {
+      if (frameId) {
+        input.trace?.interpretation({
+          frameId,
+          stage: "typescript_opencode_process_transport",
+          ruleId: "opencode.stderr",
+          disposition: "operator_only",
+          reason:
+            "OpenCode stderr is retained only in the restricted trace sidecar",
+        });
+      }
+      input.options.onDiagnostic?.(redactedDiagnostic);
+    });
+    const providerChild = child;
     await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
+      providerChild.once("spawn", resolve);
+      providerChild.once("error", reject);
     });
     if (child.pid)
       await input.options.onSpawn?.({
@@ -2196,29 +2403,27 @@ async function startRuntime(input: {
       process: child,
       bridge,
       trace: input.trace,
-      sensitiveValues: [
-        password,
-        input.options.environment?.OPENROUTER_API_KEY,
-      ].filter((value): value is string => Boolean(value)),
+      sensitiveValues,
       close: async (closeInput = {}) => {
+        await providerProxy?.close();
         await bridge.close().catch(() => {});
-        if (child.exitCode === null && child.signalCode === null && child.pid) {
+        if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
             if (globalThis.process.platform === "win32" || !isolateProcessGroup)
-              child.kill("SIGTERM");
-            else globalThis.process.kill(-child.pid, "SIGTERM");
+              providerChild.kill("SIGTERM");
+            else globalThis.process.kill(-providerChild.pid, "SIGTERM");
           } catch {
-            child.kill("SIGTERM");
+            providerChild.kill("SIGTERM");
           }
         }
-        await waitForExit(child, 2_000);
-        if (child.exitCode === null && child.signalCode === null && child.pid) {
+        await waitForExit(providerChild, 2_000);
+        if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
             if (globalThis.process.platform === "win32" || !isolateProcessGroup)
-              child.kill("SIGKILL");
-            else globalThis.process.kill(-child.pid, "SIGKILL");
+              providerChild.kill("SIGKILL");
+            else globalThis.process.kill(-providerChild.pid, "SIGKILL");
           } catch {
-            child.kill("SIGKILL");
+            providerChild.kill("SIGKILL");
           }
         }
         await rm(join(configHome, "opencode", "opencode.json"), {
@@ -2233,8 +2438,9 @@ async function startRuntime(input: {
       },
     };
   } catch (error) {
+    await providerProxy?.close();
     await bridge.close().catch(() => {});
-    child.kill("SIGKILL");
+    child?.kill("SIGKILL");
     await rm(join(configHome, "opencode", "opencode.json"), {
       force: true,
     }).catch(() => undefined);
@@ -2599,6 +2805,7 @@ function sanitizedEnvironment(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const allowed = [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     "PATH",
     "LANG",
     "LC_ALL",

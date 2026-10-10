@@ -217,6 +217,7 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
+    identity: (id: string) => ["agents", "identity", id] as const,
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
@@ -373,10 +374,10 @@ export const queryKeys = {
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
-    attachments: (issueId: string) =>
-      ["issues", "attachments", issueId] as const,
-    attachmentPreview: (attachmentId: string) =>
-      ["issues", "attachment-preview", attachmentId] as const,
+    privacyConstraints: (issueId: string) => ["issues", "privacy-constraints", issueId] as const,
+    accessGrants: (issueId: string) => ["issues", "access-grants", issueId] as const,
+    attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) =>
       ["issues", "document", issueId, key] as const,
@@ -396,6 +397,8 @@ export const queryKeys = {
       ["issues", "runner-goal", issueId, agentId ?? "__effective__"] as const,
     workProducts: (issueId: string) =>
       ["issues", "work-products", issueId] as const,
+    workProductPullRequestRefresh: (issueId: string) =>
+      ["issues", "work-product-pr-refresh", issueId] as const,
     fileResources: (
       issueId: string,
       options: {
@@ -528,6 +531,7 @@ export const queryKeys = {
         { includeArchived: opts.includeArchived === true },
       ] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    accessMembers: (id: string) => ["projects", "access-members", id] as const,
   },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
@@ -618,6 +622,9 @@ export const queryKeys = {
       ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
       ["sidebar-preferences", "project-order", companyId, userId] as const,
+  },
+  primaryAgent: {
+    mine: (companyId: string, userId: string) => ["primary-agent", companyId, userId] as const,
   },
   resourceMemberships: {
     mine: (companyId: string) =>

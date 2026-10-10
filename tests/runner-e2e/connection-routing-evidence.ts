@@ -43,6 +43,7 @@ export function gradeProviderOutcome(input: {
   response: string;
   marker: string;
   sameConnections: boolean;
+  accessDecision?: { id: string; connectionId: string };
 }) {
   const decision = input.rows.find((row) => row.id === input.decisionId);
   const selected = decision?.result?.answers?.find(
@@ -58,8 +59,12 @@ export function gradeProviderOutcome(input: {
     },
     {
       id: "provider-no-extra-setup",
-      passed: input.rows.length === 1 && input.sameConnections,
-      detail: "No replacement question or unnecessary connection was created.",
+      passed: input.sameConnections && (input.accessDecision
+        ? input.rows.length === 2 && input.rows.some(row => row.id === input.accessDecision!.id
+          && row.kind === "connection_intent" && row.status === "accepted"
+          && row.result?.outcome === "connected" && row.result?.connectionId === input.accessDecision!.connectionId)
+        : input.rows.length === 1),
+      detail: "Only the selected provider and, when needed, its separate approved access card were used; no connection was replaced.",
     },
     {
       id: "provider-use-matches-choice",
@@ -71,4 +76,27 @@ export function gradeProviderOutcome(input: {
         "None prevents execution; choosing Arcade returns its independently observed marker exactly once.",
     },
   ];
+}
+
+/** The provider preference is not an app/tool grant. Require the separate, scoped access card. */
+export function requireProviderAccessCard(input: {
+  rows: Array<{ id: string; kind: string; status: string; payload?: any }>;
+  decisionId: string; connectionId: string; agentId: string; catalogEntryIds: string[]; calls: number;
+}) {
+  const cards = input.rows.filter(row => row.id !== input.decisionId);
+  const card = cards[0];
+  const payload = card?.payload;
+  const tools = payload?.accessRequest?.tools;
+  if (input.calls !== 0 || input.rows.length !== 2 || cards.length !== 1 || card?.kind !== "connection_intent"
+    || card.status !== "pending" || payload?.serviceSlug !== "arcade"
+    || payload.requestingAgentId !== input.agentId
+    || payload.upstreamService?.selectionInteractionId !== input.decisionId
+    || payload.upstreamService?.slug !== "hubspot"
+    || payload.accessRequest?.connectionId !== input.connectionId
+    || !Array.isArray(tools) || tools.length !== 1 || tools[0].toolName !== "Hubspot_ListContacts"
+    || tools[0].permission !== "allowed" || input.catalogEntryIds.length !== 1
+    || tools[0].catalogEntryId !== input.catalogEntryIds[0]) {
+    throw new Error("Expected one scoped Arcade access card after the saved provider choice, before any provider call");
+  }
+  return card;
 }

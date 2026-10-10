@@ -157,6 +157,163 @@ afterEach(async () => {
 });
 
 describe("Permissions action Test dialog", () => {
+  it("forwards an explicitly cleared optional text field", async () => {
+    const textEntry = {
+      ...entry,
+      inputSchema: { type: "object", properties: { update_text: { type: "string" } } },
+    } as ToolCatalogEntry;
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "empty-text" });
+
+    await renderDialog(textEntry);
+    const moreOptions = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "More options");
+    expect(moreOptions).toBeTruthy();
+    await act(() => moreOptions!.click());
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Update Text"]');
+    expect(input).toBeTruthy();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(() => {
+      setValue!.call(input, "draft");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(() => {
+      setValue!.call(input, "");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "list_projects",
+      parameters: { update_text: "" },
+    });
+  });
+
+  it("forwards false, zero, and an explicit object default without normalization", async () => {
+    const defaultsEntry = {
+      ...entry,
+      inputSchema: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", default: false },
+          count: { type: "integer", default: 0 },
+          options: {
+            type: "object",
+            default: { enabled: false, count: 0 },
+            required: ["enabled", "count"],
+            properties: {
+              enabled: { type: "boolean" },
+              count: { type: "integer" },
+            },
+          },
+        },
+      },
+    } as ToolCatalogEntry;
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "defaults" });
+
+    await renderDialog(defaultsEntry);
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "list_projects",
+      parameters: { enabled: false, count: 0, options: { enabled: false, count: 0 } },
+    });
+  });
+
+  it("rejects an explicitly supplied empty optional object with required children", async () => {
+    const objectEntry = {
+      ...entry,
+      inputSchema: {
+        type: "object",
+        properties: {
+          options: {
+            type: "object",
+            default: {},
+            required: ["name"],
+            properties: { name: { type: "string" } },
+          },
+        },
+      },
+    } as ToolCatalogEntry;
+
+    await renderDialog(objectEntry);
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(document.body.textContent).toContain("This field is required");
+    expect(runTestCallMock).not.toHaveBeenCalled();
+  });
+
+  it("runs the actual ActionTester with Firecrawl's minimal URL input after opening More options", async () => {
+    const firecrawlEntry = {
+      ...entry,
+      id: "firecrawl-scrape",
+      toolName: "firecrawl_scrape",
+      title: "Firecrawl scrape",
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          profile: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+          queryOptions: {
+            type: "object",
+            required: ["prompt"],
+            properties: {
+              mode: { type: "string", enum: ["directQuote", "freeform"], default: "freeform" },
+              prompt: { type: "string" },
+            },
+          },
+          screenshotOptions: {
+            type: "object",
+            properties: {
+              viewport: {
+                type: "object",
+                required: ["width", "height"],
+                properties: { width: { type: "number" }, height: { type: "number" } },
+              },
+            },
+          },
+        },
+      },
+    } as ToolCatalogEntry;
+    getTestAgentAccessMock.mockResolvedValue({
+      access: {
+        connectionId: "conn-1", toolCount: 1, allowedCount: 1, askFirstCount: 0, offCount: 0,
+        lastChangedAt: null, lastChangedByAgentId: null, lastChangedByName: null,
+        tools: [{ toolName: "firecrawl_scrape", gatewayToolName: "firecrawl__firecrawl_scrape", displayName: "Firecrawl scrape", risk: "read", decision: "allowed", reasonCode: null, matchedPolicyIds: [] }],
+      },
+    });
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "firecrawl-minimal" });
+
+    await renderDialog(firecrawlEntry);
+    const moreOptions = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "More options");
+    expect(moreOptions).toBeTruthy();
+    await act(() => moreOptions!.click());
+    const urlInput = document.body.querySelector<HTMLInputElement>('input[aria-label="Url"]');
+    expect(urlInput, document.body.textContent).toBeTruthy();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(() => {
+      setValue!.call(urlInput, "https://paperclip.ing");
+      urlInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    expect(runButton).toBeTruthy();
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("This field is required");
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "firecrawl_scrape",
+      parameters: { url: "https://paperclip.ing" },
+    });
+  });
+
   it("renders structured MCP rows and keeps the full response behind the raw disclosure", async () => {
     runTestCallMock.mockResolvedValue({
       decision: "allowed", invocationId: "structured",

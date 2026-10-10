@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   approvals,
   issueApprovals,
@@ -164,6 +165,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }
 
   async function cleanupRetryFixtureOnce() {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
@@ -483,6 +485,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
+
+    // Complete the circular issue/run fixture after both FK targets exist.
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, runId));
 
     return { companyId, agentId, issueId, runId, now };
   }
@@ -1260,8 +1267,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(executionWorkspaces)
       .where(inArray(executionWorkspaces.id, [currentWorkspaceId, foreignWorkspaceId]));
     expect(workspaces).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: { current: true } }),
-      expect.objectContaining({ id: foreignWorkspaceId, status: "active", metadata: { foreign: true } }),
+      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: expect.objectContaining({ current: true }) }),
+      expect.objectContaining({ id: foreignWorkspaceId, status: "active", metadata: expect.objectContaining({ foreign: true }) }),
     ]));
 
     const activity = await db
@@ -1388,8 +1395,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(executionWorkspaces)
       .where(inArray(executionWorkspaces.id, [staleWorkspaceId, currentWorkspaceId]));
     expect(workspaces).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: staleWorkspaceId, status: "active", metadata: { stale: true } }),
-      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: { current: true } }),
+      expect.objectContaining({ id: staleWorkspaceId, status: "active", metadata: expect.objectContaining({ stale: true }) }),
+      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: expect.objectContaining({ current: true }) }),
     ]));
 
     const activity = await db
