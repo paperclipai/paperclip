@@ -775,7 +775,12 @@ impl ExternalCommandExecutor {
         input.input_digest = Some(digest.clone());
         let mut resolved = input.request.clone();
         resolved["status"] = json!("resolved");
-        state.push("runtime_request.resolved", json!({"request":resolved}))?;
+        state.push(
+            "runtime_request.resolved",
+            json!({"requestId":id,"requestKind":"runtime","requestType":"input",
+                "turnId":state.turn_id,"itemId":self.config.item_id,"action":"submit",
+                "adapter":"muse-v1","response":response,"request":resolved}),
+        )?;
         state.push(
             "external_provider.input_available",
             json!({"binding":state.binding(),"requestId":id,
@@ -1390,9 +1395,23 @@ mod tests {
         let available = e.execute(&resolution).unwrap().result;
         assert_eq!(available["status"], "delivered");
         assert_eq!(e.execute(&resolution).unwrap().result, available);
+        let events = e.poll_events().unwrap();
+        let resolved = events
+            .iter()
+            .filter(|event| event.event_type == "runtime_request.resolved")
+            .collect::<Vec<_>>();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].payload["requestId"], "native-question-1");
         assert_eq!(
-            e.poll_events()
-                .unwrap()
+            resolved[0].payload["request"]["requestId"],
+            resolved[0].payload["requestId"]
+        );
+        assert_eq!(resolved[0].payload["turnId"], "turn-1");
+        assert_eq!(resolved[0].payload["action"], "submit");
+        assert_eq!(resolved[0].payload["response"], muse_response());
+        assert_eq!(resolved[0].payload["requestType"], "input");
+        assert_eq!(
+            events
                 .iter()
                 .filter(|event| event.event_type == "external_provider.input_available")
                 .count(),

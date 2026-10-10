@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import type { HarnessRuntimeRequest, HarnessRuntimeRequestResolution, HarnessDriver, HarnessDriverDescriptor, HarnessSession, OpenHarnessSessionInput, PersistedHarnessSession } from "../../contracts/harness-driver.js";
+import type { HarnessRuntimeRequest, HarnessRuntimeRequestHandoff, HarnessRuntimeRequestResolution, HarnessDriver, HarnessDriverDescriptor, HarnessSession, OpenHarnessSessionInput, PersistedHarnessSession } from "../../contracts/harness-driver.js";
 import type { NativeExecutionInputV6, NativeExecutionInputV7 } from "../../contracts/native-execution.js";
 import type { ExternalProviderPort } from "../../contracts/external-provider.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
@@ -63,6 +63,7 @@ const capabilities = {
 export function describeRunnerdExternalDriver(codec: ExternalProviderCodec): HarnessDriverDescriptor {
   return { kind: codec.driverKind, displayName: codec.displayName, version: codec.revision, protocolVersion: "prp.v3",
     capabilities: { ...structuredClone(capabilities), runtimeRequestResolution: codec.runtimeRequestResolution,
+      ...(codec.runtimeRequestResolution ? { runtimeRequestHandoff: true } : {}),
       unsupported: capabilities.unsupported.filter(name => !codec.runtimeRequestResolution || name !== "runtimeRequestResolution") }, runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } };
 }
 
@@ -115,7 +116,25 @@ class RunnerdExternalSession implements HarnessSession {
   #detachPort: (() => Promise<void>) | null = null;
   #closed = false;
   #failure: Error | null = null;
-  constructor(readonly options: RunnerdExternalDriverOptions, readonly codec: ExternalProviderCodec) {}
+  #resolvingRequests = new Set<string>();
+  readonly handoffRuntimeRequest?: NonNullable<HarnessSession["handoffRuntimeRequest"]>;
+  constructor(readonly options: RunnerdExternalDriverOptions, readonly codec: ExternalProviderCodec) {
+    if (codec.runtimeRequestResolution) this.handoffRuntimeRequest = input => this.#handoffRuntimeRequest(input);
+  }
+  #handoffRuntimeRequest(input: Parameters<NonNullable<HarnessSession["handoffRuntimeRequest"]>>[0]): HarnessRuntimeRequestHandoff {
+    if (input.signal.aborted || this.#closed || this.#failure || input.turnId !== this.options.identity.turnId
+        || Date.now() >= this.options.execution.provider.binding.expiresAtUnixMs
+        || this.#resolvingRequests.has(input.requestId)
+        || this.#events.some(event => ["turn.completed", "turn.cancelled", "turn.failed", "run.terminal"].includes(event.eventType))
+        || !this.pendingRuntimeRequests().some(request => request.requestId === input.requestId && request.turnId === input.turnId)) {
+      return { result: "already_settled", cleanup: Promise.resolve() };
+    }
+    // Rust checkpoints the pending request before publishing its ACKed created
+    // event. That same request already owns the durable external wait; no
+    // process-bound RPC needs expiring, interruption, or a second question card.
+    // A late answer still resolves and is ingested on this exact active turn.
+    return { result: "handed_off", cleanup: Promise.resolve() };
+  }
   ids() { return { driverSessionId: this.options.identity.normalizedSessionId, providerSessionId: null, displayId: this.codec.displayName }; }
 
   async open(signal?: AbortSignal) {
@@ -189,7 +208,7 @@ class RunnerdExternalSession implements HarnessSession {
         // Remote monitors do not report an exit code. The authenticated,
         // persisted receipt is the evidence of shutdown, for either launcher.
         if (core.getCommand(`${this.codec.commandPrefix}_shutdown`)?.status === "completed") return;
-        this.#failure ??= new Error(`dot_runner_process_exited_recovery_required: code=${result.code} signal=${result.signal}`);
+        this.#failure ??= new Error(`${this.codec.commandPrefix}_runner_process_exited_recovery_required: code=${result.code} signal=${result.signal}`);
         this.#wake();
       }, () => {
         if (this.#closed || core.getCommand(`${this.codec.commandPrefix}_shutdown`)?.status === "completed") return;
@@ -272,8 +291,18 @@ class RunnerdExternalSession implements HarnessSession {
         || input.resolution.action !== "submit" || !("response" in input.resolution)) {
       throw new Error("external_runtime_request_resolution_invalid");
     }
-    await this.#command("request.resolve", { requestId: input.requestId, response: input.resolution.response },
-      input.commandId ?? `${this.codec.commandPrefix}_resolve_${input.requestId}`);
+    this.#resolvingRequests.add(input.requestId);
+    try {
+      await this.#command("request.resolve", { requestId: input.requestId, response: input.resolution.response },
+        input.commandId ?? `${this.codec.commandPrefix}_resolve_${input.requestId}`);
+    } catch (error) {
+      // A rejected answer did not settle the request. Unknown deliveries retain
+      // the resolving barrier until their exact command receipt is reconciled.
+      if (error instanceof Error && "dotOperationRejected" in error && error.dotOperationRejected === true) {
+        this.#resolvingRequests.delete(input.requestId);
+      }
+      throw error;
+    }
   }
   async read() { return await this.#command("session.snapshot", {}, `${this.codec.commandPrefix}_snapshot_${randomUUID()}`); }
   async reconcile() { return { ...await this.read(), externalStopConfirmed: false, usage: null, cost: null }; }
