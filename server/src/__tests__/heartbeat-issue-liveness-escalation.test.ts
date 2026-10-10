@@ -735,6 +735,43 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     });
   });
 
+  it("heals a null-assignee blocked dependent by waking its createdByAgentId", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none", assignee: null });
+
+    // Task has no assignee but was created by the agent — backstop should fall
+    // back to createdByAgentId as the wake target.
+    await db
+      .update(issues)
+      .set({ createdByAgentId: agentId, updatedAt: new Date() })
+      .where(eq(issues.id, blockedIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(1);
+    expect(result.issueIds).toEqual([blockedIssueId]);
+
+    const wake = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+      ))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toMatchObject({
+      reason: "issue_blockers_resolved",
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: blockedIssueId,
+        blockerIssueIds: [blockerIssueId],
+      }),
+    });
+  });
+
   async function seedExecutionWait(status: "active" | "resolved" = "resolved") {
     const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     const [action] = await db.insert(issueRecoveryActions).values({
