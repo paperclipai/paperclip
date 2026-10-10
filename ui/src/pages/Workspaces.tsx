@@ -117,6 +117,18 @@ export function Workspaces() {
   if (experimentalSettingsQuery.isLoading || experimentalSettingsView.kind === "reconnecting") {
     return <PageSkeleton variant="detail" />;
   }
+  // Nor must a failed settings load: with no settings there is no flag to read.
+  if (experimentalSettingsView.kind === "error" && experimentalSettingsQuery.data === undefined) {
+    return (
+      <QueryErrorState
+        size="page"
+        error={experimentalSettingsQuery.error}
+        action="load workspaces"
+        onRetry={experimentalSettingsView.retry}
+        retrying={experimentalSettingsView.isFetching}
+      />
+    );
+  }
   if (!isolatedWorkspacesEnabled) return <Navigate to="/issues" replace />;
   if (dataLoading) return <PageSkeleton variant="list" />;
   if (overviewView.kind === "error") {

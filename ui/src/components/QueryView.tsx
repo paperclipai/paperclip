@@ -12,8 +12,9 @@
  *   placeholder that fills in by itself when the server is back.
  * - A non-transient failure (403, 404, validation, conflict, a real 500) is
  *   `error`: readable `describeError` copy with a Retry button. So is a
- *   route-level transient failure with no data (a 429, one plugin worker
- *   restarting) once the retry policy has given up, because nothing else
+ *   transient failure with no data once the retry policy has given up while
+ *   the server is reachable (a 429, one plugin worker restarting, a 504 on
+ *   one slow route): the app-wide probe loop is not running, so nothing else
  *   would refetch it.
  * - A `not_found` state is shown only when `classifyError` says `not_found`,
  *   never for an outage.
@@ -25,7 +26,7 @@
 
 import { useCallback, type ReactNode } from "react";
 import { AlertTriangle, RefreshCcw } from "lucide-react";
-import { classifyError, describeError, isConnectivityError, isTransientError, type ErrorKind } from "@/api/errors";
+import { classifyError, describeError, isTransientError, type ErrorKind } from "@/api/errors";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -78,11 +79,13 @@ export function queryViewKind(
   if (hasError(query.error)) {
     const transient = isTransientError(query.error);
     if (hasData) return transient ? "stale" : "error";
-    // With nothing to show, only an outage is worth waiting out quietly: the
-    // connectivity probe refetches on recovery. A route-level blip (429, one
-    // plugin worker restarting) has no such loop, so it gets readable copy
-    // with a Retry button once the retry policy gives up.
-    if (transient && (connectivity !== "online" || isConnectivityError(query.error))) return "reconnecting";
+    // With nothing to show, a transient failure is worth waiting out quietly
+    // only while the app-wide probe loop is running: it refetches every live
+    // query on recovery. While the server is reachable nothing else would
+    // refetch, so a route that keeps failing (a 429, one plugin worker
+    // restarting, a 504 on one slow endpoint) gets readable copy with a
+    // Retry button once the retry policy gives up.
+    if (transient && connectivity !== "online") return "reconnecting";
     return "error";
   }
   const retryingTransient = hasError(query.failureReason) && isTransientError(query.failureReason);

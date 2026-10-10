@@ -40,7 +40,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
-import { describeError } from "@/api/errors";
+import { describeError, isTransientError } from "@/api/errors";
 import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -707,13 +707,18 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
   }, [data, slots]);
   usePluginModuleLoader(contributions);
   const modulesLoaded = contributions ? aggregateLoadState(contributions) === "loaded" : true;
-  const isLoading = queryEnabled && (isQueryLoading || viewKind === "reconnecting" || !modulesLoaded);
+  // Plugin chrome never shows red for a transient failure, even one that
+  // outlasts the retry policy while the server is reachable: with nothing
+  // loaded the outlets stay collapsed, and the next mount or focus refetches.
+  const transientFailure = viewKind === "error" && isTransientError(error);
+  const reportedError = viewKind === "error" && !transientFailure ? error : null;
+  const isLoading = queryEnabled && (isQueryLoading || viewKind === "reconnecting" || transientFailure || !modulesLoaded);
 
   return {
     slots,
     isLoading,
-    errorMessage: viewKind === "error" ? describeError(error).body : null,
-    error: viewKind === "error" ? error : null,
+    errorMessage: reportedError ? describeError(reportedError).body : null,
+    error: reportedError,
     retry,
   };
 }

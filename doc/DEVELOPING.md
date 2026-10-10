@@ -397,11 +397,17 @@ localStorage.removeItem("paperclipSimulateOutage")
 Reads render through `useQueryView(query)` or `<QueryView>`
 (`ui/src/components/QueryView.tsx`). The view state is one of `loading`,
 `ready`, `stale` (data plus a transient failure: render the data, no red
-text), `reconnecting` (no data yet during an outage: a quiet placeholder that
-fills in by itself), or `error` (a real failure: `describeError` copy with a
-Retry button). "Not found" renders only when `classifyError` says
-`not_found`, never for an outage. `<QueryErrorState>` is the error
-presentation on its own, in `page`, `panel`, and `inline` sizes.
+text), `reconnecting` (no data yet while the app-wide connectivity state is
+not `online`: a quiet placeholder that fills in by itself when the probe loop
+recovers), or `error` (a real failure: `describeError` copy with a Retry
+button). A transient failure with no data while the server is reachable (a
+429, one plugin worker restarting, a 504 on one slow route) is also `error`
+once the retry policy gives up, because no recovery loop would refetch it.
+"Not found" renders only when `classifyError` says `not_found`, never for an
+outage. `<QueryErrorState>` is the error presentation on its own, in `page`,
+`panel`, and `inline` sizes. Plugin chrome (`usePluginSlots`,
+`usePluginLaunchers`) is the one exception: it never reports a transient
+failure and stays collapsed instead.
 
 `pnpm check:query-error-rendering` reports UI code that renders raw query errors
 (`{error.message}`, `isError ?`) or sets `retry: false`. It is report-only for

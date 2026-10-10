@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { ConnectivityProvider, createConnectivityStore, type ConnectivityStore } from "@/lib/connectivity";
 import {
   ExecutionWorkspaceCompanyGate,
   UnprefixedExecutionWorkspaceRedirect,
@@ -51,20 +52,21 @@ describe("UnprefixedExecutionWorkspaceRedirect", () => {
     vi.clearAllMocks();
   });
 
-  function render(path: string) {
+  function render(path: string, options: { store?: ConnectivityStore } = {}) {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
+            <Route path=":companyPrefix/execution-workspaces/:workspaceId/issues" element={<Destination />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
     flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[path]}>
-            <Routes>
-              <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
-              <Route path=":companyPrefix/execution-workspaces/:workspaceId/issues" element={<Destination />} />
-            </Routes>
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
+      root.render(options.store ? <ConnectivityProvider store={options.store}>{tree}</ConnectivityProvider> : tree);
     });
   }
 
@@ -110,13 +112,28 @@ describe("UnprefixedExecutionWorkspaceRedirect", () => {
     mockExecutionWorkspacesApi.get.mockRejectedValue(
       new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
     );
-    render("/execution-workspaces/workspace-1/issues");
+    // The app-wide store is waiting out the outage, so the probe loop will refetch on recovery.
+    const store = createConnectivityStore({ browserOnline: false });
+    render("/execution-workspaces/workspace-1/issues", { store });
 
     await vi.waitFor(() => expect(mockExecutionWorkspacesApi.get).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(container.textContent).not.toContain("NOT_FOUND");
     expect(container.textContent).not.toContain("DESTINATION@");
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    store.dispose();
+  });
+
+  it("shows readable copy with a retry when the route keeps failing while the server is reachable", async () => {
+    mockExecutionWorkspacesApi.get.mockRejectedValue(
+      new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
+    );
+    render("/execution-workspaces/workspace-1/issues");
+
+    await vi.waitFor(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+    expect(container.textContent).not.toContain("NOT_FOUND");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(container.textContent).toContain("Retry");
   });
 
   it("shows readable copy with a retry for an unexpected failure", async () => {

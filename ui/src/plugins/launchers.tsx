@@ -25,7 +25,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
-import { describeError } from "@/api/errors";
+import { describeError, isTransientError } from "@/api/errors";
 import { queryViewKind } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { useNavigate, useLocation } from "@/lib/router";
@@ -347,11 +347,14 @@ export function usePluginLaunchers(
     return rows;
   }, [data, filters.entityType, placementZonesKey]);
 
+  // Same as `usePluginSlots`: a transient failure never reports an error,
+  // even after the retry policy gives up while the server is reachable.
+  const transientFailure = viewKind === "error" && isTransientError(error);
   return {
     launchers,
     contributionsByPluginId,
-    isLoading: queryEnabled && (isLoading || viewKind === "reconnecting"),
-    errorMessage: viewKind === "error" ? describeError(error).body : null,
+    isLoading: queryEnabled && (isLoading || viewKind === "reconnecting" || transientFailure),
+    errorMessage: viewKind === "error" && !transientFailure ? describeError(error).body : null,
   };
 }
 

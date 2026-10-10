@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { companySkillsApi } from "@/api/companySkills";
+import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { TaskSkillPanel } from "./TaskSkillPanel";
 
 const navigate = vi.fn();
@@ -47,12 +48,30 @@ describe("TaskSkillPanel", () => {
     vi.mocked(companySkillsApi.detail).mockRejectedValue(
       new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
     );
-    renderPanel();
+    // The app-wide store is waiting out the outage, so the probe loop will refetch on recovery.
+    const store = createConnectivityStore({ browserOnline: false });
+    act(() => root.render(
+      <ConnectivityProvider store={store}>
+        <QueryClientProvider client={client}><TaskSkillPanel companyId="company-1" skillId="skill-1" /></QueryClientProvider>
+      </ConnectivityProvider>,
+    ));
     await vi.waitFor(() => expect(companySkillsApi.detail).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(container.textContent).toContain("Loading skill…");
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
     expect(container.textContent).not.toContain("tenant_app_unavailable");
+    store.dispose();
+  });
+
+  it("shows readable copy with Retry when the skill route keeps failing while the server is reachable", async () => {
+    vi.mocked(companySkillsApi.detail)
+      .mockRejectedValueOnce(new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockResolvedValue(skill);
+    renderPanel();
+    await vi.waitFor(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    act(() => (container.querySelector("button") as HTMLButtonElement).click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Release helper"));
   });
 
   it("offers retry with readable copy for an unexpected failure", async () => {

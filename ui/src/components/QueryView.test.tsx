@@ -30,11 +30,20 @@ describe("queryViewKind", () => {
     expect(queryViewKind({ ...base, data: 1, status: "error", error: forbidden() })).toBe("error");
   });
 
-  it("reconnects quietly when nothing has loaded yet", () => {
-    expect(queryViewKind({ ...base, status: "error", error: unavailable() })).toBe("reconnecting");
-    expect(queryViewKind({ ...base, status: "error", error: new TypeError("Failed to fetch") })).toBe("reconnecting");
-    expect(queryViewKind({ ...base, status: "error", error: notFound() })).toBe("error");
-    expect(queryViewKind({ ...base, status: "error", error: new Error("boom") })).toBe("error");
+  it("reconnects quietly when nothing has loaded yet and the app is waiting out an outage", () => {
+    expect(queryViewKind({ ...base, status: "error", error: unavailable() }, "reconnecting")).toBe("reconnecting");
+    expect(queryViewKind({ ...base, status: "error", error: unavailable() }, "offline")).toBe("reconnecting");
+    expect(queryViewKind({ ...base, status: "error", error: new TypeError("Failed to fetch") }, "reconnecting")).toBe("reconnecting");
+    expect(queryViewKind({ ...base, status: "error", error: notFound() }, "reconnecting")).toBe("error");
+    expect(queryViewKind({ ...base, status: "error", error: new Error("boom") }, "reconnecting")).toBe("error");
+  });
+
+  it("shows retryable copy when a route keeps failing while the server is reachable", () => {
+    // Nothing would refetch these: the probe loop only runs while the app is
+    // not online. A placeholder here would never fill in.
+    expect(queryViewKind({ ...base, status: "error", error: unavailable() })).toBe("error");
+    expect(queryViewKind({ ...base, status: "error", error: new ApiError("Gateway timeout", 504, "upstream timed out") })).toBe("error");
+    expect(queryViewKind({ ...base, status: "error", error: new TypeError("Failed to fetch") })).toBe("error");
   });
 
   it("shows retryable copy for a route-level blip with no data, but keeps data through it", () => {
@@ -174,14 +183,44 @@ describe("useQueryView and <QueryView>", () => {
     expect(container.querySelector(".text-destructive")).toBeNull();
   });
 
-  it("shows a quiet placeholder when the first load fails with a transient error", async () => {
+  it("shows a quiet placeholder when the first load fails during an outage", async () => {
+    // The server is down: the probe fails, so the store is reconnecting and
+    // will refetch every live query on recovery.
+    probe.mockResolvedValue({ reachable: false, retryAfterMs: null } as unknown as { reachable: true });
     mount();
     attempts[0]!.reject(unavailable());
+    store.reportError(unavailable());
     await settle();
+    expect(store.getSnapshot().status).toBe("reconnecting");
     expect(last().kind).toBe("reconnecting");
     expect(container.querySelector('[data-query-view="placeholder"]')).not.toBeNull();
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
     expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy with Retry when one route keeps failing while the server is reachable", async () => {
+    // The probe says the server is fine, so no recovery loop will ever refetch
+    // this query: a placeholder would spin forever.
+    mount();
+    attempts[0]!.reject(unavailable());
+    store.reportError(unavailable());
+    await settle();
+    expect(store.getSnapshot().status).toBe("online");
+    expect(last().kind).toBe("error");
+    expect(last().errorKind).toBe("transient");
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).not.toContain("tenant_app_unavailable");
+    expect(alert?.querySelector("button")?.textContent).toContain("Retry");
+    expect(container.querySelector('[data-query-view="placeholder"]')).toBeNull();
+    await act(async () => {
+      alert!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(fetchCount).toBe(2);
+    attempts[1]!.resolve({ title: "Recovered" });
+    await settle();
+    expect(last().kind).toBe("ready");
+    expect(container.querySelector('[data-testid="data"]')?.textContent).toBe("Recovered");
   });
 
   it("shows readable copy and retries for a real error", async () => {
