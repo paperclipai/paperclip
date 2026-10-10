@@ -143,7 +143,7 @@ Publish a restricted report without transcripts, audio, keys or caller data:
 node summarize-run.mjs /absolute/private/run/report.json reports/new-run.json
 ```
 
-The original polling investigation is in
-`doc/plans/2026-09-11-speko-hosted-continuation-repro.md`. The newer application
-notification results are in
-`doc/plans/2026-09-12-speko-application-notification-proof.md`.
+See the [current qualification report](../../doc/plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../../doc/plans/2026-09-11-speko-voice-e2e-runbook.md) for inspectable
+results and remaining acceptance gaps. Historical private call reports are not
+included in this checkout.

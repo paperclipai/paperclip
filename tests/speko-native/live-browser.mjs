@@ -241,9 +241,13 @@ try {
   }).catch(() => null);
   if (audioMeasurements) await writeFile(resolve(out, 'audio-measurements.json'), JSON.stringify(audioMeasurements), { mode: 0o600 });
   if (audio) await writeFile(resolve(out, 'received.webm'), Buffer.from(audio), { mode: 0o600 });
+  } catch { event('evidence_failed'); process.exitCode = 1; } finally {
+  // Evidence failures must never bypass hangup of a paid provider session.
   if (session) {
-    const button = page.getByRole('button', { name: /^(End call|Retry ending call)$/ });
-    if (await button.count()) await button.click().catch(() => {});
+    try {
+      const button = page.getByRole('button', { name: /^(End call|Retry ending call)$/ });
+      if (await button.count()) await button.click();
+    } catch { event('ui_cleanup_unavailable'); }
     try {
       const response = await page.request.post(`${origin}/api/companies/${fixture.companyId}/voice-sessions/${session.id}/end`, { headers: { Origin: origin }, data: {} });
       event('end_requested', { status: response.status() });
@@ -255,7 +259,6 @@ try {
       event('cleanup_verified');
     } catch { event('cleanup_unconfirmed'); process.exitCode = 1; }
   }
-  } catch { event('evidence_cleanup_failed'); process.exitCode = 1; } finally {
   try {
   await writeFile(resolve(out, 'report.json'), JSON.stringify({ startedAt: new Date(started).toISOString(), events, session, browserNotificationDisabledForIdleProbe: idleProbe, syntheticMicrophone: true, audioReview: 'required independently; script success does not confirm complete spoken playback', resumedIssueId: resumeIssueId, diskScenario, delayedTemplate, expectedWord: templateScenario ? expectedWord : undefined, executionProvider: templateScenario ? 'claude_local' : 'fixture', server: 'real', speko: 'live' }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ evidence: out }));

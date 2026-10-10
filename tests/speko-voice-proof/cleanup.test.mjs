@@ -49,3 +49,20 @@ test('failed report can be retried without redialing or repeating a confirmed ha
   assert.equal(ends, 1);
   assert.equal(reports, 2);
 });
+
+
+test('retries failed local operations and keeps End available until all media cleanup succeeds', async () => {
+  let tracks = 0, sdk = 0, ends = 0, reports = 0;
+  const cleanup = createCleanup({
+    local: async attempt => {
+      await attempt('tracks.stop', async () => { tracks++; });
+      await attempt('sdk.end', async () => { if (++sdk === 1) throw new Error('temporary failure'); });
+    },
+    provider: async () => { ends++; }, report: async () => { reports++; }, failed: () => {},
+  });
+  assert.equal(await cleanup.end(), false);
+  assert.equal(cleanup.complete, false);
+  assert.equal(await cleanup.end(), true);
+  assert.equal(cleanup.complete, true);
+  assert.deepEqual({tracks, sdk, ends, reports}, {tracks: 1, sdk: 2, ends: 1, reports: 2});
+});
