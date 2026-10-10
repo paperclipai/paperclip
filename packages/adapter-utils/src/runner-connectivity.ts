@@ -1,4 +1,4 @@
-import type { AdapterExecutionTarget } from "./execution-target.js";
+import { adapterExecutionTargetIsCommandBacked, type AdapterExecutionTarget } from "./execution-target.js";
 
 export const PAPERCLIP_RUNNER_INGRESS_PORT = 43_127;
 export const PAPERCLIP_RUNNER_CONNECT_PATH_PREFIX = "/api/runner/v1/connect";
@@ -133,7 +133,7 @@ export async function resolvePaperclipRunnerTransport(input: {
   }
 
   if (
-    input.target.transport === "sandbox" &&
+    adapterExecutionTargetIsCommandBacked(input.target) &&
     input.target.effectiveCapabilities?.runnerWebSocketIngress === true
   ) {
     const ingressAuthorized =
@@ -152,16 +152,18 @@ export async function resolvePaperclipRunnerTransport(input: {
         "The sandbox runner ingress provider is unavailable for this lease.",
       );
     }
+    const port = input.target.transport === "computer" ? input.target.listenerPort : PAPERCLIP_RUNNER_INGRESS_PORT;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new PaperclipRunnerTransportError("runner_ingress_unavailable", "Invalid allocated runner port.");
     const path = connectPath(input.runId);
     const ingress = await getRunnerIngressEndpoint({
       leaseId: input.target.leaseId,
-      port: PAPERCLIP_RUNNER_INGRESS_PORT,
+      port,
       path,
     });
     return {
       mode: "provider_ingress",
       listenAddress: "0.0.0.0",
-      listenPort: PAPERCLIP_RUNNER_INGRESS_PORT,
+      listenPort: port,
       listenPath: path,
       ingress,
     };

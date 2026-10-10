@@ -233,10 +233,33 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
 }
 
+/** A durable attached computer owns a process, never the physical machine. */
+export interface AdapterComputerExecutionTarget extends Omit<AdapterSandboxExecutionTarget, "transport" | "sandboxLeaseAcquisition"> {
+  transport: "computer";
+  listenerPort: number;
+  resourceAuthority: { kind: "computer-owner"; computerId: string; ownerId: string; generation: number };
+  fileAuthority: { kind: "remote-persistent"; placementId: string; root: string; agentHome: string };
+  launch(input: { command: string; args?: string[]; cwd?: string; env?: Record<string, string> }): Promise<unknown>;
+  inspectProcess(): Promise<{ running: boolean; claim: unknown }>;
+  retainWarm(idleTimeoutMs: number): Promise<void>;
+  retire(): Promise<void>;
+  computerTool: { command: string; args: string[] };
+}
+
+export type AdapterCommandBackedExecutionTarget = AdapterSandboxExecutionTarget | AdapterComputerExecutionTarget;
+
+/** Command transport capability; sandbox allocation ownership is unchanged. */
+export function adapterExecutionTargetIsCommandBacked(
+  target: AdapterExecutionTarget | null | undefined,
+): target is AdapterCommandBackedExecutionTarget {
+  return target?.kind === "remote" && (target.transport === "sandbox" || target.transport === "computer");
+}
+
 export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget
   | AdapterSshExecutionTarget
-  | AdapterSandboxExecutionTarget;
+  | AdapterSandboxExecutionTarget
+  | AdapterComputerExecutionTarget;
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
@@ -443,7 +466,7 @@ function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecu
   if (parsed.kind === "local") return true;
   if (parsed.kind !== "remote") return false;
   if (parsed.transport === "ssh") return parseSshRemoteExecutionSpec(parseObject(parsed.spec)) !== null;
-  if (parsed.transport !== "sandbox") return false;
+  if (parsed.transport !== "sandbox" && parsed.transport !== "computer") return false;
   return readStringMeta(parsed, "remoteCwd") !== null;
 }
 
@@ -462,7 +485,7 @@ export function adapterExecutionTargetIsRemote(
 export function adapterExecutionTargetUsesManagedHome(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
-  return target?.kind === "remote" && target.transport === "sandbox";
+  return adapterExecutionTargetIsCommandBacked(target);
 }
 
 /**
@@ -475,8 +498,7 @@ export function adapterExecutionTargetEnablesSandboxDuplexBridge(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
   return (
-    target?.kind === "remote" &&
-    target.transport === "sandbox" &&
+    adapterExecutionTargetIsCommandBacked(target) &&
     target.enableSandboxDuplexBridge === true
   );
 }
@@ -489,7 +511,7 @@ export function adapterExecutionTargetEnablesSandboxDuplexBridge(
 export function adapterExecutionTargetDuplexObservabilityRecorder(
   target: AdapterExecutionTarget | null | undefined,
 ): DuplexObservabilityRecorder | null {
-  return target?.kind === "remote" && target.transport === "sandbox"
+  return adapterExecutionTargetIsCommandBacked(target)
     ? target.duplexObservabilityRecorder ?? null
     : null;
 }
@@ -553,7 +575,7 @@ export function describeAdapterExecutionTarget(
   if (target.transport === "ssh") {
     return `SSH environment ${target.spec.username}@${target.spec.host}:${target.spec.port}`;
   }
-  return `sandbox environment${target.providerKey ? ` (${target.providerKey})` : ""}`;
+  return `${target.transport} environment${target.providerKey ? ` (${target.providerKey})` : ""}`;
 }
 
 export type AdapterExecutionTargetTimeoutSource =
@@ -593,7 +615,7 @@ export function resolveAdapterExecutionTargetTimeout(
   // that usually apply their own shorter command defaults, so request an
   // explicit longer timeout for full adapter runs when the adapter leaves
   // timeoutSec unset.
-  if (target?.kind === "remote" && target.transport === "sandbox") {
+  if (adapterExecutionTargetIsCommandBacked(target)) {
     return { timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC, source: "sandbox_default" };
   }
   return { timeoutSec: 0, source: "unlimited" };
@@ -659,18 +681,18 @@ export function formatAdapterExecutionTimeoutStartLogLine(
   );
 }
 
-function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {
+function requireSandboxRunner(target: AdapterCommandBackedExecutionTarget): CommandManagedRuntimeRunner {
   if (target.runner) return target.runner;
   throw new Error(
     "Sandbox execution target is missing its provider runtime runner. Sandbox commands must execute through the environment runtime.",
   );
 }
 
-function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | "sh" {
+function preferredSandboxShell(target: AdapterCommandBackedExecutionTarget): "bash" | "sh" {
   return preferredShellForSandbox(target.shellCommand);
 }
 
-type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
+type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterCommandBackedExecutionTarget;
 
 // The Secure Shell command runner's own output buffer. This value used to
 // derive from the bridge body limit (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES
@@ -697,7 +719,7 @@ function adapterExecutionTargetShellCommand(target: AdapterCommandCapableExecuti
 function adapterExecutionTargetTimeoutMs(
   target: AdapterCommandCapableExecutionTarget,
 ): number | null | undefined {
-  return target.transport === "sandbox" ? target.timeoutMs : undefined;
+  return adapterExecutionTargetIsCommandBacked(target) ? target.timeoutMs : undefined;
 }
 
 export async function ensureAdapterExecutionTargetCommandResolvable(
@@ -707,7 +729,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   env: NodeJS.ProcessEnv,
   options: { installCommand?: string | null; timeoutSec?: number | null } = {},
 ) {
-  if (target?.kind === "remote" && target.transport === "sandbox") {
+  if (adapterExecutionTargetIsCommandBacked(target)) {
     await ensureSandboxCommandResolvable(
       command,
       target,
@@ -726,7 +748,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
 
 async function probeSandboxCommandResolvable(
   command: string,
-  target: AdapterSandboxExecutionTarget,
+  target: AdapterCommandBackedExecutionTarget,
   env: Record<string, string>,
 ): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
@@ -747,7 +769,7 @@ async function probeSandboxCommandResolvable(
 
 async function ensureSandboxCommandResolvable(
   command: string,
-  target: AdapterSandboxExecutionTarget,
+  target: AdapterCommandBackedExecutionTarget,
   env: Record<string, string>,
   installCommand: string | null,
   timeoutSec?: number | null,
@@ -815,7 +837,7 @@ export async function resolveAdapterExecutionTargetCommandForLogs(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  if (target?.kind === "remote" && target.transport === "sandbox") {
+  if (adapterExecutionTargetIsCommandBacked(target)) {
     return `sandbox://${target.providerKey ?? "provider"}/${target.leaseId ?? "lease"}/${target.remoteCwd} :: ${command}`;
   }
   return await resolveCommandForLogs(command, cwd, env, {
@@ -859,7 +881,7 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
-  if (target?.kind === "remote" && target.transport === "sandbox") {
+  if (adapterExecutionTargetIsCommandBacked(target)) {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
     await options.onRuntimeProgress?.({
@@ -1055,7 +1077,7 @@ export async function maybeRunSandboxInstallCommand(input: {
   timeoutSec?: number;
 }): Promise<AdapterSandboxInstallCommandCheck | null> {
   const { target, adapterKey, installCommand } = input;
-  if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
+  if (!adapterExecutionTargetIsCommandBacked(target)) {
     return null;
   }
   const trimmed = installCommand.trim();
@@ -1162,7 +1184,7 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   onLog?: AdapterExecutionTargetShellOptions["onLog"];
 }): Promise<void> {
   const installCommand = input.installCommand?.trim();
-  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!installCommand || !adapterExecutionTargetIsCommandBacked(input.target)) {
     return;
   }
 
@@ -1562,7 +1584,7 @@ export function githubOperationLauncherDirectory(input: GitHubLauncherLocation):
   if (!/^[a-zA-Z0-9_-]+$/.test(input.runId)) throw new Error("Invalid GitHub launcher run ID");
   return input.target?.kind === "remote"
     ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime",
-        ...(input.target.transport === "sandbox" ? ["paperclip-runner"] : []), "github", input.runId)
+        ...(adapterExecutionTargetIsCommandBacked(input.target) ? ["paperclip-runner"] : []), "github", input.runId)
     : path.join(os.tmpdir(), "paperclip-github-runtime", input.runId);
 }
 
@@ -1986,7 +2008,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // it does not start the 100 ms poll. Default OFF: the bridge keeps the poll.
   streamOutputViaSession?: boolean;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
-  if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!adapterExecutionTargetIsCommandBacked(input.target)) {
     return null;
   }
 
@@ -4838,7 +4860,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           // log line as the file path. The http2 path starts no file-bridge
           // worker, so create the log directory before the tail starts.
           let duplexRunLogTail: SandboxRunLogTailFactory | null = null;
-          if (target.transport === "sandbox" && target.streamRunLogs !== false) {
+          if (adapterExecutionTargetIsCommandBacked(target) && target.streamRunLogs !== false) {
             const duplexLogsDir = sandboxCallbackBridgeDirectories(queueDir).logsDir;
             await ensureSandboxRunLogDirectory({
               runner,
@@ -4930,7 +4952,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   }
 
   let runLogTail: SandboxRunLogTailFactory | null = null;
-  if (target.transport === "sandbox" && target.streamRunLogs !== false) {
+  if (adapterExecutionTargetIsCommandBacked(target) && target.streamRunLogs !== false) {
     runLogTail = createSandboxRunLogTailFactory({
       runner,
       remoteCwd: target.remoteCwd,

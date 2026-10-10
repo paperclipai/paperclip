@@ -210,3 +210,28 @@ describe("paperclip runner transport routing", () => {
     ).toThrow();
   });
 });
+
+it("uses each computer owner's allocated port without changing the sandbox default", async () => {
+  const { adapterExecutionTargetIsCommandBacked } = await import("./execution-target.js");
+  const endpoint = ingress();
+  const getRunnerIngressEndpoint = vi.fn(async () => endpoint);
+  const base = {
+    kind: "remote" as const, transport: "computer" as const, providerKey: "boat", remoteCwd: "/home/user/project",
+    leaseId: "attempt-lease", listenerPort: 45101, effectiveCapabilities: capabilities, getRunnerIngressEndpoint,
+    resourceAuthority: { kind: "computer-owner" as const, computerId: "machine", ownerId: "owner-a", generation: 2 },
+    fileAuthority: { kind: "remote-persistent" as const, placementId: "placement", root: "/home/user/project", agentHome: "/home/user/agent-a" },
+    launch: async () => ({}), inspectProcess: async () => ({ running: true, claim: {} }),
+    retainWarm: async () => {}, retire: async () => {}, computerTool: { command: "cua-driver", args: ["mcp"] },
+  };
+  expect(adapterExecutionTargetIsCommandBacked(base)).toBe(true);
+  for (const port of [45101, 45102]) {
+    const resolved = await resolvePaperclipRunnerTransport({ target: { ...base, listenerPort: port }, runId: "run-1",
+      localConnectUrl: "ws://localhost/unused", runnerIngressAuthorized: true });
+    expect(resolved).toMatchObject({ mode: "provider_ingress", listenPort: port });
+    expect(getRunnerIngressEndpoint).toHaveBeenLastCalledWith({ leaseId: "attempt-lease", port, path: "/api/runner/v1/connect/run-1" });
+  }
+  const { listenerPort, resourceAuthority, fileAuthority, launch, inspectProcess, retainWarm, retire, computerTool, ...common } = base;
+  const resolved = await resolvePaperclipRunnerTransport({ target: { ...common, transport: "sandbox" }, runId: "sandbox-run",
+    localConnectUrl: "ws://localhost/unused", runnerIngressAuthorized: true });
+  expect(resolved).toMatchObject({ mode: "provider_ingress", listenPort: 43127 });
+});
