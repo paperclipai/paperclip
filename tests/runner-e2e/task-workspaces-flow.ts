@@ -166,6 +166,15 @@ export async function runTaskWorkspacesFlow(input: {
     const checks = gradeTaskWorkspaces(evidence);
     const failed = checks.filter(check => !check.passed);
     if (failed.length) throw new Error(`Task workspace oracle failure: ${failed.map(check => check.id).join(", ")}`);
+    await refresh();
+    const [comments, interactions] = await Promise.all([
+      api.get<Row[]>(`/api/issues/${issue.id}/comments`),
+      api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
+    ]);
+    await input.evidence("api-state.json", { issue, runs, comments, interactions, checks });
+    await expect(page.getByTestId("task-chat-thread-header").getByTestId("issue-detail-header")
+      .getByRole("button", { name: "Change status (current: Done)", exact: true })).toBeVisible();
+    await input.capture("final-state", "Final visible task state", "final-state.png");
     return { issue, runs, checks };
   } catch (error) {
     await refresh().catch(() => undefined);
