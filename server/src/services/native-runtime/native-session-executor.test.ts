@@ -2491,12 +2491,14 @@ describe("remote provider checkpoint restores", () => {
         return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
       });
       const runner = { execute };
+      const onProgress = vi.fn(async (_completed: number, _total: number) => undefined);
       const staging = stageRemoteRunnerDirectory({
         target: { kind: "remote", transport: "computer", remoteCwd: root, runner } as never,
         runner: runner as never,
         sourcePath,
         targetPath,
         mode: 0o700,
+        onProgress,
       });
       if (corrupt) {
         await expect(staging).rejects.toThrow();
@@ -2505,6 +2507,8 @@ describe("remote provider checkpoint restores", () => {
         return;
       }
       await staging;
+      expect(onProgress.mock.calls[0]![0]).toBe(0);
+      expect(onProgress.mock.calls.at(-1)![0]).toBe(onProgress.mock.calls.at(-1)![1]);
       expect(await readFile(join(targetPath, "provider-pack.json"), "utf8")).toBe(manifest);
       expect((await lstat(join(targetPath, "bin", "provider"))).mode & 0o100).toBe(0o100);
       expect((await lstat(targetPath)).mode & 0o777).toBe(0o700);

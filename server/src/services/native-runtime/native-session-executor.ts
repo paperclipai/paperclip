@@ -10317,6 +10317,7 @@ export async function stageRemoteRunnerDirectory(input: {
   targetPath: string;
   mode: number;
   excludeEntries?: readonly string[];
+  onProgress?: (completedBytes: number, totalBytes: number) => Promise<void>;
 }): Promise<void> {
   const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
   if (input.runner.syncIn) {
@@ -10378,11 +10379,16 @@ export async function stageRemoteRunnerDirectory(input: {
     });
     await run(`umask 077; mkdir -p ${quote(posix.dirname(remoteArchive))} && : > ${quote(remoteArchive)}`);
     const digest = createHash("sha256");
+    const totalBytes = lstatSync(archivePath).size;
+    let completedBytes = 0;
+    let progressAt = Date.now();
+    await input.onProgress?.(0, totalBytes);
     let chunkIndex = 0;
     const stream = createReadStream(archivePath, { highWaterMark: 4 * 1024 * 1024 });
     for await (const bytes of stream) {
       const chunk = bytes as Buffer;
       digest.update(chunk);
+      completedBytes += chunk.length;
       // Disjoint fixed offsets permit bounded parallel upload and idempotent
       // writes. The final digest rejects missing, duplicated, or partial bytes.
       pending.push(run(`base64 -d | dd of=${quote(remoteArchive)} bs=4194304 seek=${chunkIndex++} conv=notrunc 2>/dev/null`,
@@ -10391,10 +10397,15 @@ export async function stageRemoteRunnerDirectory(input: {
         await Promise.all(pending);
         pending.length = 0;
         if (uploadError) throw uploadError;
+        if (Date.now() - progressAt >= 15_000) {
+          await input.onProgress?.(completedBytes, totalBytes);
+          progressAt = Date.now();
+        }
       }
     }
     await Promise.all(pending);
     if (uploadError) throw uploadError;
+    await input.onProgress?.(totalBytes, totalBytes);
     const expectedDigest = digest.digest("hex");
     await run(`test "$(if command -v sha256sum >/dev/null 2>&1; then sha256sum ${quote(remoteArchive)}; else shasum -a 256 ${quote(remoteArchive)}; fi | cut -d ' ' -f 1)" = ${quote(expectedDigest)} && ` +
       `umask 077 && mkdir -p ${quote(input.targetPath)} && ` +
@@ -12266,12 +12277,16 @@ async function createRunnerdBackendWithinSessionClaim(
               "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
             );
           }
+          await input.onLog?.("stderr", "[paperclip-runner] Preparing the provider pack for first use.\n");
           await stageRemoteRunnerDirectory({
             target: remoteTarget,
             runner: remoteCommandRunner,
             sourcePath: configuredProviderPackRoot,
             targetPath: stagedRemoteProviderPackRoot,
             mode: 0o700,
+            onProgress: async (completed, total) => {
+              await input.onLog?.("stderr", `[paperclip-runner] Uploading provider pack: ${Math.round(completed / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MiB.\n`);
+            },
           });
           await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
             verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
