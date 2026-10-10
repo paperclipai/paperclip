@@ -22,6 +22,17 @@ describe("buildJobManifest", () => {
     expect(job.kind).toBe("Job");
   });
 
+  it("places the pod with the configured nodeSelector and tolerations, and omits them by default", () => {
+    expect(buildJobManifest(baseInput).spec.template.spec.nodeSelector).toBeUndefined();
+    const spec = buildJobManifest({
+      ...baseInput,
+      nodeSelector: { workload: "agents" },
+      tolerations: [{ key: "dedicated", operator: "Exists", effect: "NoSchedule" }],
+    }).spec.template.spec;
+    expect(spec.nodeSelector).toEqual({ workload: "agents" });
+    expect(spec.tolerations).toEqual([{ key: "dedicated", operator: "Exists", effect: "NoSchedule" }]);
+  });
+
   it("sets Job-level lifecycle controls: backoffLimit=0, ttlSecondsAfterFinished, activeDeadlineSeconds", () => {
     const job = buildJobManifest({ ...baseInput, activeDeadlineSec: 1800, ttlSecondsAfterFinished: 600 });
     expect(job.spec.backoffLimit).toBe(0);
